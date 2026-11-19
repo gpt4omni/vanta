@@ -26,6 +26,7 @@
 #![allow(unsafe_code)]
 
 mod audio_devices;
+mod appearance;
 mod chooser;
 mod cli;
 mod crash;

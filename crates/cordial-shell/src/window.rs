@@ -275,7 +275,7 @@ pub fn build(
     // The Roblox button and nothing under it but the profile's caption, which
     // is hidden in the ordinary case. VR is started from Settings → VR
     // (ADR-053, decision 7): the launcher stays one button.
-    column.append(&chooser_widget);
+    column.append(&chooser::hero(chooser_widget.clone()));
     column.append(&switcher.note);
 
     let clamp = adw::Clamp::builder().maximum_size(360).child(&column).build();
@@ -333,6 +333,7 @@ pub fn build(
     // why Settings rather than this window's own content is what decides it.
     let (initial_width, initial_height) = initial_size(&initial_window);
     let host = HostWindow::new(&cordial_shell::host_window::title(), initial_width, initial_height, &toasts);
+    crate::appearance::apply(host.window().upcast_ref());
 
     // **The primary menu, rightmost, because that is where GNOME users look.**
     //
