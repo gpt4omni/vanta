@@ -181,6 +181,14 @@ decodes; all such work is joined before forwarding to the driver. There is no
 production synchronous size fallback. A serial test control remains for the
 measurements below.
 
+`vkCmdExecuteCommands` records primary-to-secondary links for command buffers
+with emulated uploads, including nested execution. Submit walks those links
+with duplicate/cycle protection, joining and rechecking each reachable region
+without holding `state()` or another command lock. Joining only at execute
+recording would miss source writes made afterwards. Reset/free drops the
+primary's links with its command state; secondary staging keeps its existing
+retirement rules.
+
 Unmap/free remove the mapping under `state()` and clone the relevant command
 handles, then join affected jobs without that lock before forwarding. No
 worker reads the original mapping. Begin/reset/free of a command buffer,

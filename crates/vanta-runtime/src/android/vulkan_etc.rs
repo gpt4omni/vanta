@@ -1,4 +1,4 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::{c_char, c_void, CStr};
 use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering::Acquire, Ordering::Relaxed, Ordering::Release};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
@@ -141,6 +141,7 @@ slots!(
     H_CREATE_IMAGE_VIEW,
     H_CMD_COPY_BUFFER_TO_IMAGE,
     H_CMD_COPY_BUFFER_TO_IMAGE2,
+    H_CMD_EXECUTE_COMMANDS,
     H_CMD_COPY_IMAGE,
     H_CMD_COPY_IMAGE2,
     H_CMD_BLIT_IMAGE,
@@ -218,6 +219,9 @@ pub fn hook(name: &[u8], host: *mut c_void, device: *mut c_void) -> Option<*mut 
         b"vkCmdCopyBufferToImage" => (&H_CMD_COPY_BUFFER_TO_IMAGE, cmd_copy_buffer_to_image as *const ()),
         b"vkCmdCopyBufferToImage2" | b"vkCmdCopyBufferToImage2KHR" => {
             (&H_CMD_COPY_BUFFER_TO_IMAGE2, cmd_copy_buffer_to_image2 as *const ())
+        }
+        b"vkCmdExecuteCommands" | b"vkCmdExecuteCommandsKHR" => {
+            (&H_CMD_EXECUTE_COMMANDS, cmd_execute_commands as *const ())
         }
         b"vkCmdCopyImage" => (&H_CMD_COPY_IMAGE, cmd_copy_image as *const ()),
         b"vkCmdCopyImage2" | b"vkCmdCopyImage2KHR" => (&H_CMD_COPY_IMAGE2, cmd_copy_image2 as *const ()),
@@ -739,6 +743,7 @@ struct Job {
 struct CmdState {
     chunks: Vec<Chunk>,
     pending: Vec<Pending>,
+    secondaries: Vec<usize>,
     retired: bool,
 }
 
@@ -1731,71 +1736,85 @@ fn retire_mapping(memory: u64) {
     }
 }
 
+fn check_command(c: usize, same: &mut usize, gone: &mut usize) -> Vec<usize> {
+    let Some(shared) = state().cmds.get(&c).cloned() else { return Vec::new() };
+    let mut cs = command(&shared);
+    if cs.retired {
+        return Vec::new();
+    }
+    for p in &mut cs.pending {
+        if let Err(error) = p.finish() {
+            unhandled(format_args!("submit: decode failed: {error}; texels cleared"));
+            continue;
+        }
+        let snapshot = {
+            let st = state();
+            source_bytes(&st.mapped, p.memory, p.mem_offset, p.len).map(|bytes| {
+                let h = hash(bytes);
+                if p.decoded && h == p.hash { None } else { Some(bytes.to_vec().into_boxed_slice()) }
+            })
+        };
+        let bytes = match snapshot {
+            Ok(Some(bytes)) => bytes,
+            Ok(None) => {
+                *same += 1;
+                continue;
+            }
+            Err(e) => {
+                *gone += 1;
+                if !p.decoded {
+                    unhandled(format_args!("submit: deferred ETC region still unreadable ({e}); texels stay zero"));
+                    p.decoded = true;
+                }
+                continue;
+            }
+        };
+        match validate_job(&p.job, &bytes) {
+            Ok(()) => {
+                if p.decoded {
+                    glcount::ETC_LATE_WRITE.fetch_add(1, Relaxed);
+                }
+                trace(format_args!(
+                    "submit: ETC region re-decoded ({}), mem 0x{:x}+{} {} B",
+                    if p.decoded { "source changed after recording" } else { "deferred at record" },
+                    p.memory,
+                    p.mem_offset,
+                    p.len
+                ));
+                if p.job.width == 0 || p.job.height == 0 {
+                    p.decoded = true;
+                    p.hash = hash(&bytes);
+                } else {
+                    p.work = Some(DecodePool::get().enqueue(&p.job, bytes));
+                }
+            }
+            Err(e) => unhandled(format_args!("submit: decode failed: {e}")),
+        }
+    }
+    for p in &mut cs.pending {
+        if p.work.is_some() {
+            if let Err(error) = p.finish() {
+                unhandled(format_args!("submit: decode failed: {error}; texels cleared"));
+            }
+        }
+    }
+    cs.secondaries.clone()
+}
+
 fn check_pending(cmds: impl Iterator<Item = usize>) {
     if LIVE_CMDS.load(Relaxed) == 0 {
         return;
     }
     let (mut same, mut gone) = (0usize, 0usize);
     for c in cmds {
-        let Some(shared) = state().cmds.get(&c).cloned() else { continue };
-        let mut cs = command(&shared);
-        if cs.retired {
+        let mut children = check_command(c, &mut same, &mut gone);
+        if children.is_empty() {
             continue;
         }
-        for p in &mut cs.pending {
-            if let Err(error) = p.finish() {
-                unhandled(format_args!("submit: decode failed: {error}; texels cleared"));
-                continue;
-            }
-            let snapshot = {
-                let st = state();
-                source_bytes(&st.mapped, p.memory, p.mem_offset, p.len).map(|bytes| {
-                    let h = hash(bytes);
-                    if p.decoded && h == p.hash { None } else { Some(bytes.to_vec().into_boxed_slice()) }
-                })
-            };
-            let bytes = match snapshot {
-                Ok(Some(bytes)) => bytes,
-                Ok(None) => {
-                    same += 1;
-                    continue;
-                }
-                Err(e) => {
-                    gone += 1;
-                    if !p.decoded {
-                        unhandled(format_args!("submit: deferred ETC region still unreadable ({e}); texels stay zero"));
-                        p.decoded = true;
-                    }
-                    continue;
-                }
-            };
-            match validate_job(&p.job, &bytes) {
-                Ok(()) => {
-                    if p.decoded {
-                        glcount::ETC_LATE_WRITE.fetch_add(1, Relaxed);
-                    }
-                    trace(format_args!(
-                        "submit: ETC region re-decoded ({}), mem 0x{:x}+{} {} B",
-                        if p.decoded { "source changed after recording" } else { "deferred at record" },
-                        p.memory,
-                        p.mem_offset,
-                        p.len
-                    ));
-                    if p.job.width == 0 || p.job.height == 0 {
-                        p.decoded = true;
-                        p.hash = hash(&bytes);
-                    } else {
-                        p.work = Some(DecodePool::get().enqueue(&p.job, bytes));
-                    }
-                }
-                Err(e) => unhandled(format_args!("submit: decode failed: {e}")),
-            }
-        }
-        for p in &mut cs.pending {
-            if p.work.is_some() {
-                if let Err(error) = p.finish() {
-                    unhandled(format_args!("submit: decode failed: {error}; texels cleared"));
-                }
+        let mut visited = HashSet::from([c]);
+        while let Some(child) = children.pop() {
+            if visited.insert(child) {
+                children.extend(check_command(child, &mut same, &mut gone));
             }
         }
     }
@@ -1804,6 +1823,37 @@ fn check_pending(cmds: impl Iterator<Item = usize>) {
             "submit: {same} ETC region(s) verified unchanged since recording, {gone} whose source was no longer mapped"
         ));
     }
+}
+
+extern "C" fn cmd_execute_commands(cmd: *mut c_void, count: u32, secondaries: *const usize) {
+    let Some(f) = as_fn::<extern "C" fn(*mut c_void, u32, *const usize)>(H_CMD_EXECUTE_COMMANDS.load(Relaxed)) else {
+        return;
+    };
+    if LIVE_CMDS.load(Relaxed) != 0 && !secondaries.is_null() {
+        let linked = {
+            let mut st = state();
+            let children: Vec<usize> = (0..count as usize).map(|i| rd(secondaries as *const c_void, i * 8))
+                .filter(|c| st.cmds.contains_key(c)).collect();
+            if children.is_empty() {
+                None
+            } else {
+                let primary = Arc::clone(st.cmds.entry(cmd as usize).or_insert_with(|| {
+                    LIVE_CMDS.fetch_add(1, Relaxed);
+                    SharedCmd::default()
+                }));
+                Some((primary, children))
+            }
+        };
+        if let Some((primary, children)) = linked {
+            let mut primary = command(&primary);
+            if !primary.retired {
+                // Joining here would miss legal source writes between this
+                // recording call and the eventual primary submission.
+                primary.secondaries.extend(children);
+            }
+        }
+    }
+    f(cmd, count, secondaries);
 }
 
 extern "C" fn queue_submit(queue: *mut c_void, count: u32, submits: *const c_void, fence: u64) -> i32 {
@@ -1948,6 +1998,12 @@ mod tests {
         VK_SUCCESS
     }
 
+    static EXECUTE_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+    extern "C" fn fake_execute(_: *mut c_void, _: u32, _: *const usize) {
+        EXECUTE_CALLS.fetch_add(1, Relaxed);
+    }
+
     extern "C" fn fake_unmap(_: *mut c_void, _: u64) { check_retirement(); }
     extern "C" fn fake_free(_: *mut c_void, _: u64, _: *const c_void) { check_retirement(); }
     extern "C" fn fake_reset(_: *mut c_void, _: u32) -> i32 { check_retirement(); VK_SUCCESS }
@@ -1994,6 +2050,7 @@ mod tests {
             st.cmds.insert(3, Arc::new(Mutex::new(CmdState {
                 chunks: vec![Chunk { buffer: 4, memory: 5, mapped: dst.as_mut_ptr() as usize, size: dst.len() as u64, used: 0 }],
                 pending: Vec::new(),
+                secondaries: Vec::new(),
                 retired: false,
             })));
             LIVE_CMDS.store(1, Relaxed);
@@ -2071,6 +2128,81 @@ mod tests {
         fn drop(&mut self) {
             forget_device();
         }
+    }
+
+    #[test]
+    fn secondary_uploads_are_joined_and_rechecked_when_the_primary_is_submitted() {
+        let _turn = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        for name in [&b"vkCmdExecuteCommands"[..], &b"vkCmdExecuteCommandsKHR"[..]] {
+            for second in [false, true] {
+                for mode in 0..3 {
+                    let mut harness = CopyHarness::new(256);
+                    {
+                        let mut st = state();
+                        let secondary = st.cmds.remove(&3).unwrap();
+                        st.cmds.insert(4, secondary);
+                        st.cmd_pool.insert(4, 7);
+                    }
+                    harness.record_on(4).unwrap();
+                    {
+                        let shared = state().cmds[&4].clone();
+                        let mut cmd = command(&shared);
+                        let pending = &mut cmd.pending[0];
+                        pending.finish().unwrap();
+                        pending.decoded = false;
+                        pending.hash = 0;
+                        let source = if mode == 2 { Vec::new() } else { harness.src.clone() };
+                        // Leave the replacement unpublished so only the submit
+                        // walker can make progress on this secondary's work.
+                        pending.work = Some(DecodePool::get().prepare(&pending.job, DecodeSource::Snapshot(source.into_boxed_slice())));
+                    }
+                    let hooked = hook(name, fake_execute as *const () as *mut c_void, std::ptr::null_mut()).unwrap();
+                    let execute: extern "C" fn(*mut c_void, u32, *const usize) = as_fn(hooked as usize).unwrap();
+                    let calls = EXECUTE_CALLS.load(Relaxed);
+                    execute(5usize as *mut c_void, 1, [4usize].as_ptr());
+                    execute(3usize as *mut c_void, 2, [5usize, 5].as_ptr());
+                    assert_eq!(EXECUTE_CALLS.load(Relaxed), calls + 2);
+                    assert!(command(&state().cmds[&4]).pending[0].work.is_some());
+                    if mode == 1 {
+                        harness.src[0] ^= 0x80;
+                    }
+                    let errors = glcount::ETC_UNHANDLED.load(Relaxed);
+                    let late = glcount::ETC_LATE_WRITE.load(Relaxed);
+                    assert_eq!(harness.submit(second), VK_SUCCESS);
+                    assert!(command(&state().cmds[&4]).pending[0].work.is_none());
+                    if mode == 2 {
+                        assert_eq!(glcount::ETC_UNHANDLED.load(Relaxed), errors + 1);
+                        assert!(harness.dst.iter().all(|&b| b == 0));
+                    } else {
+                        assert_eq!(glcount::ETC_UNHANDLED.load(Relaxed), errors);
+                        assert_eq!(glcount::ETC_LATE_WRITE.load(Relaxed), late + u64::from(mode == 1));
+                        assert_eq!(harness.dst, harness.expected());
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn empty_execution_and_primary_reset_do_not_retain_secondary_links() {
+        let _turn = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let harness = CopyHarness::new(256);
+        {
+            let mut st = state();
+            let secondary = st.cmds.remove(&3).unwrap();
+            st.cmds.insert(4, secondary);
+        }
+        harness.record_on(4).unwrap();
+        H_CMD_EXECUTE_COMMANDS.store(fake_execute as *const () as usize, Relaxed);
+        cmd_execute_commands(3usize as *mut c_void, 0, std::ptr::null());
+        cmd_execute_commands(3usize as *mut c_void, 1, [99usize].as_ptr());
+        assert!(!state().cmds.contains_key(&3));
+        cmd_execute_commands(3usize as *mut c_void, 1, [4usize].as_ptr());
+        assert_eq!(command(&state().cmds[&3]).secondaries, [4]);
+        H_RESET_COMMAND_BUFFER.store(fake_reset as *const () as usize, Relaxed);
+        assert_eq!(reset_command_buffer(3usize as *mut c_void, 0), VK_SUCCESS);
+        check_pending(std::iter::once(3));
+        assert!(command(&state().cmds[&4]).pending[0].work.is_some());
     }
 
     #[test]
