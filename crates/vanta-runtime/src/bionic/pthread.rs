@@ -1383,7 +1383,10 @@ mod tests {
         let cond = storage.as_mut_ptr() as *mut c_void;
         assert_eq!(cond_signal(cond), 0);
         assert_eq!(cond_broadcast(cond), 0);
-        assert_eq!(storage, [0; 6], "a notification alone must not allocate backing");
+        assert_eq!(
+            storage, [0; 6],
+            "a notification alone must not allocate backing"
+        );
         assert_eq!(cond_destroy(cond), 0);
     }
 
@@ -1621,8 +1624,9 @@ mod tests {
     }
 
     #[test]
-    fn first_use_creates_the_backing_object_and_destroy_returns_the_wrapper_to_zero() {
+    fn first_wait_resolves_a_backing_object_and_destroy_returns_the_wrapper_to_zero() {
         let c = fresh_cond();
+        assert!(cond_backing(&c).is_some());
         assert_eq!(on_cond(&c, pthread_cond_signal), 0);
         assert_eq!(c.state.load(Ordering::SeqCst), READY);
         assert_ne!(backing_address(&c.real_lo, &c.real_hi), 0);
@@ -1634,6 +1638,8 @@ mod tests {
         // The wrapper is reusable, which is what a bionic condition variable
         // that is destroyed and then used again by sloppy code relies on.
         assert_eq!(on_cond(&c, pthread_cond_broadcast), 0);
+        assert_eq!(c.state.load(Ordering::SeqCst), UNINIT);
+        assert!(cond_backing(&c).is_some());
         destroy_backing(&c);
         // And destroying the already destroyed is nothing, not a double free.
         destroy_backing(&c);
