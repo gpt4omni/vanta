@@ -258,6 +258,11 @@ wrapper!(BionicSem, sem_destroy);
 fn resolve<W: Wrapper>(w: &W, init: impl FnOnce(*mut c_void)) -> *mut c_void {
     let (state, real_lo, real_hi) = (w.state(), w.real_lo(), w.real_hi());
     loop {
+        if state.load(Ordering::Acquire) == READY {
+            let address = (real_lo.load(Ordering::Relaxed) as u64)
+                | ((real_hi.load(Ordering::Relaxed) as u64) << 32);
+            return address as usize as *mut c_void;
+        }
         match state.compare_exchange(UNINIT, INITIALISING, Ordering::AcqRel, Ordering::Acquire) {
             Ok(_) => {
                 let backing = alloc_backing();
@@ -1566,6 +1571,17 @@ mod tests {
             real_hi: AtomicU32::new(0),
             _reserved: 0,
         }
+    }
+
+    #[test]
+    fn ready_resolver_reuses_the_published_pointer_without_initialising_again() {
+        let c = fresh_cond();
+        let first = cond_backing(&c).unwrap();
+        assert!(!first.is_null());
+        for _ in 0..32 {
+            assert_eq!(resolve(&c, |_| panic!("READY must not initialise")), first);
+        }
+        destroy_backing(&c);
     }
 
     fn backing_address(real_lo: &AtomicU32, real_hi: &AtomicU32) -> u64 {

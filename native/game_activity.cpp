@@ -1630,7 +1630,9 @@ int vanta_input_mouse_move(void* fn, float x, float y, float dx, float dy, char*
         return -1;
     }
     try {
-        auto cls = env->GetClass("com/roblox/engine/jni/NativeInputInterface");
+        // There is one VM per process, and its class table owns this class.
+        // Cache the shared class, not a local JNI reference from another thread.
+        static const auto cls = env->GetClass("com/roblox/engine/jni/NativeInputInterface");
         reinterpret_cast<Call>(fn)(env->GetJNIEnv(), (jobject)vanta::to_jni(env, cls), x, y, dx,
                                    dy);
         return 0;
