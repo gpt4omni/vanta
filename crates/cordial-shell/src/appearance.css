@@ -1,0 +1,63 @@
+window.vanta-launcher {
+  background-color: #090a0c;
+  color: #f4f4f5;
+}
+
+.vanta-launcher headerbar {
+  background: #090a0c;
+  color: #c6c7cd;
+  box-shadow: none;
+}
+
+.vanta-launcher .vanta-hero {
+  padding: 24px 0;
+}
+
+.vanta-launcher .vanta-wordmark {
+  font-size: 34px;
+  font-weight: 700;
+  color: #f4f4f5;
+}
+
+.vanta-launcher .vanta-tagline {
+  color: #a5a7b0;
+  font-size: 14px;
+}
+
+.vanta-launcher .vanta-launch {
+  margin-top: 24px;
+  min-height: 48px;
+  border-radius: 14px;
+  background: #eeeef0;
+  color: #111216;
+  font-weight: 700;
+  box-shadow: inset 0 1px rgba(255, 255, 255, 0.4);
+}
+
+.vanta-launcher .vanta-launch:hover {
+  background: #ffffff;
+}
+
+.vanta-launcher .vanta-launch:active {
+  background: #c9cbd1;
+}
+
+.vanta-launcher .vanta-launch:disabled {
+  background: #26272c;
+  color: #898b94;
+  box-shadow: none;
+}
+
+.vanta-launcher button:focus-visible {
+  outline: 2px solid #d7d9df;
+  outline-offset: 3px;
+}
+
+.vanta-launcher .vanta-launch:focus-visible {
+  outline-offset: 4px;
+}
+
+.vanta-launcher .vanta-hero .dim-label {
+  color: #a5a7b0;
+  opacity: 1;
+}

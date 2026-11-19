@@ -333,6 +333,7 @@ pub fn build(
     // why Settings rather than this window's own content is what decides it.
     let (initial_width, initial_height) = initial_size(&initial_window);
     let host = HostWindow::new(&cordial_shell::host_window::title(), initial_width, initial_height, &toasts);
+    crate::appearance::apply(&host.window);
 
     // **The primary menu, rightmost, because that is where GNOME users look.**
     //

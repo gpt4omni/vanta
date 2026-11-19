@@ -96,7 +96,7 @@ pub fn build(source: &dyn EntrySource, on_activate: impl Fn(&str) + Clone + 'sta
     }
 
     if entries.len() == 1 {
-        return button(entries.remove(0), on_activate);
+        return hero(button(entries.remove(0), on_activate));
     }
 
     // No group title. "Launch" over a list of things to launch is a header
@@ -126,6 +126,33 @@ pub fn build(source: &dyn EntrySource, on_activate: impl Fn(&str) + Clone + 'sta
     group.upcast()
 }
 
+fn hero(launch: gtk::Widget) -> gtk::Widget {
+    let column = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    column.add_css_class("vanta-hero");
+
+    let bytes = gtk::glib::Bytes::from_static(include_bytes!("../../../packaging/mark.svg"));
+    let stream = gtk::gio::MemoryInputStream::from_bytes(&bytes);
+    let mark = match gtk::gdk_pixbuf::Pixbuf::from_stream(&stream, gtk::gio::Cancellable::NONE) {
+        Ok(pixbuf) => gtk::Image::from_paintable(Some(&gtk::gdk::Texture::for_pixbuf(&pixbuf))),
+        Err(_) => gtk::Image::from_icon_name(cordial_shell::branding::current().icon()),
+    };
+    mark.set_pixel_size(112);
+    mark.set_margin_bottom(8);
+    column.append(&mark);
+
+    let title = gtk::Label::new(Some(cordial_shell::branding::current().name()));
+    title.add_css_class("vanta-wordmark");
+    column.append(&title);
+
+    let tagline = gtk::Label::new(Some("Roblox, native on Linux."));
+    tagline.add_css_class("vanta-tagline");
+    tagline.set_wrap(true);
+    tagline.set_justify(gtk::Justification::Center);
+    column.append(&tagline);
+    column.append(&launch);
+    column.upcast()
+}
+
 /// The lone entry, as the button the window exists for.
 ///
 /// The entry's own icon goes inside the button rather than above it as an
@@ -145,6 +172,7 @@ fn button(entry: Entry, on_activate: impl Fn(&str) + 'static) -> gtk::Widget {
     let button = gtk::Button::builder().child(&content).build();
     button.add_css_class("suggested-action");
     button.add_css_class("pill");
+    button.add_css_class("vanta-launch");
     if let Some(subtitle) = &entry.subtitle {
         button.set_tooltip_text(Some(subtitle));
     }
