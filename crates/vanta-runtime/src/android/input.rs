@@ -1581,6 +1581,7 @@ fn pump_phase_sentence(gap_ms: u64, gtk_ms: u64, total_ms: u64) -> String {
     )
 }
 pub fn pass_key_event(down: bool, evdev_code: i32, modifiers: i32) {
+    note_genuine_input();
     if no_pass_key() {
         return;
     }
@@ -1792,7 +1793,30 @@ fn track_key_held(down: bool, evdev_code: i32) {
 /// event has ever landed there is nothing honest to resend, so this does
 /// nothing rather than guess.
 ///
-/// Called from [`super::looper::pump`] every tick a key is held; harmless to
+/// **Why it runs with no key held too.** Held keys were the first case found,
+/// but the throttle does not care what the user is doing: a window someone is
+/// looking at, with the pointer resting on it, dropped to 1.0/s whenever the
+/// mouse stopped -- the home page and every idle menu animated at one frame a
+/// second, and each frame after a pause in input came up to a second late.
+/// Desktop Roblox does not throttle a window in the foreground, and
+/// `ThrottleWhen` already decides what counts as the background, so with the
+/// pointer on the canvas and no key held this resends every
+/// [`IDLE_KEEPALIVE_INTERVAL_MS`] instead of every tick. Once throttled, the
+/// engine draws one frame per call rather than waking for a while: resent four
+/// times a second it presented 3.5 frames a second on an idle landing page
+/// (GLES, headless sway), against 1.0 with no keepalive. So the call has to
+/// land at least once a frame, and 4 ms covers a 240 Hz display.
+///
+/// **And only for [`KEEPALIVE_AFTER_INPUT_MS`] after the last genuine input.**
+/// Roblox kicks a player who has been idle for twenty minutes, and whether a
+/// zero-delta move counts as activity for that timer has not been measured.
+/// If it does, a keepalive with no end would keep an idle player in a server
+/// indefinitely. Stopping five minutes after the user last touched the mouse or
+/// keyboard leaves the kick at most five minutes later than it would
+/// otherwise be (INFERRED), and the throttle comes back for a desk nobody is
+/// sitting at. Motion, keys, buttons and the wheel all count as input.
+///
+/// Called from [`super::looper::pump`] every tick the policy wants it; harmless to
 /// call when the interface native is not registered yet, since
 /// [`pass_mouse_move_delta`] already falls through to
 /// [`report_unregistered`]'s deduplicated logging rather than spamming.
@@ -1891,12 +1915,44 @@ pub fn keepalive_wanted(policy: ThrottleWhen, focused: Option<bool>, visible: Op
 
 pub fn idle_keepalive() {
     let any_held = !KEYS_HELD.lock().unwrap_or_else(|e| e.into_inner()).is_empty();
-    if !any_held {
+    let now = keepalive_clock_ms();
+    if !any_held
+        && !keepalive_due(
+            now,
+            LAST_KEEPALIVE_MS.load(Ordering::Relaxed),
+            LAST_GENUINE_INPUT_MS.load(Ordering::Relaxed),
+        )
+    {
         return;
     }
     if let Some((x, y)) = mouse_last_position() {
+        LAST_KEEPALIVE_MS.store(now, Ordering::Relaxed);
         pass_mouse_move_delta(x, y, 0.0, 0.0);
     }
+}
+
+/// How often [`idle_keepalive`] resends when no key is held.
+pub const IDLE_KEEPALIVE_INTERVAL_MS: u64 = 4;
+
+/// How long after the last genuine input [`idle_keepalive`] keeps resending.
+pub const KEEPALIVE_AFTER_INPUT_MS: u64 = 5 * 60 * 1000;
+
+static LAST_KEEPALIVE_MS: AtomicU64 = AtomicU64::new(0);
+static LAST_GENUINE_INPUT_MS: AtomicU64 = AtomicU64::new(0);
+
+fn note_genuine_input() {
+    LAST_GENUINE_INPUT_MS.store(keepalive_clock_ms(), Ordering::Relaxed);
+}
+
+fn keepalive_clock_ms() -> u64 {
+    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    // Offset by one interval so the very first call is already due.
+    START.get_or_init(std::time::Instant::now).elapsed().as_millis() as u64 + IDLE_KEEPALIVE_INTERVAL_MS
+}
+
+fn keepalive_due(now_ms: u64, last_ms: u64, last_input_ms: u64) -> bool {
+    now_ms.saturating_sub(last_ms) >= IDLE_KEEPALIVE_INTERVAL_MS
+        && now_ms.saturating_sub(last_input_ms) <= KEEPALIVE_AFTER_INPUT_MS
 }
 
 /// When, around a game starting, to tell the engine that a pointer exists: from
@@ -2505,6 +2561,7 @@ fn resolve_mouse_delta(pending: Option<(f32, f32)>, from_position_diff: (f32, f3
 /// later report with no matching relative sample falls back to subtracting
 /// from it.
 pub fn pass_mouse_move(x: f32, y: f32) {
+    note_genuine_input();
     let from_position_diff = mouse_delta(x, y);
     let (dx, dy) = resolve_mouse_delta(take_pending_unlocked_delta(), from_position_diff);
     pass_mouse_move_delta(x, y, dx, dy);
@@ -2547,6 +2604,7 @@ pub fn pass_mouse_move_delta(x: f32, y: f32, dx: f32, dy: f32) {
 /// never reports a right button cannot turn its camera with the mouse however
 /// well the rest of the path works.
 pub fn pass_mouse_button(x: f32, y: f32, down: bool, android_button: i32) {
+    note_genuine_input();
     let Some(button) = roblox_mouse_button(android_button) else {
         return;
     };
@@ -2592,6 +2650,7 @@ pub fn pass_mouse_button(x: f32, y: f32, down: bool, android_button: i32) {
 /// home for it and is not driven here, because "plausible" is how this file
 /// acquires bugs that take a session to find.
 pub fn wheel(handle: i64, x: f32, y: f32, hscroll: f32, vscroll: f32, event_time_ms: i64) {
+    note_genuine_input();
     let scale = wheel_scale();
     let (h, v) = (hscroll * scale, vscroll * scale);
     if handle != 0 {
@@ -3699,6 +3758,21 @@ pub fn script_type(handle: i64, text: &str, now_ms: i64) -> usize {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn the_idle_keepalive_resends_once_a_frame_not_every_tick() {
+        assert!(keepalive_due(IDLE_KEEPALIVE_INTERVAL_MS, 0, 0));
+        assert!(!keepalive_due(1_000, 1_000 - IDLE_KEEPALIVE_INTERVAL_MS + 1, 1_000));
+        assert!(keepalive_due(1_000, 1_000 - IDLE_KEEPALIVE_INTERVAL_MS, 1_000));
+    }
+
+    #[test]
+    fn the_idle_keepalive_stops_so_the_afk_kick_still_can_fire() {
+        let input = 10_000;
+        assert!(keepalive_due(input + KEEPALIVE_AFTER_INPUT_MS, 0, input));
+        assert!(!keepalive_due(input + KEEPALIVE_AFTER_INPUT_MS + 1, 0, input));
+        assert!(keepalive_clock_ms() >= IDLE_KEEPALIVE_INTERVAL_MS);
+    }
     /// Two buttons are one gesture. `ACTION_DOWN` for the first, `ACTION_UP` for
     /// the last, a press and a release for each: the sequence Android's own mouse
     /// input produces, and what both backends failed to send.
