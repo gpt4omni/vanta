@@ -345,6 +345,46 @@ pub fn decode_region(
 mod tests {
     use super::*;
 
+    #[test]
+    #[ignore]
+    fn microbench_decode() {
+        use std::hint::black_box;
+        use std::time::Instant;
+
+        let (width, height) = (1024usize, 1024usize);
+        for format in [EtcFormat::Rgb8, EtcFormat::Rgba8, EtcFormat::Rg11Signed] {
+            for pattern in ["random", "flat", "runs"] {
+                let bb = format.block_bytes();
+                let mut data = vec![0u8; width * height / 16 * bb];
+                let mut seed = 0x1234_5678u32;
+                let mut block = [0u8; 16];
+                for (i, out) in data.chunks_mut(bb).enumerate() {
+                    if i == 0 || pattern == "random" || (pattern == "runs" && i % 8 == 0) {
+                        for b in &mut block {
+                            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                            *b = (seed >> 24) as u8;
+                        }
+                    }
+                    out.copy_from_slice(&block[..bb]);
+                }
+                let surface = Surface { data: &data, row_blocks: width / 4, rows_of_blocks: height / 4 };
+                let mut dst = vec![0; width * height * format.texel_bytes()];
+                decode_region(format, &surface, width, height, &mut dst).unwrap();
+                let mut samples = Vec::new();
+                for _ in 0..5 {
+                    let start = Instant::now();
+                    for _ in 0..10 {
+                        decode_region(format, black_box(&surface), width, height, black_box(&mut dst)).unwrap();
+                        black_box(&dst);
+                    }
+                    samples.push(start.elapsed().as_secs_f64() / 10.0);
+                }
+                samples.sort_by(f64::total_cmp);
+                println!("decode {format:?} {pattern}: {:.3} ms/image", samples[2] * 1000.0);
+            }
+        }
+    }
+
     type Vector = (&'static str, &'static str, &'static [u8], &'static [u8]);
 
     const VECTORS: &[Vector] = &[

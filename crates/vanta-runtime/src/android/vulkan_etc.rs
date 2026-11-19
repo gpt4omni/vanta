@@ -1636,6 +1636,50 @@ mod tests {
     use super::*;
 
     #[test]
+    #[ignore]
+    fn microbench_upload() {
+        use std::hint::black_box;
+        use std::time::Instant;
+
+        for len in [4096usize, 4 * 1024 * 1024 + 31] {
+            let data: Vec<u8> = (0..len).map(|i| (i * 37 + 11) as u8).collect();
+            let iterations = (128 * 1024 * 1024 / len).max(1);
+            let mut samples = Vec::new();
+            for _ in 0..5 {
+                let start = Instant::now();
+                for _ in 0..iterations {
+                    black_box(hash(black_box(&data)));
+                }
+                samples.push(start.elapsed().as_secs_f64());
+            }
+            samples.sort_by(f64::total_cmp);
+            println!("hash {len} B: {:.3} GB/s", len as f64 * iterations as f64 / samples[2] / 1e9);
+        }
+        for width in [128usize, 256, 1024] {
+            let height = width;
+            let mut seed = 0x1234_5678u32;
+            let src: Vec<u8> = (0..width * height).map(|_| {
+                seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                (seed >> 24) as u8
+            }).collect();
+            let mut dst = vec![0; width * height * 4];
+            let job = job_for(width, height, 1, &mut dst);
+            run_job(&job, &src).unwrap();
+            let mut samples = Vec::new();
+            for _ in 0..5 {
+                let start = Instant::now();
+                for _ in 0..30 {
+                    run_job(black_box(&job), black_box(&src)).unwrap();
+                    black_box(&dst);
+                }
+                samples.push(start.elapsed().as_secs_f64() / 30.0);
+            }
+            samples.sort_by(f64::total_cmp);
+            println!("upload {width}x{height} RGBA8: {:.3} ms/image", samples[2] * 1000.0);
+        }
+    }
+
+    #[test]
     fn substitutes_keep_srgb_and_signedness() {
         let table: Vec<(u32, u32)> = (147..=156).map(|f| (f, etc_format(f).unwrap().1)).collect();
         assert_eq!(
