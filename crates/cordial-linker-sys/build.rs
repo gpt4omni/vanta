@@ -31,6 +31,16 @@ fn main() {
         &root.join("patches"),
         &["0005-parse-relr-dynamic-tags", "0006-link-guest-arch-objects"],
     );
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux") {
+        // The fallback shadows the host UAPI header, leaving arm64's
+        // <asm/sigcontext.h> without its __u128 definition on Fedora 44.
+        let fallback = linker.join("include/linux/types.h");
+        if let Err(err) = std::fs::remove_file(&fallback) {
+            if err.kind() != std::io::ErrorKind::NotFound {
+                panic!("could not remove {}: {err}", fallback.display());
+            }
+        }
+    }
 
     // AOSP bionic does not build with GCC; see docs/base-evaluation.md §2.1.
     let dst = cmake::Config::new(&native)
