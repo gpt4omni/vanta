@@ -544,9 +544,7 @@ async function fileIssue(
         type: BUTTON,
         style: 2,
         label: "Add the rest",
-        custom_id: `vanta-issue-extra:${form.slug}:${issue.number}${
-          chosen.withPicker ? ":l" : ""
-        }`,
+        custom_id: `vanta-issue-extra:${form.slug}:${issue.number}${chosen.withPicker ? ":l" : ""}`,
       }],
     }]
     : [];
