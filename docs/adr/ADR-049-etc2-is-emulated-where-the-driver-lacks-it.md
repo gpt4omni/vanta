@@ -155,7 +155,7 @@ submit hashing or contention with engine workers.
 Reproduce without loading an engine:
 
 ```sh
-CARGO_PROFILE_RELEASE_DEBUG=0 cargo test --release -p cordial-runtime --lib microbench -- --ignored --nocapture --test-threads=1
+CARGO_PROFILE_RELEASE_DEBUG=0 cargo test --release -p vanta-runtime --lib microbench -- --ignored --nocapture --test-threads=1
 ```
 
 The existing independent decoder vectors pass, alongside per-pixel palette
