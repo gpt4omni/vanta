@@ -3162,12 +3162,12 @@ pub mod game_activity {
     /// here -- so the one thing this call cannot check is that `native` really
     /// is that resolved export and not a stale, null-masked, or wrong pointer.
     pub unsafe fn pass_mouse_move(native: *mut c_void, x: f32, y: f32, dx: f32, dy: f32) -> Result<(), String> {
-        let mut err = vec![0u8; 512];
+        let mut err = [0u8; 512];
         // SAFETY: `native` is the exported JNI native; `err` outlives the call.
         let rc = unsafe {
             vanta_input_mouse_move(native, x, y, dx, dy, err.as_mut_ptr() as *mut c_char, err.len())
         };
-        if rc == 0 { Ok(()) } else { Err(take_err(err)) }
+        if rc == 0 { Ok(()) } else { Err(take_err(err.to_vec())) }
     }
 
     /// `NativeInputInterface.nativePassMouseButton`.

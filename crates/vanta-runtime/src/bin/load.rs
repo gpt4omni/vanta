@@ -6461,6 +6461,46 @@ fn switch_on(value: Option<&str>) -> bool {
 }
 
 #[cfg(test)]
+mod mouse_motion_tests {
+    use vanta_linker_sys::{game_activity::pass_mouse_move, jni};
+    use std::ffi::c_void;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn cached_class_survives_motion_from_multiple_threads() {
+        static CALLS: AtomicUsize = AtomicUsize::new(0);
+        static CLASS: AtomicUsize = AtomicUsize::new(0);
+        static BAD: AtomicUsize = AtomicUsize::new(0);
+        extern "C" fn motion(env: *mut c_void, class: *mut c_void, x: f32, y: f32, dx: f32, dy: f32) {
+            let first = CLASS.compare_exchange(0, class as usize, Ordering::Relaxed, Ordering::Relaxed)
+                .unwrap_or_else(|first| first);
+            if env.is_null() || class.is_null() || (first != 0 && first != class as usize)
+                || [x, y, dx, dy] != [1.0, 2.0, 3.0, 4.0] {
+                BAD.fetch_add(1, Ordering::Relaxed);
+            }
+            CALLS.fetch_add(1, Ordering::Relaxed);
+        }
+
+        // SAFETY: the callback is refused before a VM exists.
+        assert!(unsafe { pass_mouse_move(motion as *mut c_void, 0.0, 0.0, 0.0, 0.0) }.is_err());
+        jni::create_vm().expect("the test's process VM");
+        // SAFETY: a null callback is explicitly refused by the C++ shim.
+        assert!(unsafe { pass_mouse_move(std::ptr::null_mut(), 0.0, 0.0, 0.0, 0.0) }.is_err());
+        let threads: Vec<_> = (0..8).map(|_| std::thread::spawn(|| {
+            for _ in 0..32 {
+                // SAFETY: the callback has nativePassMouseMove's JNI signature.
+                unsafe { pass_mouse_move(motion as *mut c_void, 1.0, 2.0, 3.0, 4.0) }.unwrap();
+            }
+        })).collect();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        assert_eq!(CALLS.load(Ordering::Relaxed), 256);
+        assert_eq!(BAD.load(Ordering::Relaxed), 0);
+    }
+}
+
+#[cfg(test)]
 mod post_async_tests {
     #[test]
     fn zero_and_off_mean_off() {

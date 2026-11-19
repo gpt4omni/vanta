@@ -173,15 +173,14 @@ fn add(c: [i32; 3], d: i32) -> [i32; 3] {
 }
 
 fn paint_block(paint: &[[i32; 3]; 4], lo: u32, opaque: bool, out: &mut [[u8; 4]; 16]) {
+    let mut colours = paint.map(|p| [clamp8(p[0]), clamp8(p[1]), clamp8(p[2]), 255]);
+    if !opaque {
+        colours[2] = [0; 4];
+    }
     for y in 0..4 {
         for x in 0..4 {
             let idx = pixel_index(lo, x, y);
-            out[y * 4 + x] = if !opaque && idx == 2 {
-                [0, 0, 0, 0]
-            } else {
-                let p = paint[idx];
-                [clamp8(p[0]), clamp8(p[1]), clamp8(p[2]), 255]
-            };
+            out[y * 4 + x] = colours[idx];
         }
     }
 }
@@ -189,23 +188,25 @@ fn paint_block(paint: &[[i32; 3]; 4], lo: u32, opaque: bool, out: &mut [[u8; 4];
 fn subblocks(c1: [i32; 3], c2: [i32; 3], b3: u8, lo: u32, opaque: bool, out: &mut [[u8; 4]; 16]) {
     let cw = [usize::from(b3 >> 5), usize::from((b3 >> 2) & 7)];
     let flip = b3 & 1 != 0;
+    let colours = [c1, c2];
+    let paint: [[[u8; 4]; 4]; 2] = std::array::from_fn(|i| {
+        let base = colours[i];
+        let table = INTENSITY[cw[i]];
+        let modifiers = [if opaque { table[0] } else { 0 }, table[1], -table[0], -table[1]];
+        std::array::from_fn(|idx| {
+            let m = modifiers[idx];
+            if !opaque && idx == 2 {
+                [0; 4]
+            } else {
+                [clamp8(base[0] + m), clamp8(base[1] + m), clamp8(base[2] + m), 255]
+            }
+        })
+    });
     for y in 0..4 {
         for x in 0..4 {
             let second = if flip { y >= 2 } else { x >= 2 };
-            let (base, table) = if second { (c2, INTENSITY[cw[1]]) } else { (c1, INTENSITY[cw[0]]) };
             let idx = pixel_index(lo, x, y);
-            if !opaque && idx == 2 {
-                out[y * 4 + x] = [0, 0, 0, 0];
-                continue;
-            }
-            let m = match idx {
-                0 if !opaque => 0,
-                0 => table[0],
-                1 => table[1],
-                2 => -table[0],
-                _ => -table[1],
-            };
-            out[y * 4 + x] = [clamp8(base[0] + m), clamp8(base[1] + m), clamp8(base[2] + m), 255];
+            out[y * 4 + x] = paint[usize::from(second)][idx];
         }
     }
 }
@@ -252,6 +253,10 @@ pub fn decode_eac11(block: &[u8], signed: bool, out: &mut [u16; 16]) {
 }
 
 pub fn decode_block(format: EtcFormat, block: &[u8], out: &mut [u8; 64]) {
+    decode_block_rows(format, block, out, 4 * format.texel_bytes());
+}
+
+fn decode_block_rows(format: EtcFormat, block: &[u8], out: &mut [u8], stride: usize) {
     match format {
         EtcFormat::Rgb8 | EtcFormat::Rgb8A1 | EtcFormat::Rgba8 => {
             let mut px = [[0u8; 4]; 16];
@@ -261,15 +266,17 @@ pub fn decode_block(format: EtcFormat, block: &[u8], out: &mut [u8; 64]) {
             } else {
                 decode_etc2_rgb(&block[0..8], format == EtcFormat::Rgb8A1, &mut px);
             }
-            for (i, p) in px.iter().enumerate() {
-                out[i * 4..i * 4 + 4].copy_from_slice(p);
+            for y in 0..4 {
+                let row: [u8; 16] = std::array::from_fn(|i| px[y * 4 + i / 4][i % 4]);
+                out[y * stride..y * stride + 16].copy_from_slice(&row);
             }
         }
         EtcFormat::R11 | EtcFormat::R11Signed => {
             let mut r = [0u16; 16];
             decode_eac11(&block[0..8], format == EtcFormat::R11Signed, &mut r);
-            for (i, v) in r.iter().enumerate() {
-                out[i * 2..i * 2 + 2].copy_from_slice(&v.to_le_bytes());
+            for y in 0..4 {
+                let row: [u8; 8] = std::array::from_fn(|i| r[y * 4 + i / 2].to_le_bytes()[i % 2]);
+                out[y * stride..y * stride + 8].copy_from_slice(&row);
             }
         }
         EtcFormat::Rg11 | EtcFormat::Rg11Signed => {
@@ -278,9 +285,12 @@ pub fn decode_block(format: EtcFormat, block: &[u8], out: &mut [u8; 64]) {
             let mut g = [0u16; 16];
             decode_eac11(&block[0..8], signed, &mut r);
             decode_eac11(&block[8..16], signed, &mut g);
-            for i in 0..16 {
-                out[i * 4..i * 4 + 2].copy_from_slice(&r[i].to_le_bytes());
-                out[i * 4 + 2..i * 4 + 4].copy_from_slice(&g[i].to_le_bytes());
+            for y in 0..4 {
+                let row: [u8; 16] = std::array::from_fn(|i| {
+                    let v = if i % 4 < 2 { r[y * 4 + i / 4] } else { g[y * 4 + i / 4] };
+                    v.to_le_bytes()[i % 2]
+                });
+                out[y * stride..y * stride + 16].copy_from_slice(&row);
             }
         }
     }
@@ -299,6 +309,9 @@ pub fn decode_region(
     height: usize,
     dst: &mut [u8],
 ) -> Result<(), String> {
+    if width == 0 || height == 0 {
+        return Ok(());
+    }
     let bb = format.block_bytes();
     let tb = format.texel_bytes();
     let bw = width.div_ceil(4);
@@ -316,26 +329,47 @@ pub fn decode_region(
     if dst.len() < width * height * tb {
         return Err(format!("destination has {} bytes, region needs {}", dst.len(), width * height * tb));
     }
+    // Keep interior results in place; only cropped blocks need uncropped texels
+    // in scratch for a following identical block.
     let mut texels = [0u8; 64];
+    let mut previous: Option<(&[u8], usize, bool)> = None;
+    let stride = width * tb;
     for by in 0..bh {
         for bx in 0..bw {
             let off = (by * src.row_blocks + bx) * bb;
-            decode_block(format, &src.data[off..off + bb], &mut texels);
-            for y in 0..4 {
-                let py = by * 4 + y;
-                if py >= height {
-                    break;
-                }
-                for x in 0..4 {
-                    let px = bx * 4 + x;
-                    if px >= width {
-                        break;
+            let block = &src.data[off..off + bb];
+            let d = (by * 4 * width + bx * 4) * tb;
+            let full = bx * 4 + 4 <= width && by * 4 + 4 <= height;
+            let same = previous.filter(|&(raw, _, _)| raw == block);
+            if full {
+                if let Some((_, from, was_full)) = same {
+                    for y in 0..4 {
+                        if was_full {
+                            dst.copy_within(from + y * stride..from + y * stride + 4 * tb, d + y * stride);
+                        } else {
+                            dst[d + y * stride..d + y * stride + 4 * tb]
+                                .copy_from_slice(&texels[y * 4 * tb..(y + 1) * 4 * tb]);
+                        }
                     }
-                    let d = (py * width + px) * tb;
-                    let s = (y * 4 + x) * tb;
-                    dst[d..d + tb].copy_from_slice(&texels[s..s + tb]);
+                } else {
+                    decode_block_rows(format, block, &mut dst[d..], stride);
+                }
+            } else {
+                if let Some((_, from, true)) = same {
+                    for y in 0..4 {
+                        texels[y * 4 * tb..(y + 1) * 4 * tb]
+                            .copy_from_slice(&dst[from + y * stride..from + y * stride + 4 * tb]);
+                    }
+                } else if same.is_none() {
+                    decode_block(format, block, &mut texels);
+                }
+                let bytes = (width - bx * 4).min(4) * tb;
+                for y in 0..(height - by * 4).min(4) {
+                    dst[d + y * stride..d + y * stride + bytes]
+                        .copy_from_slice(&texels[y * 4 * tb..y * 4 * tb + bytes]);
                 }
             }
+            previous = Some((block, d, full));
         }
     }
     Ok(())
@@ -344,6 +378,46 @@ pub fn decode_region(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore]
+    fn microbench_decode() {
+        use std::hint::black_box;
+        use std::time::Instant;
+
+        let (width, height) = (1024usize, 1024usize);
+        for format in [EtcFormat::Rgb8, EtcFormat::Rgba8, EtcFormat::Rg11Signed] {
+            for pattern in ["random", "flat", "runs"] {
+                let bb = format.block_bytes();
+                let mut data = vec![0u8; width * height / 16 * bb];
+                let mut seed = 0x1234_5678u32;
+                let mut block = [0u8; 16];
+                for (i, out) in data.chunks_mut(bb).enumerate() {
+                    if i == 0 || pattern == "random" || (pattern == "runs" && i % 8 == 0) {
+                        for b in &mut block {
+                            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                            *b = (seed >> 24) as u8;
+                        }
+                    }
+                    out.copy_from_slice(&block[..bb]);
+                }
+                let surface = Surface { data: &data, row_blocks: width / 4, rows_of_blocks: height / 4 };
+                let mut dst = vec![0; width * height * format.texel_bytes()];
+                decode_region(format, &surface, width, height, &mut dst).unwrap();
+                let mut samples = Vec::new();
+                for _ in 0..5 {
+                    let start = Instant::now();
+                    for _ in 0..10 {
+                        decode_region(format, black_box(&surface), width, height, black_box(&mut dst)).unwrap();
+                        black_box(&dst);
+                    }
+                    samples.push(start.elapsed().as_secs_f64() / 10.0);
+                }
+                samples.sort_by(f64::total_cmp);
+                println!("decode {format:?} {pattern}: {:.3} ms/image", samples[2] * 1000.0);
+            }
+        }
+    }
 
     type Vector = (&'static str, &'static str, &'static [u8], &'static [u8]);
 
@@ -465,5 +539,132 @@ mod tests {
         let src = Surface { data: &[0u8; 8], row_blocks: 2, rows_of_blocks: 2 };
         let mut out = vec![0u8; 8 * 8 * 4];
         assert!(decode_region(EtcFormat::Rgb8, &src, 8, 8, &mut out).is_err());
+    }
+
+    #[test]
+    fn region_rows_and_repeated_blocks_match_per_texel_copies() {
+        for format in [EtcFormat::Rgb8, EtcFormat::Rgb8A1, EtcFormat::Rgba8,
+                       EtcFormat::R11, EtcFormat::R11Signed, EtcFormat::Rg11, EtcFormat::Rg11Signed] {
+            for width in 1usize..=9 {
+                for height in 1usize..=9 {
+                    let bb = format.block_bytes();
+                    let tb = format.texel_bytes();
+                    let row_blocks = width.div_ceil(4) + 1;
+                    let rows_of_blocks = height.div_ceil(4);
+                    let mut data = vec![0; row_blocks * rows_of_blocks * bb];
+                    let mut seed = 0x1234_5678u32;
+                    let mut block = [0; 16];
+                    for (i, out) in data.chunks_mut(bb).enumerate() {
+                        if i % 3 == 0 {
+                            for b in &mut block {
+                                seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                                *b = (seed >> 24) as u8;
+                            }
+                        }
+                        out.copy_from_slice(&block[..bb]);
+                    }
+                    let surface = Surface { data: &data, row_blocks, rows_of_blocks };
+                    let len = width * height * tb;
+                    let mut dst = vec![0xa5; len + 16];
+                    decode_region(format, &surface, width, height, &mut dst).unwrap();
+                    let mut expected = vec![0; len];
+                    let mut pixels = [0; 64];
+                    for by in 0..height.div_ceil(4) {
+                        for bx in 0..width.div_ceil(4) {
+                            let at = (by * row_blocks + bx) * bb;
+                            decode_block(format, &data[at..at + bb], &mut pixels);
+                            for y in 0..(height - by * 4).min(4) {
+                                for x in 0..(width - bx * 4).min(4) {
+                                    let s = (y * 4 + x) * tb;
+                                    let d = ((by * 4 + y) * width + bx * 4 + x) * tb;
+                                    expected[d..d + tb].copy_from_slice(&pixels[s..s + tb]);
+                                }
+                            }
+                        }
+                    }
+                    assert_eq!(dst[..len], expected, "{format:?} {width}x{height}");
+                    assert_eq!(dst[len..], [0xa5; 16]);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn empty_regions_and_invalid_extents() {
+        let empty = Surface { data: &[], row_blocks: 0, rows_of_blocks: 0 };
+        assert!(decode_region(EtcFormat::Rgb8, &empty, 0, 4, &mut []).is_ok());
+        assert!(decode_region(EtcFormat::Rgb8, &empty, 4, 0, &mut []).is_ok());
+        assert!(decode_region(EtcFormat::Rgb8, &empty, 4, 4, &mut [0; 64]).is_err());
+        let full = Surface { data: &[0; 8], row_blocks: 1, rows_of_blocks: 1 };
+        assert!(decode_region(EtcFormat::Rgb8, &full, 4, 4, &mut [0; 63]).is_err());
+    }
+
+    #[test]
+    fn repeated_blocks_across_cropped_edges_keep_all_texels() {
+        for format in [EtcFormat::Rgb8, EtcFormat::Rgb8A1, EtcFormat::Rgba8,
+                       EtcFormat::R11, EtcFormat::R11Signed, EtcFormat::Rg11, EtcFormat::Rg11Signed] {
+            let block = [0x82, 0xda, 0x96, 0x30, 0x2f, 0xcd, 0x83, 0x79,
+                         0x73, 0xdd, 0x8f, 0xdb, 0xec, 0xc7, 0x77, 0x73];
+            let data = block[..format.block_bytes()].repeat(6);
+            let surface = Surface { data: &data, row_blocks: 2, rows_of_blocks: 3 };
+            let tb = format.texel_bytes();
+            let mut pixels = [0; 64];
+            decode_block(format, &block, &mut pixels);
+            let mut out = vec![0; 5 * 9 * tb];
+            decode_region(format, &surface, 5, 9, &mut out).unwrap();
+            for y in 0..9 {
+                for x in 0..5 {
+                    let from = (y % 4 * 4 + x % 4) * tb;
+                    let at = (y * 5 + x) * tb;
+                    assert_eq!(out[at..at + tb], pixels[from..from + tb], "{format:?} {x},{y}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn palettes_match_per_pixel_clamping() {
+        let mut seed = 0x1234_5678u32;
+        for i in 0..2048 {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            let lo = seed;
+            let b3 = i as u8;
+            let opaque = i & 256 == 0;
+            let bases = [[(seed & 255) as i32, ((seed >> 8) & 255) as i32, ((seed >> 16) & 255) as i32],
+                         [((seed >> 24) & 255) as i32, 255, 0]];
+            let mut out = [[0; 4]; 16];
+            subblocks(bases[0], bases[1], b3, lo, opaque, &mut out);
+            for y in 0..4 {
+                for x in 0..4 {
+                    let second = if b3 & 1 != 0 { y >= 2 } else { x >= 2 };
+                    let base = bases[usize::from(second)];
+                    let table = INTENSITY[if second { usize::from((b3 >> 2) & 7) } else { usize::from(b3 >> 5) }];
+                    let idx = pixel_index(lo, x, y);
+                    let m = match idx {
+                        0 if !opaque => 0,
+                        0 => table[0],
+                        1 => table[1],
+                        2 => -table[0],
+                        _ => -table[1],
+                    };
+                    let expected = if !opaque && idx == 2 { [0; 4] } else {
+                        [clamp8(base[0] + m), clamp8(base[1] + m), clamp8(base[2] + m), 255]
+                    };
+                    assert_eq!(out[y * 4 + x], expected);
+                }
+            }
+            let paint = [add(bases[0], -183), add(bases[0], 183), bases[1], add(bases[1], 183)];
+            paint_block(&paint, lo, opaque, &mut out);
+            for y in 0..4 {
+                for x in 0..4 {
+                    let idx = pixel_index(lo, x, y);
+                    let p = paint[idx];
+                    let expected = if !opaque && idx == 2 { [0; 4] } else {
+                        [clamp8(p[0]), clamp8(p[1]), clamp8(p[2]), 255]
+                    };
+                    assert_eq!(out[y * 4 + x], expected);
+                }
+            }
+        }
     }
 }

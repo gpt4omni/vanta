@@ -91,8 +91,78 @@ create the device and a client that never starts.
 - An ETC2 format inside a `VkImageFormatListCreateInfo` is forwarded
   unchanged and counted.
 - `check_pending` still decodes at submit with the shared state lock held, and
-  `emulate_copy` decodes at record under it. Neither has been shown to cost a
-  frame; both are known and not measured.
+  `emulate_copy` decodes at record under it. Source mappings are raw pointers,
+  and command-buffer state owns the staging allocations. Dropping the lock
+  would let unmap/free or command reset retire those allocations while helpers
+  use them. The worker job's `Arc` does not own either allocation; releasing
+  this lock needs a separate mapping/staging lifetime protocol. Contention and
+  its in-game cost have not been measured.
+- Only consecutive identical compressed blocks are memoised. No wider block
+  cache was added: the synthetic workloads below do not establish a realistic
+  hit rate that would justify its extra lookup and storage.
+
+## CPU fast path and VM microbenchmarks
+
+Full interior blocks write four row slices directly into staging, rather than
+copying individual texels through a second block buffer. Cropped edge blocks
+retain uncropped texels in scratch. Identical consecutive 8/16-byte blocks
+reuse the preceding decoded result, including across cropped edges. ETC colour
+palettes are clamped once per block/subblock, not once per pixel.
+
+Regions of at least 256x256 texels use a lazily-started persistent pool, with
+`available_parallelism().min(8)` helpers cached at initialisation. The caller
+claims a band before publication and then takes unstarted bands itself;
+helpers never wait for other jobs. Concurrent callers therefore do not depend
+on a free helper to start work. Completion, including decode errors and caught
+panics, is joined before borrowed source/staging pointers can expire. The
+threshold remains unchanged. Tests compare concurrent multi-layer jobs against
+serial decoding and exercise progress with no helpers at all.
+
+Submit validation still reads every compressed source byte. Its hash now uses
+four independent lanes over 32-byte strides and a byte-wise tail; hashes are
+ephemeral record/submit state, not persisted digests. Tests change every bit in
+each lane and the tail. Both submit wrappers visit command buffers with lazy
+iterators instead of allocating temporary vectors.
+
+These are **CPU microbenchmarks on this VM, not in-game measurements**: eight
+reported Intel Xeon vCPUs under KVM, Ubuntu 24.04 build container, Rust 1.99.1,
+release optimisation with `CARGO_PROFILE_RELEASE_DEBUG=0`, no extra target CPU
+flags. The baseline is `66a212e` (benchmark-only changes over `d694229`). Each
+entry is the median of five batches after warm-up. Decoder batches contain ten
+1024x1024 images; CPU job batches contain thirty images with warm helpers;
+hash batches read approximately 128 MiB. Inputs are deterministic synthetic
+compressed bytes: independent blocks, one repeated block, or runs of eight.
+The CPU job benchmark does not include Vulkan calls, staging allocation,
+submit hashing or contention with engine workers.
+
+| VM microbenchmark | Before | After |
+| --- | ---: | ---: |
+| RGB8 random, ms/image | 14.919 | 2.109 |
+| RGB8 flat, ms/image | 5.442 | 0.791 |
+| RGB8 runs, ms/image | 7.154 | 0.920 |
+| RGBA8 random, ms/image | 15.123 | 2.763 |
+| RGBA8 flat, ms/image | 5.740 | 0.853 |
+| RGBA8 runs, ms/image | 7.278 | 1.016 |
+| RG11 signed random, ms/image | 12.594 | 11.143 |
+| RG11 signed flat, ms/image | 5.131 | 0.791 |
+| RG11 signed runs, ms/image | 6.218 | 2.134 |
+| Hash 4,096 bytes, GB/s | 6.742 | 24.302 |
+| Hash 4,194,335 bytes, GB/s | 6.328 | 21.497 |
+| CPU job 128x128 RGBA8, ms/image | 0.219 | 0.039 |
+| CPU job 256x256 RGBA8, ms/image | 0.380 | 0.058 |
+| CPU job 1024x1024 RGBA8, ms/image | 3.278 | 0.661 |
+
+Reproduce without loading an engine:
+
+```sh
+CARGO_PROFILE_RELEASE_DEBUG=0 cargo test --release -p vanta-runtime --lib microbench -- --ignored --nocapture --test-threads=1
+```
+
+The existing independent decoder vectors pass, alongside per-pixel palette
+references, padded/cropped region comparisons and repeated-edge cases for all
+seven formats. **INFERRED:** less CPU work and no per-layer thread creation may
+reduce texture-upload stalls in game. No game was run; neither the target
+NVIDIA machine nor an in-game frame-rate or latency improvement was measured.
 
 ## Not an ADR-001 matter
 
@@ -128,3 +198,6 @@ check available without NVIDIA.
   across a join has not been measured.
 - Compatibility with a driver that lacks ETC2 and is not NVIDIA's. The code
   does not depend on the vendor, and no such driver has run it.
+- In-game effects of the CPU fast path, real texture repetition rates, cold
+  pool startup cost and contention/oversubscription against engine workers.
+  The VM microbenchmarks above do not establish any of these.
