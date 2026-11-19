@@ -247,31 +247,62 @@ pacing and target NVIDIA behaviour remain unverified.
 
 ## EAC palettes: a second VM measurement
 
-EAC R11/RG11 now precompute the eight final signed or unsigned values per
-block, including the multiplier-zero rule and the signed -128 base fixup.
-Selectors index little-endian palettes directly into four output rows. Alpha
-blocks also clamp eight palette entries instead of sixteen pixels. The old
-per-pixel R11 decoder remains in tests: 65,536 base/table/multiplier combinations
-with deterministic random selectors and second channels compare both R11/RG11
-signed and unsigned output, alongside the independent vectors and edge tests.
+Signed EAC R11/RG11 precompute eight final values per block, including the
+multiplier-zero rule and signed -128 base fixup. Selectors index little-endian
+palettes directly into four output rows. Alpha blocks also clamp eight palette
+entries instead of sixteen pixels. Unsigned R11/RG11 instead dispatch at
+`decode_region` to the complete old implementation: `etc_decode_legacy.rs` is
+pinned verbatim, apart from its provenance comment and trailing blank line,
+to main commit `c5a9e3727b635c29bee8e16584f7e006c533249c`, without its tests.
+Keeping the whole region path avoids relying on arithmetic-only restoration
+having the same optimisation behaviour. Other formats in that frozen module
+are retained to preserve the implementation, but are not dispatched to it.
 
-These are CPU microbenchmarks on the same VM/container and toolchain, not
-in-game results. Baseline `4774ce7` adds measurement only on top of the merged
-first fast path. Each figure is the median of five warmed ten-image batches,
-in milliseconds per 1024x1024 image, using the command above.
+The original separate-run unsigned measurements (1.110 ms R11 and 1.832 ms
+RG11) were not enough to distinguish VM variation from a regression. A
+same-binary, three-round interleaved comparison resolved that: the old region
+path took 1.038/1.042/1.041 ms for R11 against 1.300/1.295/1.295 ms with only
+unsigned per-pixel arithmetic restored. RG11 was 1.683/1.693/1.661 ms against
+2.177/2.199/2.158 ms. The regression was real in that session, not merely a
+reason to dismiss the earlier baseline as noise. The full-region dispatch
+replaces that attempt; signed palettes remain enabled.
 
-| Random EAC image | Before | Palette/direct-row version |
+The following replacement table is **same-session CPU microbenchmarking on
+this VM, not in-game results**, with the same container/toolchain as above.
+Each entry is the median of three round medians. Every round has seven batches
+of ten old/new image pairs, alternating AB/BA order per pair, after warm-up.
+Both timed paths use the same source and destination allocations. Deterministic
+random inputs match the existing image benchmark generator. Outputs are checked
+against the pinned decoder before and after timing.
+
+| Random 1024x1024 EAC image, ms | Pinned old region | Selected region |
 | --- | ---: | ---: |
-| R11 unsigned | 1.110 | 1.334 |
-| R11 signed | 5.629 | 2.015 |
-| RG11 unsigned | 1.832 | 2.113 |
-| RG11 signed | 10.790 | 3.519 |
+| R11 unsigned | 1.032 | 1.032 |
+| R11 signed | 5.529 | 2.023 |
+| RG11 unsigned | 1.697 | 1.684 |
+| RG11 signed | 10.718 | 3.627 |
 
-The signed paths are faster; **unsigned random data regressed** (about 20% for
-R11 and 15% for RG11). Precomputing a palette does not guarantee a win against
-the old simple unsigned arithmetic. Inlining and direct palette-to-row writes
-were tried; these measurements do not establish a faster unsigned path. Flat
-blocks remain dominated by repeated-block reuse (about 0.74 ms/image).
+The unsigned paths now tie within run variation, rather than carrying a
+measured regression. Full per-round numbers, old/selected in milliseconds:
+
+| Format | Round 1 | Round 2 | Round 3 |
+| --- | ---: | ---: | ---: |
+| R11 unsigned | 1.032 / 1.034 | 1.031 / 1.031 | 1.034 / 1.032 |
+| R11 signed | 5.529 / 2.026 | 5.546 / 2.017 | 5.519 / 2.023 |
+| RG11 unsigned | 1.648 / 1.662 | 1.711 / 1.684 | 1.697 / 1.701 |
+| RG11 signed | 10.718 / 3.627 | 10.645 / 3.593 | 12.423 / 3.933 |
+
+Reproduce the paired comparison without an engine or Vulkan driver:
+
+```sh
+CARGO_PROFILE_RELEASE_DEBUG=0 cargo test --release -p vanta-runtime --lib microbench_eac_interleaved -- --ignored --nocapture --test-threads=1
+```
+
+The old per-pixel R11 reference remains in tests: 65,536 base/table/multiplier
+combinations with random selectors and second channels compare signed and
+unsigned R11/RG11 output. Independent vectors, padded/cropped regions and
+repeated-edge cases still run; an additional test compares unsigned dispatch
+with the pinned path for empty, edge and malformed source/destination cases.
 **INFERRED:** signed EAC uploads may use less CPU in game. No game was run.
 
 ## Not an ADR-001 matter
