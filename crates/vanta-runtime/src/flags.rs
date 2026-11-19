@@ -770,11 +770,18 @@ pub fn frame_rate_limit_flags(choice: FrameRateLimit) -> Vec<(String, String)> {
 /// On a 120 Hz output with `nativePassCurrentDisplayRefreshRate 120` in the log
 /// (`refresh.rs`), a 2.742 client sat at 60 until a number was chosen by hand;
 /// the engine takes the rate as information, and its scheduler target is a
-/// separate flag. Above 60 the target is now the rate itself; at 60 or below,
-/// or before the rate is known, it is still nothing.
-pub fn frame_rate_limit_flags_for(choice: FrameRateLimit, display_hz: Option<f32>) -> Vec<(String, String)> {
+/// separate flag. Above 60 the target is the rate itself under a queueing
+/// present mode, and [`crate::refresh::REPLACING_PRESENT_HEADROOM`] times it
+/// under MAILBOX or IMMEDIATE, where a target of exactly the rate left one
+/// refresh in five showing a repeated frame; at 60 or below, or before the
+/// rate is known, it is still nothing.
+pub fn frame_rate_limit_flags_for(
+    choice: FrameRateLimit,
+    display_hz: Option<f32>,
+    present_replaces_frames: bool,
+) -> Vec<(String, String)> {
     match choice {
-        FrameRateLimit::Display => match crate::refresh::target_fps_for(display_hz) {
+        FrameRateLimit::Display => match crate::refresh::target_fps_with_headroom(display_hz, present_replaces_frames) {
             Some(fps) => vec![("DFIntTaskSchedulerTargetFps".to_string(), fps.to_string())],
             None => Vec::new(),
         },
@@ -788,11 +795,27 @@ pub fn frame_rate_limit_flags_for(choice: FrameRateLimit, display_hz: Option<f32
 fn frame_rate_limit_layer() -> Layer {
     let choice = frame_rate_limit();
     let values: BTreeMap<String, String> =
-        frame_rate_limit_flags_for(choice, crate::refresh::announced()).into_iter().collect();
+        frame_rate_limit_flags_for(choice, crate::refresh::announced(), present_replaces_frames())
+            .into_iter()
+            .collect();
     if !values.is_empty() {
         println!("  flags: frame rate limit set to {} ({} flag(s))", choice.label(), values.len());
     }
     Layer { source: Source::FrameRateLimit, values }
+}
+
+/// Whether the present mode the environment and flag layers ask for replaces
+/// frames, read from [`collect_without_frame_rate_limit`] for the reason that
+/// function exists.
+pub fn present_replaces_frames() -> bool {
+    let resolved = resolve(collect_without_frame_rate_limit());
+    let from_flags = resolved
+        .get(crate::android::vulkan::PRESENT_MODE_KEY)
+        .map(|entry| (entry.source.describe(), entry.value.clone()));
+    crate::android::vulkan::present_mode_replaces_frames(
+        std::env::var(crate::android::vulkan::PRESENT_MODE_ENV).ok(),
+        from_flags,
+    )
 }
 
 /// [`collect`] without the frame-rate-limit layer itself, so [`frame_rate_limit`]
@@ -1620,18 +1643,23 @@ mod frame_rate_limit_tests {
 
     #[test]
     fn display_follows_a_fast_display_and_leaves_a_sixty_hertz_one_alone() {
-        let target = |hz| frame_rate_limit_flags_for(FrameRateLimit::Display, hz);
+        let target = |hz| frame_rate_limit_flags_for(FrameRateLimit::Display, hz, false);
         assert_eq!(
             target(Some(120.0)),
             vec![("DFIntTaskSchedulerTargetFps".to_string(), "120".to_string())],
             "a 120 Hz output must not stay at the engine's 60"
+        );
+        assert_eq!(
+            frame_rate_limit_flags_for(FrameRateLimit::Display, Some(100.0), true),
+            vec![("DFIntTaskSchedulerTargetFps".to_string(), "150".to_string())],
+            "MAILBOX on 100 Hz must target above the refresh it would otherwise repeat frames at"
         );
         // Controls: nothing to raise, or nothing known.
         assert!(target(Some(60.0)).is_empty());
         assert!(target(None).is_empty());
         // A number chosen by hand is not overridden by the display.
         assert_eq!(
-            frame_rate_limit_flags_for(FrameRateLimit::Cap(90), Some(144.0)),
+            frame_rate_limit_flags_for(FrameRateLimit::Cap(90), Some(144.0), true),
             vec![("DFIntTaskSchedulerTargetFps".to_string(), "90".to_string())]
         );
     }

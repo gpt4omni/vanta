@@ -139,7 +139,11 @@ fn set_frame_rate_limit(choice: vanta_protocol::FrameRateLimit) -> Option<String
     // "now".
     // Not true when the display is above 60 Hz: Display then carries a flag of
     // its own (`flags::frame_rate_limit_flags_for`), the engine takes it at once.
-    let display_flag = !crate::flags::frame_rate_limit_flags_for(Limit::Display, crate::refresh::announced())
+    let display_flag = !crate::flags::frame_rate_limit_flags_for(
+        Limit::Display,
+        crate::refresh::announced(),
+        crate::flags::present_replaces_frames(),
+    )
         .is_empty();
     (parsed == Limit::Display && before != Limit::Display && !display_flag).then(|| {
         "the engine keeps the previous cap until its next settings refresh, within about two minutes"
