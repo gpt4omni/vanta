@@ -96,7 +96,7 @@ pub fn build(source: &dyn EntrySource, on_activate: impl Fn(&str) + Clone + 'sta
     }
 
     if entries.len() == 1 {
-        return hero(button(entries.remove(0), on_activate));
+        return button(entries.remove(0), on_activate);
     }
 
     // No group title. "Launch" over a list of things to launch is a header
@@ -126,7 +126,7 @@ pub fn build(source: &dyn EntrySource, on_activate: impl Fn(&str) + Clone + 'sta
     group.upcast()
 }
 
-fn hero(launch: gtk::Widget) -> gtk::Widget {
+pub fn hero(launch: gtk::Widget) -> gtk::Widget {
     let column = gtk::Box::new(gtk::Orientation::Vertical, 12);
     column.add_css_class("vanta-hero");
 
@@ -180,4 +180,22 @@ fn button(entry: Entry, on_activate: impl Fn(&str) + 'static) -> gtk::Widget {
     let id = entry.id;
     button.connect_clicked(move |_| on_activate(&id));
     button.upcast()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "requires a GTK display"]
+    fn the_hero_preserves_the_launch_button_as_the_focus_target() {
+        adw::init().unwrap();
+        let chooser = build(&CordialSource, |_| {});
+        assert!(chooser.is::<gtk::Button>());
+        let window = gtk::Window::new();
+        window.set_child(Some(&hero(chooser.clone())));
+        GtkWindowExt::set_focus(&window, Some(&chooser));
+        assert_eq!(GtkWindowExt::focus(&window), Some(chooser));
+        window.close();
+    }
 }

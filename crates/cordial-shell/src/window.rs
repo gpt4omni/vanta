@@ -275,7 +275,7 @@ pub fn build(
     // The Roblox button and nothing under it but the profile's caption, which
     // is hidden in the ordinary case. VR is started from Settings → VR
     // (ADR-053, decision 7): the launcher stays one button.
-    column.append(&chooser_widget);
+    column.append(&chooser::hero(chooser_widget.clone()));
     column.append(&switcher.note);
 
     let clamp = adw::Clamp::builder().maximum_size(360).child(&column).build();
