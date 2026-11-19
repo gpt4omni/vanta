@@ -1181,6 +1181,27 @@ fn resolve_present_mode(
     (auto, "auto".to_string())
 }
 
+/// Whether the present mode these settings resolve to discards frames the
+/// display never scans out (MAILBOX, or IMMEDIATE) rather than queueing them
+/// behind the refresh.
+///
+/// Asked by `flags.rs` before any swapchain exists, so it takes the same two
+/// inputs as [`resolve_present_mode`] rather than calling
+/// [`present_mode_choice`], whose flag read goes through `flags::collect` and
+/// would ask the frame-rate layer that is asking this. It answers for the mode
+/// requested, not the one the driver grants; a surface without MAILBOX falls
+/// back to the engine's FIFO, where a present blocks and the answer costs
+/// nothing.
+pub fn present_mode_replaces_frames(from_env: Option<String>, from_flags: Option<(String, String)>) -> bool {
+    match resolve_present_mode(from_env, from_flags).0 {
+        PresentModeChoice::Untouched => false,
+        PresentModeChoice::Prefer(modes) => matches!(
+            modes.first(),
+            Some(&VK_PRESENT_MODE_MAILBOX_KHR) | Some(&VK_PRESENT_MODE_IMMEDIATE_KHR)
+        ),
+    }
+}
+
 /// What the flag layers say about [`PRESENT_MODE_KEY`], if anything.
 fn present_mode_from_flags() -> Option<(String, String)> {
     let resolved = crate::flags::resolve(crate::flags::collect());
@@ -2667,6 +2688,18 @@ extern "C" fn vk_create_android_surface_khr(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_mailbox_and_immediate_count_as_replacing_frames() {
+        let flag = |v: &str| Some(("a plugin".to_string(), v.to_string()));
+        assert!(present_mode_replaces_frames(None, None), "auto is MAILBOX");
+        assert!(present_mode_replaces_frames(Some("immediate".into()), None));
+        assert!(present_mode_replaces_frames(None, flag("uncapped")));
+        // Controls: a queueing mode, and the engine's own choice, do not.
+        assert!(!present_mode_replaces_frames(Some("fifo".into()), None));
+        assert!(!present_mode_replaces_frames(None, flag("fifo-relaxed")));
+        assert!(!present_mode_replaces_frames(Some("off".into()), flag("mailbox")));
+    }
 
     /// What nothing-set resolves to. Named rather than spelled out at each
     /// use, because the whole point of these tests is that the fallback is one

@@ -81,6 +81,36 @@ pub fn target_fps_for(hz: Option<f32>) -> Option<u32> {
     (fps > 60).then_some(fps)
 }
 
+/// How far above the display's rate [`target_fps_with_headroom`] puts the
+/// scheduler target when the swapchain replaces frames rather than queueing.
+///
+/// Measured on main on a 100 Hz output (GTX 1080 Ti, NVIDIA 580, Hyprland):
+/// a target of 100 presented 75-84 a second in game with a p95 interval of
+/// about 20 ms -- the engine's limiter lands short of its target, and under
+/// MAILBOX every refresh that finds no new frame shows the old one twice,
+/// which is the 20 ms. A frame finished above the refresh rate costs nothing
+/// on screen there: MAILBOX replaces it before scan-out. 1.5 is `INFERRED`
+/// from a model of that limiter (`docs/analysis/present-headroom.md`): it
+/// takes the engine's rate above the refresh with the undershoot seen, where
+/// 1.25 still leaves about one refresh in sixteen repeated.
+pub const REPLACING_PRESENT_HEADROOM: f32 = 1.5;
+
+/// [`target_fps_for`], raised by [`REPLACING_PRESENT_HEADROOM`] when the
+/// present mode replaces frames.
+///
+/// Under FIFO a present waits for the refresh, so a target above it only
+/// fills the queue and adds latency; there the target stays the rate itself.
+/// Nothing at or below 60 in either case, for [`target_fps_for`]'s reason and
+/// because a cap above a 60 Hz display was measured slower, not faster, on
+/// one headless machine (`docs/fastflags.md`).
+pub fn target_fps_with_headroom(hz: Option<f32>, replaces_frames: bool) -> Option<u32> {
+    let fps = target_fps_for(hz)?;
+    if !replaces_frames {
+        return Some(fps);
+    }
+    Some((fps as f32 * REPLACING_PRESENT_HEADROOM).round() as u32)
+}
+
 /// One output, as much of it as this decision needs.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Output {
@@ -169,6 +199,18 @@ mod tests {
         assert_eq!(target_fps_for(Some(50.0)), None);
         assert_eq!(target_fps_for(Some(0.0)), None, "GDK's unknown is not a display");
         assert_eq!(target_fps_for(None), None);
+    }
+
+    #[test]
+    fn a_replacing_present_mode_targets_above_the_display() {
+        assert_eq!(target_fps_with_headroom(Some(100.0), true), Some(150));
+        assert_eq!(target_fps_with_headroom(Some(143.98), true), Some(216));
+        assert_eq!(target_fps_with_headroom(Some(240.0), true), Some(360));
+        // Controls: a queueing mode keeps the rate itself, and the 60 Hz and
+        // unknown cases still set nothing whatever the mode.
+        assert_eq!(target_fps_with_headroom(Some(100.0), false), Some(100));
+        assert_eq!(target_fps_with_headroom(Some(60.0), true), None);
+        assert_eq!(target_fps_with_headroom(None, true), None);
     }
 
     fn out(hz: f32, current: bool) -> Output {
