@@ -183,6 +183,13 @@ compositor and Cordial does not need to reimplement it.
 
 ## What would change this
 
+The Vanta launcher now uses an obsidian palette and a dark colour scheme as
+part of its visual identity. This is limited to the launcher process: the
+runtime's canvas, editors and shared host window still follow the desktop
+theme described above. Native high-contrast styling takes precedence over the
+launcher's custom stylesheet, including when accessibility settings change
+while the window is open.
+
 Evidence that a Wayland compositor in common use cannot do something the engine
 requires — an EGL configuration, a presentation timing guarantee — would make
 this a compatibility question rather than a quality one. Nothing observed so far
