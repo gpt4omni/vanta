@@ -70,7 +70,7 @@ for everybody, on evidence this project cannot test.
 ## Consequences
 
 - Every NVIDIA behaviour is `INFERRED` until somebody with the hardware runs the
-  plan in [`docs/analysis/nvidia-support.md`](https://github.com/luohoa97/cordial/blob/main/docs/analysis/nvidia-support.md), and
+  plan in [`docs/analysis/nvidia-support.md`](https://github.com/gpt4omni/vanta/blob/main/docs/analysis/nvidia-support.md), and
   its comment says so. The claim "NVIDIA is supported" is not made anywhere;
   `docs/nvidia.md` opens by saying how little has been run on NVIDIA (two users'
   reports by 2026-10-04).

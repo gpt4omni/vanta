@@ -4,11 +4,11 @@ description: "Replace Roblox's built-in textures, fonts and interface images wit
 icon: "image"
 ---
 Roblox's app carries its own textures, fonts and interface images. An **asset
-override** is a file of yours that Cordial serves in place of one of them: a
+override** is a file of yours that Vanta serves in place of one of them: a
 different cursor, a font you can read more easily, a recoloured button.
 
-Cordial never edits Roblox's files. When the game asks for one of its
-built-in assets, Cordial checks your overrides first and hands over your file
+Vanta never edits Roblox's files. When the game asks for one of its
+built-in assets, Vanta checks your overrides first and hands over your file
 if there is one. Delete your file and the original comes back, with nothing to
 repair.
 
@@ -38,11 +38,11 @@ are under `content/fonts/`.
 
 | Install | Override folder |
 |---|---|
-| Flatpak | `~/.var/app/io.github.luohoa97.Cordial/config/cordial/overlay/` |
-| Other installs | `~/.config/cordial/overlay/` |
+| Flatpak | `~/.var/app/io.github.gpt4omni.Vanta/config/vanta/overlay/` |
+| Other installs | `~/.config/vanta/overlay/` |
 
 So a replacement cursor goes at
-`~/.config/cordial/overlay/content/textures/Cursors/KeyboardMouse/ArrowCursor.png`.
+`~/.config/vanta/overlay/content/textures/Cursors/KeyboardMouse/ArrowCursor.png`.
 Keep the original file name and format.
 
 
@@ -50,14 +50,14 @@ Keep the original file name and format.
 <Step title="Start Roblox again">
 
 
-Cordial reads the overrides at launch. A change made while the game is
+Vanta reads the overrides at launch. A change made while the game is
 running applies the next time you start it.
 
 
 </Step>
 </Steps>
 
-This folder applies to every profile. Set `CORDIAL_OVERLAY` to use a different
+This folder applies to every profile. Set `VANTA_OVERLAY` to use a different
 folder.
 
 ## Sharing overrides as a plugin
@@ -101,8 +101,8 @@ effect usually means its files do not match a path inside the Android app's
   in the Android app, and nothing else.
 - **Applied at launch.** Changing an override, or switching an override plugin
   on or off, takes effect at the next start.
-- **Your responsibility.** Cordial does not check what a replacement changes.
+- **Your responsibility.** Vanta does not check what a replacement changes.
   Swapping something that affects gameplay rather than looks is on you, and
   Roblox's rules apply to it as they would to anything else.
-- **Nothing is drawn over the game.** Overrides replace files; Cordial does not
+- **Nothing is drawn over the game.** Overrides replace files; Vanta does not
   inject an overlay into the game's picture.

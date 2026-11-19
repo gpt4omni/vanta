@@ -5,7 +5,7 @@ title: "ADR-053: VR is a mode of the Android runtime, and a profile serves both 
 **Date:** 2026-10-01
 **Supersedes:** decision 5 of [ADR-043](/adr/ADR-043-the-roblox-build-is-the-binarys-architecture) ("Quest is rejected") and the premise of its decision 3, and, for the Quest build only, [`docs/multiarch.md`](/multiarch)'s "no translation layer will be designed". ADR-043's other decisions stand for the phone build.
 **Related:** [ADR-001](/adr/ADR-001-in-process-hooking), [ADR-012](/adr/ADR-012-profiles-and-instances), [ADR-013](/adr/ADR-013-per-profile-configuration), [ADR-033](/adr/ADR-033-roblox-versions-are-a-keyed-store), [ADR-037](/adr/ADR-037-one-lock-and-a-content-hash-for-the-build-store), [ADR-050](/adr/ADR-050-other-runtimes-are-launched-not-built), [ADR-052](/adr/ADR-052-the-runtime-spec)
-**Design and measurements:** [`docs/vr/dynarmic-design.md`](https://github.com/luohoa97/cordial/blob/main/docs/vr/dynarmic-design.md). **User page:** [`docs/vr.md`](/vr).
+**Design and measurements:** [`docs/vr/dynarmic-design.md`](https://github.com/gpt4omni/vanta/blob/main/docs/vr/dynarmic-design.md). **User page:** [`docs/vr.md`](/vr).
 
 ## What changed
 
@@ -201,7 +201,7 @@ the end. Seen once.
   above 60 frames/s with occasional slight stutters; that is an observation,
   with no frame log taken.
 - The in-game Leave button and rejoining on WiVRn are still open
-  ([`vr/play-button.md`](https://github.com/luohoa97/cordial/blob/main/docs/vr/play-button.md)). Pressing Play in the headset
+  ([`vr/play-button.md`](https://github.com/gpt4omni/vanta/blob/main/docs/vr/play-button.md)). Pressing Play in the headset
   is not: on a Quest 3 over WiVRn it joined in three sessions of three, each
   `Game.launch` carrying `joinAttemptOrigin` as a Play press does rather than
   a deep link's `referralPage: "DeepLink"` (play-button.md, "In the

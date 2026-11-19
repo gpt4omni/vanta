@@ -1,12 +1,12 @@
 ---
 title: "Status"
-description: "What works in Cordial today, what is partly working, and what is broken."
+description: "What works in Vanta today, what is partly working, and what is broken."
 icon: "gauge"
 ---
 Experimental, but playable: sign in, load a game, move around. Install it
 expecting rough edges. What changed release by release is on the
-[releases page](https://github.com/luohoa97/cordial/releases) and in
-[`CHANGELOG.md`](https://github.com/luohoa97/cordial/blob/main/CHANGELOG.md).
+[releases page](https://github.com/gpt4omni/vanta/releases) and in
+[`CHANGELOG.md`](https://github.com/gpt4omni/vanta/blob/main/CHANGELOG.md).
 
 ## What works
 
@@ -21,20 +21,20 @@ expecting rough edges. What changed release by release is on the
 | Loading into an experience | Works | World, avatar and UI render, signed in |
 | Engine content store | Works | `RbxStorage` is a real SQLite database; cache hits rise across launches, so assets are not refetched every session |
 | Clean shutdown | Works | Full pause, stop and destroy sequence, seen in the engine's own log |
-| Signing in | Works | Through Quick Sign-in, a code flow that needs no typing. A password followed by a two-step code stalled on the verification window ([#83](https://github.com/luohoa97/cordial/issues/83)); the window now gets the app's native bridge, `INFERRED` to fix it and not yet seen with a real code ([ADR-063](/adr/ADR-063-sign-in-challenge-windows-get-the-native-bridge)) |
+| Signing in | Works | Through Quick Sign-in, a code flow that needs no typing. A password followed by a two-step code stalled on the verification window ([#83](https://github.com/gpt4omni/vanta/issues/83)); the window now gets the app's native bridge, `INFERRED` to fix it and not yet seen with a real code ([ADR-063](/adr/ADR-063-sign-in-challenge-windows-get-the-native-bridge)) |
 | Staying signed in | Works | Cookies and identity are kept in the desktop keyring, not a file |
 | Profiles | Works | A menu in the header bar; creates and deletes one, and marks a profile another window holds |
 | Two accounts at once | Works | Two profiles, two instances, side by side; budget about 1.5 GB of memory each ([ADR-012](/adr/ADR-012-profiles-and-instances)) |
 | Keyboard in an experience | Works | WASD, space, the lot |
 | Mouse: navigation, buttons, focus | Works | |
-| Mouse: turning the camera | Works | Right-drag, using the compositor's unaccelerated delta, so sensitivity does not depend on your desktop mouse settings. The pointer lock holds the cursor still during the drag; on Hyprland that needs a workaround for the compositor dropping the button ([ADR-060](/adr/ADR-060-hyprland-takes-the-camera-button-when-the-lock-activates)), and `CORDIAL_DRAG_LOCK=0` turns it off |
+| Mouse: turning the camera | Works | Right-drag, using the compositor's unaccelerated delta, so sensitivity does not depend on your desktop mouse settings. The pointer lock holds the cursor still during the drag; on Hyprland that needs a workaround for the compositor dropping the button ([ADR-060](/adr/ADR-060-hyprland-takes-the-camera-button-when-the-lock-activates)), and `VANTA_DRAG_LOCK=0` turns it off |
 | Scroll wheel | Works | |
 | Pointer capture in first person | Works | The cursor stays in the window |
 | Typing into text fields | Works | A GTK overlay draws the focused Android field live, with caret movement and Wayland IME preedit |
 | Window | Works | libadwaita header bar, engine as a subsurface |
 | Fullscreen | Works | F11 acts on the gameplay window, hides the title bar and persists per profile |
 | Audio | Works | Sound in an experience, from real play |
-| Voice chat | Works | In a real game on the 0.15.0 binary, joined by deep link and the game's own Connect control; details in [voice-dual-response](https://github.com/luohoa97/cordial/blob/main/docs/analysis/voice-dual-response.md) |
+| Voice chat | Works | In a real game on the 0.15.0 binary, joined by deep link and the game's own Connect control; details in [voice-dual-response](https://github.com/gpt4omni/vanta/blob/main/docs/analysis/voice-dual-response.md) |
 | Feral GameMode | Works | Registered while the client runs |
 | Asset overlays | Works | Custom textures, sounds and fonts; non-destructive, remove the file and the original returns ([asset-overrides](/asset-overrides)) |
 | Launching from the shell | Works | Finds a build, or explains how to get one |
@@ -43,7 +43,7 @@ expecting rough edges. What changed release by release is on the
 
 | Area | State | What is missing |
 |---|---|---|
-| Web views (Marketplace, Profile, Communities) | Partly | They render in a signed-in WebKitGTK window and both observed bridge formats reach the engine. More pages need interactive coverage, and a page-specific bridge command can still use engine vocabulary Cordial has not seen |
+| Web views (Marketplace, Profile, Communities) | Partly | They render in a signed-in WebKitGTK window and both observed bridge formats reach the engine. More pages need interactive coverage, and a page-specific bridge command can still use engine vocabulary Vanta has not seen |
 | Plugins | Partly | Host, broker and per-profile grants enforce every capability. Settings can grant or revoke one, and install or remove a plugin from a local `.tar.zst`. There is no in-app fetch from a remote index, so the marketplace half of the registry is unbuilt ([plugins](/plugins)) |
 | Text entry coverage | Partly | The overlay needs testing across more field types and input methods |
 | Frame rate | Unsettled | See below |
@@ -63,26 +63,26 @@ the older records it replaces, are in
 
 From the [0.23.2 release notes](/releases/v0.23.2), the newest list:
 
-- **The signed-in startup freeze is not fixed, but Cordial now restarts a stuck
-  start by itself** ([#92](https://github.com/luohoa97/cordial/issues/92)). When
-  the client's log shows it has stopped part-way through starting, Cordial
+- **The signed-in startup freeze is not fixed, but Vanta now restarts a stuck
+  start by itself** ([#92](https://github.com/gpt4omni/vanta/issues/92)). When
+  the client's log shows it has stopped part-way through starting, Vanta
   stops it, says "Roblox got stuck starting. Restarting it (2 of 3).", and
   starts it again, at most twice per press of Roblox. If all three freeze, it
   says so instead of showing a spinner; pressing Roblox again usually works.
-  `CORDIAL_NO_FREEZE_RESTART=1` turns the restart off. Not yet seen to recover
+  `VANTA_NO_FREEZE_RESTART=1` turns the restart off. Not yet seen to recover
   a real freeze: it has only been run against a recorded freeze log, not against
   a live one.
 - **Movement keys sometimes stop working after joining a game**
-  ([#29](https://github.com/luohoa97/cordial/issues/29)). Respawning or re-joining
-  brings them back. To report it, start Cordial with `CORDIAL_TRACE_KEYS=1`,
-  press W in the stuck state, and paste the `[cordial] key` lines from the
-  terminal: `flatpak run --env=CORDIAL_TRACE_KEYS=1 io.github.luohoa97.Cordial`,
-  or `CORDIAL_TRACE_KEYS=1 cordial` for a native install. `result=ok` on
-  `path=native` means the key reached the engine; `result=gated` means Cordial
+  ([#29](https://github.com/gpt4omni/vanta/issues/29)). Respawning or re-joining
+  brings them back. To report it, start Vanta with `VANTA_TRACE_KEYS=1`,
+  press W in the stuck state, and paste the `[vanta] key` lines from the
+  terminal: `flatpak run --env=VANTA_TRACE_KEYS=1 io.github.gpt4omni.Vanta`,
+  or `VANTA_TRACE_KEYS=1 vanta` for a native install. `result=ok` on
+  `path=native` means the key reached the engine; `result=gated` means Vanta
   dropped it because the window had no keyboard focus. Every key is printed,
   including ones typed into a password box, so trim the paste to the W lines.
 - **A touchscreen can crash the client**
-  ([#36](https://github.com/luohoa97/cordial/issues/36)). Fixed on `main` after
+  ([#36](https://github.com/gpt4omni/vanta/issues/36)). Fixed on `main` after
   0.26.0, so it ships in the next release; checked with a touch injected into a
   nested compositor, not yet on a real touchscreen.
 - **A Roblox version released only for ARM64 is not shown on x86_64 machines.**
@@ -102,10 +102,10 @@ The rest of the list in the
   [NVIDIA graphics](/nvidia).
 - **Real ARM64 hardware.** See [Architectures](/multiarch).
 - **The AppImage's web view on a machine without WebKitGTK**, and on anything but
-  Fedora. See [Installing Cordial](/install).
+  Fedora. See [Installing Vanta](/install).
 
 <Columns cols={2}>
-  <Card title="Installing Cordial" href="/install">
+  <Card title="Installing Vanta" href="/install">
     get it running
   </Card>
   <Card title="Checking this machine" href="/doctor">

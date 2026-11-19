@@ -5,7 +5,7 @@ title: "ADR-015: Cordial may fetch the Roblox build, and may never ship one"
 **Related:** [ADR-014](/adr/ADR-014-plugin-registry-and-unpacking),
 [ADR-010](/adr/ADR-010-plugin-asset-overlays),
 [ADR-001](/adr/ADR-001-in-process-hooking)
-**Implements:** [docs/design/updating-roblox.md](https://github.com/luohoa97/cordial/blob/main/docs/design/updating-roblox.md)
+**Implements:** [docs/design/updating-roblox.md](https://github.com/gpt4omni/vanta/blob/main/docs/design/updating-roblox.md)
 
 ## Decision
 

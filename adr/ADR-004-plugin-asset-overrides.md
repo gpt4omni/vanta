@@ -63,7 +63,7 @@ the same reason.
 **Accepted:** theming Roblox's own interface is limited to what Roblox itself
 exposes. That is not nothing — `selectedTheme` is already part of
 `StartAppParams`, and theme FastFlags are reachable through the layered flag
-system in [`crates/cordial-runtime/src/flags.rs`](https://github.com/luohoa97/cordial/blob/main/crates/cordial-runtime/src/flags.rs),
+system in [`crates/cordial-runtime/src/flags.rs`](https://github.com/gpt4omni/vanta/blob/main/crates/cordial-runtime/src/flags.rs),
 where a plugin can contribute flags without writing to the user's file.
 
 **Accepted:** this is a policy decision, not a technical limitation, and it has

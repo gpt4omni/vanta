@@ -3,7 +3,7 @@ title: "Plugin API: FastFlags"
 description: "How flag layers resolve, and the flags.list, flags.get and flags.set methods."
 icon: "flag"
 ---
-FastFlags reach the engine through a layered resolver in `crates/cordial-runtime/src/flags.rs`. A plugin can read the resolved set with provenance, and write one layer: its own.
+FastFlags reach the engine through a layered resolver in `crates/vanta-runtime/src/flags.rs`. A plugin can read the resolved set with provenance, and write one layer: its own.
 
 ## The layers, and who wins
 
@@ -11,8 +11,8 @@ FastFlags reach the engine through a layered resolver in `crates/cordial-runtime
 
 | Order | Layer | Source |
 |---|---|---|
-| 1 | `built-in` | Cordial's own defaults (currently empty) |
-| 2 | `performance mode` | The `CORDIAL_PERFORMANCE` tables (empty unless a mode is chosen) |
+| 1 | `built-in` | Vanta's own defaults (currently empty) |
+| 2 | `performance mode` | The `VANTA_PERFORMANCE` tables (empty unless a mode is chosen) |
 | 3 | `plugin:<id>` | `<plugin dir>/<id>/flags.json`, one layer per installed, enabled plugin, alphabetical by id |
 | 4 | `user` | `<profile>/flags.json` |
 
@@ -41,8 +41,8 @@ Capability `flags.read`. No params. Returns an array with one object per resolve
 |---|---|
 | `user` | The user's own `<profile>/flags.json` |
 | `plugin:<id>` | That plugin's `flags.json` |
-| `built-in` | Cordial's own defaults |
-| `performance mode` | The flags the chosen `CORDIAL_PERFORMANCE` mode asks for |
+| `built-in` | Vanta's own defaults |
+| `performance mode` | The flags the chosen `VANTA_PERFORMANCE` mode asks for |
 
 ## `flags.get`
 
@@ -68,20 +68,20 @@ Capability `flags.write`. Params are a `values` object, not a key and a value.
 | Stringifies | `3` lands as `"3"`. Roblox's own document uses `"True"` and this produces `"true"`, so write the string yourself if the spelling matters. |
 | Takes effect at the **next launch**, only | See [two lifetimes](#two-lifetimes). |
 | Written atomically | To a sibling file, then renamed, so a kill mid-write leaves the previous valid document. |
-| Machine-global | Lands at `~/.local/share/cordial/plugins/<id>/flags.json` and applies in every profile whether or not the plugin was granted anything there. Open question in [ADR-013](/adr/ADR-013-per-profile-configuration). |
+| Machine-global | Lands at `~/.local/share/vanta/plugins/<id>/flags.json` and applies in every profile whether or not the plugin was granted anything there. Open question in [ADR-013](/adr/ADR-013-per-profile-configuration). |
 
 | Refusal | Cause |
 |---|---|
 | `flags.set needs a values object` | `values` missing or not an object. An `error`, not `denied`. |
 | `<n> bytes of flags is more than the 262144 byte limit` | The serialised document exceeds 256 KiB. |
 
-### `flags.write` reaches Cordial's own settings
+### `flags.write` reaches Vanta's own settings
 
-Any key beginning `Cordial` rides the same layering and is filtered out before Roblox's settings document, because the engine does not know those keys. The ones that exist today are `CordialGraphicsBackend`, `CordialPresentMode` (what `fps-flex` writes) and `CordialDeviceProfile`. A plugin's request only wins where the user's own Graphics setting is Automatic. This is why the consent text says:
+Any key beginning `Vanta` rides the same layering and is filtered out before Roblox's settings document, because the engine does not know those keys. The ones that exist today are `VantaGraphicsBackend`, `VantaPresentMode` (what `fps-flex` writes) and `VantaDeviceProfile`. A plugin's request only wins where the user's own Graphics setting is Automatic. This is why the consent text says:
 
-> Change how Cordial itself renders and behaves. Sets Roblox FastFlags, and also Cordial's own settings including the graphics backend and present mode. Takes effect at the next launch. Your own choices in Settings still win.
+> Change how Vanta itself renders and behaves. Sets Roblox FastFlags, and also Vanta's own settings including the graphics backend and present mode. Takes effect at the next launch. Your own choices in Settings still win.
 
-Every future `Cordial*` key inherits the same reach.
+Every future `Vanta*` key inherits the same reach.
 
 ## Two lifetimes
 
@@ -127,7 +127,7 @@ Reports what is in effect, then contributes a flag and handles the refusal. The 
 ```ts
 const log = (message: string) => call("log.write", { message });
 
-// Cordial's layers only; Roblox's own defaults are not in here.
+// Vanta's layers only; Roblox's own defaults are not in here.
 const listed = await call("flags.list");
 if (listed.status === "ok") {
   const entries: Array<{ key: string; value: string; source: string }> = listed.result;
@@ -154,7 +154,7 @@ if (one.status === "ok" && one.result === null) {
 const set = await call("flags.set", {
   values: {
     "FIntTaskSchedulerAutoThreadLimit": "8",
-    "CordialPresentMode": "uncapped",
+    "VantaPresentMode": "uncapped",
   },
 });
 

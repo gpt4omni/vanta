@@ -1,6 +1,6 @@
 ---
-title: "How Cordial works"
-description: "A map of Cordial's parts, and the rules that shape how it answers the Roblox engine."
+title: "How Vanta works"
+description: "A map of Vanta's parts, and the rules that shape how it answers the Roblox engine."
 icon: "diagram-project"
 ---
 <Note>
@@ -17,7 +17,7 @@ flowchart TB
 
     subgraph desk["Your Linux desktop"]
       direction TB
-      shell["<b>cordial-shell</b> — the launcher<br/>GTK4 · libadwaita<br/>profiles · settings · updates · roblox:// links"]
+      shell["<b>vanta-shell</b> — the launcher<br/>GTK4 · libadwaita<br/>profiles · settings · updates · roblox:// links"]
       broker["<b>Capability broker</b><br/>presence.set · notify.send · url.open · events.*<br/><i>payloads and effects, never sockets</i>"]
       plugins["<b>Plugins</b><br/>TypeScript on Deno<br/>zero permissions + bwrap sandbox"]
     end
@@ -27,13 +27,13 @@ flowchart TB
 
     shell -- "spawns sibling binary with<br/>--lib-dir --apk --profile --host-libc<br/>--game-activity, and hands over the flock" --> linker
 
-    subgraph run["cordial-run — one process = one instance = one window"]
+    subgraph run["vanta-run — one process = one instance = one window"]
       direction TB
       linker["<b>Ported AOSP bionic linker</b><br/>maps libroblox.so, walks DT_NEEDED"]
-      symtab["<b>Symbol table</b><br/>13 virtual libraries, ~650 symbols<br/>≈99 cordial · ≈502 host glibc · 49 honest stubs"]
+      symtab["<b>Symbol table</b><br/>13 virtual libraries, ~650 symbols<br/>≈99 vanta · ≈502 host glibc · 49 honest stubs"]
       jnivm["<b>libjnivm</b><br/>stands in for Android's ART"]
       fw["<b>Framework layer</b><br/>GameActivity · ANativeWindow · AAssetManager<br/>input · clipboard · accessibility · OpenSL ES"]
-      engine["<b>libroblox.so</b><br/>Roblox's official Android x86-64 engine<br/><i>you supply it — Cordial ships none</i>"]
+      engine["<b>libroblox.so</b><br/>Roblox's official Android x86-64 engine<br/><i>you supply it — Vanta ships none</i>"]
     end
 
     linker -- "dlopen" --> engine
@@ -59,24 +59,24 @@ flowchart TB
 
 | Part | What it is |
 |---|---|
-| **`cordial-shell`** | The launcher: GTK4 and libadwaita. Profiles, settings, updates, `roblox://` links |
+| **`vanta-shell`** | The launcher: GTK4 and libadwaita. Profiles, settings, updates, `roblox://` links |
 | **Capability broker** | Holds plugin permissions and performs the effects: `presence.set`, `notify.send`, `url.open`, `events.*`. Payloads and effects, never sockets |
 | **Plugins** | TypeScript on Deno, with zero permissions and a `bwrap` sandbox |
-| **`cordial-run`** | One process, one instance, one window. Holds the engine and everything that answers it |
+| **`vanta-run`** | One process, one instance, one window. Holds the engine and everything that answers it |
 | **Ported AOSP bionic linker** | Maps `libroblox.so` and walks `DT_NEEDED` |
 | **Symbol table** | 13 virtual libraries, about 650 symbols, answering every name the engine imports |
 | **libjnivm** | Stands in for Android's ART |
 | **Framework layer** | GameActivity, ANativeWindow, AAssetManager, input, clipboard, accessibility, OpenSL ES |
-| **`libroblox.so`** | Roblox's official Android x86-64 engine. You supply it; Cordial ships none |
+| **`libroblox.so`** | Roblox's official Android x86-64 engine. You supply it; Vanta ships none |
 
-The shell spawns `cordial-run` as a sibling binary with `--lib-dir --apk
+The shell spawns `vanta-run` as a sibling binary with `--lib-dir --apk
 --profile --host-libc --game-activity`, and hands over the profile's `flock`.
 
 ## Rules that shape it
 
 **Nothing points into the engine.** `libroblox.so` is mapped, relocated and
 called, and that is all. Every arrow touching it points outward: the engine asks,
-Cordial answers. There is no hooking, patching or injected script environment;
+Vanta answers. There is no hooking, patching or injected script environment;
 those are absent from the API, not disabled, so a fork has no primitive to
 re-enable
 ([ADR-001](/adr/ADR-001-in-process-hooking),
@@ -84,7 +84,7 @@ re-enable
 
 **Plugins never reach the engine side.** They talk to the broker, which holds the
 permission and performs the effect; `presence.set` takes a presence structure and
-Cordial owns the Discord socket
+Vanta owns the Discord socket
 ([ADR-007](/adr/ADR-007-host-resources-are-brokered)). The `bwrap` layer under
 Deno can only subtract
 ([ADR-018](/adr/ADR-018-plugin-sub-sandboxing)).
@@ -94,7 +94,7 @@ is a window. Several clients may run at once, but two on one profile are refused
 because two processes writing one `appData` and one cookie store corrupt Roblox's
 storage ([ADR-012](/adr/ADR-012-profiles-and-instances)).
 
-**The engine's network stack is not touched.** Cordial does not proxy, inspect or
+**The engine's network stack is not touched.** Vanta does not proxy, inspect or
 rewrite it: Roblox's cURL talks to Roblox directly, and `RtcIoRna`, the real-time
 game transport, is not HTTP at all. That is why there is no `http_proxy`-shaped
 setting and the per-profile VPN gate is a launch gate rather than a tunnel
@@ -103,12 +103,12 @@ setting and the per-profile VPN gate is a launch gate rather than a tunnel
 ## How the engine is answered
 
 Every name the engine imports resolves one of three ways. The split is printed at
-startup (about 99 Cordial, 502 host glibc, 49 stubs), so it can be checked
+startup (about 99 Vanta, 502 host glibc, 49 stubs), so it can be checked
 rather than assumed.
 
 | Route | Meaning |
 |---|---|
-| **cordial** | Cordial implements it, because Android's version does something Linux's does not |
+| **vanta** | Vanta implements it, because Android's version does something Linux's does not |
 | **host** | Forwarded straight to the host's glibc (`--host-libc`) |
 | **stub** | Not implemented, and it **reports failure** rather than faking success |
 

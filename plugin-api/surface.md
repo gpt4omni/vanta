@@ -3,11 +3,11 @@ title: "Plugin API: notifications, presence, state, settings and overlays"
 description: "Reference for notify.send, presence.set, url.open, state.get, settings, preferences and asset overlays."
 icon: "sliders"
 ---
-Every method here is one shape from your side of the pipe: a JSON object goes out and a reply comes back, whatever Cordial does underneath (a D-Bus portal, a Unix socket, JSON files, a filesystem index). Plugins receive the effect, never the channel ([ADR-007](/adr/ADR-007-host-resources-are-brokered)). Branch on `status`, not on the presence of `result` ([protocol](/plugin-api/protocol#messages)).
+Every method here is one shape from your side of the pipe: a JSON object goes out and a reply comes back, whatever Vanta does underneath (a D-Bus portal, a Unix socket, JSON files, a filesystem index). Plugins receive the effect, never the channel ([ADR-007](/adr/ADR-007-host-resources-are-brokered)). Branch on `status`, not on the presence of `result` ([protocol](/plugin-api/protocol#messages)).
 
 `denied` names the capability, not the method. A refused `presence.clear` comes back as `"capability":"presence.set"` and a refused `preferences.get` as `"capability":"settings.read"`.
 
-The examples use the `call` helper that every shipped example plugin defines. [`plugins/flag-inspector/main.ts`](https://github.com/luohoa97/cordial/blob/main/plugins/flag-inspector/main.ts) is the shortest to read.
+The examples use the `call` helper that every shipped example plugin defines. [`plugins/flag-inspector/main.ts`](https://github.com/gpt4omni/vanta/blob/main/plugins/flag-inspector/main.ts) is the shortest to read.
 
 | Method | Capability | Page section |
 |---|---|---|
@@ -35,7 +35,7 @@ await call("notify.send", {
 });
 ```
 
-Cordial sends it through `org.freedesktop.portal.Notification.AddNotification` rather than `org.freedesktop.Notifications`, so it costs nothing in the Flatpak manifest: a portal interface is reachable from the sandbox with no `--talk-name` entry.
+Vanta sends it through `org.freedesktop.portal.Notification.AddNotification` rather than `org.freedesktop.Notifications`, so it costs nothing in the Flatpak manifest: a portal interface is reachable from the sandbox with no `--talk-name` entry.
 
 | Refusal | Cause |
 |---|---|
@@ -44,11 +44,11 @@ Cordial sends it through `org.freedesktop.portal.Notification.AddNotification` r
 | `could not reach the session bus: …` | No session bus in this environment |
 | `the notification portal refused the call: …` | The portal answered with an error |
 
-You cannot withdraw or update a notification. Cordial picks the portal id (`cordial-1`, `cordial-2`, …) and does not tell you.
+You cannot withdraw or update a notification. Vanta picks the portal id (`vanta-1`, `vanta-2`, …) and does not tell you.
 
 ## Discord presence: `presence.set` and `presence.clear`
 
-[`plugins/discord-presence/main.ts`](https://github.com/luohoa97/cordial/blob/main/plugins/discord-presence/main.ts) is the working example. `presence.set` takes a **closed** object: any field not in this table refuses the whole call.
+[`plugins/discord-presence/main.ts`](https://github.com/gpt4omni/vanta/blob/main/plugins/discord-presence/main.ts) is the working example. `presence.set` takes a **closed** object: any field not in this table refuses the whole call.
 
 | Parameter | Type | Required | Notes |
 |---|---|---|---|
@@ -57,19 +57,19 @@ You cannot withdraw or update a notification. Cordial picks the portal id (`cord
 | `state` | string | no | Second line, at most 128 characters |
 | `start` | integer | no | Unix seconds. Alone it shows an elapsed counter. |
 | `end` | integer | no | Unix seconds. With `start` it shows a countdown. |
-| `large_image_key` | string | no | A key Cordial issued, not a URL. An empty string clears the picture. |
+| `large_image_key` | string | no | A key Vanta issued, not a URL. An empty string clears the picture. |
 | `large_text` | string | no | Hover text |
 | `small_image_key` | string | no | As `large_image_key` |
 | `small_text` | string | no | Hover text |
-| `place_id` | integer | no | The experience being played. Cordial turns it into buttons. |
+| `place_id` | integer | no | The experience being played. Vanta turns it into buttons. |
 | `job_id` | string | no | The server instance, a UUID. Needed for a "Join server" button. |
 
-Returns `null`. Cordial assembles Discord's `timestamps` and `assets` sub-objects itself from the flat fields. A key that nothing has resolved renders as no picture. A plugin cannot set a button link: Cordial builds `roblox://experiences/start?placeId=…&gameInstanceId=…` itself, offers the join button only when a `job_id` is present, and falls back to the game page.
+Returns `null`. Vanta assembles Discord's `timestamps` and `assets` sub-objects itself from the flat fields. A key that nothing has resolved renders as no picture. A plugin cannot set a button link: Vanta builds `roblox://experiences/start?placeId=…&gameInstanceId=…` itself, offers the join button only when a `job_id` is present, and falls back to the game page.
 
 ```ts
 await call("presence.set", {
   client_id: "1234567890123456",
-  details: "Using Cordial",
+  details: "Using Vanta",
   state: "In session",
   start: Math.floor(Date.now() / 1000),
 });
@@ -85,10 +85,10 @@ The payload is a closed struct rather than a JSON value forwarded verbatim, whic
 | `client_id must be a Discord application snowflake (digits only)` | |
 | `details must be at most 128 characters, Discord's own limit` | Same sentence for `state`. Refused here so you hear it from the response, not from Discord silently dropping the activity. |
 | `job_id must be a server instance UUID` | |
-| `large_image_key is not a key Cordial issued` | Same for `small_image_key` |
+| `large_image_key is not a key Vanta issued` | Same for `small_image_key` |
 | `Discord is not running` | No IPC socket answered. The ordinary case, since most users do not have Discord open. The call fails every time; only the logging is throttled. |
 | `Discord refused the activity (<code>): <message>` | Discord answered with an error |
-| `presence update failed: …` | The connection died mid-write. Cordial drops it so your next call starts a fresh handshake. |
+| `presence update failed: …` | The connection died mid-write. Vanta drops it so your next call starts a fresh handshake. |
 
 ## Opening a web page: `url.open`
 
@@ -107,7 +107,7 @@ Returns `null`. The scheme is checked before the D-Bus connection is touched, so
 
 ## Session state: `state.get`
 
-Capability `state.read`. No parameters. Returns what Cordial knows about the current game, kept from the engine's own log so plugins do not each fold the event stream into a private copy. Every key is optional, and an **absent key means not known**.
+Capability `state.read`. No parameters. Returns what Vanta knows about the current game, kept from the engine's own log so plugins do not each fold the event stream into a private copy. Every key is optional, and an **absent key means not known**.
 
 | Key | Type | Meaning |
 |---|---|---|
@@ -118,14 +118,14 @@ Capability `state.read`. No parameters. Returns what Cordial knows about the cur
 | `user_id` | integer | The Roblox user id of the player |
 | `joined_at` | integer | Unix seconds at which the current game was joined |
 
-Outside a game the result is `{}`, and leaving a game clears every key. There is no username, display name or server location: a name needs a request to `users.roblox.com` and a location needs a geo-IP lookup, both third-party calls made on the player's behalf. A plugin that starts mid-session can read this once and follow events afterwards ([events](/plugin-api/events#core-events)). Described from the source (`crates/cordial-plugins/src/state.rs`), not observed in a run (INFERRED).
+Outside a game the result is `{}`, and leaving a game clears every key. There is no username, display name or server location: a name needs a request to `users.roblox.com` and a location needs a geo-IP lookup, both third-party calls made on the player's behalf. A plugin that starts mid-session can read this once and follow events afterwards ([events](/plugin-api/events#core-events)). Described from the source (`crates/vanta-plugins/src/state.rs`), not observed in a run (INFERRED).
 
 ## Settings and preferences
 
 | | **Settings** | **Preferences** |
 |---|---|---|
 | Whose answers | Your plugin's | The user's |
-| Who writes them | Your plugin, via `settings.set` | Cordial, from its own page |
+| Who writes them | Your plugin, via `settings.set` | Vanta, from its own page |
 | Can your plugin write them | Yes | **No, and no method could** |
 | What defines the shape | Nothing; any JSON object | The `preferences` array in `plugin.json` |
 | Where it lives | `<profile>/plugins/<id>/settings.json` | `<profile>/plugins/<id>/preferences.json` |
@@ -144,9 +144,9 @@ await call("settings.set", { settings: { panel: "flags", opened: 4 } });
 const mine = await call("settings.get");   // mine.result is your document
 ```
 
-The usual case costs no round trip: the document arrives in the `cordial/init` handshake as `msg.payload.settings` (`{}` if empty, `null` if you were not granted `settings.read`).
+The usual case costs no round trip: the document arrives in the `vanta/init` handshake as `msg.payload.settings` (`{}` if empty, `null` if you were not granted `settings.read`).
 
-**Neither method takes a plugin id.** Cordial knows which process is on the pipe. Naming another plugin in your params is not an error and is not honoured: you get your own document.
+**Neither method takes a plugin id.** Vanta knows which process is on the pipe. Naming another plugin in your params is not an error and is not honoured: you get your own document.
 
 | Refusal | Cause |
 |---|---|
@@ -154,13 +154,13 @@ The usual case costs no round trip: the document arrives in the `cordial/init` h
 | `settings must be a JSON object` | An array, number or string |
 | `settings are 1234567 bytes; the limit is 1048576` | Capped at one mebibyte, measured on the pretty-printed text |
 | `<path> is not a JSON object` or `<path> is not usable (…)` | The file on disk is unreadable. Reported rather than answered as empty, so you do not overwrite what the user had. |
-| `settings.get needs an open profile; this Cordial has no settings store` | Only from the test `Session` built without a profile |
+| `settings.get needs an open profile; this Vanta has no settings store` | Only from the test `Session` built without a profile |
 
 A write goes to `settings.json.new` and is renamed, so a plugin killed mid-write leaves the previous document.
 
 ## Preferences: the user's answers
 
-You declare fields in `plugin.json` and Cordial builds the page. There is no capability for declaring: declaring a field is how you get a page ([ADR-020](/adr/ADR-020-declarative-plugin-preferences)).
+You declare fields in `plugin.json` and Vanta builds the page. There is no capability for declaring: declaring a field is how you get a page ([ADR-020](/adr/ADR-020-declarative-plugin-preferences)).
 
 ```json
 {
@@ -208,9 +208,9 @@ Reading needs `settings.read` and arrives as `msg.payload.preferences` in the ha
 const prefs = (await call("preferences.get")).result;
 ```
 
-**The document is always complete and valid**: every declared key is present and every value fits its declaration. No `?? default` and no range checks. A saved value that no longer fits your manifest falls back to the current default and Cordial logs `plugin <id>: preference …`. Keys nothing declares are dropped. A plugin that declares no fields and holds `settings.read` gets `{}`; `null` still means not granted.
+**The document is always complete and valid**: every declared key is present and every value fits its declaration. No `?? default` and no range checks. A saved value that no longer fits your manifest falls back to the current default and Vanta logs `plugin <id>: preference …`. Keys nothing declares are dropped. A plugin that declares no fields and holds `settings.read` gets `{}`; `null` still means not granted.
 
-**There is no `preferences.set`.** A plugin that could rewrite the answers could have the page show its choice back as the user's. Your own state goes in `settings.json`. You cannot draw the page yourself: you are a separate process with no display, and one able to draw in Cordial's window could imitate its sign-in dialog.
+**There is no `preferences.set`.** A plugin that could rewrite the answers could have the page show its choice back as the user's. Your own state goes in `settings.json`. You cannot draw the page yourself: you are a separate process with no display, and one able to draw in Vanta's window could imitate its sign-in dialog.
 
 ## Asset overlays: `assets.override`
 
@@ -218,7 +218,7 @@ A plugin, or the user directly, may supply files that resolve in place of Roblox
 
 ### Two routes
 
-**A shipped `overlay/` directory needs no capability.** Cordial registers it at launch, before the engine reads an asset. It is the only route for a data-only plugin, and the only reliable one, because **an asset served once stays cached for the rest of the process**: an overlay registered after a texture loads cannot change it.
+**A shipped `overlay/` directory needs no capability.** Vanta registers it at launch, before the engine reads an asset. It is the only route for a data-only plugin, and the only reliable one, because **an asset served once stays cached for the rest of the process**: an overlay registered after a texture loads cannot change it.
 
 The `assets.override` **method** is for a *running* plugin registering a directory at runtime. Plugins start after the client is up, so this usually arrives after the engine has read a great deal. Use it to swap a root mid-session, not to ship a texture pack.
 
@@ -244,7 +244,7 @@ The directory does not have to exist: registering a missing one succeeds and con
 
 A root mirrors the APK's `assets/` layout, the same shape Sober's `asset_overlay` uses. `<root>/content/textures/wood.png` stands in for `assets/content/textures/wood.png`.
 
-Roots form a stack, lowest first: every plugin in registration order, then the user's root last. **The user's root beats every plugin's**, and among plugins the most recently registered wins (re-registering moves you to the end). The user's root is `$XDG_CONFIG_HOME/cordial/overlay`, falling back to `$HOME/.config/cordial/overlay`, overridable with `CORDIAL_OVERLAY`. Paths that would escape their root (`..`, an absolute name, a symlink pointing outside) are dropped when the index is built.
+Roots form a stack, lowest first: every plugin in registration order, then the user's root last. **The user's root beats every plugin's**, and among plugins the most recently registered wins (re-registering moves you to the end). The user's root is `$XDG_CONFIG_HOME/vanta/overlay`, falling back to `$HOME/.config/vanta/overlay`, overridable with `VANTA_OVERLAY`. Paths that would escape their root (`..`, an absolute name, a symlink pointing outside) are dropped when the index is built.
 
 | | |
 |---|---|
@@ -255,7 +255,7 @@ Roots form a stack, lowest first: every plugin in registration order, then the u
 
 <Danger>
 
-Gameplay-affecting substitution is possible and Cordial builds no detection for it. Replacing a collision or hitbox mesh with a smaller or absent one is an advantage, not a cosmetic change. [ADR-010](/adr/ADR-010-plugin-asset-overlays) leaves it to the user's responsibility, as Sober and Bloxstrap do, and the capability's consent text says so.
+Gameplay-affecting substitution is possible and Vanta builds no detection for it. Replacing a collision or hitbox mesh with a smaller or absent one is an advantage, not a cosmetic change. [ADR-010](/adr/ADR-010-plugin-asset-overlays) leaves it to the user's responsibility, as Sober and Bloxstrap do, and the capability's consent text says so.
 
 </Danger>
 

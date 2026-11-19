@@ -1,11 +1,11 @@
 ---
 title: "Writing a plugin"
-description: "What a Cordial plugin is for, how it talks to Cordial, and the shortest path from an empty folder to a working one."
+description: "What a Vanta plugin is for, how it talks to Vanta, and the shortest path from an empty folder to a working one."
 icon: "code"
 ---
 ## What plugins are for
 
-A plugin extends **Cordial**: it reacts to what the client is doing and asks Cordial to do something about it. Discord status from the current game, a FastFlag preset, a desktop notification when a server changes, a texture pack. If all you need is to apply something once at startup, a plain file is usually enough. Code earns its place when it watches, decides and acts.
+A plugin extends **Vanta**: it reacts to what the client is doing and asks Vanta to do something about it. Discord status from the current game, a FastFlag preset, a desktop notification when a server changes, a texture pack. If all you need is to apply something once at startup, a plain file is usually enough. Code earns its place when it watches, decides and acts.
 
 <Info>
 
@@ -15,9 +15,9 @@ A plugin can never reach into Roblox. There is no API for running code in the ga
 
 ## How it works
 
-A plugin is a folder with a `plugin.json` and, usually, one TypeScript module. Cordial runs the module under Deno with **no** Deno permissions, so it cannot open a file, a socket or a program. It talks to Cordial in newline-delimited JSON over standard input and output.
+A plugin is a folder with a `plugin.json` and, usually, one TypeScript module. Vanta runs the module under Deno with **no** Deno permissions, so it cannot open a file, a socket or a program. It talks to Vanta in newline-delimited JSON over standard input and output.
 
-Everything a plugin does is a request to Cordial, carried out only if the user granted the [capability](/plugin-api/capabilities#the-fifteen-capabilities) it needs, in that profile. The plugin never holds the resource: to set Discord status it sends the text, and Cordial owns the connection. Why: [ADR-007](/adr/ADR-007-host-resources-are-brokered).
+Everything a plugin does is a request to Vanta, carried out only if the user granted the [capability](/plugin-api/capabilities#the-fifteen-capabilities) it needs, in that profile. The plugin never holds the resource: to set Discord status it sends the text, and Vanta owns the connection. Why: [ADR-007](/adr/ADR-007-host-resources-are-brokered).
 
 ## A plugin in five minutes
 
@@ -26,7 +26,7 @@ Everything a plugin does is a request to Cordial, carried out only if the user g
 
 
 ```text
-~/.local/share/cordial/plugins/hello/
+~/.local/share/vanta/plugins/hello/
 ├── plugin.json
 └── main.ts
 ```
@@ -96,7 +96,7 @@ await call("log.write", { message: "hello from a plugin" });
 
 Open **Settings → Plugins**, switch on **Use Plugins**, and turn on `log`
 on the plugin's row. A plugin with nothing granted is never started.
-Press Play and look for the line in Cordial's output.
+Press Play and look for the line in Vanta's output.
 
 
 </Step>
@@ -105,8 +105,8 @@ Press Play and look for the line in Cordial's output.
 <Warning>
 
 Never write to standard output except protocol lines. `console.log` goes to the
-wire, and one unparseable line ends the conversation: Cordial stops the plugin.
-Use `console.error` for debugging; it lands in Cordial's own output.
+wire, and one unparseable line ends the conversation: Vanta stops the plugin.
+Use `console.error` for debugging; it lands in Vanta's own output.
 
 </Warning>
 
@@ -126,10 +126,10 @@ Instead of copying into the plugins folder, use **Settings → Plugins → Add a
 | Other plugins | `events.declare`, `events.publish`, `events.subscribe` | [Plugin-declared events](/plugin-api/events#plugin-declared-events) |
 
 A plugin can also declare **preferences** (switches, numbers, choices, text) in
-`plugin.json`. Cordial draws the settings page and hands the answers to the
+`plugin.json`. Vanta draws the settings page and hands the answers to the
 plugin read-only.
 
-Not available, by design: drawing over the game, adding controls to Cordial's
+Not available, by design: drawing over the game, adding controls to Vanta's
 window, and changing a FastFlag in a running game. Two declared events,
 `client.ready` and `window.resized`, are not sent by anything yet.
 
@@ -146,8 +146,8 @@ running, so for now plugins are shared as files.
 ## Examples to read
 
 The four built-in plugins are small and real:
-[`flag-inspector`](https://github.com/luohoa97/cordial/tree/main/plugins/flag-inspector)
-(the shortest), [`fps-flex`](https://github.com/luohoa97/cordial/tree/main/plugins/fps-flex)
-(preferences and pushes), [`discord-presence`](https://github.com/luohoa97/cordial/tree/main/plugins/discord-presence)
-and [`hide-gui`](https://github.com/luohoa97/cordial/tree/main/plugins/hide-gui).
+[`flag-inspector`](https://github.com/gpt4omni/vanta/tree/main/plugins/flag-inspector)
+(the shortest), [`fps-flex`](https://github.com/gpt4omni/vanta/tree/main/plugins/fps-flex)
+(preferences and pushes), [`discord-presence`](https://github.com/gpt4omni/vanta/tree/main/plugins/discord-presence)
+and [`hide-gui`](https://github.com/gpt4omni/vanta/tree/main/plugins/hide-gui).
 The [plugin API reference](/plugin-api) covers every method, event and refusal.

@@ -45,7 +45,7 @@ other.** Generic goes to the host candidates and then to libc when
 generated stub to give it -- stubs are generated per TSV line and a discovered
 symbol has none -- and manufacturing one would mean a shared function returning
 zero for a symbol nobody has looked at. That is the failure
-[`AGENTS.md`](https://github.com/luohoa97/cordial/blob/main/AGENTS.md) names as never making a stub lie, and it is what
+[`AGENTS.md`](https://github.com/gpt4omni/vanta/blob/main/AGENTS.md) names as never making a stub lie, and it is what
 the issue asked to preserve: the load fails, the linker names the symbol, and
 `load.rs` prints what class of thing it was first. Silently answering it is how
 the next `hypotf` becomes a mystery instead of an error.
@@ -125,7 +125,7 @@ A Roblox update that adds a libc, libm, libz, GLES or EGL import no longer
 breaks the client, and the log says which symbol arrived and where it came
 from. One that adds an Android API still fails, which is correct -- that is a
 real gap and wants
-[`roblox_update.yml`](https://github.com/luohoa97/cordial/blob/main/.github/ISSUE_TEMPLATE/roblox_update.yml).
+[`roblox_update.yml`](https://github.com/gpt4omni/vanta/blob/main/.github/ISSUE_TEMPLATE/roblox_update.yml).
 
 Discovered names are `Box::leak`ed, because `Entry::symbol` is `&'static str`
 and the table is built once at startup and handed to the linker, which copies

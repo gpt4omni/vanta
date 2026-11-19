@@ -44,7 +44,7 @@ they try, rather than a silent no-op discovered three days later.
 
 **Layering already carries provenance, and the same rules apply here.** The
 resolver is implemented in
-[`crates/cordial-runtime/src/flags.rs`](https://github.com/luohoa97/cordial/blob/main/crates/cordial-runtime/src/flags.rs):
+[`crates/cordial-runtime/src/flags.rs`](https://github.com/gpt4omni/vanta/blob/main/crates/cordial-runtime/src/flags.rs):
 the user's file always wins over any plugin, plugin-against-plugin conflicts are
 reported rather than quietly resolved, and every effective value records which
 layer set it. Extending that to a runtime API means the same guarantees, not new
@@ -72,7 +72,7 @@ temporary adjustment.
 refresh or requires Cordial to re-present the settings document. That is an
 implementation question and it has not been established by experiment yet.
 Whoever builds it should determine it by running something, not by reading the
-binary — see [`docs/NEXT.md`](https://github.com/luohoa97/cordial/blob/main/docs/NEXT.md) for why that rule exists here.
+binary — see [`docs/NEXT.md`](https://github.com/gpt4omni/vanta/blob/main/docs/NEXT.md) for why that rule exists here.
 
 ## What would change this
 

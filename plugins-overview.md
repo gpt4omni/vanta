@@ -4,11 +4,11 @@ sidebarTitle: "What plugins are"
 description: "What plugins are for, what they can and cannot do, and how to install one."
 icon: "puzzle-piece"
 ---
-A plugin adds a feature to **Cordial**, not to Roblox. It can set your Discord
+A plugin adds a feature to **Vanta**, not to Roblox. It can set your Discord
 status from the game you are in, apply a set of FastFlags, send a desktop
 notification, or carry a pack of replacement textures. It cannot run code
 inside Roblox, read or change the game's memory, or give you a script
-executor. Those abilities are not switched off in Cordial; they do not exist in
+executor. Those abilities are not switched off in Vanta; they do not exist in
 it at all, so no plugin and no fork can switch them on.
 
 ## How a plugin is kept in check
@@ -16,12 +16,12 @@ it at all, so no plugin and no fork can switch them on.
 Each plugin is a separate program, written in TypeScript and run by
 [Deno](https://deno.com) with every one of Deno's permissions turned off. It
 cannot open files, use the network or start programs on its own. It asks
-Cordial for things, and Cordial does them only if you allowed that kind of
+Vanta for things, and Vanta does them only if you allowed that kind of
 request.
 
 Those kinds of request are called **capabilities**. A plugin lists the ones it
 wants, and starts with none of them granted. You grant them per profile, and
-Cordial describes each one in plain words before you do.
+Vanta describes each one in plain words before you do.
 
 <Accordion title="Every capability a plugin can ask for">
 
@@ -30,14 +30,14 @@ Cordial describes each one in plain words before you do.
 |---|---|
 | `flags.read` | See the FastFlags in effect and where each one came from |
 | `flags.write` | Set FastFlags of its own. They apply at the next launch, and your own `flags.json` still wins |
-| `log` | Write to Cordial's log |
+| `log` | Write to Vanta's log |
 | `lifecycle.read` | Know when the client starts, which Roblox version it is, and when it stops |
 | `state.read` | Read which place, server and user the client is on |
-| `presence.set` | Set your Discord Rich Presence. Cordial talks to Discord, not the plugin |
+| `presence.set` | Set your Discord Rich Presence. Vanta talks to Discord, not the plugin |
 | `notify.send` | Show a desktop notification |
 | `url.open` | Open an `http` or `https` link in your browser |
-| `assets.override` | Point Cordial at a folder of replacement assets while running |
-| `settings.read`, `settings.write` | Keep its own settings, which Cordial stores for it |
+| `assets.override` | Point Vanta at a folder of replacement assets while running |
+| `settings.read`, `settings.write` | Keep its own settings, which Vanta stores for it |
 | `events.declare`, `events.publish`, `events.subscribe` | Exchange events with other plugins |
 
 
@@ -46,20 +46,20 @@ Cordial describes each one in plain words before you do.
 <Note>
 
 A plugin never receives a network connection or a file. When it sets your
-Discord status, it hands Cordial the text and Cordial sends it.
+Discord status, it hands Vanta the text and Vanta sends it.
 
 </Note>
 
-## The plugins that come with Cordial
+## The plugins that come with Vanta
 
 | Plugin | What it does | On by default |
 |---|---|---|
-| **Discord presence** | Shows "Using Cordial", or the game's own status if the game provides one, in Discord | Yes, after you allow it |
+| **Discord presence** | Shows "Using Vanta", or the game's own status if the game provides one, in Discord | Yes, after you allow it |
 | **Flag inspector** | Logs every FastFlag in effect and which file set it. Mostly an example to learn from | Yes, after you allow it |
 | **FPS Flex** | Picks how frames are presented and caps the frame rate (60 to 240). Applies at the next launch | No: an uncapped frame rate costs heat and battery |
 | **Hide the interface** | Unlocks Roblox's shortcuts for hiding the game's interface, for screenshots and videos | Yes, after you allow it |
 
-The first time you open the **Plugins** page in a profile, Cordial asks once,
+The first time you open the **Plugins** page in a profile, Vanta asks once,
 in a single dialog, for the capabilities the plugins that are switched on
 need. Until you choose **Allow**, they do nothing. Choose **Not now** and use
 the switches on each plugin's row to allow only some. A plugin that ships off
@@ -69,7 +69,7 @@ Settings. Why: [ADR-021](/adr/ADR-021-everything-is-a-plugin).
 <Warning>
 
 **Hide the interface** works only for accounts in the Roblox group that
-unlocks those shortcuts (the one Bloxstrap uses). Cordial cannot check whether
+unlocks those shortcuts (the one Bloxstrap uses). Vanta cannot check whether
 yours is.
 
 </Warning>
@@ -91,7 +91,7 @@ Open **Settings → Plugins** and switch on **Use Plugins**. If Deno is not inst
 
 Under **Install from a file**, choose **Choose file…** and pick the plugin. You do not need a terminal and you do not need to know where plugins live.
 
-The file must be a `.tar.zst`. A `.tar.gz` is not a Cordial plugin archive, whatever is inside it, and the picker refuses it. Why: [ADR-014](/adr/ADR-014-plugin-registry-and-unpacking).
+The file must be a `.tar.zst`. A `.tar.gz` is not a Vanta plugin archive, whatever is inside it, and the picker refuses it. Why: [ADR-014](/adr/ADR-014-plugin-registry-and-unpacking).
 
 
 </Step>
@@ -110,7 +110,7 @@ To remove a plugin, use its **Remove** button. Built-in plugins cannot be remove
 
 <Warning>
 
-**Trust the source.** A plugin runs as a real process on your machine. Cordial gives it no file access, network, environment or subprocess of its own, and every capability it uses is one you approved by name. That is a boundary, not a guarantee about intent. Installing something because a stranger linked it is the same decision it is anywhere else.
+**Trust the source.** A plugin runs as a real process on your machine. Vanta gives it no file access, network, environment or subprocess of its own, and every capability it uses is one you approved by name. That is a boundary, not a guarantee about intent. Installing something because a stranger linked it is the same decision it is anywhere else.
 
 </Warning>
 
@@ -118,8 +118,8 @@ To remove a plugin, use its **Remove** button. Built-in plugins cannot be remove
 
 | Install | Folder |
 |---|---|
-| Flatpak | `~/.var/app/io.github.luohoa97.Cordial/data/cordial/plugins/` |
-| Other installs | `~/.local/share/cordial/plugins/` |
+| Flatpak | `~/.var/app/io.github.gpt4omni.Vanta/data/vanta/plugins/` |
+| Other installs | `~/.local/share/vanta/plugins/` |
 
 Which plugins are switched on, and what each may do, is stored per profile, so two profiles can have different plugins on.
 
@@ -138,5 +138,5 @@ event.
 - **Two events are never sent.** `client.ready` and `window.resized` are
   declared but nothing publishes them yet, so a plugin waiting for them waits
   forever.
-- **Plugins cannot draw anything** over the game or add buttons to Cordial's
+- **Plugins cannot draw anything** over the game or add buttons to Vanta's
   window.

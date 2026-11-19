@@ -58,7 +58,7 @@ finish. See [`docs/doctor.md`](/doctor).
 
 The screen has a **Save logs…** row beside Save to a file, and the "Open an
 issue" row asks whether to save the logs before it opens the form. Both write
-one `.zip` ([`log_export.rs`](https://github.com/luohoa97/cordial/blob/main/crates/cordial-shell/src/log_export.rs)):
+one `.zip` ([`log_export.rs`](https://github.com/gpt4omni/vanta/blob/main/crates/cordial-shell/src/log_export.rs)):
 the diagnostics and checks, the launcher's own output this session, the last
 client run's output and command line, the last `[cordial] health:` lines, the
 newest `*_last.log` of the active profile's phone and Quest builds (each cut to

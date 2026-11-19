@@ -1,20 +1,20 @@
 ---
-title: "Cordial"
+title: "Vanta"
 description: "Roblox's Android client, running natively on Linux."
 ---
-Cordial loads Roblox's official Android x86-64 client directly on Linux, with
+Vanta loads Roblox's official Android x86-64 client directly on Linux, with
 no Android emulator or container. It is experimental, and Roblox does not
 support third-party clients, so test it with an account you would not mind
 losing.
 
 Installing it is covered in the
-[README](https://github.com/luohoa97/cordial#install) and in
-[Installing Cordial](/install). These pages cover what you can change once it
+[README](https://github.com/gpt4omni/vanta#install) and in
+[Installing Vanta](/install). These pages cover what you can change once it
 runs, and how to build on it.
 
 <Columns cols={2}>
   <Card title="Plugins" href="/plugins-overview">
-    Small programs that add features to Cordial, such as Discord status or FastFlag presets.
+    Small programs that add features to Vanta, such as Discord status or FastFlag presets.
   </Card>
   <Card title="Asset overrides" href="/asset-overrides">
     Replace the app's own textures, fonts and interface images, without modifying any files.
@@ -29,4 +29,4 @@ runs, and how to build on it.
 
 Questions, bug reports in progress, or plugins to share: join the
 [Discord](https://discord.gg/qJzU3Xfr9b). Bugs and feature requests go on
-[GitHub](https://github.com/luohoa97/cordial/issues).
+[GitHub](https://github.com/gpt4omni/vanta/issues).

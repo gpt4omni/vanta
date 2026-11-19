@@ -74,7 +74,7 @@ process with the engine's GLES; `GSK_RENDERER=cairo` cures it.
 
 `cordial_shell::gtk_renderer` now chooses cairo for the machines that would
 otherwise get nothing. `cordial-run` starts the Vulkan probe of
-[`vulkan_probe`](https://github.com/luohoa97/cordial/blob/main/crates/cordial-shell/src/vulkan_probe.rs) in a background
+[`vulkan_probe`](https://github.com/gpt4omni/vanta/blob/main/crates/cordial-shell/src/vulkan_probe.rs) in a background
 thread right after the Graphics line is printed, and collects it in
 `wayland::open` before `init_wayland`, which is before GTK realises the window
 and reads the variable. The rule:

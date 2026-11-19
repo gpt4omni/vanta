@@ -31,7 +31,7 @@ emulates ETC2 and EAC where the driver lacks the feature.
 
 **No transcoder, no format translation, and no change to what any shipped
 client tells the engine was built.** See
-[docs/analysis/nvidia-texture-manager2.md](https://github.com/luohoa97/cordial/blob/main/docs/analysis/nvidia-texture-manager2.md)
+[docs/analysis/nvidia-texture-manager2.md](https://github.com/gpt4omni/vanta/blob/main/docs/analysis/nvidia-texture-manager2.md)
 for why: the premise that motivated this work — "shader translation for
 NVIDIA so texture manager v2 works" — did not survive the measurement this
 capability exists to take.

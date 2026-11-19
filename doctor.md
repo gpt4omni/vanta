@@ -1,11 +1,11 @@
 ---
 title: "Checking this machine"
-description: "Run cordial --doctor to see whether this machine can run Roblox, and what to fix if it cannot."
+description: "Run vanta --doctor to see whether this machine can run Roblox, and what to fix if it cannot."
 icon: "stethoscope"
 ---
 ```bash
-cordial --doctor            # add --offline to skip the update check
-flatpak run io.github.luohoa97.Cordial --doctor
+vanta --doctor            # add --offline to skip the update check
+flatpak run io.github.gpt4omni.Vanta --doctor
 ```
 
 The same checks are on **Report a Problem** in the main menu, under "This
@@ -31,11 +31,11 @@ safe to paste into an issue.
 | Check | What it reports |
 |---|---|
 | Build | "Official build" when the project's own release workflows made it, otherwise "Unofficial build from" and the git remote. A hint for whoever reads a report, not a check: a fork can set the same stamp, and nothing behaves differently because of it |
-| Whether it can run | `cordial-run` beside the launcher, not running as root, the Roblox archive the launcher would use and its version, and (not with `--offline`, never on the report screen) whether a newer build is on offer |
-| Wayland or X11 | The game opens on X11 when `WAYLAND_DISPLAY` is unset or `CORDIAL_X11` is set. X11 is a `warn` because it is the rougher backend |
+| Whether it can run | `vanta-run` beside the launcher, not running as root, the Roblox archive the launcher would use and its version, and (not with `--offline`, never on the report screen) whether a newer build is on offer |
+| Wayland or X11 | The game opens on X11 when `WAYLAND_DISPLAY` is unset or `VANTA_X11` is set. X11 is a `warn` because it is the rougher backend |
 | The GPU | Vendor, device and driver, from asking Vulkan rather than the files on disk. A machine whose only Vulkan device is a CPU renderer (llvmpipe) is a `warn`: Vulkan works and the GPU is not used for it. Roblox skips that device and draws with OpenGL ES instead, which is fast only if OpenGL reaches the GPU |
 | NVIDIA | Only when Vulkan lists an NVIDIA GPU: the driver series, whether a Flatpak's GL extension matches the host driver, and whether `nvidia-drm` has `modeset` on. See below |
-| Other host pieces | Vulkan driver files, sound sockets (PipeWire or PulseAudio), a keyring, GameMode when the setting is on, and whether the website's Play button opens Cordial |
+| Other host pieces | Vulkan driver files, sound sockets (PipeWire or PulseAudio), a keyring, GameMode when the setting is on, and whether the website's Play button opens Vanta |
 | Deno | Needed by plugins that run code. Only a note when absent |
 | Disk space | Where Roblox's files and the profiles live |
 | Profile locks | A count: `2 of 3 profiles are open`, never which |

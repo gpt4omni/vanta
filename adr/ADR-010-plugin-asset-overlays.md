@@ -83,7 +83,7 @@ uses, so a directory built for one is usable, unmodified, for the other.
 
 Resolution order is fixed: the user's root beats every plugin's, and among
 plugins the most recently registered wins. This mirrors the precedence rule
-[`flags.rs`](https://github.com/luohoa97/cordial/blob/main/crates/cordial-runtime/src/flags.rs) already uses for
+[`flags.rs`](https://github.com/gpt4omni/vanta/blob/main/crates/cordial-runtime/src/flags.rs) already uses for
 FastFlags, for the same reason — an explicit choice the user made must not be
 silently overridden by something they installed to do something else.
 

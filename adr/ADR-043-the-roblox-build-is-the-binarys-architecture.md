@@ -4,7 +4,7 @@ title: "ADR-043: The Roblox build's architecture is the binary's, and choosing a
 **Status:** accepted; decision 5 and the premise of decision 3 superseded by [ADR-053](/adr/ADR-053-vr-is-a-mode-of-the-android-runtime). The reasoning below is kept: it was right about a second `cordial-run` under qemu-user, which is not what the VR mode does.
 **Date:** 2026-09-30
 **Related:** [ADR-001](/adr/ADR-001-in-process-hooking), [ADR-033](/adr/ADR-033-roblox-versions-are-a-keyed-store), [ADR-037](/adr/ADR-037-one-lock-and-a-content-hash-for-the-build-store), [ADR-039](/adr/ADR-039-a-runtime-backend-seam-and-why-macos-waits)
-**Evidence:** [`docs/analysis/roblox-build-architecture.md`](https://github.com/luohoa97/cordial/blob/main/docs/analysis/roblox-build-architecture.md)
+**Evidence:** [`docs/analysis/roblox-build-architecture.md`](https://github.com/gpt4omni/vanta/blob/main/docs/analysis/roblox-build-architecture.md)
 
 ## Decision
 
@@ -65,7 +65,7 @@ engine's imports can be answered across the architecture boundary by generated
 thunks: the x86-64 `cordial-run` links the Quest build's arm64 `libroblox.so`,
 runs it under dynarmic and hands its Vulkan and OpenXR calls to the host's own
 driver and runtime ([ADR-053](/adr/ADR-053-vr-is-a-mode-of-the-android-runtime),
-[design §9.5](https://github.com/luohoa97/cordial/blob/main/docs/vr/dynarmic-design.md)). The qemu-user measurement above stands
+[design §9.5](https://github.com/gpt4omni/vanta/blob/main/docs/vr/dynarmic-design.md)). The qemu-user measurement above stands
 for what it measured.
 
 ## Consequences
@@ -95,7 +95,7 @@ The page `docs/multiarch.md` began life as the decision record for "Task B (§16
 translation layer.**
 
 Task A established that Roblox ships a complete x86-64 Android build (see
-[`findings.md`](https://github.com/luohoa97/cordial/blob/main/docs/findings.md) §1). Cordial therefore never translates machine code. This
+[`findings.md`](https://github.com/gpt4omni/vanta/blob/main/docs/findings.md) §1). Cordial therefore never translates machine code. This
 is a build-flag and runtime-dispatch concern, not an architectural one.
 
 *Corrected 2026-10-01:* "never translates machine code" is now true of the phone build
@@ -167,7 +167,7 @@ still executed natively and never translated.
 
 **Reopened and re-measured, 2026-09-30.** The last sentence here used to say reopening
 this required reopening Task A. The spike in
-[`analysis/roblox-build-architecture.md`](https://github.com/luohoa97/cordial/blob/main/docs/analysis/roblox-build-architecture.md) is that
+[`analysis/roblox-build-architecture.md`](https://github.com/gpt4omni/vanta/blob/main/docs/analysis/roblox-build-architecture.md) is that
 reopening, and it changes the reasoning without changing the answer: choosing the other
 architecture's `libroblox.so` is the easy half, and running it needs a second
 `cordial-run` with its whole userland under a CPU translator, because the engine is
@@ -181,7 +181,7 @@ records the decision and what would reopen it.
 in-process load does not force it: the x86-64 `cordial-run` links the Quest build's arm64
 engine and answers its imports through generated thunks, so the engine reaches the host's
 own Vulkan driver (an RTX 4070 Ti, not llvmpipe) and OpenXR runtime
-([`vr/dynarmic-design.md`](https://github.com/luohoa97/cordial/blob/main/docs/vr/dynarmic-design.md) §9.4, §9.5). What the spike measured
+([`vr/dynarmic-design.md`](https://github.com/gpt4omni/vanta/blob/main/docs/vr/dynarmic-design.md) §9.4, §9.5). What the spike measured
 about qemu-user is unaffected.
 
 **No Quest/VR target.** The Quest build ships no x86 code, so supporting it would mandate

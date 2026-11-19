@@ -3,7 +3,7 @@ title: "Recording gameplay"
 description: "Save a session as a video file, with the game's own sound, started and stopped with F9."
 icon: "video"
 ---
-Roblox's own Record Video button does nothing on the Android client, and nothing in Cordial can change that. Cordial can record for it, because it owns the window the engine draws into: it reads each finished frame out of its own swapchain and hands it to `ffmpeg`.
+Roblox's own Record Video button does nothing on the Android client, and nothing in Vanta can change that. Vanta can record for it, because it owns the window the engine draws into: it reads each finished frame out of its own swapchain and hands it to `ffmpeg`.
 
 It needs `ffmpeg` on your `PATH`. The Flatpak runtime ships one, so the Flatpak has it; on other installs it is the `ffmpeg` package.
 
@@ -17,26 +17,26 @@ It needs `ffmpeg` on your `PATH`. The Flatpak runtime ships one, so the Flatpak 
 
 F9 works whenever the game window has focus, with no setting involved. Each press toggles: the first starts a file, the second finishes it, and the next press starts another. Control+F9 and Alt+F9 still go to the game.
 
-Settings has **Record gameplay**, which records every session from its first frame instead, and **Record sound too**. They apply the next time Cordial starts, not to a game already running.
+Settings has **Record gameplay**, which records every session from its first frame instead, and **Record sound too**. They apply the next time Vanta starts, not to a game already running.
 
 
 </Step>
 <Step title="Play">
 
 
-A recording started with the switch ends when you close Cordial. One started with F9 ends at the next press, or when you close Cordial.
+A recording started with the switch ends when you close Vanta. One started with F9 ends at the next press, or when you close Vanta.
 
 
 </Step>
 <Step title="Find the file">
 
 
-Files are named `Cordial-2026-10-15_18-07-11.mp4`.
+Files are named `Vanta-2026-10-15_18-07-11.mp4`.
 
-- **Not in the Flatpak:** `~/Videos/Cordial/` (or your `XDG_VIDEOS_DIR`).
-- **In the Flatpak:** `~/.var/app/io.github.luohoa97.Cordial/data/cordial/profiles/<profile>/recordings/`. The Flatpak has no access to `~/Videos`, so it records into its own data instead.
+- **Not in the Flatpak:** `~/Videos/Vanta/` (or your `XDG_VIDEOS_DIR`).
+- **In the Flatpak:** `~/.var/app/io.github.gpt4omni.Vanta/data/vanta/profiles/<profile>/recordings/`. The Flatpak has no access to `~/Videos`, so it records into its own data instead.
 
-Set `CORDIAL_RECORD_DIR` to choose another folder.
+Set `VANTA_RECORD_DIR` to choose another folder.
 
 
 </Step>
@@ -44,25 +44,25 @@ Set `CORDIAL_RECORD_DIR` to choose another folder.
 
 <Note>
 
-F9 is also the key Roblox uses for its developer console on desktop. If a game you play needs it, set `CORDIAL_RECORD_KEY` to another key (below) or to `off`.
+F9 is also the key Roblox uses for its developer console on desktop. If a game you play needs it, set `VANTA_RECORD_KEY` to another key (below) or to `off`.
 
 </Note>
 
 ## What you get
 
-MP4 with H.264 where `ffmpeg` has libx264. Where it does not, which is the Flatpak runtime's `ffmpeg`, WebM with VP9. The container follows what the encoder can fill; it never writes a WebM called `.mp4`. The frame rate is 30 unless you set `CORDIAL_RECORD_FPS` (1 to 120).
+MP4 with H.264 where `ffmpeg` has libx264. Where it does not, which is the Flatpak runtime's `ffmpeg`, WebM with VP9. The container follows what the encoder can fill; it never writes a WebM called `.mp4`. The frame rate is 30 unless you set `VANTA_RECORD_FPS` (1 to 120).
 
 Playback runs at the speed you played, not faster: the engine draws one frame a second when nothing is moving, and the recorder fills the gaps with the last frame.
 
-If you resize the window while recording, the file ends and a new one starts beside it (`Cordial-…-2.mp4`), because a video cannot change size part way.
+If you resize the window while recording, the file ends and a new one starts beside it (`Vanta-…-2.mp4`), because a video cannot change size part way.
 
 An MP4 is written in fragments, so one cut off by a crash or a full disk still plays up to the cut.
 
 ## Sound
 
-Off until you switch on **Record sound too** (or set `CORDIAL_RECORD_AUDIO=game`). It records what the game plays and nothing else: Cordial copies the audio it hands to your sound server, so music in another window, a call, or a notification is not in the file. That holds on PipeWire, PulseAudio, ALSA and OSS alike.
+Off until you switch on **Record sound too** (or set `VANTA_RECORD_AUDIO=game`). It records what the game plays and nothing else: Vanta copies the audio it hands to your sound server, so music in another window, a call, or a notification is not in the file. That holds on PipeWire, PulseAudio, ALSA and OSS alike.
 
-If you want everything you can hear, other programs included, set `CORDIAL_RECORD_AUDIO=desktop`. That reads the default output's monitor through PulseAudio, and a call on another desktop would be in the file.
+If you want everything you can hear, other programs included, set `VANTA_RECORD_AUDIO=desktop`. That reads the default output's monitor through PulseAudio, and a call on another desktop would be in the file.
 
 Sound is stereo. A game that plays surround is folded down to two channels. In a test with generated frames the sound came about 30 ms ahead of the picture, one frame; a real game has not been measured.
 
@@ -77,15 +77,15 @@ Each captured frame holds the engine's present for a few milliseconds while it i
 <Accordion title="Other ways to start and stop, and the variables">
 
 
-For scripts: run the client with `CORDIAL_DEV_CONTROL=1` and use the development control surface (`record start`, `record stop`, `record status`, or `cordial_record` in the MCP). Pressing F9 through `cordial_key` (evdev code 67) toggles recording the same way the real key does, and `tone <hz> <seconds>` (`cordial_tone` in the MCP) plays a quiet tone through Cordial's audio path, which is how to check what a recording hears when the game itself is silent.
+For scripts: run the client with `VANTA_DEV_CONTROL=1` and use the development control surface (`record start`, `record stop`, `record status`, or `vanta_record` in the MCP). Pressing F9 through `vanta_key` (evdev code 67) toggles recording the same way the real key does, and `tone <hz> <seconds>` (`vanta_tone` in the MCP) plays a quiet tone through Vanta's audio path, which is how to check what a recording hears when the game itself is silent.
 
 | Variable | Meaning |
 |---|---|
-| `CORDIAL_RECORD` | `1` for the default folder, or a folder, or a file ending `.mp4`, `.webm` or `.mkv`. Recording starts at the first frame. |
-| `CORDIAL_RECORD_DIR` | The default folder. |
-| `CORDIAL_RECORD_FPS` | Frames a second, 1 to 120. |
-| `CORDIAL_RECORD_AUDIO` | `game` (also `1`, `on`), `desktop`, or `off`. |
-| `CORDIAL_RECORD_KEY` | The toggle key: `F1` to `F10`, `F12`, `Pause`, `ScrollLock`, or `off`. Default `F9`. A name that is none of these turns the key off and says so in the log. |
+| `VANTA_RECORD` | `1` for the default folder, or a folder, or a file ending `.mp4`, `.webm` or `.mkv`. Recording starts at the first frame. |
+| `VANTA_RECORD_DIR` | The default folder. |
+| `VANTA_RECORD_FPS` | Frames a second, 1 to 120. |
+| `VANTA_RECORD_AUDIO` | `game` (also `1`, `on`), `desktop`, or `off`. |
+| `VANTA_RECORD_KEY` | The toggle key: `F1` to `F10`, `F12`, `Pause`, `ScrollLock`, or `off`. Default `F9`. A name that is none of these turns the key off and says so in the log. |
 
 The client log says what was chosen (`[record] recording to … (libx264 at 30 fps, audio: the game's own sound)`, `[record] hotkey: F9 starts and stops recording while the game window has focus`) and, at the end, how many frames were written and dropped.
 

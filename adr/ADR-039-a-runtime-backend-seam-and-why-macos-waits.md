@@ -403,7 +403,7 @@ pick between.
 
 ## Correction, 2026-10-01: Metal on Vulkan, Darling, and the loader
 
-The [macOS spike](https://github.com/luohoa97/cordial/blob/main/docs/analysis/macos-runtime.md) read the public repositories
+The [macOS spike](https://github.com/gpt4omni/vanta/blob/main/docs/analysis/macos-runtime.md) read the public repositories
 and found three statements above wrong or stale. None of it was run.
 
 - **"No Metal-to-Vulkan project was found" is wrong.** Darling's

@@ -24,7 +24,7 @@ exists to load the Android engine: the bionic linker, the JNI layer, the Android
 framework answers and the AGDK input path. A macOS client needs Darling's
 frameworks and would reuse none of that.
 
-*Correction, 2026-10-01 ([spike](https://github.com/luohoa97/cordial/blob/main/docs/analysis/macos-runtime.md)):* this paragraph
+*Correction, 2026-10-01 ([spike](https://github.com/gpt4omni/vanta/blob/main/docs/analysis/macos-runtime.md)):* this paragraph
 said a macOS client would need "its own graphics translation". The spike found
 Mac O' Blox draws with Roblox's own OpenGL renderer through Darling's
 OpenGL-over-EGL, so none is needed today (read from source, not run; whether
