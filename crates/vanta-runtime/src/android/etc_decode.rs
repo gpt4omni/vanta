@@ -225,29 +225,40 @@ fn eac_index(bits: u64, x: usize, y: usize) -> usize {
 
 pub fn decode_eac_alpha(block: &[u8], out: &mut [[u8; 4]; 16]) {
     let (base, mult, table, bits) = eac_parts(block);
+    let paint = table.map(|m| clamp8(i32::from(base) + m * mult));
     for y in 0..4 {
         for x in 0..4 {
-            out[y * 4 + x][3] = clamp8(i32::from(base) + table[eac_index(bits, x, y)] * mult);
+            out[y * 4 + x][3] = paint[eac_index(bits, x, y)];
         }
     }
 }
 
-pub fn decode_eac11(block: &[u8], signed: bool, out: &mut [u16; 16]) {
+#[inline]
+fn eac_palette(block: &[u8], signed: bool) -> ([u16; 8], u64) {
     let (base, mult, table, bits) = eac_parts(block);
+    let scale = if mult == 0 { 1 } else { mult * 8 };
+    let b = if signed { i32::from(base as i8).max(-127) * 8 } else { i32::from(base) * 8 + 4 };
+    let paint = table.map(|m| {
+        let value = b + m * scale;
+        if signed {
+            let v = value.clamp(-1023, 1023);
+            let mag = v.abs();
+            let wide = (mag << 5) | (mag >> 5);
+            (if v < 0 { -wide } else { wide }) as i16 as u16
+        } else {
+            let v = value.clamp(0, 2047);
+            ((v << 5) | (v >> 6)) as u16
+        }
+    });
+    (paint, bits)
+}
+
+#[cfg(test)]
+pub fn decode_eac11(block: &[u8], signed: bool, out: &mut [u16; 16]) {
+    let (paint, bits) = eac_palette(block, signed);
     for y in 0..4 {
         for x in 0..4 {
-            let m = table[eac_index(bits, x, y)];
-            let step = if mult == 0 { m } else { m * mult * 8 };
-            out[y * 4 + x] = if signed {
-                let b = i32::from(base as i8).max(-127);
-                let v = (b * 8 + step).clamp(-1023, 1023);
-                let mag = v.abs();
-                let wide = (mag << 5) | (mag >> 5);
-                (if v < 0 { -wide } else { wide }) as i16 as u16
-            } else {
-                let v = (i32::from(base) * 8 + 4 + step).clamp(0, 2047);
-                ((v << 5) | (v >> 6)) as u16
-            };
+            out[y * 4 + x] = paint[eac_index(bits, x, y)];
         }
     }
 }
@@ -272,23 +283,23 @@ fn decode_block_rows(format: EtcFormat, block: &[u8], out: &mut [u8], stride: us
             }
         }
         EtcFormat::R11 | EtcFormat::R11Signed => {
-            let mut r = [0u16; 16];
-            decode_eac11(&block[0..8], format == EtcFormat::R11Signed, &mut r);
+            let (paint, bits) = eac_palette(&block[0..8], format == EtcFormat::R11Signed);
+            let paint = paint.map(u16::to_le_bytes);
             for y in 0..4 {
-                let row: [u8; 8] = std::array::from_fn(|i| r[y * 4 + i / 2].to_le_bytes()[i % 2]);
+                let row: [u8; 8] = std::array::from_fn(|i| paint[eac_index(bits, i / 2, y)][i % 2]);
                 out[y * stride..y * stride + 8].copy_from_slice(&row);
             }
         }
         EtcFormat::Rg11 | EtcFormat::Rg11Signed => {
             let signed = format == EtcFormat::Rg11Signed;
-            let mut r = [0u16; 16];
-            let mut g = [0u16; 16];
-            decode_eac11(&block[0..8], signed, &mut r);
-            decode_eac11(&block[8..16], signed, &mut g);
+            let (red, rbits) = eac_palette(&block[0..8], signed);
+            let (green, gbits) = eac_palette(&block[8..16], signed);
+            let red = red.map(u16::to_le_bytes);
+            let green = green.map(u16::to_le_bytes);
             for y in 0..4 {
                 let row: [u8; 16] = std::array::from_fn(|i| {
-                    let v = if i % 4 < 2 { r[y * 4 + i / 4] } else { g[y * 4 + i / 4] };
-                    v.to_le_bytes()[i % 2]
+                    if i % 4 < 2 { red[eac_index(rbits, i / 4, y)][i % 2] }
+                    else { green[eac_index(gbits, i / 4, y)][i % 2] }
                 });
                 out[y * stride..y * stride + 16].copy_from_slice(&row);
             }
@@ -378,6 +389,68 @@ pub fn decode_region(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn reference_eac11(block: &[u8], signed: bool, out: &mut [u16; 16]) {
+        let (base, mult, table, bits) = eac_parts(block);
+        for y in 0..4 {
+            for x in 0..4 {
+                let m = table[eac_index(bits, x, y)];
+                let step = if mult == 0 { m } else { m * mult * 8 };
+                out[y * 4 + x] = if signed {
+                    let b = i32::from(base as i8).max(-127);
+                    let v = (b * 8 + step).clamp(-1023, 1023);
+                    let mag = v.abs();
+                    let wide = (mag << 5) | (mag >> 5);
+                    (if v < 0 { -wide } else { wide }) as i16 as u16
+                } else {
+                    let v = (i32::from(base) * 8 + 4 + step).clamp(0, 2047);
+                    ((v << 5) | (v >> 6)) as u16
+                };
+            }
+        }
+    }
+
+    #[test]
+    fn eac_palettes_match_the_old_per_pixel_decoder() {
+        let mut seed = 0x1234_5678u32;
+        for i in 0..65536 {
+            let mut block = [0; 16];
+            for byte in &mut block {
+                seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                *byte = (seed >> 24) as u8;
+            }
+            // Cover every base/table/multiplier pair as well as random selectors.
+            block[0] = (i >> 8) as u8;
+            block[1] = i as u8;
+            for signed in [false, true] {
+                let mut expected = [[0; 16]; 2];
+                reference_eac11(&block[..8], signed, &mut expected[0]);
+                reference_eac11(&block[8..], signed, &mut expected[1]);
+                for (format, channels) in if signed {
+                    [(EtcFormat::R11Signed, 1), (EtcFormat::Rg11Signed, 2)]
+                } else {
+                    [(EtcFormat::R11, 1), (EtcFormat::Rg11, 2)]
+                } {
+                    let mut out = [0; 64];
+                    decode_block(format, &block, &mut out);
+                    for px in 0..16 {
+                        for c in 0..channels {
+                            let at = (px * channels + c) * 2;
+                            assert_eq!(&out[at..at + 2], &expected[c][px].to_le_bytes());
+                        }
+                    }
+                }
+            }
+            let (base, mult, table, bits) = eac_parts(&block);
+            let mut alpha = [[0; 4]; 16];
+            decode_eac_alpha(&block, &mut alpha);
+            for y in 0..4 {
+                for x in 0..4 {
+                    assert_eq!(alpha[y * 4 + x][3], clamp8(i32::from(base) + table[eac_index(bits, x, y)] * mult));
+                }
+            }
+        }
+    }
 
     #[test]
     #[ignore]

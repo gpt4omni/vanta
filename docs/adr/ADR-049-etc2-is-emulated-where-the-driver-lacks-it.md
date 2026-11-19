@@ -164,6 +164,35 @@ seven formats. **INFERRED:** less CPU work and no per-layer thread creation may
 reduce texture-upload stalls in game. No game was run; neither the target
 NVIDIA machine nor an in-game frame-rate or latency improvement was measured.
 
+## EAC palettes: a second VM measurement
+
+EAC R11/RG11 now precompute the eight final signed or unsigned values per
+block, including the multiplier-zero rule and the signed -128 base fixup.
+Selectors index little-endian palettes directly into four output rows. Alpha
+blocks also clamp eight palette entries instead of sixteen pixels. The old
+per-pixel R11 decoder remains in tests: 65,536 base/table/multiplier combinations
+with deterministic random selectors and second channels compare both R11/RG11
+signed and unsigned output, alongside the independent vectors and edge tests.
+
+These are CPU microbenchmarks on the same VM/container and toolchain, not
+in-game results. Baseline `4774ce7` adds measurement only on top of the merged
+first fast path. Each figure is the median of five warmed ten-image batches,
+in milliseconds per 1024x1024 image, using the command above.
+
+| Random EAC image | Before | Palette/direct-row version |
+| --- | ---: | ---: |
+| R11 unsigned | 1.110 | 1.334 |
+| R11 signed | 5.629 | 2.015 |
+| RG11 unsigned | 1.832 | 2.113 |
+| RG11 signed | 10.790 | 3.519 |
+
+The signed paths are faster; **unsigned random data regressed** (about 20% for
+R11 and 15% for RG11). Precomputing a palette does not guarantee a win against
+the old simple unsigned arithmetic. Inlining and direct palette-to-row writes
+were tried; these measurements do not establish a faster unsigned path. Flat
+blocks remain dominated by repeated-block reuse (about 0.74 ms/image).
+**INFERRED:** signed EAC uploads may use less CPU in game. No game was run.
+
 ## Not an ADR-001 matter
 
 Nothing here reads or writes the engine's memory or code. It is the same kind
