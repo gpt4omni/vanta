@@ -251,6 +251,13 @@ macro_rules! wrapper {
 wrapper!(BionicCond, pthread_cond_destroy);
 wrapper!(BionicSem, sem_destroy);
 
+fn ready_backing<W: Wrapper>(w: &W) -> *mut c_void {
+    // The caller acquired READY before loading either half of the pointer.
+    let address = (w.real_lo().load(Ordering::Relaxed) as u64)
+        | ((w.real_hi().load(Ordering::Relaxed) as u64) << 32);
+    address as usize as *mut c_void
+}
+
 /// Resolve the real object behind a wrapper, creating it on first use.
 ///
 /// `init` is called exactly once, with the freshly allocated backing store.
@@ -259,9 +266,7 @@ fn resolve<W: Wrapper>(w: &W, init: impl FnOnce(*mut c_void)) -> *mut c_void {
     let (state, real_lo, real_hi) = (w.state(), w.real_lo(), w.real_hi());
     loop {
         if state.load(Ordering::Acquire) == READY {
-            let address = (real_lo.load(Ordering::Relaxed) as u64)
-                | ((real_hi.load(Ordering::Relaxed) as u64) << 32);
-            return address as usize as *mut c_void;
+            return ready_backing(w);
         }
         match state.compare_exchange(UNINIT, INITIALISING, Ordering::AcqRel, Ordering::Acquire) {
             Ok(_) => {
@@ -273,11 +278,7 @@ fn resolve<W: Wrapper>(w: &W, init: impl FnOnce(*mut c_void)) -> *mut c_void {
                 state.store(READY, Ordering::Release);
                 return backing;
             }
-            Err(READY) => {
-                let address = (real_lo.load(Ordering::Relaxed) as u64)
-                    | ((real_hi.load(Ordering::Relaxed) as u64) << 32);
-                return address as usize as *mut c_void;
-            }
+            Err(READY) => return ready_backing(w),
             Err(INITIALISING) => {
                 // Another thread is between allocation and publication. This
                 // window is a handful of instructions.
@@ -382,11 +383,40 @@ cond_op!(cond_broadcast, pthread_cond_broadcast);
 
 /// Run a glibc condition-variable operation on the real object behind `c`.
 fn on_cond(c: &BionicCond, op: unsafe extern "C" fn(*mut c_void) -> c_int) -> c_int {
-    let Some(backing) = cond_backing(c) else {
+    let state = c.state.load(Ordering::Acquire);
+    if state == READY {
+        notify_ready_cond(c, op)
+    } else {
+        notify_cold_cond(c, op, state)
+    }
+}
+
+#[cold]
+fn notify_cold_cond(
+    c: &BionicCond,
+    op: unsafe extern "C" fn(*mut c_void) -> c_int,
+    mut state: u32,
+) -> c_int {
+    while state == INITIALISING {
+        std::hint::spin_loop();
+        state = c.state.load(Ordering::Acquire);
+    }
+    match state {
+        READY => notify_ready_cond(c, op),
+        // A waiter resolves the backing before releasing its mutex. With no
+        // backing there is nobody to wake, and a notification is not queued
+        // for future waiters. Do not allocate just to wake nobody.
+        UNINIT => 0,
+        _ => libc_einval(),
+    }
+}
+
+fn notify_ready_cond(c: &BionicCond, op: unsafe extern "C" fn(*mut c_void) -> c_int) -> c_int {
+    let backing = ready_backing(c);
+    if backing.is_null() {
         return libc_einval();
-    };
-    // SAFETY: `backing` is the live glibc `pthread_cond_t` that `resolve`
-    // created behind `c`, which is what every `op` passed here takes.
+    }
+    // SAFETY: `backing` is the live glibc `pthread_cond_t` published by READY.
     unsafe { op(backing) }
 }
 
@@ -1290,6 +1320,7 @@ mod tests {
         let rc = unsafe { cond_timedwait(cond, mutex, ts.as_ptr() as *const c_void) };
         assert_eq!(rc, 110, "ETIMEDOUT");
         assert_eq!(mutex_unlock_for_test(mutex), 0);
+        assert_eq!(cond_destroy(cond), 0);
         #[cfg(target_arch = "aarch64")]
         assert_eq!(mutex_storage[0] as u32, READY);
     }
@@ -1352,6 +1383,7 @@ mod tests {
         let cond = storage.as_mut_ptr() as *mut c_void;
         assert_eq!(cond_signal(cond), 0);
         assert_eq!(cond_broadcast(cond), 0);
+        assert_eq!(storage, [0; 6], "a notification alone must not allocate backing");
         assert_eq!(cond_destroy(cond), 0);
     }
 

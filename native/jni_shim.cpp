@@ -27,9 +27,27 @@ namespace vanta { jnivm::ENV* process_env(); }
 #include <memory>
 
 namespace {
+class ProcessVM final : public jnivm::VM {
+public:
+    ProcessVM() : VM(true) {
+        // libjnivm also takes the VM mutex to read this immutable association.
+        AddHook([](JNINativeInterface& iface) {
+            iface.GetJavaVM = [](JNIEnv* env, JavaVM** out) -> jint {
+                if (out) {
+                    *out = jnivm::ENV::FromJNIEnv(env)->GetVM()->GetJavaVM();
+                }
+                return JNI_OK;
+            };
+        });
+        initialize();
+    }
+
+    using jnivm::VM::OverrideJNIInvokeInterface;
+};
+
 // The VM owns every class, object and environment it hands out, so it outlives
 // anything derived from it. One per process.
-std::unique_ptr<jnivm::VM> g_vm;
+std::unique_ptr<ProcessVM> g_vm;
 
 /// Report an uncaught C++ exception with its stack instead of dying mute.
 ///
@@ -79,42 +97,69 @@ void dump_classes_now() {
 
 namespace {
 
-// A JavaVM whose invocation table logs before delegating. Roblox died before
-// asking for a single Java class, so the failure is in the invocation interface
-// itself — which of DestroyJavaVM / AttachCurrentThread / DetachCurrentThread /
-// GetEnv, called with which JavaVM, was not visible any other way.
-JNIInvokeInterface g_traced_iface;
-JavaVM g_traced_vm;
-const JNIInvokeInterface* g_real_iface = nullptr;
+JNIInvokeInterface g_real_iface;
 JavaVM* g_real_vm = nullptr;
 bool g_trace_invoke = false;
+
+// Even an already-attached thread takes libjnivm's VM-wide mutex to look
+// itself up. The VM still owns the env; detach on this same thread invalidates
+// the cache through the canonical invocation table, also used by GetJavaVM.
+thread_local JNIEnv* t_env = nullptr;
+
+jint attach(JavaVM* vm, JNIEnv** out, void* args) {
+    if (t_env && out) {
+        *out = t_env;
+        return JNI_OK;
+    }
+    JNIEnv* env = nullptr;
+    const jint rc = g_real_iface.AttachCurrentThread(vm, out ? &env : nullptr, args);
+    if (rc == JNI_OK && out) {
+        t_env = *out = env;
+    }
+    return rc;
+}
 
 void note(const char* what, JavaVM* vm) {
     if (g_trace_invoke) {
         fprintf(stderr, "[jni] %s(vm=%p)%s\n", what, (void*)vm,
-                vm == &g_traced_vm ? " [ours]" : " [NOT ours]");
+                vm == g_real_vm ? " [ours]" : " [NOT ours]");
     }
 }
 
 jint traced_destroy(JavaVM* vm) {
     note("DestroyJavaVM", vm);
-    return g_real_iface->DestroyJavaVM(g_real_vm);
+    return g_real_iface.DestroyJavaVM(vm);
 }
 jint traced_attach(JavaVM* vm, JNIEnv** env, void* args) {
     note("AttachCurrentThread", vm);
-    return g_real_iface->AttachCurrentThread(g_real_vm, env, args);
+    return attach(vm, env, args);
 }
 jint traced_attach_daemon(JavaVM* vm, JNIEnv** env, void* args) {
     note("AttachCurrentThreadAsDaemon", vm);
-    return g_real_iface->AttachCurrentThreadAsDaemon(g_real_vm, env, args);
+    // libjnivm implements daemon attachment as ordinary attachment.
+    return attach(vm, env, args);
 }
 jint traced_detach(JavaVM* vm) {
     note("DetachCurrentThread", vm);
-    return g_real_iface->DetachCurrentThread(g_real_vm);
+    const jint rc = g_real_iface.DetachCurrentThread(vm);
+    if (rc == JNI_OK) {
+        t_env = nullptr;
+    }
+    return rc;
 }
 jint traced_get_env(JavaVM* vm, void** env, jint version) {
     note("GetEnv", vm);
-    return g_real_iface->GetEnv(g_real_vm, env, version);
+    if (!env) {
+        return g_real_iface.GetEnv(vm, nullptr, version);
+    }
+    // libjnivm ignores the requested version and attaches on GetEnv. Keep
+    // that behaviour rather than changing the engine's attachment contract.
+    JNIEnv* attached = nullptr;
+    const jint rc = attach(vm, &attached, nullptr);
+    if (rc == JNI_OK) {
+        *env = attached;
+    }
+    return rc;
 }
 
 } // namespace
@@ -128,26 +173,26 @@ void* vanta_jni_create_vm() {
         return nullptr;
     }
     std::set_terminate(report_terminate);
-    g_vm = std::make_unique<jnivm::VM>();
+    g_vm = std::make_unique<ProcessVM>();
     // Vanta's Java side, before Roblox can ask for any of it.
     vanta_register_android_classes(g_vm->GetEnv().get());
     vanta::register_game_activity_classes(g_vm->GetEnv().get());
     vanta::register_init_params_classes(g_vm->GetEnv().get());
     g_real_vm = g_vm->GetJavaVM();
-    g_real_iface = g_real_vm->functions;
+    g_real_iface = *g_real_vm->functions;
 
-    // Copy the table wholesale — reserved0 has to survive, or libjnivm cannot
-    // recover its own VM — then replace only the entry points.
-    g_traced_iface = *g_real_iface;
-    g_traced_iface.DestroyJavaVM = traced_destroy;
-    g_traced_iface.AttachCurrentThread = traced_attach;
-    g_traced_iface.AttachCurrentThreadAsDaemon = traced_attach_daemon;
-    g_traced_iface.DetachCurrentThread = traced_detach;
-    g_traced_iface.GetEnv = traced_get_env;
-    g_traced_vm.functions = &g_traced_iface;
+    // Replace the table on the real VM: a proxy passed to JNI_OnLoad would
+    // let JNIEnv::GetJavaVM hand out an unwrapped detach entry point.
+    auto iface = g_real_iface;
+    iface.DestroyJavaVM = traced_destroy;
+    iface.AttachCurrentThread = traced_attach;
+    iface.AttachCurrentThreadAsDaemon = traced_attach_daemon;
+    iface.DetachCurrentThread = traced_detach;
+    iface.GetEnv = traced_get_env;
+    g_vm->OverrideJNIInvokeInterface(iface);
     g_trace_invoke = getenv("VANTA_JNI_TRACE") != nullptr;
 
-    JavaVM* vm = &g_traced_vm;
+    JavaVM* vm = g_real_vm;
     // libjnivm recovers its VM from JavaVM::functions->reserved0. If that is not
     // set, every callback Roblox makes throws before it does anything.
     fprintf(stderr, "[jni] JavaVM=%p functions=%p reserved0=%p (expect %p)\n",
@@ -155,11 +200,6 @@ void* vanta_jni_create_vm() {
             vm && vm->functions ? vm->functions->reserved0 : nullptr,
             (void*)g_vm.get());
     return vm;
-}
-
-/// The current thread's `JNIEnv*`.
-void* vanta_jni_env() {
-    return g_vm ? g_vm->GetJNIEnv() : nullptr;
 }
 
 /// Write C++ stubs for every Java class and method the native code has reached
@@ -186,10 +226,15 @@ void* vanta_jni_thread_env() {
         return nullptr;
     }
     JNIEnv* env = nullptr;
-    if (g_real_vm->AttachCurrentThread(&env, nullptr) != JNI_OK) {
+    if (attach(g_real_vm, &env, nullptr) != JNI_OK) {
         return nullptr;
     }
     return env;
+}
+
+/// The current thread's `JNIEnv*`.
+void* vanta_jni_env() {
+    return vanta_jni_thread_env();
 }
 
 /// A jmethodID's JNI descriptor. libjnivm's method IDs are its `Method`
@@ -219,7 +264,7 @@ int vanta_jni_call_onload(void* fn, char* err, size_t err_len) {
         return -1;
     }
     try {
-        return reinterpret_cast<OnLoad>(fn)(&g_traced_vm, nullptr);
+        return reinterpret_cast<OnLoad>(fn)(g_real_vm, nullptr);
     } catch (const std::exception& e) {
         snprintf(err, err_len, "%s", e.what());
         return -2;
@@ -233,24 +278,9 @@ int vanta_jni_call_onload(void* fn, char* err, size_t err_len) {
 
 namespace vanta {
 jnivm::ENV* process_env() {
-    if (!g_vm || !g_real_vm) {
-        return nullptr;
-    }
-    // NOT `g_vm->GetEnv()`. That is `jnienvs[pthread_self()]` — an
-    // unordered_map::operator[], which for a thread it has never seen
-    // default-constructs a null shared_ptr and returns a reference to it. Every
-    // JNI hook in this build calls process_env(), and the engine calls those
-    // hooks from threads it created itself, so on those threads the old version
-    // handed back a null ENV and the engine stored the null where it expected a
-    // JNIEnv.
-    //
-    // AttachCurrentThread is the entry point that does create an env for an
-    // unknown thread; on a thread that already has one it finds it and changes
-    // nothing. Going through it makes "which thread am I on" stop mattering.
-    JNIEnv* env = nullptr;
-    if (g_real_vm->AttachCurrentThread(&env, nullptr) != JNI_OK || !env) {
-        return nullptr;
-    }
-    return jnivm::ENV::FromJNIEnv(env);
+    // GetEnv() on the C++ VM would insert a null map entry on a worker that
+    // has never called JNI. The shared route attaches before looking it up.
+    auto* env = static_cast<JNIEnv*>(vanta_jni_thread_env());
+    return env ? jnivm::ENV::FromJNIEnv(env) : nullptr;
 }
 } // namespace vanta
