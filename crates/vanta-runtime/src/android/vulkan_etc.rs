@@ -649,7 +649,7 @@ fn active_device(device: usize) -> Option<&'static Dev> {
 
 fn forget_device() {
     let Some(dev) = active() else { return };
-    let cmds: Vec<CmdState> = {
+    let cmds: Vec<SharedCmd> = {
         let mut st = state();
         st.images.clear();
         st.buffers.clear();
@@ -701,6 +701,25 @@ struct Pending {
     hash: u64,
     decoded: bool,
     job: Job,
+    work: Option<Arc<DecodeWork>>,
+    error: Option<String>,
+}
+
+impl Pending {
+    fn finish(&mut self) -> Result<(), String> {
+        if let Some(work) = self.work.take() {
+            if let Err(error) = DecodePool::get().wait(&work) {
+                slice_mut(self.job.dst as *mut c_void, self.job.dst_len).fill(0);
+                self.error = Some(error);
+            } else {
+                self.decoded = true;
+                if let Some(hash) = work.snapshot_hash.get() {
+                    self.hash = *hash;
+                }
+            }
+        }
+        self.error.clone().map_or(Ok(()), Err)
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -720,6 +739,13 @@ struct Job {
 struct CmdState {
     chunks: Vec<Chunk>,
     pending: Vec<Pending>,
+    retired: bool,
+}
+
+type SharedCmd = Arc<Mutex<CmdState>>;
+
+fn command(cmd: &SharedCmd) -> MutexGuard<'_, CmdState> {
+    cmd.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 #[derive(Default)]
@@ -728,7 +754,7 @@ struct State {
     buffers: HashMap<u64, (u64, u64)>,
     mapped: HashMap<u64, (usize, u64, u64)>,
     cmd_pool: HashMap<usize, u64>,
-    cmds: HashMap<usize, CmdState>,
+    cmds: HashMap<usize, SharedCmd>,
 }
 
 fn state() -> MutexGuard<'static, State> {
@@ -737,7 +763,6 @@ fn state() -> MutexGuard<'static, State> {
 }
 
 static LIVE_CMDS: AtomicUsize = AtomicUsize::new(0);
-static DECODE_US: AtomicUsize = AtomicUsize::new(0);
 static LIVE_IMAGES: AtomicUsize = AtomicUsize::new(0);
 
 fn is_emulated(image: u64) -> Option<EmuImage> {
@@ -938,13 +963,31 @@ struct DecodeProgress {
 
 struct DecodeWork {
     job: Job,
-    src: usize,
-    src_len: usize,
+    source: DecodeSource,
+    snapshot_hash: OnceLock<u64>,
     band_rows: usize,
     bands_per_layer: usize,
     next: AtomicUsize,
     progress: Mutex<DecodeProgress>,
     finished: Condvar,
+}
+
+enum DecodeSource {
+    #[cfg(test)]
+    Borrowed(usize, usize),
+    Snapshot(Box<[u8]>),
+}
+
+impl DecodeSource {
+    fn bytes(&self) -> &[u8] {
+        match self {
+            Self::Snapshot(bytes) => bytes,
+            // SAFETY: the synchronous pool caller joins every band before
+            // releasing this borrow. Asynchronous jobs own snapshots instead.
+            #[cfg(test)]
+            Self::Borrowed(ptr, len) => unsafe { std::slice::from_raw_parts(*ptr as *const u8, *len) },
+        }
+    }
 }
 
 impl DecodeWork {
@@ -959,14 +1002,12 @@ impl DecodeWork {
         let first = (band % self.bands_per_layer) * self.band_rows;
         let height = (job.height - first * 4).min(self.band_rows * 4);
         let offset = layer * job.layer_stride + first * job.row_blocks * job.format.block_bytes();
-        // SAFETY: run_job keeps the source and staging allocation live until
-        // every claimed band has finished, including on a decode error/panic.
-        let src = unsafe { std::slice::from_raw_parts(self.src as *const u8, self.src_len) };
-        let data = src.get(offset..).ok_or("band outside the source")?;
+        let data = self.source.bytes().get(offset..).ok_or("band outside the source")?;
         let stride = job.width * job.format.texel_bytes();
         let start = (layer * job.height + first * 4) * stride;
         // SAFETY: claim assigns each band once; bands have disjoint output
-        // rows. No borrow of the whole output exists while helpers run.
+        // rows. Pending jobs are joined before submit, staging release or
+        // synchronous re-decode. Workers never acquire the global state lock.
         let dst = unsafe { std::slice::from_raw_parts_mut((job.dst as *mut u8).add(start), height * stride) };
         let surface = Surface {
             data,
@@ -977,7 +1018,16 @@ impl DecodeWork {
     }
 
     fn perform(&self, band: usize) {
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.decode(band)))
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if band == 0 {
+                match &self.source {
+                    DecodeSource::Snapshot(bytes) => { let _ = self.snapshot_hash.set(hash(bytes)); }
+                    #[cfg(test)]
+                    DecodeSource::Borrowed(..) => {}
+                }
+            }
+            self.decode(band)
+        }))
             .unwrap_or_else(|_| Err("decode worker panicked".into()));
         let mut progress = self.progress.lock().unwrap_or_else(|e| e.into_inner());
         if let Err(error) = result {
@@ -994,6 +1044,20 @@ impl DecodeWork {
 struct DecodeQueue {
     ready: Mutex<VecDeque<Arc<DecodeWork>>>,
     available: Condvar,
+}
+
+impl DecodeQueue {
+    fn take(ready: &mut VecDeque<Arc<DecodeWork>>) -> Option<(Arc<DecodeWork>, usize)> {
+        while let Some(work) = ready.pop_front() {
+            if let Some(band) = work.claim() {
+                // A large upload must not monopolise the queue ahead of
+                // other command buffers.
+                ready.push_back(Arc::clone(&work));
+                return Some((work, band));
+            }
+        }
+        None
+    }
 }
 
 struct DecodePool {
@@ -1013,14 +1077,10 @@ impl DecodePool {
                     let (work, band) = {
                         let mut ready = queue.ready.lock().unwrap_or_else(|e| e.into_inner());
                         loop {
-                            if let Some(work) = ready.front() {
-                                if let Some(band) = work.claim() {
-                                    break (Arc::clone(work), band);
-                                }
-                                ready.pop_front();
-                            } else {
-                                ready = queue.available.wait(ready).unwrap_or_else(|e| e.into_inner());
+                            if let Some(band) = DecodeQueue::take(&mut ready) {
+                                break band;
                             }
+                            ready = queue.available.wait(ready).unwrap_or_else(|e| e.into_inner());
                         }
                     };
                     work.perform(band);
@@ -1030,26 +1090,45 @@ impl DecodePool {
         })
     }
 
-    fn run(&self, job: &Job, src: &[u8]) -> Result<(), String> {
+    fn prepare(&self, job: &Job, source: DecodeSource) -> Arc<DecodeWork> {
         let block_rows = job.height.div_ceil(4);
         let band_rows = block_rows.div_ceil(self.helpers + 1);
         let bands_per_layer = block_rows.div_ceil(band_rows);
-        let work = Arc::new(DecodeWork {
+        Arc::new(DecodeWork {
             job: *job,
-            src: src.as_ptr() as usize,
-            src_len: src.len(),
+            source,
+            snapshot_hash: OnceLock::new(),
             band_rows,
             bands_per_layer,
             next: AtomicUsize::new(0),
             progress: Mutex::new(DecodeProgress { remaining: bands_per_layer * job.layers, error: None }),
             finished: Condvar::new(),
-        });
+        })
+    }
+
+    fn publish(&self, work: &Arc<DecodeWork>) {
+        self.queue.ready.lock().unwrap_or_else(|e| e.into_inner()).push_back(Arc::clone(work));
+        self.queue.available.notify_all();
+    }
+
+    fn enqueue(&self, job: &Job, snapshot: Box<[u8]>) -> Arc<DecodeWork> {
+        let work = self.prepare(job, DecodeSource::Snapshot(snapshot));
+        self.publish(&work);
+        work
+    }
+
+    #[cfg(test)]
+    fn run(&self, job: &Job, src: &[u8]) -> Result<(), String> {
+        let work = self.prepare(job, DecodeSource::Borrowed(src.as_ptr() as usize, src.len()));
         // Claim before publication so the caller always contributes, even if
         // helpers are free. It also guarantees progress if thread creation fails.
         let first = work.claim().unwrap();
-        self.queue.ready.lock().unwrap_or_else(|e| e.into_inner()).push_back(Arc::clone(&work));
-        self.queue.available.notify_all();
+        self.publish(&work);
         work.perform(first);
+        self.wait(&work)
+    }
+
+    fn wait(&self, work: &Arc<DecodeWork>) -> Result<(), String> {
         while let Some(band) = work.claim() {
             work.perform(band);
         }
@@ -1059,12 +1138,14 @@ impl DecodePool {
         }
         // A queued Arc may outlive the borrowed buffers, but can only claim
         // exhausted work. Remove it here too in case no helper could start.
-        self.queue.ready.lock().unwrap_or_else(|e| e.into_inner()).retain(|w| !Arc::ptr_eq(w, &work));
-        progress.error.take().map_or(Ok(()), Err)
+        self.queue.ready.lock().unwrap_or_else(|e| e.into_inner()).retain(|w| !Arc::ptr_eq(w, work));
+        progress.error.clone().map_or(Ok(()), Err)
     }
 }
 
+#[cfg(test)]
 fn run_job(job: &Job, src: &[u8]) -> Result<(), String> {
+    validate_job(job, src)?;
     if job.width == 0 || job.height == 0 || job.layers == 0 {
         return Ok(());
     }
@@ -1082,6 +1163,30 @@ fn run_job(job: &Job, src: &[u8]) -> Result<(), String> {
         let data = src.get(layer * job.layer_stride..).ok_or("layer outside the source")?;
         let surface = Surface { data, row_blocks: job.row_blocks, rows_of_blocks: job.rows_of_blocks };
         etc_decode::decode_region(job.format, &surface, job.width, job.height, out)?;
+    }
+    Ok(())
+}
+
+fn validate_job(job: &Job, src: &[u8]) -> Result<(), String> {
+    if job.width == 0 || job.height == 0 || job.layers == 0 {
+        return Ok(());
+    }
+    let bw = job.width.div_ceil(4);
+    let bh = job.height.div_ceil(4);
+    if bw > job.row_blocks || bh > job.rows_of_blocks {
+        return Err("region exceeds the source block extent".into());
+    }
+    let need = (bh - 1).checked_mul(job.row_blocks).and_then(|n| n.checked_add(bw))
+        .and_then(|n| n.checked_mul(job.format.block_bytes()))
+        .and_then(|n| (job.layers - 1).checked_mul(job.layer_stride).and_then(|offset| offset.checked_add(n)))
+        .ok_or("source size overflow")?;
+    if src.len() < need {
+        return Err("source is shorter than the job".into());
+    }
+    let total = job.width.checked_mul(job.height).and_then(|n| n.checked_mul(job.layers))
+        .and_then(|n| n.checked_mul(job.format.texel_bytes())).ok_or("output size overflow")?;
+    if job.dst_len < total {
+        return Err("destination is shorter than the job".into());
     }
     Ok(())
 }
@@ -1159,8 +1264,15 @@ fn staging(dev: &Dev, cmd: &mut CmdState, len: u64) -> Result<(u64, u64, usize),
     Ok((buffer, 0, mapped as usize))
 }
 
-fn release_cmd(dev: &Dev, cmd: CmdState) {
-    for c in cmd.chunks {
+fn release_cmd(dev: &Dev, cmd: SharedCmd) {
+    let mut cmd = command(&cmd);
+    cmd.retired = true;
+    for mut pending in cmd.pending.drain(..) {
+        if let Err(error) = pending.finish() {
+            unhandled(format_args!("retiring command buffer: decode failed: {error}"));
+        }
+    }
+    for c in cmd.chunks.drain(..) {
         (dev.destroy_buffer)(dev.device, c.buffer, std::ptr::null());
         (dev.free_memory)(dev.device, c.memory, std::ptr::null());
     }
@@ -1184,8 +1296,8 @@ fn release_cmds(cmds: &[usize]) {
         return;
     }
     LIVE_CMDS.fetch_sub(released.len(), Relaxed);
-    let bytes: u64 = released.iter().flat_map(|c| c.chunks.iter()).map(|c| c.size).sum();
-    let regions: usize = released.iter().map(|c| c.pending.len()).sum();
+    let bytes: u64 = released.iter().map(|c| command(c).chunks.iter().map(|c| c.size).sum::<u64>()).sum();
+    let regions: usize = released.iter().map(|c| command(c).pending.len()).sum();
     trace(format_args!(
         "staging released: {} command buffer(s), {regions} region(s), {} KiB; {} still holding staging",
         released.len(),
@@ -1209,6 +1321,26 @@ struct BufferImageCopy {
     layer_count: u32,
     image_offset: [i32; 3],
     image_extent: [u32; 3],
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static SYNC_RECORD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+fn record_work(job: &Job, bytes: Box<[u8]>) -> Result<(Option<Arc<DecodeWork>>, bool, u64), String> {
+    validate_job(job, &bytes)?;
+    #[cfg(test)]
+    if SYNC_RECORD.with(|mode| mode.get()) {
+        let fingerprint = hash(&bytes);
+        run_job(job, &bytes)?;
+        return Ok((None, true, fingerprint));
+    }
+    if job.width == 0 || job.height == 0 {
+        Ok((None, true, hash(&bytes)))
+    } else {
+        Ok((Some(DecodePool::get().prepare(job, DecodeSource::Snapshot(bytes))), false, 0))
+    }
 }
 
 fn emulate_copy(
@@ -1236,38 +1368,45 @@ fn emulate_copy(
     let src_len = (layers - 1) * layer_stride + last_layer;
     let dst_len = w * h * layers * fmt.texel_bytes();
 
-    let mut guard = state();
-    let st = &mut *guard;
-    let &(memory, bind_offset) =
-        st.buffers.get(&src_buffer).ok_or_else(|| format!("source buffer 0x{src_buffer:x} has no recorded binding"))?;
-    let mem_offset = bind_offset + region.buffer_offset;
-    let entry = st.cmds.entry(cmd as usize).or_insert_with(|| {
-        LIVE_CMDS.fetch_add(1, Relaxed);
-        CmdState::default()
-    });
-    let (buffer, offset, dst) = staging(dev, entry, dst_len as u64)?;
+    let shared = {
+        let mut st = state();
+        Arc::clone(st.cmds.entry(cmd as usize).or_insert_with(|| {
+            LIVE_CMDS.fetch_add(1, Relaxed);
+            SharedCmd::default()
+        }))
+    };
+    let mut entry = command(&shared);
+    if entry.retired {
+        return Err("command buffer was retired during recording".into());
+    }
+    let (buffer, offset, dst) = staging(dev, &mut entry, dst_len as u64)?;
     let job = Job { format: fmt, row_blocks, rows_of_blocks, layer_stride, layers, width: w, height: h, dst, dst_len };
-    let note;
-    let (decoded, h64, note) = match source_bytes(&st.mapped, memory, mem_offset, src_len) {
+    let (memory, mem_offset, snapshot) = {
+        let st = state();
+        let &(memory, bind_offset) = st.buffers.get(&src_buffer)
+            .ok_or_else(|| format!("source buffer 0x{src_buffer:x} has no recorded binding"))?;
+        let mem_offset = bind_offset + region.buffer_offset;
+        // Pinning a mapping does not prevent legal writes after recording.
+        let snapshot = source_bytes(&st.mapped, memory, mem_offset, src_len).map(|bytes| bytes.to_vec().into_boxed_slice());
+        (memory, mem_offset, snapshot)
+    };
+    let (work, decoded, h64, note) = match snapshot {
         Ok(bytes) => {
-            let t = std::time::Instant::now();
-            let hv = hash(bytes);
-            run_job(&job, bytes)?;
-            let us = t.elapsed().as_micros() as u64;
-            DECODE_US.fetch_add(us as usize, Relaxed);
-            note = format!("decoded at record in {us} us ({} ms total)", DECODE_US.load(Relaxed) / 1000);
-            (true, hv, note.as_str())
+            let (work, decoded, hash) = record_work(&job, bytes)?;
+            (work, decoded, hash, "prepared snapshot for decode")
         }
         Err(e) => {
             slice_mut(dst as *mut c_void, dst_len).fill(0);
             unhandled(format_args!("source not readable at record time ({e}); will retry at submit"));
-            (false, 0, "deferred to submit")
+            (None, false, 0, "deferred to submit")
         }
     };
-    entry.pending.push(Pending { memory, mem_offset, len: src_len, hash: h64, decoded, job });
-    drop(guard);
+    entry.pending.push(Pending { memory, mem_offset, len: src_len, hash: h64, decoded, job, work: work.clone(), error: None });
     let out = BufferImageCopy { buffer_offset: offset, buffer_row_length: 0, buffer_image_height: 0, ..*region };
     (dev.copy_buffer_to_image)(cmd, buffer, image, layout, 1, &out as *const BufferImageCopy as *const c_void);
+    if let Some(work) = work {
+        DecodePool::get().publish(&work);
+    }
     glcount::ETC_REGION_DECODED.fetch_add(1, Relaxed);
     Ok(format!(
         "{note}: src buffer 0x{src_buffer:x} mem 0x{memory:x}+{mem_offset} {src_len} B, rowLength={} imageHeight={} -> staging 0x{buffer:x}+{offset} {dst_len} B",
@@ -1561,7 +1700,7 @@ extern "C" fn map_memory2(device: *mut c_void, info: *const c_void, out: *mut *m
 
 extern "C" fn unmap_memory(device: *mut c_void, memory: u64) {
     if active_device(device as usize).is_some() {
-        state().mapped.remove(&memory);
+        retire_mapping(memory);
     }
     if let Some(f) = as_fn::<extern "C" fn(*mut c_void, u64)>(H_UNMAP_MEMORY.load(Relaxed)) {
         f(device, memory);
@@ -1570,10 +1709,25 @@ extern "C" fn unmap_memory(device: *mut c_void, memory: u64) {
 
 extern "C" fn free_memory(device: *mut c_void, memory: u64, alloc: *const c_void) {
     if active_device(device as usize).is_some() {
-        state().mapped.remove(&memory);
+        retire_mapping(memory);
     }
     if let Some(f) = as_fn::<extern "C" fn(*mut c_void, u64, *const c_void)>(H_FREE_MEMORY.load(Relaxed)) {
         f(device, memory, alloc);
+    }
+}
+
+fn retire_mapping(memory: u64) {
+    let cmds: Vec<_> = {
+        let mut st = state();
+        st.mapped.remove(&memory);
+        st.cmds.values().cloned().collect()
+    };
+    for cmd in cmds {
+        for p in command(&cmd).pending.iter_mut().filter(|p| p.memory == memory) {
+            if let Err(error) = p.finish() {
+                unhandled(format_args!("retiring mapping: decode failed: {error}"));
+            }
+        }
     }
 }
 
@@ -1581,14 +1735,31 @@ fn check_pending(cmds: impl Iterator<Item = usize>) {
     if LIVE_CMDS.load(Relaxed) == 0 {
         return;
     }
-    let mut st = state();
-    let st = &mut *st;
     let (mut same, mut gone) = (0usize, 0usize);
     for c in cmds {
-        let Some(cs) = st.cmds.get_mut(&c) else { continue };
+        let Some(shared) = state().cmds.get(&c).cloned() else { continue };
+        let mut cs = command(&shared);
+        if cs.retired {
+            continue;
+        }
         for p in &mut cs.pending {
-            let bytes = match source_bytes(&st.mapped, p.memory, p.mem_offset, p.len) {
-                Ok(b) => b,
+            if let Err(error) = p.finish() {
+                unhandled(format_args!("submit: decode failed: {error}; texels cleared"));
+                continue;
+            }
+            let snapshot = {
+                let st = state();
+                source_bytes(&st.mapped, p.memory, p.mem_offset, p.len).map(|bytes| {
+                    let h = hash(bytes);
+                    if p.decoded && h == p.hash { None } else { Some(bytes.to_vec().into_boxed_slice()) }
+                })
+            };
+            let bytes = match snapshot {
+                Ok(Some(bytes)) => bytes,
+                Ok(None) => {
+                    same += 1;
+                    continue;
+                }
                 Err(e) => {
                     gone += 1;
                     if !p.decoded {
@@ -1598,12 +1769,7 @@ fn check_pending(cmds: impl Iterator<Item = usize>) {
                     continue;
                 }
             };
-            let h = hash(bytes);
-            if p.decoded && h == p.hash {
-                same += 1;
-                continue;
-            }
-            match run_job(&p.job, bytes) {
+            match validate_job(&p.job, &bytes) {
                 Ok(()) => {
                     if p.decoded {
                         glcount::ETC_LATE_WRITE.fetch_add(1, Relaxed);
@@ -1615,10 +1781,21 @@ fn check_pending(cmds: impl Iterator<Item = usize>) {
                         p.mem_offset,
                         p.len
                     ));
-                    p.decoded = true;
-                    p.hash = h;
+                    if p.job.width == 0 || p.job.height == 0 {
+                        p.decoded = true;
+                        p.hash = hash(&bytes);
+                    } else {
+                        p.work = Some(DecodePool::get().enqueue(&p.job, bytes));
+                    }
                 }
                 Err(e) => unhandled(format_args!("submit: decode failed: {e}")),
+            }
+        }
+        for p in &mut cs.pending {
+            if p.work.is_some() {
+                if let Err(error) = p.finish() {
+                    unhandled(format_args!("submit: decode failed: {error}; texels cleared"));
+                }
             }
         }
     }
@@ -1751,6 +1928,33 @@ extern "C" fn destroy_command_pool(device: *mut c_void, pool: u64, alloc: *const
 mod tests {
     use super::*;
 
+    static RETIRING: AtomicPtr<DecodeWork> = AtomicPtr::new(std::ptr::null_mut());
+    static EARLY_FORWARD: AtomicUsize = AtomicUsize::new(0);
+
+    fn check_retirement() {
+        // SAFETY: the lifecycle test retains the Arc until the hook thread exits.
+        if let Some(work) = unsafe { RETIRING.load(Acquire).as_ref() } {
+            if work.progress.lock().unwrap().remaining != 0 {
+                EARLY_FORWARD.fetch_add(1, Relaxed);
+            }
+        }
+    }
+
+    extern "C" fn fake_submit(_: *mut c_void, _: u32, _: *const c_void, _: u64) -> i32 {
+        let cmds: Vec<_> = state().cmds.values().cloned().collect();
+        if cmds.iter().any(|c| command(c).pending.iter().any(|p| p.work.is_some())) {
+            return VK_ERROR_INITIALIZATION_FAILED;
+        }
+        VK_SUCCESS
+    }
+
+    extern "C" fn fake_unmap(_: *mut c_void, _: u64) { check_retirement(); }
+    extern "C" fn fake_free(_: *mut c_void, _: u64, _: *const c_void) { check_retirement(); }
+    extern "C" fn fake_reset(_: *mut c_void, _: u32) -> i32 { check_retirement(); VK_SUCCESS }
+    extern "C" fn fake_free_cmds(_: *mut c_void, _: u64, _: u32, _: *const usize) { check_retirement(); }
+    extern "C" fn fake_reset_pool(_: *mut c_void, _: u64, _: u32) -> i32 { check_retirement(); VK_SUCCESS }
+    extern "C" fn fake_destroy_device(_: *mut c_void, _: *const c_void) { check_retirement(); }
+
     struct CopyHarness {
         dev: Box<Dev>,
         src: Vec<u8>,
@@ -1760,8 +1964,12 @@ mod tests {
 
     impl CopyHarness {
         fn new(width: usize) -> Self {
+            Self::with_capacity(width, 1)
+        }
+
+        fn with_capacity(width: usize, copies: usize) -> Self {
             extern "C" fn create(_: usize, _: *const c_void, _: *const c_void, _: *mut u64) -> i32 { -1 }
-            extern "C" fn destroy(_: usize, _: u64, _: *const c_void) {}
+            extern "C" fn destroy(_: usize, _: u64, _: *const c_void) { check_retirement(); }
             extern "C" fn requirements(_: usize, _: u64, _: *mut [u64; 3]) {}
             extern "C" fn bind(_: usize, _: u64, _: u64, _: u64) -> i32 { 0 }
             extern "C" fn map(_: usize, _: u64, _: u64, _: u64, _: u32, _: *mut *mut c_void) -> i32 { -1 }
@@ -1777,21 +1985,27 @@ mod tests {
                 seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
                 (seed >> 24) as u8
             }).collect::<Vec<_>>();
-            let mut dst = vec![0xa5; width * width * 4];
+            let mut dst = vec![0xa5; width * width * 4 * copies];
             let mut st = state();
             assert!(st.cmds.is_empty());
             st.buffers.insert(1, (2, 0));
+            st.cmd_pool.insert(3, 7);
             st.mapped.insert(2, (src.as_ptr() as usize, 0, src.len() as u64));
-            st.cmds.insert(3, CmdState {
+            st.cmds.insert(3, Arc::new(Mutex::new(CmdState {
                 chunks: vec![Chunk { buffer: 4, memory: 5, mapped: dst.as_mut_ptr() as usize, size: dst.len() as u64, used: 0 }],
                 pending: Vec::new(),
-            });
+                retired: false,
+            })));
             LIVE_CMDS.store(1, Relaxed);
             DEV.store(&*dev as *const Dev as *mut Dev, Release);
             Self { dev, src, dst, width }
         }
 
         fn record(&self) -> Result<String, String> {
+            self.record_on(3)
+        }
+
+        fn record_on(&self, cmd: usize) -> Result<String, String> {
             let w = self.width as u32;
             let region = BufferImageCopy {
                 buffer_offset: 0, buffer_row_length: 0, buffer_image_height: 0,
@@ -1799,14 +2013,33 @@ mod tests {
                 image_offset: [0; 3], image_extent: [w, w, 1],
             };
             let image = EmuImage { format: EtcFormat::Rgba8, etc: 151, substitute: 37, width: w, height: w };
-            emulate_copy(&self.dev, 3usize as *mut c_void, 1, 6, image, 0, &region)
+            emulate_copy(&self.dev, cmd as *mut c_void, 1, 6, image, 0, &region)
+        }
+
+        fn split_commands(&self, count: usize) {
+            let mut st = state();
+            st.cmds.clear();
+            let size = self.dst.len() / count;
+            for i in 0..count {
+                st.cmds.insert(3 + i, Arc::new(Mutex::new(CmdState {
+                    chunks: vec![Chunk { buffer: 4 + i as u64, memory: 100 + i as u64,
+                        mapped: self.dst.as_ptr() as usize + i * size, size: size as u64, used: 0 }],
+                    ..CmdState::default()
+                })));
+                st.cmd_pool.insert(3 + i, 7);
+            }
+            LIVE_CMDS.store(count, Relaxed);
         }
 
         fn rewind(&self) {
-            let mut st = state();
-            let cmd = st.cmds.get_mut(&3).unwrap();
-            cmd.pending.clear();
-            cmd.chunks[0].used = 0;
+            let cmds: Vec<_> = state().cmds.values().cloned().collect();
+            for shared in cmds {
+                let mut cmd = command(&shared);
+                for mut p in cmd.pending.drain(..) {
+                    p.finish().unwrap();
+                }
+                cmd.chunks[0].used = 0;
+            }
         }
 
         fn expected(&self) -> Vec<u8> {
@@ -1814,6 +2047,23 @@ mod tests {
             let job = job_for(self.width, self.width, 1, &mut dst);
             run_job(&job, &self.src).unwrap();
             dst
+        }
+
+        fn submit(&self, second: bool) -> i32 {
+            let mut submit = [0u64; 9];
+            if second {
+                let info = [0usize, 0, 3, 0];
+                submit[4] = 1;
+                submit[5] = info.as_ptr() as u64;
+                H_QUEUE_SUBMIT2.store(fake_submit as *const () as usize, Relaxed);
+                queue_submit2(std::ptr::null_mut(), 1, submit.as_ptr() as *const c_void, 0)
+            } else {
+                let cmds = [3usize];
+                submit[5] = 1;
+                submit[6] = cmds.as_ptr() as u64;
+                H_QUEUE_SUBMIT.store(fake_submit as *const () as usize, Relaxed);
+                queue_submit(std::ptr::null_mut(), 1, submit.as_ptr() as *const c_void, 0)
+            }
         }
     }
 
@@ -1824,10 +2074,225 @@ mod tests {
     }
 
     #[test]
+    fn recorded_jobs_finish_before_both_submit_variants_and_recheck_late_writes() {
+        let _turn = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        for second in [false, true] {
+            let mut harness = CopyHarness::new(256);
+            harness.record().unwrap();
+            assert!(command(&state().cmds[&3]).pending[0].work.is_some());
+            assert_eq!(harness.submit(second), VK_SUCCESS);
+            assert_eq!(harness.dst, harness.expected());
+            harness.rewind();
+            harness.record().unwrap();
+            let late = glcount::ETC_LATE_WRITE.load(Relaxed);
+            harness.src[0] ^= 0x80;
+            assert_eq!(harness.submit(second), VK_SUCCESS);
+            assert_eq!(glcount::ETC_LATE_WRITE.load(Relaxed), late + 1);
+            assert_eq!(harness.dst, harness.expected());
+        }
+    }
+
+    #[test]
+    fn async_failures_are_reported_at_submit_and_never_upload_uninitialised_texels() {
+        let _turn = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let harness = CopyHarness::new(256);
+        harness.record().unwrap();
+        {
+            let shared = state().cmds[&3].clone();
+            let mut cmd = command(&shared);
+            let pending = &mut cmd.pending[0];
+            pending.finish().unwrap();
+            pending.decoded = false;
+            pending.work = Some(DecodePool::get().prepare(&pending.job, DecodeSource::Snapshot(Box::new([]))));
+        }
+        let errors = glcount::ETC_UNHANDLED.load(Relaxed);
+        assert_eq!(harness.submit(false), VK_SUCCESS);
+        assert_eq!(glcount::ETC_UNHANDLED.load(Relaxed), errors + 1);
+        assert!(harness.dst.iter().all(|&b| b == 0));
+        assert!(command(&state().cmds[&3]).pending[0].error.is_some());
+        assert_eq!(harness.submit(true), VK_SUCCESS);
+        assert_eq!(glcount::ETC_UNHANDLED.load(Relaxed), errors + 2);
+    }
+
+    #[test]
+    fn memory_and_command_retirement_join_inflight_jobs_before_forwarding() {
+        let _turn = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        H_UNMAP_MEMORY.store(fake_unmap as *const () as usize, Relaxed);
+        H_FREE_MEMORY.store(fake_free as *const () as usize, Relaxed);
+        H_RESET_COMMAND_BUFFER.store(fake_reset as *const () as usize, Relaxed);
+        H_FREE_COMMAND_BUFFERS.store(fake_free_cmds as *const () as usize, Relaxed);
+        H_RESET_COMMAND_POOL.store(fake_reset_pool as *const () as usize, Relaxed);
+        H_DESTROY_COMMAND_POOL.store(fake_free as *const () as usize, Relaxed);
+        H_DESTROY_DEVICE.store(fake_destroy_device as *const () as usize, Relaxed);
+        for operation in 0..7 {
+            let harness = CopyHarness::new(256);
+            harness.record().unwrap();
+            let work = {
+                let shared = state().cmds[&3].clone();
+                let mut cmd = command(&shared);
+                let p = &mut cmd.pending[0];
+                p.finish().unwrap();
+                let work = DecodePool::get().prepare(&p.job, DecodeSource::Snapshot(harness.src.clone().into_boxed_slice()));
+                p.work = Some(Arc::clone(&work));
+                p.decoded = false;
+                work
+            };
+            // Hold one claimed band outside the queue. The retiring caller must
+            // help the others, but cannot finish until this band is released.
+            let band = work.claim().unwrap();
+            RETIRING.store(Arc::as_ptr(&work) as *mut DecodeWork, Release);
+            EARLY_FORWARD.store(0, Relaxed);
+            let (started, start) = std::sync::mpsc::channel();
+            let (done, finished) = std::sync::mpsc::channel();
+            let thread = std::thread::spawn(move || {
+                started.send(()).unwrap();
+                let device = 0x8001usize as *mut c_void;
+                match operation {
+                    0 => unmap_memory(device, 2),
+                    1 => free_memory(device, 2, std::ptr::null()),
+                    2 => { reset_command_buffer(3usize as *mut c_void, 0); }
+                    3 => free_command_buffers(device, 7, 1, [3usize].as_ptr()),
+                    4 => { reset_command_pool(device, 7, 0); }
+                    5 => destroy_command_pool(device, 7, std::ptr::null()),
+                    _ => destroy_device(device, std::ptr::null()),
+                }
+                done.send(()).unwrap();
+            });
+            start.recv().unwrap();
+            let early = finished.recv_timeout(std::time::Duration::from_millis(20));
+            let (probe, state_ready) = std::sync::mpsc::channel();
+            let metadata = std::thread::spawn(move || {
+                drop(state());
+                probe.send(()).unwrap();
+            });
+            let unlocked = state_ready.recv_timeout(std::time::Duration::from_millis(100));
+            work.perform(band);
+            thread.join().unwrap();
+            metadata.join().unwrap();
+            RETIRING.store(std::ptr::null_mut(), Release);
+            assert!(matches!(early, Err(std::sync::mpsc::RecvTimeoutError::Timeout)), "operation {operation}");
+            finished.recv().unwrap();
+            assert_eq!(EARLY_FORWARD.load(Relaxed), 0, "operation {operation}");
+            assert!(unlocked.is_ok(), "operation {operation} held state() while waiting");
+            assert_eq!(work.progress.lock().unwrap().remaining, 0);
+            assert_eq!(harness.dst, harness.expected());
+            if operation < 2 {
+                assert!(!state().mapped.contains_key(&2));
+                assert_eq!(harness.submit(false), VK_SUCCESS);
+            } else {
+                assert!(!state().cmds.contains_key(&3));
+            }
+        }
+    }
+
+    #[test]
+    fn small_empty_and_unreadable_recordings_keep_their_fallbacks() {
+        let _turn = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut harness = CopyHarness::new(64);
+        harness.record().unwrap();
+        assert!(command(&state().cmds[&3]).pending[0].work.is_some());
+        harness.submit(false);
+        assert_eq!(harness.dst, harness.expected());
+        harness.rewind();
+        let invalid = BufferImageCopy {
+            buffer_offset: 0, buffer_row_length: 4, buffer_image_height: 0,
+            aspect_mask: 1, mip_level: 0, base_array_layer: 0, layer_count: 1,
+            image_offset: [0; 3], image_extent: [64, 64, 1],
+        };
+        let image = EmuImage { format: EtcFormat::Rgba8, etc: 151, substitute: 37, width: 64, height: 64 };
+        assert!(emulate_copy(&harness.dev, 3usize as *mut c_void, 1, 6, image, 0, &invalid).is_err());
+        assert!(command(&state().cmds[&3]).pending.is_empty());
+        harness.rewind();
+        state().mapped.remove(&2);
+        harness.record().unwrap();
+        assert_eq!(harness.submit(false), VK_SUCCESS);
+        assert!(harness.dst.iter().all(|&b| b == 0));
+        harness.rewind();
+        harness.width = 0;
+        assert!(harness.record().is_ok());
+        assert_eq!(harness.submit(false), VK_SUCCESS);
+    }
+
+    #[test]
+    #[ignore]
+    fn microbench_bursts() {
+        let _turn = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        for (width, jobs) in [(128, 64), (512, 16)] {
+            for commands in [1, 8] {
+                let harness = CopyHarness::with_capacity(width, jobs);
+                harness.split_commands(commands);
+                let expected = harness.expected();
+                for sync in [true, false] {
+                    let mut samples = Vec::new();
+                    for _ in 0..6 {
+                        SYNC_RECORD.with(|mode| mode.set(sync));
+                        let start = std::time::Instant::now();
+                        for i in 0..jobs {
+                            std::hint::black_box(harness.record_on(3 + i % commands).unwrap());
+                        }
+                        let hook = start.elapsed().as_secs_f64();
+                        SYNC_RECORD.with(|mode| mode.set(false));
+                        check_pending(3..3 + commands);
+                        samples.push((hook, start.elapsed().as_secs_f64()));
+                        for image in harness.dst.chunks_exact(width * width * 4) {
+                            assert_eq!(image, &expected[..width * width * 4]);
+                        }
+                        harness.rewind();
+                    }
+                    samples.remove(0);
+                    samples.sort_by(|a, b| a.0.total_cmp(&b.0));
+                    println!("burst {jobs}x{width}x{width} cmds={commands} sync={sync}: hook {:.3} ms; all-done {:.3} ms", samples[2].0 * 1000.0, samples[2].1 * 1000.0);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn multiple_recording_threads_keep_command_staging_independent() {
+        let _turn = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let harness = CopyHarness::with_capacity(128, 32);
+        harness.split_commands(8);
+        std::thread::scope(|scope| {
+            for cmd in 3..11 {
+                let harness = &harness;
+                scope.spawn(move || {
+                    for _ in 0..4 {
+                        harness.record_on(cmd).unwrap();
+                    }
+                });
+            }
+        });
+        check_pending(3..11);
+        let expected = harness.expected();
+        for image in harness.dst.chunks_exact(128 * 128 * 4) {
+            assert_eq!(image, &expected[..128 * 128 * 4]);
+        }
+    }
+
+    #[test]
+    fn queue_claims_bands_from_different_jobs_before_the_first_finishes() {
+        let pool = DecodePool { queue: Arc::new(DecodeQueue::default()), helpers: 8 };
+        let mut a = vec![0; 128 * 128 * 4];
+        let mut b = a.clone();
+        let wa = pool.prepare(&job_for(128, 128, 1, &mut a), DecodeSource::Snapshot(vec![0; 128 * 128].into_boxed_slice()));
+        let wb = pool.prepare(&job_for(128, 128, 1, &mut b), DecodeSource::Snapshot(vec![0; 128 * 128].into_boxed_slice()));
+        let mut ready = VecDeque::from([wa.clone(), wb.clone()]);
+        let (first, a_band) = DecodeQueue::take(&mut ready).unwrap();
+        let (second, b_band) = DecodeQueue::take(&mut ready).unwrap();
+        assert!(Arc::ptr_eq(&first, &wa));
+        assert!(Arc::ptr_eq(&second, &wb));
+        second.perform(b_band);
+        first.perform(a_band);
+        pool.wait(&wa).unwrap();
+        pool.wait(&wb).unwrap();
+        assert_eq!(a, b);
+    }
+
+    #[test]
     #[ignore]
     fn microbench_record_submit() {
         let _turn = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        for width in [128, 256, 1024] {
+        for width in [64, 128, 256, 1024] {
             let harness = CopyHarness::new(width);
             harness.record().unwrap();
             check_pending(std::iter::once(3));
@@ -1848,6 +2313,30 @@ mod tests {
             samples.sort_by(|a, b| a.0.total_cmp(&b.0));
             println!("record {width}x{width} RGBA8: {:.3} ms; record+submit: {:.3} ms", samples[2].0 * 1000.0, samples[2].1 * 1000.0);
             assert_eq!(harness.dst, harness.expected());
+            if width <= 128 {
+                let mut dst = vec![0; harness.dst.len()];
+                let job = job_for(width, width, 1, &mut dst);
+                for queued in [false, true] {
+                    let mut samples = Vec::new();
+                    for _ in 0..5 {
+                        let start = std::time::Instant::now();
+                        for _ in 0..30 {
+                            if queued {
+                                let snapshot = harness.src.clone().into_boxed_slice();
+                                let work = DecodePool::get().enqueue(&job, snapshot);
+                                DecodePool::get().wait(&work).unwrap();
+                            } else {
+                                std::hint::black_box(hash(&harness.src));
+                                run_job(&job, &harness.src).unwrap();
+                            }
+                            std::hint::black_box(&dst);
+                        }
+                        samples.push(start.elapsed().as_secs_f64() / 30.0);
+                    }
+                    samples.sort_by(f64::total_cmp);
+                    println!("{width}x{width} CPU control queued={queued}: {:.3} ms", samples[2] * 1000.0);
+                }
+            }
         }
     }
 

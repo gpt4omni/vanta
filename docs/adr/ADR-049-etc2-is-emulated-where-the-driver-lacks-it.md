@@ -33,9 +33,9 @@ as though it were true and serves the engine's ETC2 and EAC images itself:
 - `vkCreateImage` and `vkCreateImageView` use that substitute format, as does
   `vkGetDeviceImageMemoryRequirements` and its sparse variant, so the image
   the driver sizes and creates is the one that is used;
-- `vkCmdCopyBufferToImage(2)` decodes each region on the CPU into a staging
-  buffer and copies that instead, re-checking at submit that the source did not
-  change after recording.
+- `vkCmdCopyBufferToImage(2)` reserves staging and queues CPU decoding from an
+  owned compressed-byte snapshot. Submit joins the work and checks for writes
+  since recording before the driver may execute the recorded staging copy.
 
 The decoder is `etc_decode.rs` and the shim is `vulkan_etc.rs`.
 
@@ -90,13 +90,11 @@ create the device and a client that never starts.
   make them, and `ETC_UNHANDLED` says so if that changes.
 - An ETC2 format inside a `VkImageFormatListCreateInfo` is forwarded
   unchanged and counted.
-- `check_pending` still decodes at submit with the shared state lock held, and
-  `emulate_copy` decodes at record under it. Source mappings are raw pointers,
-  and command-buffer state owns the staging allocations. Dropping the lock
-  would let unmap/free or command reset retire those allocations while helpers
-  use them. The worker job's `Arc` does not own either allocation; releasing
-  this lock needs a separate mapping/staging lifetime protocol. Contention and
-  its in-game cost have not been measured.
+- Metadata lookup, copying compressed source bytes and submit-time hashing
+  still take the shared state lock. Decoding and completion waits do not.
+  Staging allocation and retirement use a per-command-buffer lock. Metadata
+  contention, extra snapshot memory and the pool's competition with engine
+  workers have not been measured in game.
 - Only consecutive identical compressed blocks are memoised. No wider block
   cache was added: the synthetic workloads below do not establish a realistic
   hit rate that would justify its extra lookup and storage.
@@ -109,14 +107,13 @@ retain uncropped texels in scratch. Identical consecutive 8/16-byte blocks
 reuse the preceding decoded result, including across cropped edges. ETC colour
 palettes are clamped once per block/subblock, not once per pixel.
 
-Regions of at least 256x256 texels use a lazily-started persistent pool, with
-`available_parallelism().min(8)` helpers cached at initialisation. The caller
-claims a band before publication and then takes unstarted bands itself;
-helpers never wait for other jobs. Concurrent callers therefore do not depend
-on a free helper to start work. Completion, including decode errors and caught
-panics, is joined before borrowed source/staging pointers can expire. The
-threshold remains unchanged. Tests compare concurrent multi-layer jobs against
-serial decoding and exercise progress with no helpers at all.
+The first fast path used a lazily-started persistent pool for regions of at
+least 256x256 texels, with `available_parallelism().min(8)` helpers cached at
+initialisation. The synchronous caller claimed bands as well. The pipeline
+below replaces synchronous recording and removes the size threshold in
+production. The old synchronous CPU-job path remains only as a test control.
+Tests compare concurrent multi-layer jobs against serial decoding and exercise
+progress with no helpers at all.
 
 Submit validation still reads every compressed source byte. Its hash now uses
 four independent lanes over 32-byte strides and a byte-wise tail; hashes are
@@ -124,7 +121,8 @@ ephemeral record/submit state, not persisted digests. Tests change every bit in
 each lane and the tail. Both submit wrappers visit command buffers with lazy
 iterators instead of allocating temporary vectors.
 
-These are **CPU microbenchmarks on this VM, not in-game measurements**: eight
+The following table records the first fast path, before pipelining. These are
+**CPU microbenchmarks on this VM, not in-game measurements**: eight
 reported Intel Xeon vCPUs under KVM, Ubuntu 24.04 build container, Rust 1.99.1,
 release optimisation with `CARGO_PROFILE_RELEASE_DEBUG=0`, no extra target CPU
 flags. The baseline is `66a212e` (benchmark-only changes over `d694229`). Each
@@ -163,6 +161,89 @@ references, padded/cropped region comparisons and repeated-edge cases for all
 seven formats. **INFERRED:** less CPU work and no per-layer thread creation may
 reduce texture-upload stalls in game. No game was run; neither the target
 NVIDIA machine nor an in-game frame-rate or latency improvement was measured.
+
+## Pipelined recording and submit
+
+Every non-empty readable region is asynchronous, including small regions.
+Recording takes an owned snapshot under `state()` while the mapping is live,
+then releases that lock before preparing or publishing work. The driver copy
+is recorded before publication. Workers compute the snapshot hash and decode
+disjoint row bands. They never take `state()` or a command-buffer lock.
+The queue rotates jobs after each band claim, so uploads from different
+regions and command buffers can occupy helpers concurrently; it does not wait
+for one whole image to finish before scheduling another.
+
+Command state is `Arc<Mutex<CmdState>>`. A caller clones its handle under
+`state()` and drops the global guard before locking that command. Submit joins
+recorded jobs, taking unclaimed bands itself, then checks the live source hash.
+Changed or previously unreadable sources get new owned snapshots and queued
+decodes; all such work is joined before forwarding to the driver. There is no
+production synchronous size fallback. A serial test control remains for the
+measurements below.
+
+Unmap/free remove the mapping under `state()` and clone the relevant command
+handles, then join affected jobs without that lock before forwarding. No
+worker reads the original mapping. Begin/reset/free of a command buffer,
+pool reset/destruction and device destruction detach command handles under
+`state()`, then join their pending jobs under their individual command locks
+before freeing staging. The per-command lock prevents submit or retirement
+from freeing an output while a join/re-decode is using it. No path takes a
+command lock or waits for decoding while holding `state()`.
+
+Input/shape errors detectable at record still refuse the region before the
+driver copy. Unexpected worker errors/panics are retained until submit and
+reported through `ETC_UNHANDLED`, without inventing a Vulkan submit failure.
+Unlike the old record-time skip, a recorded copy cannot be retracted: after
+joining every band, that region is cleared to zero before execution. Errors
+remain reportable if an earlier unmap already joined the failed work.
+
+Tests cover both submit variants, late writes, unreadable/empty/malformed
+regions, error reporting, eight concurrent recording threads, interleaved job
+claims, and all seven memory/command/device retirement hooks. A deliberately
+held band verifies retirement cannot forward early and that another thread
+can still acquire `state()` while retirement waits.
+
+### VM recording and burst measurements
+
+Same release/container/toolchain as above; no game or Vulkan driver executes.
+The harness invokes the real `emulate_copy` and pending-submit logic, using
+mock driver functions and preallocated coherent staging. It excludes driver
+costs, initial staging allocation, GPU execution and engine contention. Single
+images compare against measurement-only baseline `4774ce7`. Five warmed batches
+contain thirty record/immediate-submit pairs each; the table reports the median
+hook sample and its paired total. No unrelated engine work fills the gap.
+
+| RGBA8 size | Record before, ms | Record after, ms | Record+submit before, ms | Record+submit after, ms |
+| --- | ---: | ---: | ---: | ---: |
+| 128x128 | 0.040 | 0.008 | 0.041 | 0.032 |
+| 256x256 | 0.057 | 0.011 | 0.060 | 0.069 |
+| 1024x1024 | 0.666 | 0.083 | 0.715 | 0.828 |
+
+Recording is cheaper, but isolated 256/1024 images immediately submitted cost
+more in total: ownership needs a compressed-byte copy and dispatch/join. This
+does not establish an isolated-image throughput win.
+
+Bursts compare the same current hook with a test-only synchronous control
+(serial decode below 256x256, caller plus pool above it) against queued work.
+Both modes retain snapshot ownership and hashing. Five warmed bursts follow
+one discarded warm-up. The caller records every region before submitting;
+the eight-command case distributes regions round-robin. Hook time is elapsed
+time inside the calling thread's recording loop, not aggregate worker CPU.
+
+| Burst / command buffers | Sync hook, ms | Async hook, ms | Sync all-done, ms | Async all-done, ms |
+| --- | ---: | ---: | ---: | ---: |
+| 64 x 128x128 / 1 | 2.792 | 0.167 | 2.835 | 0.520 |
+| 64 x 128x128 / 8 | 2.831 | 0.150 | 2.875 | 0.705 |
+| 16 x 512x512 / 1 | 3.645 | 0.213 | 3.817 | 1.991 |
+| 16 x 512x512 / 8 | 3.459 | 0.204 | 3.636 | 2.114 |
+
+The small-job burst supports removing the recording threshold. An isolated
+64x64 CPU control was slower queued (0.017 versus 0.011 ms), but no synchronous
+production exception is kept: this is not evidence that bursts of small jobs
+should block the caller. These synthetic bursts reuse one deterministic random
+source per size, not a captured texture workload. **INFERRED:** overlapping
+decode with engine recording may reduce upload stalls. In-game throughput,
+pacing and target NVIDIA behaviour remain unverified.
 
 ## EAC palettes: a second VM measurement
 
