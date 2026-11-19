@@ -145,6 +145,24 @@ extern "C" fn swap_buffers_timed(a: *mut c_void, b: *mut c_void) -> *mut c_void 
     r
 }
 
+/// Frames the engine has handed to the compositor, on either backend.
+///
+/// The idle backoff in `looper.rs` and devctl's `presents` used to read
+/// `QUEUE_PRESENT` alone, so a GLES session -- the backend whenever Vulkan is
+/// withheld (ADR-061) or the only Vulkan device is emulated -- never reached
+/// the backoff's threshold and its looper span a whole core for the life of
+/// the process.
+pub fn frames() -> u64 {
+    QUEUE_PRESENT.load(Ordering::Relaxed) + SWAP_BUFFERS.load(Ordering::Relaxed)
+}
+
+/// Just the `eglSwapBuffers` counter, for clients without `CORDIAL_COUNT_GL`,
+/// so [`frames`] counts GLES frames on every build and not only instrumented
+/// ones. One relaxed increment and a cached pointer load per swap.
+pub fn swap_counter() -> Vec<(&'static str, *mut c_void)> {
+    vec![forward!(SWAP_BUFFERS, "eglSwapBuffers", (a, b))]
+}
+
 pub fn overrides() -> Vec<(&'static str, *mut c_void)> {
     let mut v = vec![
         forward!(MAKE_CURRENT, "eglMakeCurrent", (a, b, c, d)),
@@ -160,4 +178,23 @@ pub fn overrides() -> Vec<(&'static str, *mut c_void)> {
         v.push(forward!(SWAP_BUFFERS, "eglSwapBuffers", (a, b)));
     }
     v
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_uninstrumented_client_still_counts_gles_frames() {
+        let names: Vec<_> = swap_counter().into_iter().map(|(n, _)| n).collect();
+        assert_eq!(names, ["eglSwapBuffers"]);
+    }
+
+    #[test]
+    fn frames_counts_both_backends() {
+        let before = frames();
+        SWAP_BUFFERS.fetch_add(1, Ordering::Relaxed);
+        QUEUE_PRESENT.fetch_add(1, Ordering::Relaxed);
+        assert!(frames() >= before + 2);
+    }
 }
