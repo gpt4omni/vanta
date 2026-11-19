@@ -386,7 +386,8 @@ mod tests {
         use std::time::Instant;
 
         let (width, height) = (1024usize, 1024usize);
-        for format in [EtcFormat::Rgb8, EtcFormat::Rgba8, EtcFormat::Rg11Signed] {
+        for format in [EtcFormat::Rgb8, EtcFormat::Rgba8, EtcFormat::R11,
+                       EtcFormat::R11Signed, EtcFormat::Rg11, EtcFormat::Rg11Signed] {
             for pattern in ["random", "flat", "runs"] {
                 let bb = format.block_bytes();
                 let mut data = vec![0u8; width * height / 16 * bb];

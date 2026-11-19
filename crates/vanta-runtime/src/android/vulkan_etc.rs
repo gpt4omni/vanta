@@ -1751,6 +1751,106 @@ extern "C" fn destroy_command_pool(device: *mut c_void, pool: u64, alloc: *const
 mod tests {
     use super::*;
 
+    struct CopyHarness {
+        dev: Box<Dev>,
+        src: Vec<u8>,
+        dst: Vec<u8>,
+        width: usize,
+    }
+
+    impl CopyHarness {
+        fn new(width: usize) -> Self {
+            extern "C" fn create(_: usize, _: *const c_void, _: *const c_void, _: *mut u64) -> i32 { -1 }
+            extern "C" fn destroy(_: usize, _: u64, _: *const c_void) {}
+            extern "C" fn requirements(_: usize, _: u64, _: *mut [u64; 3]) {}
+            extern "C" fn bind(_: usize, _: u64, _: u64, _: u64) -> i32 { 0 }
+            extern "C" fn map(_: usize, _: u64, _: u64, _: u64, _: u32, _: *mut *mut c_void) -> i32 { -1 }
+            extern "C" fn copy(_: *mut c_void, _: u64, _: u64, _: i32, _: u32, _: *const c_void) {}
+            let dev = Box::new(Dev {
+                device: 0x8001, create_buffer: create, destroy_buffer: destroy,
+                buffer_requirements: requirements, allocate_memory: create, free_memory: destroy,
+                bind_buffer_memory: bind, map_memory: map, copy_buffer_to_image: copy,
+                memory_types: vec![MEMORY_HOST_VISIBLE | MEMORY_HOST_COHERENT],
+            });
+            let mut seed = 0x1234_5678u32;
+            let src = (0..width * width).map(|_| {
+                seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                (seed >> 24) as u8
+            }).collect::<Vec<_>>();
+            let mut dst = vec![0xa5; width * width * 4];
+            let mut st = state();
+            assert!(st.cmds.is_empty());
+            st.buffers.insert(1, (2, 0));
+            st.mapped.insert(2, (src.as_ptr() as usize, 0, src.len() as u64));
+            st.cmds.insert(3, CmdState {
+                chunks: vec![Chunk { buffer: 4, memory: 5, mapped: dst.as_mut_ptr() as usize, size: dst.len() as u64, used: 0 }],
+                pending: Vec::new(),
+            });
+            LIVE_CMDS.store(1, Relaxed);
+            DEV.store(&*dev as *const Dev as *mut Dev, Release);
+            Self { dev, src, dst, width }
+        }
+
+        fn record(&self) -> Result<String, String> {
+            let w = self.width as u32;
+            let region = BufferImageCopy {
+                buffer_offset: 0, buffer_row_length: 0, buffer_image_height: 0,
+                aspect_mask: 1, mip_level: 0, base_array_layer: 0, layer_count: 1,
+                image_offset: [0; 3], image_extent: [w, w, 1],
+            };
+            let image = EmuImage { format: EtcFormat::Rgba8, etc: 151, substitute: 37, width: w, height: w };
+            emulate_copy(&self.dev, 3usize as *mut c_void, 1, 6, image, 0, &region)
+        }
+
+        fn rewind(&self) {
+            let mut st = state();
+            let cmd = st.cmds.get_mut(&3).unwrap();
+            cmd.pending.clear();
+            cmd.chunks[0].used = 0;
+        }
+
+        fn expected(&self) -> Vec<u8> {
+            let mut dst = vec![0; self.dst.len()];
+            let job = job_for(self.width, self.width, 1, &mut dst);
+            run_job(&job, &self.src).unwrap();
+            dst
+        }
+    }
+
+    impl Drop for CopyHarness {
+        fn drop(&mut self) {
+            forget_device();
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn microbench_record_submit() {
+        let _turn = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        for width in [128, 256, 1024] {
+            let harness = CopyHarness::new(width);
+            harness.record().unwrap();
+            check_pending(std::iter::once(3));
+            harness.rewind();
+            let mut samples = Vec::new();
+            for _ in 0..5 {
+                let (mut record, mut total) = (0.0, 0.0);
+                for _ in 0..30 {
+                    let start = std::time::Instant::now();
+                    std::hint::black_box(harness.record().unwrap());
+                    record += start.elapsed().as_secs_f64();
+                    check_pending(std::iter::once(3));
+                    total += start.elapsed().as_secs_f64();
+                    harness.rewind();
+                }
+                samples.push((record / 30.0, total / 30.0));
+            }
+            samples.sort_by(|a, b| a.0.total_cmp(&b.0));
+            println!("record {width}x{width} RGBA8: {:.3} ms; record+submit: {:.3} ms", samples[2].0 * 1000.0, samples[2].1 * 1000.0);
+            assert_eq!(harness.dst, harness.expected());
+        }
+    }
+
     #[test]
     #[ignore]
     fn microbench_upload() {
