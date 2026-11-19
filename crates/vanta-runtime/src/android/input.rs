@@ -1811,10 +1811,10 @@ fn track_key_held(down: bool, evdev_code: i32) {
 /// Roblox kicks a player who has been idle for twenty minutes, and whether a
 /// zero-delta move counts as activity for that timer has not been measured.
 /// If it does, a keepalive with no end would keep an idle player in a server
-/// indefinitely. Stopping five minutes after the user last moved the mouse or
-/// pressed a key leaves the kick at most five minutes later than it would
+/// indefinitely. Stopping five minutes after the user last touched the mouse or
+/// keyboard leaves the kick at most five minutes later than it would
 /// otherwise be (INFERRED), and the throttle comes back for a desk nobody is
-/// sitting at.
+/// sitting at. Motion, keys, buttons and the wheel all count as input.
 ///
 /// Called from [`super::looper::pump`] every tick the policy wants it; harmless to
 /// call when the interface native is not registered yet, since
@@ -2604,6 +2604,7 @@ pub fn pass_mouse_move_delta(x: f32, y: f32, dx: f32, dy: f32) {
 /// never reports a right button cannot turn its camera with the mouse however
 /// well the rest of the path works.
 pub fn pass_mouse_button(x: f32, y: f32, down: bool, android_button: i32) {
+    note_genuine_input();
     let Some(button) = roblox_mouse_button(android_button) else {
         return;
     };
@@ -2649,6 +2650,7 @@ pub fn pass_mouse_button(x: f32, y: f32, down: bool, android_button: i32) {
 /// home for it and is not driven here, because "plausible" is how this file
 /// acquires bugs that take a session to find.
 pub fn wheel(handle: i64, x: f32, y: f32, hscroll: f32, vscroll: f32, event_time_ms: i64) {
+    note_genuine_input();
     let scale = wheel_scale();
     let (h, v) = (hscroll * scale, vscroll * scale);
     if handle != 0 {
