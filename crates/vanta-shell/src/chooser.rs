@@ -134,13 +134,13 @@ pub fn hero(launch: gtk::Widget) -> gtk::Widget {
     let stream = gtk::gio::MemoryInputStream::from_bytes(&bytes);
     let mark = match gtk::gdk_pixbuf::Pixbuf::from_stream(&stream, gtk::gio::Cancellable::NONE) {
         Ok(pixbuf) => gtk::Image::from_paintable(Some(&gtk::gdk::Texture::for_pixbuf(&pixbuf))),
-        Err(_) => gtk::Image::from_icon_name(cordial_shell::branding::current().icon()),
+        Err(_) => gtk::Image::from_icon_name(vanta_shell::branding::current().icon()),
     };
     mark.set_pixel_size(112);
     mark.set_margin_bottom(8);
     column.append(&mark);
 
-    let title = gtk::Label::new(Some(cordial_shell::branding::current().name()));
+    let title = gtk::Label::new(Some(vanta_shell::branding::current().name()));
     title.add_css_class("vanta-wordmark");
     column.append(&title);
 
@@ -190,7 +190,7 @@ mod tests {
     #[ignore = "requires a GTK display"]
     fn the_hero_preserves_the_launch_button_as_the_focus_target() {
         adw::init().unwrap();
-        let chooser = build(&CordialSource, |_| {});
+        let chooser = build(&VantaSource, |_| {});
         assert!(chooser.is::<gtk::Button>());
         let window = gtk::Window::new();
         window.set_child(Some(&hero(chooser.clone())));
