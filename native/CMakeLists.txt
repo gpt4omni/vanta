@@ -388,6 +388,14 @@ add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../third_party/libjnivm
 add_library(vanta_jni_shim STATIC jni_shim.cpp android_classes.cpp game_activity.cpp init_params.cpp accessibility.cpp cookies.cpp audio_classes.cpp deeplink.cpp clipboard.cpp permissions_transport.cpp local_storage.cpp legacy_stdio.cpp platform_classes.cpp battery.cpp unanswered_classes.cpp)
 target_link_libraries(vanta_jni_shim PUBLIC jnivm)
 
+add_executable(vanta_jni_shim_test EXCLUDE_FROM_ALL jni_shim.cpp jni_shim_test.cpp)
+target_compile_options(vanta_jni_shim_test PRIVATE -UNDEBUG)
+target_link_libraries(vanta_jni_shim_test PRIVATE jnivm)
+add_custom_command(TARGET vanta_jni_shim_test POST_BUILD
+  COMMAND vanta_jni_shim_test
+  COMMENT "Running JNI worker attachment checks")
+add_dependencies(vanta_jni_shim vanta_jni_shim_test)
+
 add_executable(vanta_permissions_transport_test EXCLUDE_FROM_ALL
   permissions_transport.cpp permissions_transport_test.cpp)
 target_compile_options(vanta_permissions_transport_test PRIVATE -UNDEBUG)
