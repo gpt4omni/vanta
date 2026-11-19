@@ -33,7 +33,7 @@
 #
 # It also turns an intermittent bug into a reproducible one. At 80% a frozen
 # client is two launches away, which makes catching one under gdb -- with
-# `cordial_loopers` for the descriptor counts and the process CPU beside the
+# `vanta_loopers` for the descriptor counts and the process CPU beside the
 # stacks -- a matter of minutes rather than a day of waiting.
 #
 # **2026-08-26 (earlier): forty runs, twenty per arm, and not one freeze.** Nudged versus
@@ -47,7 +47,7 @@
 # previous NUDGE arm was a silent no-op: the virtual pointer holder was started
 # after the client had already latched seat capabilities at open(), so nothing
 # was ever delivered and the arm measured nothing at all. This one drove
-# Cordial's own entry points through the MCP instead and recorded proof --
+# Vanta's own entry points through the MCP instead and recorded proof --
 # `first_ok_move_at=0.017 ok=1710 errreply=0` per run. It also had a visible
 # effect on something: nudged runs sit at a p25 median of 3578 presents against
 # 2838, which is the idle throttle being held off, exactly as it should be.
@@ -85,13 +85,13 @@
 # `android_app_set_activity_state` in some Linux shims"
 # (`src/legacy/legacy_runtime.cc:2867-2873`, Apache-2.0).
 #
-# Cordial drives the ASMA/V2 app-bridge *and* GameActivity on top of it, which
+# Vanta drives the ASMA/V2 app-bridge *and* GameActivity on top of it, which
 # is the combination that comment names. Whether that is this freeze is a
 # measurement and not an argument, and this is the switch that takes it. The
 # default is on, so every row measured before 2026-08-27 stays comparable.
 #
-# Set `CORDIAL_POLL_COALESCE_US=0` to run the looper's idle backoff off as a
-# control, `CORDIAL_BRIDGE_DELAY_MS=<n>` to hold the app bridge back before it
+# Set `VANTA_POLL_COALESCE_US=0` to run the looper's idle backoff off as a
+# control, `VANTA_BRIDGE_DELAY_MS=<n>` to hold the app bridge back before it
 # starts the Lua app, and `TAG=<word>` to keep one arm's logs from overwriting
 # another's.
 #
@@ -117,42 +117,42 @@ PROFILE="${2:-default}"
 GAME_ACTIVITY="${GAME_ACTIVITY:-1}"
 [ "$GAME_ACTIVITY" = "0" ] && GAME_ACTIVITY=""
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-OUT="${CORDIAL_FREEZE_OUT:-/tmp/cordial-freeze}"
+OUT="${VANTA_FREEZE_OUT:-/tmp/vanta-freeze}"
 mkdir -p "$OUT"
-APK="${CORDIAL_APK:-$HOME/.var/app/org.vinegarhq.Sober/data/sober/packages/x86_64/com.roblox.client/base.apk}"
-LIB="${CORDIAL_LIB_DIR:-$HOME/.cache/cordial/lib/x86_64}"
+APK="${VANTA_APK:-$HOME/.var/app/org.vinegarhq.Sober/data/sober/packages/x86_64/com.roblox.client/base.apk}"
+LIB="${VANTA_LIB_DIR:-$HOME/.cache/vanta/lib/x86_64}"
 LOG="$OUT/${TAG:-run}$RUN.log"
-SOCK="$HOME/.local/share/cordial/profiles/$PROFILE/devctl.sock"
+SOCK="$HOME/.local/share/vanta/profiles/$PROFILE/devctl.sock"
 
 # Never `pkill -f`: the pattern matches the shell running it, and that has
 # killed the session issuing it five times in one day. `pidof` matches the
 # executable, which the engine's rename of its main thread does not touch.
 # **Only this profile's clients, never every client on the machine.** This
-# used to kill every `cordial-run` there was, which is fine on an idle machine
+# used to kill every `vanta-run` there was, which is fine on an idle machine
 # and destroys somebody else's session on a shared one -- a developer playing
 # on another profile, or a live specimen of an intermittent bug. The profile
 # lock already stops two clients sharing a profile, so a stale one of ours is
 # all there can be to clear. `/proc/<pid>/cmdline` is NUL-separated, hence tr.
-for p in $(pidof cordial-run 2>/dev/null); do
+for p in $(pidof vanta-run 2>/dev/null); do
   if tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null | grep -q -- "--profile $PROFILE"; then
     kill -9 "$p" 2>/dev/null
   fi
 done
-distrobox enter cordial -- bash -lc 'for p in $(pidof sway); do kill -9 $p 2>/dev/null; done' >/dev/null 2>&1
+distrobox enter vanta -- bash -lc 'for p in $(pidof sway); do kill -9 $p 2>/dev/null; done' >/dev/null 2>&1
 sleep 3
 
-# Windowed every time. Cordial remembers window state per profile, and a run
+# Windowed every time. Vanta remembers window state per profile, and a run
 # that inherited fullscreen from the previous one is a different experiment --
 # that cost two runs before anyone noticed the file.
 printf '{\n  "fullscreen": false,\n  "maximised": false,\n  "width": null,\n  "height": null\n}\n' \
-  > "$HOME/.local/share/cordial/profiles/$PROFILE/game-window.json"
+  > "$HOME/.local/share/vanta/profiles/$PROFILE/game-window.json"
 
 # sway rather than cage: cage's seat never gains a keyboard, which changes which
-# of Cordial's code runs. Headless, on its own display, so nothing is injected
+# of Vanta's code runs. Headless, on its own display, so nothing is injected
 # anywhere near the developer's session.
 DISP=$(python3 - <<'PY'
 import subprocess, os, time
-stamp, cfg = "/tmp/cordial-freeze-display", "/tmp/cordial-freeze-sway.cfg"
+stamp, cfg = "/tmp/vanta-freeze-display", "/tmp/vanta-freeze-sway.cfg"
 for f in (stamp, cfg):
     if os.path.exists(f):
         os.unlink(f)
@@ -163,11 +163,11 @@ for f in (stamp, cfg):
 open(cfg, "w").write(
     "xwayland disable\noutput HEADLESS-1 mode 1280x800\ndefault_border none\n"
     "focus_follows_mouse no\n"
-    + ('no_focus [app_id="Cordial"]\n' if os.environ.get("NOFOCUS") == "1" else "")
+    + ('no_focus [app_id="Vanta"]\n' if os.environ.get("NOFOCUS") == "1" else "")
     + "exec sh -c 'printf %%s \"$WAYLAND_DISPLAY\" > %s'\n" % stamp)
-subprocess.Popen(["distrobox", "enter", "cordial", "--", "bash", "-lc",
+subprocess.Popen(["distrobox", "enter", "vanta", "--", "bash", "-lc",
   "exec env -u WAYLAND_DISPLAY -u DISPLAY WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 "
-  "WLR_HEADLESS_OUTPUTS=1 sway -c %s > /tmp/cordial-freeze-sway.log 2>&1" % cfg],
+  "WLR_HEADLESS_OUTPUTS=1 sway -c %s > /tmp/vanta-freeze-sway.log 2>&1" % cfg],
   stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 for _ in range(120):
     if os.path.exists(stamp) and os.path.getsize(stamp):
@@ -183,22 +183,22 @@ PY
 # **`env`, not a bare assignment prefix.** `${VAR:+VAR=value}` looks like one
 # and is not: bash decides what is an assignment before it expands, so the
 # expanded word becomes the command name and the run dies with
-# `CORDIAL_POLL_COALESCE_US=0: command not found` -- which this script then
+# `VANTA_POLL_COALESCE_US=0: command not found` -- which this script then
 # scores as a freeze, because a client that never started never presents. That
 # turned a whole control arm into noise before anyone read the log.
-# **The virtual pointer has to exist before the client connects.** Cordial reads
+# **The virtual pointer has to exist before the client connects.** Vanta reads
 # the seat's capabilities once, when it binds the seat, and a headless seat with
 # no input device reports `capabilities: 0` -- so a pointer created afterwards is
-# one Cordial will never look at, and the whole nudge arm becomes a silent no-op
+# one Vanta will never look at, and the whole nudge arm becomes a silent no-op
 # that reads exactly like a null result. It was written the other way round
 # first and produced one.
 NUDGING=
 if [ "${NUDGE:-0}" = "1" ]; then
-  HOLDER="${CORDIAL_HOLDER_BIN:-/tmp/cordial-wl-holders}/wl-pointer-holder"
+  HOLDER="${VANTA_HOLDER_BIN:-/tmp/vanta-wl-holders}/wl-pointer-holder"
   [ -x "$HOLDER" ] || { echo "no $HOLDER -- run tools/build-wl-holders.sh in the container" >&2; exit 1; }
   NUDGE_FIFO=$OUT/nudge.fifo
   rm -f "$NUDGE_FIFO"; mkfifo "$NUDGE_FIFO"
-  distrobox enter cordial -- bash -lc "export WAYLAND_DISPLAY=$DISP; exec $HOLDER 1280 800" \
+  distrobox enter vanta -- bash -lc "export WAYLAND_DISPLAY=$DISP; exec $HOLDER 1280 800" \
     < "$NUDGE_FIFO" > /dev/null 2>&1 &
   NUDGE_HOLDER=$!
   exec 8> "$NUDGE_FIFO"
@@ -227,10 +227,10 @@ done
 # **`env`, not a bare assignment prefix.** `${VAR:+VAR=value}` looks like one and
 # is not: bash decides what is an assignment before it expands, so the expanded
 # word becomes the command name and the run dies with
-# `CORDIAL_POLL_COALESCE_US=0: command not found` -- which this script then
+# `VANTA_POLL_COALESCE_US=0: command not found` -- which this script then
 # scores as a freeze, because a client that never started never presents. That
 # turned a whole control arm into noise before anyone read the log.
-# Cordial's own stdout has no timestamps, and the difference between a frozen
+# Vanta's own stdout has no timestamps, and the difference between a frozen
 # startup and a healthy one opens *before* the engine's first shared log line --
 # so the engine's log cannot localise it and this can. Stamped through a fifo
 # rather than a pipeline, so `$!` is still the client and not the last stage of
@@ -247,16 +247,16 @@ for line in sys.stdin:
 ' < "$STDOUT_FIFO" > "$LOG" &
 STAMPER=$!
 
-env WAYLAND_DISPLAY=$DISP GDK_BACKEND=wayland CORDIAL_DEV_CONTROL=1 \
-  ${CORDIAL_POLL_COALESCE_US:+CORDIAL_POLL_COALESCE_US=$CORDIAL_POLL_COALESCE_US} \
-  ${CORDIAL_BRIDGE_DELAY_MS:+CORDIAL_BRIDGE_DELAY_MS=$CORDIAL_BRIDGE_DELAY_MS} \
-  ${CORDIAL_REPORT_FOCUS:+CORDIAL_REPORT_FOCUS=$CORDIAL_REPORT_FOCUS} \
-  "$ROOT/target/release/cordial-run" --lib-dir "$LIB" --apk "$APK" --host-libc \
+env WAYLAND_DISPLAY=$DISP GDK_BACKEND=wayland VANTA_DEV_CONTROL=1 \
+  ${VANTA_POLL_COALESCE_US:+VANTA_POLL_COALESCE_US=$VANTA_POLL_COALESCE_US} \
+  ${VANTA_BRIDGE_DELAY_MS:+VANTA_BRIDGE_DELAY_MS=$VANTA_BRIDGE_DELAY_MS} \
+  ${VANTA_REPORT_FOCUS:+VANTA_REPORT_FOCUS=$VANTA_REPORT_FOCUS} \
+  "$ROOT/target/release/vanta-run" --lib-dir "$LIB" --apk "$APK" --host-libc \
   ${GAME_ACTIVITY:+--game-activity} --run 0 --profile "$PROFILE" > "$STDOUT_FIFO" 2>&1 &
 CLIENT=$!
 
 if [ -n "$NUDGING" ]; then
-  # **Through Cordial's own entry point, because the compositor route does not
+  # **Through Vanta's own entry point, because the compositor route does not
   # arrive.** This arm has now been a silent no-op three times. The first two
   # started a virtual pointer after the client had latched seat capabilities;
   # this version wrote into a holder's fifo and was measured, on 2026-08-27,
@@ -273,8 +273,8 @@ if [ -n "$NUDGING" ]; then
   # three no-ops in a row is what that costs.
   ( i=0; sent=0
     while kill -0 $CLIENT 2>/dev/null && [ $i -lt 1200 ]; do
-      SK=$(ls -t "$HOME/.local/share/cordial/profiles/$PROFILE"/**/devctl.sock \
-             "$HOME/.local/share/cordial/profiles/$PROFILE"/devctl.sock 2>/dev/null | head -1)
+      SK=$(ls -t "$HOME/.local/share/vanta/profiles/$PROFILE"/**/devctl.sock \
+             "$HOME/.local/share/vanta/profiles/$PROFILE"/devctl.sock 2>/dev/null | head -1)
       if [ -n "$SK" ]; then
         python3 -c "
 import socket,sys
@@ -331,7 +331,7 @@ COOKIES=$(grep -oE "\[cookies\] restored [0-9]+ domain" "$LOG" | grep -oE "[0-9]
 # engine log is older than it and the freshness test failed -- on exactly the
 # runs whose engine log is the evidence. Six of them were scored `stage=none`
 # and had their logs pruned before anyone noticed.
-ELOG=$(ls -t "$HOME/.local/share/cordial/profiles/$PROFILE/data/files/appData/logs/"*_Player_*.log 2>/dev/null | head -1)
+ELOG=$(ls -t "$HOME/.local/share/vanta/profiles/$PROFILE/data/files/appData/logs/"*_Player_*.log 2>/dev/null | head -1)
 if [ -n "$ELOG" ] && [ "$ELOG" -nt "$STAMP_BEFORE" ]; then
   STAGE=$(grep -oE "StartupController started: stage = [0-9]+" "$ELOG" | tail -1 | grep -oE "[0-9]+$")
   cp "$ELOG" "$OUT/${TAG:-run}$RUN.engine.log" 2>/dev/null
@@ -397,7 +397,7 @@ except Exception as e:
   # **The decisive experiment, run on the specimen while it is still alive.**
   #
   # Three captures agree on the shape: an engine thread spinning on its own
-  # app-glue command pipe, and Cordial's main thread with no Wayland event for
+  # app-glue command pipe, and Vanta's main thread with no Wayland event for
   # twenty-five seconds. That is consistent with a starvation cycle -- the
   # engine waits for a command, the command comes from work the main thread
   # drives, the main thread waits for events, and the events come from
@@ -405,7 +405,7 @@ except Exception as e:
   # event should break it, and the user's original report is exactly that:
   # it freezes if you do not touch it.
   #
-  # So: poke it through Cordial's own entry point -- never the compositor --
+  # So: poke it through Vanta's own entry point -- never the compositor --
   # and read the present count again. A count that climbs after the poke and
   # not before is the mechanism confirmed.
   python3 -c "
@@ -437,5 +437,5 @@ fi
 kill -9 $CLIENT 2>/dev/null
 kill "${STAMPER:-0}" 2>/dev/null
 rm -f "$STDOUT_FIFO"
-distrobox enter cordial -- bash -lc 'for p in $(pidof sway); do kill -9 $p 2>/dev/null; done' >/dev/null 2>&1
+distrobox enter vanta -- bash -lc 'for p in $(pidof sway); do kill -9 $p 2>/dev/null; done' >/dev/null 2>&1
 printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$RUN" "$READY" "$P10" "$P25" "$COOKIES" "$VERDICT" "$STAGE"

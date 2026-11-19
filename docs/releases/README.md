@@ -12,19 +12,19 @@ written down nowhere.
 ## The version lives in six files, and CI only catches two of them
 
 **v0.15.1 was tagged with four of the six updated, and the tag went red.**
-`Publish Arch packaging` refused it: `packaging/aur/cordial/PKGBUILD` still said
+`Publish Arch packaging` refused it: `packaging/aur/vanta/PKGBUILD` still said
 `pkgver=0.15.0`, and its `source=` pins `#tag=v$pkgver`, so the packaging
 repository would have carried the *previous* release under the new version's
 name. That check earned its keep; nothing else would have noticed.
 
 | File | Why it matters |
 |---|---|
-| `Cargo.toml` (`[workspace.package] version`) | The one true version. `crates/cordial-shell/src/version.rs` reads it, the window title shows it, `cordial-update` sends it in the User-Agent. A CI gate refuses a tag that disagrees with it. |
+| `Cargo.toml` (`[workspace.package] version`) | The one true version. `crates/vanta-shell/src/version.rs` reads it, the window title shows it, `vanta-update` sends it in the User-Agent. A CI gate refuses a tag that disagrees with it. |
 | `Cargo.lock` | Holds all five workspace crates' versions. `cargo update --workspace` rewrites them; `cargo metadata` alone does **not**. |
 | `docs/releases/vX.Y.Z.md` | The notes. |
-| `packaging/aur/cordial/PKGBUILD` (`pkgver`) | Its `source=` pins `#tag=v$pkgver`, so a stale value publishes the wrong release. |
-| `packaging/aur/cordial/.SRCINFO` (`pkgver` **and** the `source =` line) | Hand-maintained deliberately — there is no `makepkg` on the development host. Two lines, not one. See [PUBLISHING.md](../../packaging/aur/PUBLISHING.md). |
-| `packaging/io.github.luohoa97.Cordial.metainfo.xml` | AppStream shows the newest `<release>` as "what's new", so the top entry is the one that is read. |
+| `packaging/aur/vanta/PKGBUILD` (`pkgver`) | Its `source=` pins `#tag=v$pkgver`, so a stale value publishes the wrong release. |
+| `packaging/aur/vanta/.SRCINFO` (`pkgver` **and** the `source =` line) | Hand-maintained deliberately — there is no `makepkg` on the development host. Two lines, not one. See [PUBLISHING.md](../../packaging/aur/PUBLISHING.md). |
+| `packaging/io.github.gpt4omni.Vanta.metainfo.xml` | AppStream shows the newest `<release>` as "what's new", so the top entry is the one that is read. |
 
 `CHANGELOG.md` is **not** in this list. It stops at 0.6.0 by design; everything
 from 0.7.0 onward lives here instead.
@@ -52,8 +52,8 @@ it needs a `v*` policy added there first.
    submodule**.
 3. Tag and push the commit and the tag.
 
-   `packaging/aur/cordial-bin/` is bumped *after* the release exists, in its own
-   commit (`Bump cordial-bin to 0.20.1` was one), because its PKGBUILD pins the
+   `packaging/aur/vanta-bin/` is bumped *after* the release exists, in its own
+   commit (`Bump vanta-bin to 0.20.1` was one), because its PKGBUILD pins the
    release asset's URL and sha256 and neither exists until CI has built the
    package.
 4. Watch `Native packages`, `Flatpak` and `Publish Arch packaging` on the tag.

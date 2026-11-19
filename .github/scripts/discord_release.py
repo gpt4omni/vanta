@@ -15,7 +15,7 @@ before sending, and any non-2xx answer fails the run with Discord's own error
 body. The action logged the status code and carried on, which is how a release
 could be too long to announce and still go green.
 
-Cordial's notes are long on purpose -- they carry a what-is-broken section, a
+Vanta's notes are long on purpose -- they carry a what-is-broken section, a
 rule in AGENTS.md -- and four of the five releases measured at the time
 exceeded the description cap on their own: v0.12.1 at 5,376 characters, v0.12.0
 at 6,593, v0.11.0 at 9,657, v0.9.0 at 5,064. The asset list overflows
@@ -50,12 +50,12 @@ EMBED_TOTAL_MAX = 6000
 # characters of notes rather than the announcement.
 SAFETY = 256
 
-USERNAME = "Cordial"
+USERNAME = "Vanta"
 COLOUR = 0x5865F2
-FOOTER = "Cordial loads Roblox natively on Linux"
+FOOTER = "Vanta loads Roblox natively on Linux"
 
 # Discord's edge answers the default Python-urllib agent with a 403.
-USER_AGENT = "cordial-release-announcer (https://github.com/luohoa97/cordial)"
+USER_AGENT = "vanta-release-announcer (https://github.com/gpt4omni/vanta)"
 
 
 def clip(text: str, limit: int) -> str:
@@ -158,7 +158,7 @@ def build_payload(
     release: dict,
     history: list[dict] | None = None,
     mention: str = "",
-    repo: str = "luohoa97/cordial",
+    repo: str = "gpt4omni/vanta",
     now: datetime | None = None,
 ) -> dict:
     """The webhook body for one release. No I/O."""
@@ -280,7 +280,7 @@ def main(argv: list[str]) -> int:
         release,
         history,
         mention=os.environ.get("DISCORD_RELEASE_MENTION", ""),
-        repo=os.environ.get("GITHUB_REPOSITORY", "luohoa97/cordial"),
+        repo=os.environ.get("GITHUB_REPOSITORY", "gpt4omni/vanta"),
     )
 
     if dry_run:

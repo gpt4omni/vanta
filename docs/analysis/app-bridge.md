@@ -15,7 +15,7 @@ no-argument native, reached after
 `Java_com_roblox_engine_jni_NativeGLInterface_nativeAppBridgeV2InitWithParams` has
 already been called once. Both are called from Java, in that order, by
 `ActivityNativeMain.N2()` — and **`ActivityNativeMain`, not the AGDK
-`MainGameActivity` Cordial has been driving, is the Activity the shipping app
+`MainGameActivity` Vanta has been driving, is the Activity the shipping app
 actually launches into** (§6). That is the single most load-bearing finding in this
 document and it changes what Phase 2 should target next.
 
@@ -148,7 +148,7 @@ investigation on top of the same dex parsing approach.
 
 | Class | Extends | Notes |
 |---|---|---|
-| `com.roblox.client.startup.MainGameActivity` | `com.google.androidgamesdk.GameActivity` (AGDK) | The class Cordial has been driving (`initializeNativeCode`, `nativeSetAssetPath`, `nativeAppBridgeSetInitParams`, `nativePreloadFlagOverrides`, `nativeRetryInit` — all on this class, per `findings.md` §8). `AndroidManifest.xml`: `exported="false"`, carries `<meta-data android:name="android.app.lib_name" value="roblox">` (the AGDK convention telling `GameActivity`'s base class which `.so` to load). |
+| `com.roblox.client.startup.MainGameActivity` | `com.google.androidgamesdk.GameActivity` (AGDK) | The class Vanta has been driving (`initializeNativeCode`, `nativeSetAssetPath`, `nativeAppBridgeSetInitParams`, `nativePreloadFlagOverrides`, `nativeRetryInit` — all on this class, per `findings.md` §8). `AndroidManifest.xml`: `exported="false"`, carries `<meta-data android:name="android.app.lib_name" value="roblox">` (the AGDK convention telling `GameActivity`'s base class which `.so` to load). |
 | `com.roblox.client.ActivityNativeMain` | `com.roblox.client.a` (not AGDK) | Implements `com.roblox.engine.jni.NativeGLJavaInterface$OnAppShellReloadNeededListener` directly. **Owns the App Bridge lifecycle** (§4, §5). Not exported, no intent-filter — reached only by explicit `Intent`. |
 
 Both implement a shared interface `vi/p` (single abstract method `E()V`). This is
@@ -252,11 +252,11 @@ into the `Intent` constructor call is `ActivityNativeMain`, not `MainGameActivit
 **This means the shipping app's default path to the home shell is
 `ActivitySplash → ActivityNativeMain`, not `MainGameActivity`.** `MainGameActivity`
 exists, is `exported=false`, carries the AGDK `lib_name` meta-data, and everything
-`findings.md` §8 describes about Cordial reaching `initializeNativeCode` on it is
+`findings.md` §8 describes about Vanta reaching `initializeNativeCode` on it is
 real and correct — but it may be a secondary/experimental path in the real app
 rather than the one that actually renders the Lua home shell today. This should be
 checked against runtime evidence (e.g., instrumenting which Activity a real device
-launches) before Cordial commits further engineering to the `MainGameActivity`
+launches) before Vanta commits further engineering to the `MainGameActivity`
 surface path.
 
 ---
@@ -486,10 +486,10 @@ task asked about.
 (behind one `vk/e.a(Context)` call tried first, not resolved in this pass) and
 calls `startActivity()` + `finish()`. `MainGameActivity` is present, has the AGDK
 `lib_name` meta-data, is `exported=false`, and is a real, reachable, working
-JNI/AGDK surface — Cordial's Phase-1 work against it (`findings.md` §8) is not
+JNI/AGDK surface — Vanta's Phase-1 work against it (`findings.md` §8) is not
 wrong — but nothing in the manifest or the bytecode found in this pass shows
 `ActivitySplash` (or anything else) routing to it by default. If that holds up
-under runtime verification, **the natives to make Cordial's next milestone
+under runtime verification, **the natives to make Vanta's next milestone
 (a rendered frame of the actual Roblox home shell) are the `ActivityNativeMain` /
 `vi/e` / `NativeGLInterface` ones in §5.2, not solely the `MainGameActivity` /
 `GameActivity.initializeNativeCode` sequence `path-to-a-frame.md` currently
@@ -585,7 +585,7 @@ modified, per the instructions it was given.
 
 Everything above is the *native* app bridge, reached from Java/JNI once a game
 is already running inside the engine. There is a second, unrelated contract
-one layer up, in the web page roblox.com serves into Cordial's own in-app
+one layer up, in the web page roblox.com serves into Vanta's own in-app
 `WebView` for the Servers-list popup — found by watching `window.Roblox` from
 the page's own JavaScript rather than by reading the dex, because this
 contract is the page's, not the engine's.
@@ -623,14 +623,14 @@ promise/resolve machinery, not a native stub answering to a fixed shape.
 **Nothing native ever received this call**, on any build before issue
 #40/#34's fix: `Roblox.Hybrid` is the page's *own* namespace object,
 assigned by the page's own bootstrap, and grepping this whole codebase
-confirms nothing in Cordial ever created or seeded `window.Roblox` in any
+confirms nothing in Vanta ever created or seeded `window.Roblox` in any
 form. There was no native layer underneath the call for it to reach, which
 is the entire reason pressing Join did nothing.
 
 **`StartGameParams` (§2.2) was not needed for this, and was deliberately not
-built.** The fix (`crates/cordial-shell/src/webview.rs`,
-`crates/cordial-runtime/src/webview.rs`,
-`crates/cordial-runtime/src/deeplink.rs::publish_hybrid_game_launch`) wraps
+built.** The fix (`crates/vanta-shell/src/webview.rs`,
+`crates/vanta-runtime/src/webview.rs`,
+`crates/vanta-runtime/src/deeplink.rs::publish_hybrid_game_launch`) wraps
 `launchGame` in the page's own JS, forwards the same payload through the
 `executeRoblox` bridge this project already had end-to-end, and republishes
 it as an extended `Linking.detectURL` message — the same publish

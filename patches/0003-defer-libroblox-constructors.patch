@@ -6,11 +6,11 @@ index 5cc4238..357480d 100644
                                          info->library_namespace : nullptr);
  }
  
-+// EXPERIMENTAL, cordial-agent-defer: whether the next do_dlopen() should map
++// EXPERIMENTAL, vanta-agent-defer: whether the next do_dlopen() should map
 +// and relocate a library without running its ELF constructors, leaving the
 +// caller to call mcpelauncher_run_deferred_ctors() explicitly once it is
 +// ready. See docs/analysis/flag-init.md §26 for why: RbxStorage::init runs
-+// during libroblox.so's own constructors, before Cordial has told the engine
++// during libroblox.so's own constructors, before Vanta has told the engine
 +// its directories, and memoises a failure nothing later can undo. This flag
 +// exists to test whether deferring construction past that setup is coherent
 +// at the linker level; it is not wired into the default load path.
@@ -47,7 +47,7 @@ index 5cc4238..357480d 100644
 +    if (g_defer_next_ctors) {
 +      g_defer_next_ctors = false;
 +      LD_LOG(kLogDlopen,
-+             "... dlopen DEFERRING constructors (cordial-agent-defer): realpath=\"%s\", soname=\"%s\", handle=%p",
++             "... dlopen DEFERRING constructors (vanta-agent-defer): realpath=\"%s\", soname=\"%s\", handle=%p",
 +             si->get_realpath(), si->get_soname(), handle);
 +    } else {
 +      LD_LOG(kLogDlopen,

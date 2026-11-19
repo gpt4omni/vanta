@@ -1,4 +1,4 @@
-# NVIDIA support: what is known, what Cordial does, and what needs hardware
+# NVIDIA support: what is known, what Vanta does, and what needs hardware
 
 **No NVIDIA GPU exists on the development machine (Intel only), so "fully
 supported" cannot be claimed and nothing below has been run against an NVIDIA
@@ -18,7 +18,7 @@ Sources, and how far each can be trusted:
   evidence of a fix; a fix is only counted where a comment says so. Author names
   are stripped, so the only trust signal is `authorAssociation`. Cited as
   "Sober #N".
-- **Cordial's own tracker and notes**: `gh issue list --state all` (51 issues)
+- **Vanta's own tracker and notes**: `gh issue list --state all` (51 issues)
   has nothing about NVIDIA, 550, device loss or explicit sync;
   [`docs/NEXT.md`](../NEXT.md) has nothing NVIDIA-specific; the only NVIDIA item
   is TASKS.md T2 and [`nvidia-texture-manager2.md`](nvidia-texture-manager2.md).
@@ -30,13 +30,13 @@ Sources, and how far each can be trusted:
   Sober's maintainers point at (mesa/mesa#12316) and NVIDIA's own Pascal
   support-plan page could not be fetched, so nothing here depends on either.
 
-## Reports from NVIDIA users of Cordial itself
+## Reports from NVIDIA users of Vanta itself
 
-- 2026-10-01, on [#39](https://github.com/luohoa97/cordial/issues/39): Flatpak
+- 2026-10-01, on [#39](https://github.com/gpt4omni/vanta/issues/39): Flatpak
   0.22.0, Debian forky, GNOME on Wayland, NVIDIA's own 610.57 driver, default
   settings. Entering and leaving fullscreen (F11), maximise, snap and restore,
   in the menus and in a game, all without a crash; the same user crashed on
-  entering fullscreen with earlier builds. The first report of Cordial on an
+  entering fullscreen with earlier builds. The first report of Vanta on an
   NVIDIA driver outside the 535/550 series, and it is clean for this path.
 - 2026-10-03, an RTX 4070 (single GPU, EndeavourOS, KDE Plasma 6.7.5 on Wayland,
   the open kernel module 615.71.09, built from `main` at 0.23.2): tester-plan
@@ -75,7 +75,7 @@ Worth putting first, because each was in the brief that started this work.
   moved nothing with override delivery proven in the same run
   (`DFIntTaskSchedulerTargetFps=30` holding 30.0 presents/s).
 - **The `heapSize` figure in the same block is u32-truncated on every platform,
-  not by Cordial's shim.** On the RTX 4070 it reads 4288675840 for a
+  not by Vanta's shim.** On the RTX 4070 it reads 4288675840 for a
   12878610432-byte heap (exactly the low 32 bits), and the Android trace
   (`waydroid-roblox-startup.log.gz`) shows 3758365696 for a 12348300288-byte
   heap -- the same truncation on real Android. It is the engine's own print.
@@ -91,18 +91,18 @@ Worth putting first, because each was in the brief that started this work.
 - **`patch_libnvidiaglcore_overzealous_vram_caching` is fleet-wide.** It sits in
   Sober's remote manifest from 2026-02-21 to 2026-05-14 and appears in Intel,
   AMD, Crostini and no-display logs, so it says nothing about the reporter's
-  GPU. (It also names an in-process patch of NVIDIA's library. Cordial will not
+  GPU. (It also names an in-process patch of NVIDIA's library. Vanta will not
   do that: [ADR-001](../adr/ADR-001-in-process-hooking.md).)
 - **The texture-manager premise did not hold.**
   [`nvidia-texture-manager2.md`](nvidia-texture-manager2.md) and
   [ADR-042](../adr/ADR-042-texture-format-query-observability.md): no issue ties
   an NVIDIA GPU to a texture-quality complaint, and nothing was translated.
 - **The Sober fix for explicit-sync errors was Sober's.** Cause G below was a
-  quirk in SDL's Wayland video driver that Sober fixed; Cordial does not use it.
+  quirk in SDL's Wayland video driver that Sober fixed; Vanta does not use it.
 
 ## Catalogue
 
-Sorted by how much evidence there is that a launcher can do anything. "Cordial"
+Sorted by how much evidence there is that a launcher can do anything. "Vanta"
 says what this repository does about it now.
 
 ### 1. Driver 535/550 crash at the first render-target resize (CONFIRMED, fix is the driver)
@@ -120,15 +120,15 @@ says what this repository does about it now.
   to 580 and it ran. OpenGL avoided it.
 - **Not established:** that every 535/550 point release does it. 550.107.02 and
   550.120 were reported working on earlier Roblox builds, so the trigger is the
-  engine build as much as the driver. That Cordial hits it too. Nobody has run
-  Cordial on a 535 or 550.
-- **Cordial:** a one-line advisory at device creation naming the evidence
-  (`driver_advisory` in `crates/cordial-shell/src/nvidia.rs`), a hint on the
+  engine build as much as the driver. That Vanta hits it too. Nobody has run
+  Vanta on a 535 or 550.
+- **Vanta:** a one-line advisory at device creation naming the evidence
+  (`driver_advisory` in `crates/vanta-shell/src/nvidia.rs`), a hint on the
   crash page, and a pointer to Settings, Graphics, Renderer, OpenGL ES. It does
   **not** switch renderer by itself: the choice is made before any Vulkan device
   exists, so the gate this work uses (the device's vendor id) is not readable in
   time, and the GLES path is not known to be stable
-  ([`crates/cordial-runtime/src/graphics.rs`](../../crates/cordial-runtime/src/graphics.rs)).
+  ([`crates/vanta-runtime/src/graphics.rs`](../../crates/vanta-runtime/src/graphics.rs)).
   `INFERRED` that the advisory applies here.
 - **Pascal:** the newest driver a GTX 10-series can run is the 580 series
   (NVIDIA announced 580 as the last feature branch for Maxwell, Pascal and
@@ -146,7 +146,7 @@ says what this repository does about it now.
   (#171, #289): `[FLog::Graphics] VULKAN ERROR:
   vkGetPhysicalDeviceSurfacePresentModesKHR(physicalDevice,
   wd.presentationSurface, &modeCount, nullptr) returned -13`. So the call is the
-  engine's, and Cordial's shim sees it. Later reports say `VK_ERROR_UNKNOWN`, sometimes `vkCreateSwapchainKHR` returning
+  engine's, and Vanta's shim sees it. Later reports say `VK_ERROR_UNKNOWN`, sometimes `vkCreateSwapchainKHR` returning
   `-3` or `SURFACE_LOST` on the neighbouring call. Nearly always Wayland (KDE,
   Hyprland); older reports say X11 was fine.
 - **What helped:** using the GPU once first: `vulkaninfo` (#1041, #1101), opening
@@ -165,15 +165,15 @@ says what this repository does about it now.
 - **Not NVIDIA-only:** the same error string appears on Intel in a virtio VM
   (#579), ChromeOS (#1276) and an Intel Arrow Lake iGPU (#1389). So the string
   alone proves nothing; the reproducible subset is hybrid laptop plus Wayland.
-- **Cordial:** when the physical device is NVIDIA's and the call fails with
+- **Vanta:** when the physical device is NVIDIA's and the call fails with
   `VK_ERROR_UNKNOWN`, `VK_ERROR_INITIALIZATION_FAILED` or
   `VK_ERROR_SURFACE_LOST_KHR`, ask again after 100, 250, 500 and 1000 ms
   (`vk_get_physical_device_surface_present_modes_khr` in
-  `crates/cordial-runtime/src/android/vulkan.rs`, `nvidia::retry`). It never
+  `crates/vanta-runtime/src/android/vulkan.rs`, `nvidia::retry`). It never
   runs when the call succeeds, and the worst case is 1.85 seconds spent on a
   path that ends in a fatal error anyway. **`INFERRED` that it helps.** A retry
   in the same process is a guess about what "run something first" does; nothing
-  else in the record is a stronger mitigation Cordial controls.
+  else in the record is a stronger mitigation Vanta controls.
   Not done: initialising or choosing the NVIDIA device ahead of the surface, or
   falling back to the iGPU or X11 (mocktail does the last, see below). All three
   change which GPU renders on evidence that is one reporter each.
@@ -201,7 +201,7 @@ says what this repository does about it now.
   installed extension appears as `.../GL/nvidia-<dashed-version>`.
 - **Not this:** #842 (driver installed but not loaded), nouveau (#274, #407),
   #876 (`--filesystem=/usr/share/vulkan/icd.d:ro` fixed it), VMs.
-- **Cordial:** a `Graphics` row in `cordial --diagnostics`, and on the crash page
+- **Vanta:** a `Graphics` row in `vanta --diagnostics`, and on the crash page
   a sentence naming the extension to install when the host has an NVIDIA module
   and the sandbox has none that matches. It only speaks inside a Flatpak. The
   mount layout is read from the runtime's metadata, not from an NVIDIA machine,
@@ -231,8 +231,8 @@ says what this repository does about it now.
   a previously reported OOM", from #1412) and warns on pre-Turing cards and on
   "a broken Vulkan memory allocator" (from #1414 and #1637), the latter on
   Turing, Ampere and Ada as well.
-- **Cordial:** nothing in code. It is an engine and driver interaction with no
-  Cordial call in it, and the only lever Cordial has (flags) is documented in
+- **Vanta:** nothing in code. It is an engine and driver interaction with no
+  Vanta call in it, and the only lever Vanta has (flags) is documented in
   `docs/nvidia.md` as a reported, unverified option rather than made a default,
   by the rule in `flags.rs`'s `BUILTIN` comment: an inferred change belongs
   behind a switch somebody chooses. The crash page now says what this is when
@@ -248,8 +248,8 @@ says what this repository does about it now.
 - **Reported cause:** Sober's shipped `.desktop` file carries
   `PrefersNonDefaultGPU=true` (#1942, and the file is pasted in #1690), which
   makes the shortcut launch on the dGPU.
-- **Cordial:** **not exposed by construction, as far as the file can show.**
-  `packaging/io.github.luohoa97.Cordial.desktop` has no `PrefersNonDefaultGPU`
+- **Vanta:** **not exposed by construction, as far as the file can show.**
+  `packaging/io.github.gpt4omni.Vanta.desktop` has no `PrefersNonDefaultGPU`
   key. `INFERRED` that this avoids the crash; a tester on X11 with a hybrid
   laptop can confirm or refute it (plan below). Nothing to change.
 
@@ -262,12 +262,12 @@ says what this repository does about it now.
   broken only fullscreen, only Wayland, when the surface is as large as the
   output. A MEMBER on #1553: "a quirk with the way NVIDIA interacts with Niri on
   Vulkan apps".
-- **Cordial:** this is the same class as Cordial's own text-box work in
-  fullscreen (the editor is a GTK field, ADR-019's `cordial_textbox` reads it
+- **Vanta:** this is the same class as Vanta's own text-box work in
+  fullscreen (the editor is a GTK field, ADR-019's `vanta_textbox` reads it
   back); nothing NVIDIA-shaped can be separated from it without hardware. Listed
   in the tester plan so that check is run on NVIDIA.
 
-### 7. KWin explicit-sync protocol errors on 555 and 560 (fixed by Sober; Cordial not affected as far as is known)
+### 7. KWin explicit-sync protocol errors on 555 and 560 (fixed by Sober; Vanta not affected as far as is known)
 
 - **Issues:** Sober #183, #244, #258, #558, #611, #1034 (and #202): `explicit
   sync is used, but no buffer is attached`, then the compositor closes the
@@ -278,8 +278,8 @@ says what this repository does about it now.
 - **Background (DOC):** NVIDIA 555 added `linux-drm-syncobj-v1` (the changelog
   says "in EGL"), the kernel needs drm-syncobj fixes present from 6.8, and a
   Vulkan client does nothing itself.
-- **Cordial:** does not use SDL, so the specific bug cannot recur. Whether
-  Cordial's own Wayland surface commits (`android/wayland.rs`, three sites) can
+- **Vanta:** does not use SDL, so the specific bug cannot recur. Whether
+  Vanta's own Wayland surface commits (`android/wayland.rs`, three sites) can
   trip the same protocol error is **not known**; it is a tester item on an
   NVIDIA 555+ system under KWin, checked by watching for a compositor
   disconnect, not by `WAYLAND_DEBUG`.
@@ -292,7 +292,7 @@ says what this repository does about it now.
   (particularly proprietary NVIDIA ones)" (#1353); "NVIDIA bug unfortunately"
   (#1762). A reporter's theory on #1974, unverified: a constant-buffer value
   arriving 85 times too large on NVIDIA.
-- **Cordial:** nothing. OpenGL ES or NVK on Turing and later, per the
+- **Vanta:** nothing. OpenGL ES or NVK on Turing and later, per the
   maintainers.
 
 ### 9. Smaller classes
@@ -302,10 +302,10 @@ says what this repository does about it now.
   (#407); NVK on Turing and later is called "quite decent" (#1353).
 - **The engine's webview and GBM in a helper process:** #43 (GTX 760: blank 2FA
   window, `nv_gbm_bo_create` failing), #140, #1364 (a Sober bug), #2112, #2292
-  (Optimus, `EGL_BAD_PARAMETER`). Cordial's web view is WebKitGTK, and the
+  (Optimus, `EGL_BAD_PARAMETER`). Vanta's web view is WebKitGTK, and the
   research found many reports of WebKitGTK's DMA-BUF renderer failing on NVIDIA
   (blank window, "Failed to create GBM buffer"; `WEBKIT_DISABLE_DMABUF_RENDERER=1`
-  is the usual workaround; LORE, no NVIDIA or WebKit primary). Whether Cordial's
+  is the usual workaround; LORE, no NVIDIA or WebKit primary). Whether Vanta's
   web window hits it is untested; it is in the tester plan.
 - **GPU faults and Xid:** #2, #31, #244, #250, #512, #2190 (RTX 3060 Ti, 580 and
   595, OpenGL stable, no Xid). Nothing a launcher can do.
@@ -320,11 +320,11 @@ says what this repository does about it now.
 
 Each with its label. Where a fact is DOC the source is NVIDIA's or Khronos's own.
 
-| Fact | Label | Bearing on Cordial |
+| Fact | Label | Bearing on Vanta |
 |---|---|---|
 | Explicit sync (`linux-drm-syncobj-v1`) arrived in 555.42.02 beta and 555.58 stable, "in EGL" per the changelog; the driver version at which the Vulkan Wayland WSI itself used it was **not found**. Needs kernel 6.8, and a Vulkan client does nothing itself. | DOC, gap | Tester item, cause 7 |
 | `nvidia-drm.modeset=1` was off by default in NVIDIA's own README through 580; **595.45.04 beta and 595.58.03 (2026-03) enable it by default**. `fbdev=1` is a documented workaround for a black screen or flicker when `simpledrm` stays active. Default by version for fbdev: only a search snippet. | DOC | `docs/nvidia.md` states it; only reporters mention either parameter in Sober's tracker |
-| 555.42.02 added `IMMEDIATE` to the Vulkan Wayland WSI; 580.65.06 added `fifo-v1` on Vulkan. Which of `MAILBOX`, `FIFO_RELAXED` NVIDIA offers on Wayland versus X11: **not found**. | DOC / SEC, gap | Cordial asks for MAILBOX and falls back to the engine's own choice when the driver does not list it, so this is safe either way; tester item |
+| 555.42.02 added `IMMEDIATE` to the Vulkan Wayland WSI; 580.65.06 added `fifo-v1` on Vulkan. Which of `MAILBOX`, `FIFO_RELAXED` NVIDIA offers on Wayland versus X11: **not found**. | DOC / SEC, gap | Vanta asks for MAILBOX and falls back to the engine's own choice when the driver does not list it, so this is safe either way; tester item |
 | A report on 550.90.07 and 555.58.02 says native-Wayland `vkQueuePresentKHR` waited for the GPU and did not return while the window was hidden; gone in 560.28.03. One user, no NVIDIA reply. | REPORT | This is the reason mocktail defaults NVIDIA-on-Wayland to XWayland |
 | Vulkan Wayland `currentExtent` is `(0xFFFFFFFF, 0xFFFFFFFF)`; the client sizes the swapchain. | DOC | Already handled: `vk_get_physical_device_surface_capabilities_khr` |
 | Swapchain bugs by driver: 545 and 550 native-Wayland `vkCreateSwapchainKHR` failing (535 worked); 570.144 and 575.51.02 crash with a second Vulkan instance destroying a Wayland swapchain; 580.65.06 to 580.76.05 hang Vulkan on Wayland at exit (fixed 580.82.07, DOC); 590.48.01 segfault on fullscreen swapchain recreation on hybrid GNOME 49; 595.71.05 Blackwell swapchain creation regression. | mostly REPORT | Driver-side. Listed so a tester's driver can be compared |
@@ -372,17 +372,17 @@ host and say so.
 | Change | Where | Gate | Evidence | Label |
 |---|---|---|---|---|
 | Identity line for the device the engine builds its logical device on, printed for every vendor: name, vendor, device id, and for NVIDIA the decoded driver version and the kernel module's | `vulkan.rs` `announce_physical_device` | none (all vendors) | needed by every report; the crash page reads it | observation |
-| Advisory for driver series 535 and 550 | `nvidia::driver_advisory`, printed with `[android] vulkan: NVIDIA advisory:` | vendor NVIDIA and driver major in {535, 550} | cause 1, maintainer-confirmed | `INFERRED` that it applies to Cordial |
+| Advisory for driver series 535 and 550 | `nvidia::driver_advisory`, printed with `[android] vulkan: NVIDIA advisory:` | vendor NVIDIA and driver major in {535, 550} | cause 1, maintainer-confirmed | `INFERRED` that it applies to Vanta |
 | Retry of the present-modes query on `VK_ERROR_UNKNOWN`, `INITIALIZATION_FAILED`, `SURFACE_LOST` | `vulkan.rs` `vk_get_physical_device_surface_present_modes_khr`, `nvidia::retry` | vendor NVIDIA of the queried physical device | cause 2, four independent workaround reports | `INFERRED` that it helps |
-| `Graphics` row in `cordial --diagnostics` | `diagnostics.rs`, `nvidia::graphics_line` | reads the kernel module, not Vulkan | cause 3 | observation |
+| `Graphics` row in `vanta --diagnostics` | `diagnostics.rs`, `nvidia::graphics_line` | reads the kernel module, not Vulkan | cause 3 | observation |
 | Flatpak GL-extension mismatch sentence on the crash page | `crash.rs`, `nvidia::flatpak_gl_here().advice()` | Flatpak and an NVIDIA module and no matching extension | cause 3, documented Flatpak behaviour | mount layout `INFERRED` |
 | Crash-page hint for the advisory, the present-modes give-up and `RBXCRASH: OutOfMemory` | `nvidia::crash_hint` | the client's own identity line says the device was NVIDIA's | causes 1, 2, 4 | wording says "may" |
 
-**How each was tested on this Intel machine.** `CORDIAL_FORCE_GPU_VENDOR=0x10de`
+**How each was tested on this Intel machine.** `VANTA_FORCE_GPU_VENDOR=0x10de`
 (optionally `@550.163.01`) makes the gate say NVIDIA for a device that is not,
-and changes nothing the engine sees; `CORDIAL_TEST_FAIL_PRESENT_MODES=N` fails
+and changes nothing the engine sees; `VANTA_TEST_FAIL_PRESENT_MODES=N` fails
 the first N present-mode queries on a gated device so the retry can be watched.
-Both are off by default, are named in `cordial-run --help`, and no packaging
+Both are off by default, are named in `vanta-run --help`, and no packaging
 script sets them. The unit tests cover the gate, the decode, the schedule, the
 override parsing and the hint. What the runs on Intel show is that the NVIDIA
 path activates and does no harm; **they say nothing about whether it helps on
@@ -390,7 +390,7 @@ NVIDIA.**
 
 ### Measured on the Intel machine, 2026-09-30
 
-Debug build of `cordial-run` at this change, five runs, one each, signed out, in
+Debug build of `vanta-run` at this change, five runs, one each, signed out, in
 a nested headless `sway` on its own socket (never the desktop's), each 30 seconds
 with `--run 30`, same profile and data root. Every run exited 0 and reached
 `app ready: Landing`. **One run per arm is not a stability result;** what these
@@ -400,10 +400,10 @@ when it is on.
 | Arm | Environment | What the log printed |
 |---|---|---|
 | A, control | none | `physical device "Intel(R) Graphics (RPL-P)" vendor 0x8086 device 0xa7a8`; no NVIDIA line anywhere |
-| B, forced | `CORDIAL_FORCE_GPU_VENDOR=0x10de` | the same line plus `-- gating as vendor 0x10de ... (CORDIAL_FORCE_GPU_VENDOR, test only)`, then `NVIDIA device: present-mode queries will be retried if the driver refuses them`, which is the engine's own present-modes query passing through the guard |
+| B, forced | `VANTA_FORCE_GPU_VENDOR=0x10de` | the same line plus `-- gating as vendor 0x10de ... (VANTA_FORCE_GPU_VENDOR, test only)`, then `NVIDIA device: present-mode queries will be retried if the driver refuses them`, which is the engine's own present-modes query passing through the guard |
 | C, advisory | `...=0x10de@550.163.01` | as B, and `NVIDIA advisory: NVIDIA driver series 535 and 550 have been reported to crash ...` |
-| D, retry recovers | as B, plus `CORDIAL_TEST_FAIL_PRESENT_MODES=2` | `NVIDIA present-modes query took 3 attempts and ended at 0` (two injected `-13`, then the driver answered); no error reached the engine |
-| E, retry gives up | as B, plus `CORDIAL_TEST_FAIL_PRESENT_MODES=20` | `took 5 attempts and ended at -13`, then `NVIDIA present-modes query still failing (last result -13); the engine will report it`, four times in the run (two queries at two swapchain creations); the client still reached Landing |
+| D, retry recovers | as B, plus `VANTA_TEST_FAIL_PRESENT_MODES=2` | `NVIDIA present-modes query took 3 attempts and ended at 0` (two injected `-13`, then the driver answered); no error reached the engine |
+| E, retry gives up | as B, plus `VANTA_TEST_FAIL_PRESENT_MODES=20` | `took 5 attempts and ended at -13`, then `NVIDIA present-modes query still failing (last result -13); the engine will report it`, four times in the run (two queries at two swapchain creations); the client still reached Landing |
 
 The control is arm A against the rest: the same binary and profile, with only the
 override differing. The unit tests were also run with a deliberate fault put in
@@ -411,7 +411,7 @@ the driver-version decode (the Vulkan 10/10/12 split instead of NVIDIA's
 10/8/8/6): three tests failed, and passed again when it was put back.
 
 What this cannot show: that any real NVIDIA driver behaves as arms D and E assume.
-The injected failure is Cordial's own, made inside the guard, and proves only that
+The injected failure is Vanta's own, made inside the guard, and proves only that
 the schedule runs, recovers and gives up as the tests say. Arm E's four give-ups
 can have cost at most 4 x 1.85 = 7.4 seconds of that run (computed from the
 schedule, not timed), which is the worst case the retry can cost.
@@ -422,7 +422,7 @@ schedule, not timed), which is the worst case the retry can cost.
   shipping it, and mocktail's own reason is its libc bridge's non-atomic
   `fseek`/`fread`, which has nothing to do with NVIDIA. No Sober issue mentions
   it (`ShaderMT` occurs nowhere in the corpus), no NVIDIA report is a
-  shader-compile failure, and its effect on Cordial is unmeasured in either
+  shader-compile failure, and its effect on Vanta is unmeasured in either
   direction. `flags.rs` already records what shipping an inferred flag as a
   default cost once (`FStringGraphicsTextureManager2DenyPattern2`). It also
   cannot be gated on the device from the shim: flags are read before any Vulkan
@@ -431,12 +431,12 @@ schedule, not timed), which is the worst case the retry can cost.
   it; the tester plan gives the line, and the engine's default value for it is
   not known here (it is not in `docs/traces`), so the plan appends nothing and
   says to read it from the client's own log first.
-- **Defaulting NVIDIA on Wayland to X11.** Cordial's X11 backend cannot attach web
-  views (`crates/cordial-runtime/src/android/mod.rs`), Wayland is the primary
+- **Defaulting NVIDIA on Wayland to X11.** Vanta's X11 backend cannot attach web
+  views (`crates/vanta-runtime/src/android/mod.rs`), Wayland is the primary
   backend ([ADR-011](../adr/ADR-011-wayland-and-libadwaita.md),
   [ADR-024](../adr/ADR-024-x11-is-supported-again.md)), the backend is chosen
   before the device is known, and the evidence is one forum report plus
-  mocktail's comment. `CORDIAL_X11=1` remains the user's switch and
+  mocktail's comment. `VANTA_X11=1` remains the user's switch and
   `docs/nvidia.md` names it with its cost.
 - **Switching to OpenGL ES on 535/550.** Same timing problem, and GLES is
   documented as not shown stable. The advisory says how.
@@ -456,11 +456,11 @@ schedule, not timed), which is the worst case the retry can cost.
 ## What cannot be fixed without hardware
 
 Everything in this file that says `INFERRED`, and in particular: whether the
-retry helps; whether the advisory applies to Cordial's own renderer; whether the
-Flatpak check fires on a real mismatch; whether Cordial's Wayland commits trip
+retry helps; whether the advisory applies to Vanta's own renderer; whether the
+Flatpak check fires on a real mismatch; whether Vanta's Wayland commits trip
 NVIDIA's explicit-sync checks; which present modes NVIDIA offers on Wayland;
-whether MAILBOX behaves; whether Cordial's web view works on NVIDIA Wayland;
-whether the out-of-memory class is worse or better under Cordial than under
+whether MAILBOX behaves; whether Vanta's web view works on NVIDIA Wayland;
+whether the out-of-memory class is worse or better under Vanta than under
 Sober (the engine allocates the same way).
 
 ## Tester plan
@@ -472,10 +472,10 @@ Steps 1 to 4 are the essential set; everything after is one experiment each.
 
 **0. Say what you have.** GPU model, whether it is a laptop with a second GPU,
 distribution, session (`echo $XDG_SESSION_TYPE`), compositor and its version,
-and how Cordial was installed. Then:
+and how Vanta was installed. Then:
 
 ```
-cordial --diagnostics                       # flatpak run io.github.luohoa97.Cordial --diagnostics
+vanta --diagnostics                       # flatpak run io.github.gpt4omni.Vanta --diagnostics
 cat /proc/driver/nvidia/version
 cat /sys/module/nvidia_drm/parameters/modeset /sys/module/nvidia_drm/parameters/fbdev
 vulkaninfo --summary
@@ -489,8 +489,8 @@ are what everything else is compared against.
 captured, signed out, for a minute:
 
 ```
-cordial-shell 2>&1 | tee cordial-nvidia-1.log          # or the Flatpak equivalent
-grep -E 'physical device|NVIDIA|present mode|vkCreateSwapchainKHR' cordial-nvidia-1.log
+vanta-shell 2>&1 | tee vanta-nvidia-1.log          # or the Flatpak equivalent
+grep -E 'physical device|NVIDIA|present mode|vkCreateSwapchainKHR' vanta-nvidia-1.log
 ```
 
 Expect one `[android] vulkan: physical device "..." vendor 0x10de` line naming
@@ -499,14 +499,14 @@ about the wrong device**; say so if it names the iGPU. Capture the first 40 line
 of the log whatever happens.
 
 **2. Reach Home, then two presents-counts for wedge detection.** With the MCP
-attached (`just dev --play` and `just mcp`), call `cordial_info` twice five
+attached (`just dev --play` and `just mcp`), call `vanta_info` twice five
 seconds apart with the pointer moving between them. Present count must advance.
-Take a `cordial_screenshot`. A fixed count is the wedged-client signature
+Take a `vanta_screenshot`. A fixed count is the wedged-client signature
 ([AGENTS.md](../../AGENTS.md)).
 
 **3. Present mode.** From the log: the line `swapchain present mode ... (driver
 offers ...)`. Report the list of modes the driver offers on your session. Then
-repeat with `CORDIAL_PRESENT_MODE=off` and again with `fifo`, driving input for
+repeat with `VANTA_PRESENT_MODE=off` and again with `fifo`, driving input for
 the whole window, and report presents per second with the input rate beside it
 ([AGENTS.md](../../AGENTS.md), "Do not use present counts as a frame rate").
 This answers which modes NVIDIA offers on Wayland and whether MAILBOX behaves.
@@ -518,7 +518,7 @@ cause 1: record the exact driver, then repeat the launch with Settings, Graphics
 Renderer set to OpenGL ES and report whether it survives. Do the same after
 moving to driver 580 if you can.
 
-**5. Cold-boot hybrid laptops only (cause 2).** Reboot. Launch Cordial as the
+**5. Cold-boot hybrid laptops only (cause 2).** Reboot. Launch Vanta as the
 first graphical thing you do, before any other GPU application. Capture the log.
 Look for:
 
@@ -536,12 +536,12 @@ Flatpak of Sober or the old behaviour if you have it, otherwise say so.
 **6. Flatpak only (cause 3).** `flatpak list | grep GL.nvidia`, and compare with
 `cat /proc/driver/nvidia/version`. If they already match, deliberately test the
 message: `flatpak remove org.freedesktop.Platform.GL.nvidia-<version>`, run
-`cordial --diagnostics`, and report the `Graphics` row (it should say NO matching
+`vanta --diagnostics`, and report the `Graphics` row (it should say NO matching
 extension), then reinstall it. If they differ on their own, that is the most
 useful report of all.
 
 **7. Text input (cause 6).** Focus a text box in fullscreen and windowed,
-`cordial_textbox` before and after typing ([ADR-019](../adr/ADR-019-development-control-surface.md)).
+`vanta_textbox` before and after typing ([ADR-019](../adr/ADR-019-development-control-surface.md)).
 Report the compositor.
 
 **8. Web view.** Open the Marketplace or Profile window. Blank, white or crashing
@@ -571,8 +571,8 @@ compositor's own log (`journalctl --user -b`) for `explicit sync is used`,
 it changes the timing this is about.
 
 **What to report.** The commands' output above, pasted rather than summarised;
-`cordial --diagnostics`; whether each step passed, failed or was not run; and any
-crash's last twenty log lines plus, for a freeze, `cordial_backtrace` (which
+`vanta --diagnostics`; whether each step passed, failed or was not run; and any
+crash's last twenty log lines plus, for a freeze, `vanta_backtrace` (which
 quotes CPU beside the stacks). File it as a `finding` in
 `.github/ISSUE_TEMPLATE/finding.yml` if it establishes or disproves one of the
 `INFERRED` items above.

@@ -55,7 +55,7 @@ export class Templates {
     const url = `${API}/repos/${owner}/${repo}/contents/${path}?ref=${ref}`;
     const headers: Record<string, string> = {
       "accept": "application/vnd.github.raw+json",
-      "user-agent": "cordial-issue-bridge",
+      "user-agent": "vanta-issue-bridge",
     };
     if (token) headers.authorization = `Bearer ${token}`;
     const response = await fetch(url, { headers });
@@ -70,7 +70,7 @@ export class Templates {
     const url = `${API}/repos/${owner}/${repo}/contents/.github/ISSUE_TEMPLATE?ref=${ref}`;
     const headers: Record<string, string> = {
       "accept": "application/vnd.github+json",
-      "user-agent": "cordial-issue-bridge",
+      "user-agent": "vanta-issue-bridge",
     };
     if (token) headers.authorization = `Bearer ${token}`;
     const response = await fetch(url, { headers });

@@ -1,5 +1,5 @@
 # Internal working notes: published in the repository, not on the docs site.
-# The site is for people installing Cordial, writing plugins, or about to
+# The site is for people installing Vanta, writing plugins, or about to
 # contradict a decision (the ADRs). AGENTS.md has the table of who reads what.
 NEXT.md
 HANDOVER.md

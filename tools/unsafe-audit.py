@@ -2,8 +2,8 @@
 """Track `unsafe` and its SAFETY comments per crate, over time.
 
 [ADR-036](../docs/adr/ADR-036-unsafe-is-a-boundary-not-a-convention.md) makes
-the two-crate boundary a lint rather than a convention: `cordial-runtime` and
-`cordial-linker-sys` are where Roblox's ABI calls into Cordial with raw
+the two-crate boundary a lint rather than a convention: `vanta-runtime` and
+`vanta-linker-sys` are where Roblox's ABI calls into Vanta with raw
 pointers, and `unsafe_code` is denied everywhere else. This script is how to
 watch the two counts that matter without waiting for a full release build --
 whether the two allowed crates are growing relative to the rest of the
@@ -32,7 +32,7 @@ build, so it is not the default and is not fast.
 
 Usage:
     tools/unsafe-audit.py                  # grep counts, all crates
-    tools/unsafe-audit.py --crate cordial-shell
+    tools/unsafe-audit.py --crate vanta-shell
     tools/unsafe-audit.py --clippy --target-dir target-toolbox
 """
 
@@ -48,11 +48,11 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # table reads in the same order as the ADR's boundary list: the two allowed
 # crates first, then the three that forbid unsafe outright.
 CRATES = [
-    "cordial-runtime",
-    "cordial-linker-sys",
-    "cordial-shell",
-    "cordial-plugins",
-    "cordial-update",
+    "vanta-runtime",
+    "vanta-linker-sys",
+    "vanta-shell",
+    "vanta-plugins",
+    "vanta-update",
 ]
 
 # A code line that actually opens unsafe, as opposed to a doc comment that

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(cordial_native LANGUAGES C CXX)
+project(vanta_native LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -15,13 +15,13 @@ if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
 endif()
 
 # The AOSP bionic linker, via minecraft-linux's host wrapper. Target: `linker`.
-# crates/cordial-linker-sys/build.rs passes a patched overlay of the
+# crates/vanta-linker-sys/build.rs passes a patched overlay of the
 # submodule here (patches/apply.rs); the submodule itself is the default for
 # a configure run by hand.
-if(NOT CORDIAL_LINKER_DIR)
-  set(CORDIAL_LINKER_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/mcpelauncher-linker)
+if(NOT VANTA_LINKER_DIR)
+  set(VANTA_LINKER_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/mcpelauncher-linker)
 endif()
-add_subdirectory(${CORDIAL_LINKER_DIR}
+add_subdirectory(${VANTA_LINKER_DIR}
                  ${CMAKE_CURRENT_BINARY_DIR}/mcpelauncher-linker)
 
 # Undo the upstream `-DPATH_MAX=256`, which is a stack overflow waiting for a
@@ -137,7 +137,7 @@ find_path(PULSE_INCLUDE_DIR pulse/pulseaudio.h)
 if(PULSE_INCLUDE_DIR AND NOT PULSE_INCLUDE_DIR MATCHES "linuxbrew|Cellar|homebrew")
   set(PULSE_FOUND TRUE)
   message(STATUS "PulseAudio backend: headers at ${PULSE_INCLUDE_DIR}; libpulse.so.0 will be "
-                  "dlopen'd at run time. Selected with CORDIAL_AUDIO_HOST=pulse.")
+                  "dlopen'd at run time. Selected with VANTA_AUDIO_HOST=pulse.")
 elseif(PULSE_INCLUDE_DIR)
   message(STATUS "PulseAudio backend: ignoring headers at ${PULSE_INCLUDE_DIR} because they are "
                   "not the system ones -- a Homebrew prefix here compiles against a different "
@@ -178,7 +178,7 @@ endif()
 # compiles identically on a tree with no
 # pipewire-devel, and honestly refuses every stream there, exactly as
 # `slCreateEngine` does.
-add_library(cordial_liblog STATIC
+add_library(vanta_liblog STATIC
   liblog.cpp system_paths.cpp netdb_compat.cpp foreign_alloc.cpp opensles.cpp pipewire_backend.cpp
   pulse_backend.cpp alsa_backend.cpp oss_backend.cpp aaudio.cpp
   aaudio_input_callback.cpp thread_trace.cpp)
@@ -186,8 +186,8 @@ add_library(cordial_liblog STATIC
 # is its own honest "unavailable" arm, so the selector gets a truthful answer
 # rather than a link error. Only the define is conditional.
 if(PULSE_FOUND)
-  target_include_directories(cordial_liblog PRIVATE ${PULSE_INCLUDE_DIR})
-  target_compile_definitions(cordial_liblog PRIVATE CORDIAL_HAVE_PULSE=1)
+  target_include_directories(vanta_liblog PRIVATE ${PULSE_INCLUDE_DIR})
+  target_compile_definitions(vanta_liblog PRIVATE VANTA_HAVE_PULSE=1)
 endif()
 # ALSA, the third backend. Same rule as the two above: headers optional,
 # `libasound.so.2` dlopen'd and never linked, and the same refusal to trust
@@ -196,10 +196,10 @@ endif()
 # missing one.
 find_path(ALSA_INCLUDE_DIR alsa/asoundlib.h)
 if(ALSA_INCLUDE_DIR AND NOT ALSA_INCLUDE_DIR MATCHES "linuxbrew|Cellar|homebrew")
-  target_include_directories(cordial_liblog PRIVATE ${ALSA_INCLUDE_DIR})
-  target_compile_definitions(cordial_liblog PRIVATE CORDIAL_HAVE_ALSA=1)
+  target_include_directories(vanta_liblog PRIVATE ${ALSA_INCLUDE_DIR})
+  target_compile_definitions(vanta_liblog PRIVATE VANTA_HAVE_ALSA=1)
   message(STATUS "ALSA backend: headers at ${ALSA_INCLUDE_DIR}; libasound.so.2 will be "
-                  "dlopen'd at run time. Selected with CORDIAL_AUDIO_HOST=alsa.")
+                  "dlopen'd at run time. Selected with VANTA_AUDIO_HOST=alsa.")
 else()
   message(STATUS "ALSA backend: no usable alsa/asoundlib.h; building the honest "
                   "\"unavailable\" arm. Install alsa-lib-devel for it.")
@@ -212,19 +212,19 @@ endif()
 # ADR-023 deferred this on the grounds that Linux has not used OSS since ALSA
 # replaced it and the remaining users are on FreeBSD. Somebody asked for it, so
 # "nobody needs this" turned out to be a claim about who had spoken up. It is
-# opt-in behind CORDIAL_AUDIO_HOST=oss and is never selected for anybody who did
+# opt-in behind VANTA_AUDIO_HOST=oss and is never selected for anybody who did
 # not ask -- which matters more here than for the others, because /dev/dsp is
 # exclusive on most drivers.
 #
-# This block must stay *after* `add_library(cordial_liblog ...)`. Put before it
+# This block must stay *after* `add_library(vanta_liblog ...)`. Put before it
 # once, and `target_include_directories` fails on a target that does not exist
 # yet -- which reads as a problem with OSS rather than with where the lines sit.
 find_path(OSS_INCLUDE_DIR sys/soundcard.h)
 if(OSS_INCLUDE_DIR AND NOT OSS_INCLUDE_DIR MATCHES "linuxbrew|Cellar|homebrew")
-  target_include_directories(cordial_liblog PRIVATE ${OSS_INCLUDE_DIR})
-  target_compile_definitions(cordial_liblog PRIVATE CORDIAL_HAVE_OSS=1)
+  target_include_directories(vanta_liblog PRIVATE ${OSS_INCLUDE_DIR})
+  target_compile_definitions(vanta_liblog PRIVATE VANTA_HAVE_OSS=1)
   message(STATUS "OSS backend: sys/soundcard.h at ${OSS_INCLUDE_DIR}. Selected with "
-                  "CORDIAL_AUDIO_HOST=oss. /dev/dsp is exclusive on most drivers, so "
+                  "VANTA_AUDIO_HOST=oss. /dev/dsp is exclusive on most drivers, so "
                   "nothing else on the machine gets sound while it is held.")
 else()
   message(STATUS "OSS backend: no sys/soundcard.h; building the honest "
@@ -232,8 +232,8 @@ else()
 endif()
 
 if(PIPEWIRE_FOUND)
-  target_include_directories(cordial_liblog PRIVATE ${PIPEWIRE_INCLUDE_DIRS})
-  target_compile_definitions(cordial_liblog PRIVATE CORDIAL_HAVE_PIPEWIRE=1)
+  target_include_directories(vanta_liblog PRIVATE ${PIPEWIRE_INCLUDE_DIRS})
+  target_compile_definitions(vanta_liblog PRIVATE VANTA_HAVE_PIPEWIRE=1)
 
   # Checks pipewire_backend.cpp's buffer-queue fill logic (the underrun ->
   # silence rule in particular) without a live PipeWire session, a daemon, or
@@ -242,65 +242,65 @@ if(PIPEWIRE_FOUND)
   # rather than left for someone to remember to invoke separately: a check
   # that only runs when asked for is a check that silently stops running.
   # `pulse_backend.cpp` comes along because `pipewire_backend.cpp`'s factory
-  # now calls into it. Deliberately built here *without* `CORDIAL_HAVE_PULSE`,
+  # now calls into it. Deliberately built here *without* `VANTA_HAVE_PULSE`,
   # so the test exercises the arm that reports the backend unavailable -- which
   # is the arm every machine without pulseaudio-libs-devel will run, and the one
   # a fallback bug would hide in.
-  add_executable(cordial_pipewire_backend_test EXCLUDE_FROM_ALL
+  add_executable(vanta_pipewire_backend_test EXCLUDE_FROM_ALL
     pipewire_backend.cpp pulse_backend.cpp alsa_backend.cpp oss_backend.cpp
     pipewire_backend_test.cpp)
-  target_include_directories(cordial_pipewire_backend_test PRIVATE ${PIPEWIRE_INCLUDE_DIRS})
-  target_compile_definitions(cordial_pipewire_backend_test PRIVATE CORDIAL_HAVE_PIPEWIRE=1)
+  target_include_directories(vanta_pipewire_backend_test PRIVATE ${PIPEWIRE_INCLUDE_DIRS})
+  target_compile_definitions(vanta_pipewire_backend_test PRIVATE VANTA_HAVE_PIPEWIRE=1)
   # Without this the asserts are compiled out of a release build, which is what
   # this binary was for a long time: it printed "ok" for checks that never ran,
   # and one of them was already wrong.
-  target_compile_options(cordial_pipewire_backend_test PRIVATE -UNDEBUG)
-  add_custom_command(TARGET cordial_pipewire_backend_test POST_BUILD
-    COMMAND cordial_pipewire_backend_test
+  target_compile_options(vanta_pipewire_backend_test PRIVATE -UNDEBUG)
+  add_custom_command(TARGET vanta_pipewire_backend_test POST_BUILD
+    COMMAND vanta_pipewire_backend_test
     COMMENT "Running pipewire_backend fill_pcm checks (no PipeWire session needed)")
-  add_dependencies(cordial_liblog cordial_pipewire_backend_test)
+  add_dependencies(vanta_liblog vanta_pipewire_backend_test)
 endif()
 
 # The recorder's copy of the engine's sound (record_tap.h, ADR-059). Pure ring
 # and mixing logic, so it runs at build time with no sound server, like the
 # checks around it.
-add_executable(cordial_record_tap_test EXCLUDE_FROM_ALL record_tap_test.cpp)
-target_compile_options(cordial_record_tap_test PRIVATE -UNDEBUG)
-add_custom_command(TARGET cordial_record_tap_test POST_BUILD
-  COMMAND cordial_record_tap_test
+add_executable(vanta_record_tap_test EXCLUDE_FROM_ALL record_tap_test.cpp)
+target_compile_options(vanta_record_tap_test PRIVATE -UNDEBUG)
+add_custom_command(TARGET vanta_record_tap_test POST_BUILD
+  COMMAND vanta_record_tap_test
   COMMENT "Running recorder audio tap checks")
-add_dependencies(cordial_liblog cordial_record_tap_test)
+add_dependencies(vanta_liblog vanta_record_tap_test)
 
-add_executable(cordial_aaudio_input_callback_test EXCLUDE_FROM_ALL
+add_executable(vanta_aaudio_input_callback_test EXCLUDE_FROM_ALL
   aaudio_input_callback.cpp aaudio_input_callback_test.cpp)
-target_compile_options(cordial_aaudio_input_callback_test PRIVATE -UNDEBUG)
-add_custom_command(TARGET cordial_aaudio_input_callback_test POST_BUILD
-  COMMAND cordial_aaudio_input_callback_test
+target_compile_options(vanta_aaudio_input_callback_test PRIVATE -UNDEBUG)
+add_custom_command(TARGET vanta_aaudio_input_callback_test POST_BUILD
+  COMMAND vanta_aaudio_input_callback_test
   COMMENT "Running AAudio input callback lifecycle checks")
-add_dependencies(cordial_liblog cordial_aaudio_input_callback_test)
+add_dependencies(vanta_liblog vanta_aaudio_input_callback_test)
 
-add_executable(cordial_aaudio_input_test EXCLUDE_FROM_ALL
+add_executable(vanta_aaudio_input_test EXCLUDE_FROM_ALL
   aaudio.cpp aaudio_input_callback.cpp aaudio_input_test.cpp)
-target_compile_options(cordial_aaudio_input_test PRIVATE -UNDEBUG)
-add_custom_command(TARGET cordial_aaudio_input_test POST_BUILD
-  COMMAND cordial_aaudio_input_test
+target_compile_options(vanta_aaudio_input_test PRIVATE -UNDEBUG)
+add_custom_command(TARGET vanta_aaudio_input_test POST_BUILD
+  COMMAND vanta_aaudio_input_test
   COMMENT "Running AAudio callback and blocking input ABI checks")
-add_dependencies(cordial_liblog cordial_aaudio_input_test)
+add_dependencies(vanta_liblog vanta_aaudio_input_test)
 
 # The two libc allocators refused in foreign_alloc.cpp. Run at build time, like
 # the tests around it, so a shim that stops refusing cannot ship unnoticed.
-add_executable(cordial_foreign_alloc_test EXCLUDE_FROM_ALL
+add_executable(vanta_foreign_alloc_test EXCLUDE_FROM_ALL
   foreign_alloc.cpp foreign_alloc_test.cpp)
-target_compile_options(cordial_foreign_alloc_test PRIVATE -UNDEBUG)
-add_custom_command(TARGET cordial_foreign_alloc_test POST_BUILD
-  COMMAND cordial_foreign_alloc_test
+target_compile_options(vanta_foreign_alloc_test PRIVATE -UNDEBUG)
+add_custom_command(TARGET vanta_foreign_alloc_test POST_BUILD
+  COMMAND vanta_foreign_alloc_test
   COMMENT "Running foreign-allocation shim checks")
-add_dependencies(cordial_liblog cordial_foreign_alloc_test)
+add_dependencies(vanta_liblog vanta_foreign_alloc_test)
 
-add_library(cordial_linker_shim STATIC shim.cpp)
-target_link_libraries(cordial_linker_shim PUBLIC linker)
+add_library(vanta_linker_shim STATIC shim.cpp)
+target_link_libraries(vanta_linker_shim PUBLIC linker)
 
-install(TARGETS cordial_linker_shim cordial_liblog linker ARCHIVE DESTINATION lib)
+install(TARGETS vanta_linker_shim vanta_liblog linker ARCHIVE DESTINATION lib)
 
 # Vendored x86-64 CPU feature emulator (see third_party/libbadcpu/README.md).
 # Independent of the bionic subtree; built here so there is one native build.
@@ -313,7 +313,7 @@ install(TARGETS cordial_linker_shim cordial_liblog linker ARCHIVE DESTINATION li
 # and it also claims this is gated in the build; it was not, and the claim was
 # written against a Meson build this project does not use.
 #
-# Nothing links it today: `crates/cordial-linker-sys/build.rs` names six
+# Nothing links it today: `crates/vanta-linker-sys/build.rs` names six
 # archives and `badcpu` is not among them. So gating it costs exactly nothing
 # and removes the first obstacle on a port nobody has started.
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
@@ -343,18 +343,18 @@ set(JNIVM_ENABLE_DEBUG ON CACHE BOOL "" FORCE)
 # It is also ruinous to leave on. The engine polls `MotionEvent.getRawX`,
 # `getRawY` and `getAxisValue` per pointer per frame, so this writes several
 # thousand unbuffered lines a second, forever, on the hot path. It was on
-# unconditionally and it made the whole machine lag, not just Cordial.
+# unconditionally and it made the whole machine lag, not just Vanta.
 #
 # So: off by default, and one flag to get it back when diagnosing.
 #
-#     cmake -DCORDIAL_JNI_TRACE=ON ...
+#     cmake -DVANTA_JNI_TRACE=ON ...
 #
 # `--dump-classes` remains available without it (that is JNIVM_ENABLE_DEBUG,
 # above, which costs nothing per call) and answers "what did Roblox reach for"
 # for most purposes. Reach for the trace when the question is "and what happened
 # when it did".
-option(CORDIAL_JNI_TRACE "Log every JNI call libjnivm handles (very slow)" OFF)
-set(JNIVM_ENABLE_TRACE ${CORDIAL_JNI_TRACE} CACHE BOOL "" FORCE)
+option(VANTA_JNI_TRACE "Log every JNI call libjnivm handles (very slow)" OFF)
+set(JNIVM_ENABLE_TRACE ${VANTA_JNI_TRACE} CACHE BOOL "" FORCE)
 set(JNIVM_ENABLE_TESTS OFF CACHE BOOL "" FORCE)
 set(JNIVM_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 
@@ -370,7 +370,7 @@ set(JNIVM_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 # the JNI surface is the part of this tree most likely to want a newer libjnivm
 # and a vendored dependency carrying local edits is one nobody updates.
 #
-# What it captures is `Constructed Unresolved symbol` — the only notice Cordial
+# What it captures is `Constructed Unresolved symbol` — the only notice Vanta
 # gets that the engine asked for a Java class, method or field nobody has
 # written. See `jnivm_logger/log.cpp`.
 add_library(logger STATIC jnivm_logger/log.cpp)
@@ -385,17 +385,17 @@ add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../third_party/libjnivm
 # (see its own header comment), so the Java audio surface builds identically
 # either way and reports an honestly empty device list on a tree that has no
 # backend behind it.
-add_library(cordial_jni_shim STATIC jni_shim.cpp android_classes.cpp game_activity.cpp init_params.cpp accessibility.cpp cookies.cpp audio_classes.cpp deeplink.cpp clipboard.cpp permissions_transport.cpp local_storage.cpp legacy_stdio.cpp platform_classes.cpp battery.cpp unanswered_classes.cpp)
-target_link_libraries(cordial_jni_shim PUBLIC jnivm)
+add_library(vanta_jni_shim STATIC jni_shim.cpp android_classes.cpp game_activity.cpp init_params.cpp accessibility.cpp cookies.cpp audio_classes.cpp deeplink.cpp clipboard.cpp permissions_transport.cpp local_storage.cpp legacy_stdio.cpp platform_classes.cpp battery.cpp unanswered_classes.cpp)
+target_link_libraries(vanta_jni_shim PUBLIC jnivm)
 
-add_executable(cordial_permissions_transport_test EXCLUDE_FROM_ALL
+add_executable(vanta_permissions_transport_test EXCLUDE_FROM_ALL
   permissions_transport.cpp permissions_transport_test.cpp)
-target_compile_options(cordial_permissions_transport_test PRIVATE -UNDEBUG)
-target_include_directories(cordial_permissions_transport_test PRIVATE
+target_compile_options(vanta_permissions_transport_test PRIVATE -UNDEBUG)
+target_include_directories(vanta_permissions_transport_test PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/libjnivm/include)
-add_custom_command(TARGET cordial_permissions_transport_test POST_BUILD
-  COMMAND cordial_permissions_transport_test
+add_custom_command(TARGET vanta_permissions_transport_test POST_BUILD
+  COMMAND vanta_permissions_transport_test
   COMMENT "Running PermissionsProtocol response transport checks")
-add_dependencies(cordial_jni_shim cordial_permissions_transport_test)
+add_dependencies(vanta_jni_shim vanta_permissions_transport_test)
 
-install(TARGETS cordial_jni_shim jnivm logger ARCHIVE DESTINATION lib)
+install(TARGETS vanta_jni_shim jnivm logger ARCHIVE DESTINATION lib)

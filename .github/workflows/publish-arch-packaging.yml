@@ -2,9 +2,9 @@
 #
 # **Why a second repository exists at all.** Both the AUR and Chaotic-AUR want a
 # git repository whose *root* is the package directory -- `PKGBUILD` and
-# `.SRCINFO` at the top level. Cordial keeps its packaging under
-# `packaging/aur/cordial/`, so neither can consume this repository directly.
-# `luohoa97/cordial-pkgbuild` is that root-level mirror, and it is generated:
+# `.SRCINFO` at the top level. Vanta keeps its packaging under
+# `packaging/aur/vanta/`, so neither can consume this repository directly.
+# `gpt4omni/vanta-pkgbuild` is that root-level mirror, and it is generated:
 # its README says so and says not to send pull requests there.
 #
 # **Why this must be automated rather than left to a maintainer.**
@@ -14,11 +14,11 @@
 # `pkgver=0.7.0` against a tree at 0.12.1, and because `source=` pins
 # `#tag=v$pkgver`, anything building it would have fetched v0.7.0 and reported
 # success. `.SRCINFO` had drifted in both directions -- the release package's
-# said 0.7.0 against a 0.12.1 PKGBUILD, and cordial-git's said
+# said 0.7.0 against a 0.12.1 PKGBUILD, and vanta-git's said
 # `0.7.0.r0.gbdad524` against a PKGBUILD saying `0.6.0.r108.g9d9c980`.
 #
 # It went unnoticed because the only consumer was `release.yml`, which overrides
-# `pkgver` from the tag via `CORDIAL_PKGBUILD_TAG` rather than trusting the file.
+# `pkgver` from the tag via `VANTA_PKGBUILD_TAG` rather than trusting the file.
 # The override kept CI green while the file rotted. **Chaotic-AUR has no such
 # override**: it shallow-clones the repository it is given and builds what is
 # there, so a stale `pkgver` ships a stale client to everyone who installs from
@@ -79,9 +79,9 @@ jobs:
         run: |
           set -euo pipefail
           want="${{ steps.tag.outputs.version }}"
-          got=$(sed -n '/^pkgver=/{s///;p;q;}' packaging/aur/cordial/PKGBUILD)
+          got=$(sed -n '/^pkgver=/{s///;p;q;}' packaging/aur/vanta/PKGBUILD)
           if [ "$got" != "$want" ]; then
-            echo "::error::packaging/aur/cordial/PKGBUILD says pkgver=$got but the tag is v$want."
+            echo "::error::packaging/aur/vanta/PKGBUILD says pkgver=$got but the tag is v$want."
             echo "::error::Its source= pins #tag=v\$pkgver, so Chaotic-AUR would build v$got."
             echo "::error::Bump it and regenerate .SRCINFO -- see packaging/aur/PUBLISHING.md."
             exit 1
@@ -94,7 +94,7 @@ jobs:
           set -euo pipefail
           useradd --create-home builder
           chown -R builder:builder "$GITHUB_WORKSPACE"
-          for p in cordial cordial-git; do
+          for p in vanta vanta-git; do
             d="$GITHUB_WORKSPACE/packaging/aur/$p"
             if ! runuser -u builder -- sh -c "cd '$d' && makepkg --printsrcinfo" > /tmp/$p.srcinfo; then
               echo "::error::makepkg could not parse $p/PKGBUILD"; exit 1
@@ -123,13 +123,13 @@ jobs:
             exit 0
           fi
           tag="${{ steps.tag.outputs.tag }}"
-          git config --global user.name  "cordial-ci"
+          git config --global user.name  "vanta-ci"
           git config --global user.email "ci@users.noreply.github.com"
           git clone --depth=1 \
-            "https://x-access-token:${TOKEN}@github.com/luohoa97/cordial-pkgbuild.git" /tmp/pkgrepo
-          cp packaging/aur/cordial/PKGBUILD \
-             packaging/aur/cordial/.SRCINFO \
-             packaging/aur/cordial/cordial.install /tmp/pkgrepo/
+            "https://x-access-token:${TOKEN}@github.com/gpt4omni/vanta-pkgbuild.git" /tmp/pkgrepo
+          cp packaging/aur/vanta/PKGBUILD \
+             packaging/aur/vanta/.SRCINFO \
+             packaging/aur/vanta/vanta.install /tmp/pkgrepo/
           cd /tmp/pkgrepo
           if git diff --quiet; then
             echo "packaging is already current for $tag; nothing to push"
@@ -137,7 +137,7 @@ jobs:
           fi
           git add -A
           git commit \
-            -m "Cordial ${tag#v} packaging" \
-            -m "Generated from packaging/aur/cordial/ in luohoa97/cordial at $tag. .SRCINFO verified in step with its PKGBUILD by makepkg --printsrcinfo."
+            -m "Vanta ${tag#v} packaging" \
+            -m "Generated from packaging/aur/vanta/ in gpt4omni/vanta at $tag. .SRCINFO verified in step with its PKGBUILD by makepkg --printsrcinfo."
           git push origin HEAD:main
           echo "pushed packaging for $tag"

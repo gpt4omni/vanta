@@ -11,7 +11,7 @@ carrying `RBXH` magic — beside eight engine-created partition directories
 (`p14 p15 p16 p19 p20 p30 p36 p5`). Sober's working store has the same shape.
 
 So `RbxStorage` is not unreachable through the host-application interface. It has
-been reached, by Cordial, on ordinary hardware.
+been reached, by Vanta, on ordinary hardware.
 
 ## What was disproved, and it is most of the prior record
 
@@ -37,7 +37,7 @@ What triggers it. Measured on the filesystem, on fresh roots, all negative:
 | late-post delay 250 ms vs 2000 ms | no store, either |
 | second warm pass | no store |
 | `FFlagStartRbxStorageInitRighAfterFlags` + `DFFlagRbxStorageInitLatch` | no store, three passes |
-| sustained content activity | `CordialTest` has **91** `ContentProvider_*` dirs and no store |
+| sustained content activity | `VantaTest` has **91** `ContentProvider_*` dirs and no store |
 
 The root that worked differs only in having far more history — around twenty runs
 under a dozen environment combinations, several of which crashed part-way.

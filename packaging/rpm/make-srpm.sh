@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build a source RPM for Cordial from a git checkout.
+# Build a source RPM for Vanta from a git checkout.
 #
 # Two tarballs, and both exist because a Copr build may run with networking
 # switched off and a build that only works when it happens to be on is not
@@ -32,21 +32,12 @@ done
 
 cd "$repo"
 
-# **The version comes from `git describe --tags` and from nowhere else.**
-# The window title is `git describe --tags --always --dirty`, stamped by
-# crates/cordial-shell/build.rs, so a package numbered from any other source
-# would disagree with the string the running client prints -- and a build with
-# no tag in reach shows a bare hash, which has already produced one confusing
-# bug report.
-describe=$(git describe --tags --long --abbrev=7)   # v0.6.0-108-g9d9c980
-case "$describe" in
-    v*) ;;
-    *) echo "expected a v-prefixed tag, got '$describe'" >&2; exit 1 ;;
-esac
-version=${describe#v}; version=${version%%-*}       # 0.6.0
-rest=${describe#v${version}-}                       # 108-g9d9c980
-commits=${rest%%-*}                                 # 108
-shorthash=${rest#*-g}                               # 9d9c980
+version_vars=$("$repo/packaging/version.sh")
+eval "$version_vars"
+describe="v$VANTA_DESCRIBE"
+version=$VANTA_VERSION
+commits=$VANTA_COMMITS
+shorthash=$VANTA_SHORTHASH
 commit=$(git rev-parse HEAD)
 date=$(git show -s --format=%cd --date=format:%Y%m%d HEAD)
 
@@ -60,11 +51,11 @@ fi
 if [ "$commits" = "0" ]; then
     snapinfo=""
     release='1%{?dist}'
-    archive="cordial-${version}"
+    archive="vanta-${version}"
 else
     snapinfo="${commits}.${date}git${shorthash}"
     release="1.${snapinfo}%{?dist}"
-    archive="cordial-${version}-${snapinfo}"
+    archive="vanta-${version}-${snapinfo}"
 fi
 
 # /var/tmp rather than /tmp: on the host this was written for, /tmp is tmpfs
@@ -72,7 +63,7 @@ fi
 # hundred megabytes before rpmbuild has started. Override with TMPDIR.
 work=$(mktemp -d -p "${TMPDIR:-/var/tmp}")
 trap 'rm -rf "$work"' EXIT
-stage="$work/cordial-${version}"
+stage="$work/vanta-${version}"
 
 echo "==> staging HEAD (submodules included)"
 # **`git archive HEAD`, not the working tree, and this cost a whole build to
@@ -97,10 +88,10 @@ echo "==> staging HEAD (submodules included)"
 # A submodule that is not initialised (status prefix `-`, as dynarmic's
 # externals that are never compiled can be) is skipped: `git archive` run in
 # its empty directory would archive the superproject instead.
-git archive --format=tar --prefix="cordial-${version}/" HEAD | tar -xf - -C "$work"
+git archive --format=tar --prefix="vanta-${version}/" HEAD | tar -xf - -C "$work"
 while read -r path; do
     [ -n "$path" ] || continue
-    ( cd "$path" && git archive --format=tar --prefix="cordial-${version}/${path}/" HEAD ) \
+    ( cd "$path" && git archive --format=tar --prefix="vanta-${version}/${path}/" HEAD ) \
         | tar -xf - -C "$work"
 done < <(git submodule status --recursive | awk '$1 !~ /^-/ {print $2}')
 
@@ -110,18 +101,18 @@ echo "==> vendoring crates"
 echo "==> writing tarballs"
 srcdir=${outdir:-$(rpm --eval %{_sourcedir})}
 mkdir -p "$srcdir"
-tar --zstd -cf "$srcdir/${archive}.tar.zst" -C "$work" "cordial-${version}"
+tar --zstd -cf "$srcdir/${archive}.tar.zst" -C "$work" "vanta-${version}"
 tar --zstd -cf "$srcdir/${archive}-vendor.tar.zst" -C "$work" vendor
 
 echo "==> writing the spec"
-spec="$work/cordial.spec"
+spec="$work/vanta.spec"
 # **On an exact tag `snapinfo` is empty, and `%global snapinfo` with nothing
 # after it is a hard rpm error** -- "Macro %snapinfo has empty body", at parse
 # time, before anything is built. This path only runs when building from a tag,
 # which is the only time it matters and the reason it went unnoticed until
 # v0.9.0: every push to main has commits after the tag and takes the other
 # branch. `archivename` is rewritten to drop the trailing component too, since
-# `cordial-0.9.0-` is not the tarball that was just written.
+# `vanta-0.9.0-` is not the tarball that was just written.
 if [ -z "$snapinfo" ]; then
     snap_edit=(-e "/^%global snapinfo /d"
                -e "s|^%global archivename .*|%global archivename %{name}-%{version}|")
@@ -133,7 +124,7 @@ sed "${snap_edit[@]}" \
     -e "s|^%global describe .*|%global describe ${describe#v}|" \
     -e "s|^Version: *.*|Version:        ${version}|" \
     -e "s|^Release: *.*|Release:        ${release}|" \
-    "$here/cordial.spec" > "$spec"
+    "$here/vanta.spec" > "$spec"
 
 echo "==> rpmbuild -bs"
 # **rpm expands macros inside comments.** An unescaped %macro in a comment is

@@ -3,7 +3,7 @@
 **Status:** established by running, on Roblox for Android 2.732.1043
 (`com.roblox.client`), against build `0.3.0-18-g4cb7624-dirty` — a working tree,
 because this is the change that introduced the path, and other agents were
-editing `crates/cordial-shell/` in the same tree at the time. Ten launches, all
+editing `crates/vanta-shell/` in the same tree at the time. Ten launches, all
 on `--profile agent-deeplink`, none signed in. Sources: the shipping APK's dex
 (`tools/dex_method.py`), `readelf --dyn-syms` over `libroblox.so`, the
 `AndroidManifest.xml`, `docs/traces/waydroid-roblox-startup.log.gz`, Roblox's
@@ -12,7 +12,7 @@ own `ClientSettings` document, and the engine itself.
 **Updated 2026-08-03** by a second session, build `0.3.0-21-gf70ee23-dirty`, five
 launches on `--profile agent-dl2`, again none signed in: §6 no longer ends at a
 warning. roblox.com's desktop link is now translated into the form §5 measured,
-and the translation has a control. §6.3 is a correction — the line Cordial
+and the translation has a control. §6.3 is a correction — the line Vanta
 printed on every desktop link carried the link's authentication ticket.
 
 **Bottom line up front.** The engine never asks anybody for a URL. The URL is
@@ -43,16 +43,16 @@ It is not what happens, on three independent counts:
   `UseExplicitStorePackageForIntents` and `EnableAtomicDeferredIntentProcessing`.
   (Search it with `zgrep`; the file is gzipped and a plain `grep -r` over
   `docs/traces/` finds nothing and looks like a clean negative.)
-* **A full Cordial launch.** No `Intent`, `Uri` or `getIntent` appears anywhere
+* **A full Vanta launch.** No `Intent`, `Uri` or `getIntent` appears anywhere
   in the run, and `--dump-classes`' 22-class inventory
   (`docs/analysis/observed-java-surface.md`) contains no `android/content/*`
   class at all.
 * **The direction of the API.** Every URL-carrying symbol in `libroblox.so` is a
   `Java_*` export — something Java calls, not something the engine asks for.
 
-So the deep link is not a question the engine asks. It is a statement Cordial
+So the deep link is not a question the engine asks. It is a statement Vanta
 has to make. That is the same shape as the cookie jar (`native/cookies.cpp`):
-Cordial is the Java side of this app, and the inward calls are the interface.
+Vanta is the Java side of this app, and the inward calls are the interface.
 
 ## 2. The manifest says which schemes exist
 
@@ -75,11 +75,11 @@ All exported by `libroblox.so` and declared in the dex:
 
 The two `maybeHandle…` natives are worth keeping in the sequence even though
 they say no: they are asked first, they answer honestly, and they are the
-base-URL-switch and web-login special cases. A link Cordial cannot place is a
+base-URL-switch and web-login special cases. A link Vanta cannot place is a
 link one of them may yet claim, and their boolean is the only self-describing
 answer in this whole area.
 
-`nativeReportReceived` is not called by Cordial. It accepted the URL without
+`nativeReportReceived` is not called by Vanta. It accepted the URL without
 complaint and moved neither `Game.launch` nor `isColdStartDeeplinkToGame()`, and
 its second argument would have to be invented — the neighbouring
 `getAttributionUrlKey` and the AppsFlyer `DeepLinkResult` classes in the same
@@ -89,7 +89,7 @@ was not chased.
 ## 4. The protocol's own vocabulary, read out of the running engine
 
 `JNILinkingProtocol` is otherwise a wall of zero-argument `String` getters.
-Calling them (`CORDIAL_DEEPLINK_PROBE=1`) is how the protocol was learned from a
+Calling them (`VANTA_DEEPLINK_PROBE=1`) is how the protocol was learned from a
 running engine rather than guessed at from symbol names:
 
 ```text
@@ -138,20 +138,20 @@ and before `nativeAppBridgeStartLuaAppDM`:
 with `--join-url 'roblox://experiences/start?placeId=1818'`. Reproduced on two
 consecutive runs (`joinAttemptId` differs, `placeId` and `referralPage` do not).
 The engine parsed the URL itself: `placeId` and `referralPage: "DeepLink"` are
-its words, not Cordial's, and Cordial passed the URL through as one opaque
+its words, not Vanta's, and Vanta passed the URL through as one opaque
 string.
 
 **Two things this pins down.**
 
 *The publish is what carries it.* The control is
-`CORDIAL_DEEPLINK_NO_PUBLISH=1` — same link, same launch, same everything, with
+`VANTA_DEEPLINK_NO_PUBLISH=1` — same link, same launch, same everything, with
 the one `publishRaw` call suppressed. `Game.launch` stays empty and
 `isColdStartDeeplinkToGame()` stays false at both sampling points.
 
 *The effect is asynchronous, and cold start is early enough.* Immediately after
 the publish, nothing has changed: the Lua app shell does not exist yet. By the
 first `APP_READY` the answer is there. So the message is queued and acted on
-when the shell comes up, and Cordial does not need to wait to publish — only to
+when the shell comes up, and Vanta does not need to wait to publish — only to
 report. Publishing a second time after `APP_READY` was tried and produces a
 *second* `Game.launch` with a second `joinAttemptId`, which is why the code
 publishes once and reads back later rather than publishing twice.
@@ -178,7 +178,7 @@ and leaves the flag false.
 
 This matters more than it sounds. `roblox-player://` is what roblox.com's play
 button emits on desktop, in a different format again, and it is the handler
-Cordial is taking over from Sober. **Taking that handler away from Sober without
+Vanta is taking over from Sober. **Taking that handler away from Sober without
 handling it is the failure this whole investigation was told to avoid.**
 
 ### 6.1 The translation, and that it works
@@ -196,7 +196,7 @@ roblox-player:1+launchmode:play+gameinfo:<ticket>+placelauncherurl:<percent-enco
 ```
 
 The `placelauncherurl` decodes to a `PlaceLauncher.ashx` request whose *query*
-names a `placeId`. `crates/cordial-runtime/src/deeplink.rs`'s `translate` takes
+names a `placeId`. `crates/vanta-runtime/src/deeplink.rs`'s `translate` takes
 that id and only that id into the mobile form measured in §5:
 
 ```text
@@ -204,7 +204,7 @@ that id and only that id into the mobile form measured in §5:
     launchtime, browsertrackerid, robloxLocale, gameLocale (316 bytes; values not shown)
 [deeplink] translated the desktop link to roblox:// with placeId (39 bytes; values not shown)
 [deeplink] its launcher URL also carried request, browserTrackerId, isPlayTogetherGame,
-    which Cordial does not carry across
+    which Vanta does not carry across
 ...
 [roblox] app ready: PlatformAccountRouter
 [deeplink] (app ready) Game.launch is:
@@ -213,12 +213,12 @@ that id and only that id into the mobile form measured in §5:
 ```
 
 Reproduced on two runs (`joinAttemptId` differs; `placeId` and `referralPage` do
-not). **The control is `CORDIAL_DEEPLINK_NO_TRANSLATE=1`** — the identical
+not). **The control is `VANTA_DEEPLINK_NO_TRANSLATE=1`** — the identical
 desktop link, the identical launch, the rewrite suppressed and the desktop link
 handed to the engine as it arrived. Twice:
 
 ```text
-[deeplink] not translating (CORDIAL_DEEPLINK_NO_TRANSLATE)
+[deeplink] not translating (VANTA_DEEPLINK_NO_TRANSLATE)
 [deeplink] warning: this engine's own link pattern (FStringGameLaunchLinkURL) matches
     roblox:// and robloxmobile:// only, so a roblox-player:// link is not expected to
     reach an experience
@@ -272,7 +272,7 @@ Everything else in the launcher query is named in the log and dropped.
 
 **This refusal has an exception now, and it is a different code path rather
 than a loosened check.** It exists because this section's own input — a
-browser-clicked `roblox-player:` link — only ever gives Cordial a bare
+browser-clicked `roblox-player:` link — only ever gives Vanta a bare
 `placeId` to work with, so carrying one of the parameters above out of it
 *alone* would join the wrong server. Issue #40/#34 found a second, later way
 a join reaches this file: intercepting the Servers-list Join button's own
@@ -281,7 +281,7 @@ hands over the whole payload the page built, including a real `instanceId`
 naming one server. Nothing is lost there the way it would be here, so
 `deeplink::publish_hybrid_game_launch` carries the instance forward as
 `gameInstanceId` instead of refusing — see that function's own doc and
-`crates/cordial-runtime/src/deeplink.rs`'s `SERVER_SELECTING` comment for the
+`crates/vanta-runtime/src/deeplink.rs`'s `SERVER_SELECTING` comment for the
 full reasoning. This section's own refusal is unchanged and still correct for
 the input it guards.
 
@@ -291,7 +291,7 @@ the input it guards.
 claimed to report parameter *names* and never values, and its own test asserted
 it. It split on `&` and `?` only — the query form's separators. The desktop form
 uses `+` and `:`, so the whole payload came back as a single "parameter name",
-and the line Cordial printed on every desktop link was:
+and the line Vanta printed on every desktop link was:
 
 ```text
 [deeplink] delivering roblox-player:// with 1+launchmode:play+gameinfo:<ticket>+…
@@ -309,7 +309,7 @@ were grepped afterwards for the synthetic ticket, the launcher host and the
 encoded launcher URL: none appears in any of them, including the two control runs
 that hand the untranslated desktop link to the engine.
 
-**Still open, and outside this change's files:** `cordial-shell`'s
+**Still open, and outside this change's files:** `vanta-shell`'s
 `deep_link::summarise` truncates a link to 64 characters for the launcher banner,
 and `roblox-player:1+launchmode:play+gameinfo:` is 40 of them — so roughly the
 first two dozen characters of a real ticket would reach that banner. Not a whole
@@ -330,7 +330,7 @@ the other crate.
 - `roblox-player://` produces neither.
 - A desktop `roblox-player:1+…+placelauncherurl:…` link, rewritten to
   `roblox://experiences/start?placeId=<id>`, produces a `Game.launch` naming that
-  place — twice, with `CORDIAL_DEEPLINK_NO_TRANSLATE=1` as the control producing
+  place — twice, with `VANTA_DEEPLINK_NO_TRANSLATE=1` as the control producing
   neither, twice (§6.1).
 - A launcher query carrying `accessCode` is refused rather than translated, and
   the refusal names the parameter and not its value (§6.2).

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Photograph a wedged cordial-run without disturbing it. Usage:
+"""Photograph a wedged vanta-run without disturbing it. Usage:
 
     tools/freeze-capture.py PID OUTDIR [PROFILE]
 
-Why this exists rather than the MCP: `cordial_backtrace` gives the stacks, but
+Why this exists rather than the MCP: `vanta_backtrace` gives the stacks, but
 nothing in the MCP reads the *state the stacks are waiting on*, and the startup
 freeze (docs/NEXT.md, 2026-09-29) turned out to be a question about state. Two
 rounds of NEXT entries reasoned from a handful of syscall lines and one
@@ -17,7 +17,7 @@ Written to files under OUTDIR:
                 poll loop rewrites its array constantly, so this takes up to 300
                 snapshots and keeps the ones whose fds are all live descriptors.
   futex.txt     the words around every futex a thread is blocked on
-  wrappers.txt  every live Cordial condition-variable wrapper (bionic::pthread),
+  wrappers.txt  every live Vanta condition-variable wrapper (bionic::pthread),
                 its glibc backing object decoded, and any thread whose futex sits
                 inside one. `waiters > 0` beside pending `g_signals` on a cond
                 is a lost wakeup; healthy clients show none (92-95 wrappers,
@@ -42,7 +42,7 @@ eight clients; its frozen-client output has never been seen.
 import os, re, struct, subprocess, sys, time, collections
 
 pid = int(sys.argv[1]); out = sys.argv[2]
-profile = sys.argv[3] if len(sys.argv) > 3 else "CordialTest"
+profile = sys.argv[3] if len(sys.argv) > 3 else "VantaTest"
 os.makedirs(out, exist_ok=True)
 P = f"/proc/{pid}"
 READY = 0xC0D1A1FF
@@ -281,14 +281,14 @@ for t, (a, op, val) in futex_addrs.items():
     if hit:
         wl.append(f"tid={t} futex {a:#x} is inside backing of wrapper(s): " + ", ".join(f"{wa:#x}->{p:#x}(+{a-p:#x})" for wa, p in hit))
     else:
-        wl.append(f"tid={t} futex {a:#x} op={op:#x} val={val:#x} is NOT inside any Cordial cond backing")
+        wl.append(f"tid={t} futex {a:#x} op={op:#x} val={val:#x} is NOT inside any Vanta cond backing")
 w("wrappers.txt", "\n".join(wl) + "\n")
 
 # ---------------------------------------------------------------- devctl
 try:
     import socket as _s
     data_home = os.environ.get("XDG_DATA_HOME", os.path.expanduser("~/.local/share"))
-    sockpath = f"{data_home}/cordial/profiles/{profile}/devctl.sock"
+    sockpath = f"{data_home}/vanta/profiles/{profile}/devctl.sock"
     dv = []
     for cmd in ("info", "loopers"):
         c = _s.socket(_s.AF_UNIX, _s.SOCK_STREAM); c.settimeout(5)

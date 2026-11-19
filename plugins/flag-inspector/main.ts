@@ -1,6 +1,6 @@
-// Flag Inspector — the first real Cordial plugin.
+// Flag Inspector — the first real Vanta plugin.
 //
-// It asks Cordial which FastFlags are in effect and where each one came from,
+// It asks Vanta which FastFlags are in effect and where each one came from,
 // then logs a summary. Deliberately small: the point is that the whole path
 // works end to end — manifest, grant, spawn, brokered call, real data — not that
 // it does anything clever.

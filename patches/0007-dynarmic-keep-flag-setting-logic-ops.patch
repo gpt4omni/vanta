@@ -6,7 +6,7 @@ index 83ed8499..53948d9e 100644
  // 5. x & y -> x (where y has all bits set to 1)
  //
  void FoldAND(IR::Inst& inst, bool is_32_bit) {
-+    // Cordial (patches/0007): a flag-setting logical op (ANDS, TST) carries
++    // Vanta (patches/0007): a flag-setting logical op (ANDS, TST) carries
 +    // a GetNZCVFromOp pseudo-op, which only accepts an And/Eor/Or/Not as its
 +    // argument. Folding the op away re-points the
 +    // pseudo-op at whatever replaced it and trips its assertion, so an op
@@ -21,7 +21,7 @@ index 83ed8499..53948d9e 100644
  // 3. 0 ^ y -> y
  //
  void FoldEOR(IR::Inst& inst, bool is_32_bit) {
-+    // Cordial (patches/0007): a flag-setting logical op (ANDS, TST) carries
++    // Vanta (patches/0007): a flag-setting logical op (ANDS, TST) carries
 +    // a GetNZCVFromOp pseudo-op, which only accepts an And/Eor/Or/Not as its
 +    // argument. Folding the op away re-points the
 +    // pseudo-op at whatever replaced it and trips its assertion, so an op
@@ -36,7 +36,7 @@ index 83ed8499..53948d9e 100644
  
  // Folds NOT operations if the contained value is an immediate.
  void FoldNOT(IR::Inst& inst, bool is_32_bit) {
-+    // Cordial (patches/0007): a flag-setting logical op (ANDS, TST) carries
++    // Vanta (patches/0007): a flag-setting logical op (ANDS, TST) carries
 +    // a GetNZCVFromOp pseudo-op, which only accepts an And/Eor/Or/Not as its
 +    // argument. Folding the op away re-points the
 +    // pseudo-op at whatever replaced it and trips its assertion, so an op
@@ -51,7 +51,7 @@ index 83ed8499..53948d9e 100644
  // 3. 0 | y -> y
  //
  void FoldOR(IR::Inst& inst, bool is_32_bit) {
-+    // Cordial (patches/0007): a flag-setting logical op (ANDS, TST) carries
++    // Vanta (patches/0007): a flag-setting logical op (ANDS, TST) carries
 +    // a GetNZCVFromOp pseudo-op, which only accepts an And/Eor/Or/Not as its
 +    // argument. Folding the op away re-points the
 +    // pseudo-op at whatever replaced it and trips its assertion, so an op

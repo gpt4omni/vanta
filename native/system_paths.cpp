@@ -1,4 +1,4 @@
-// Android's `/system` tree, served from a directory Cordial owns.
+// Android's `/system` tree, served from a directory Vanta owns.
 //
 // Roblox asks the platform for `/system/fonts/NotoSansCJK-Regular.ttc`. On
 // Android that always exists. On a Linux host there is no `/system` at all, the
@@ -14,7 +14,7 @@
 //
 // Serving `/system` is not a workaround for a Roblox bug. It is part of what an
 // Android runtime owes the code it hosts, exactly like `AAssetManager` or
-// `ALooper`. Cordial owns the symbol table, so the redirect belongs at the libc
+// `ALooper`. Vanta owns the symbol table, so the redirect belongs at the libc
 // boundary rather than anywhere near the engine.
 //
 // Written in C++ because `open` is variadic, and forwarding a C variadic to the
@@ -44,9 +44,9 @@ namespace {
 char g_root[PATH_MAX];
 size_t g_root_len = 0;
 
-/// `CORDIAL_TRACE_PATHS=1`. Every function here is fixed-arity except `open`,
+/// `VANTA_TRACE_PATHS=1`. Every function here is fixed-arity except `open`,
 /// which is forwarded properly, so this is safe to leave on — unlike
-/// `CORDIAL_TRACE=1`, which wraps variadics with fixed-arity declarations and
+/// `VANTA_TRACE=1`, which wraps variadics with fixed-arity declarations and
 /// makes the engine abort.
 ///
 /// These wrappers are the only place the path calls are intercepted. An earlier
@@ -135,7 +135,7 @@ char* s_realpath(const char* path, char* resolved) {
         // expected to `free` it. That allocation comes from the *host's*
         // allocator — Roblox statically links its own (mimalloc, going by
         // `DFLog::Mimalloc`), and every one of its `malloc`/`free`/`new`/
-        // `delete` symbols is resolved internally, never through Cordial's
+        // `delete` symbols is resolved internally, never through Vanta's
         // symbol table. When the engine later releases a buffer this call
         // handed it, that release runs entirely inside Roblox's own
         // allocator, which indexes a table keyed by the pointer's own
@@ -146,13 +146,13 @@ char* s_realpath(const char* path, char* resolved) {
         //
         // This is exactly what feeds Roblox's cURL-based HTTP stack the
         // CA-bundle path (`./exe/cacert.pem`, resolved once per connection
-        // going by `CORDIAL_TRACE_PATHS=1`): confirmed live under lldb with a
+        // going by `VANTA_TRACE_PATHS=1`): confirmed live under lldb with a
         // breakpoint on this function — `resolved` is null, the host
         // `realpath` call mallocs, and the pointer it returns is the exact
         // address that later faults on the `HttpClient` thread with
         // `rax=0x0, rcx=0xe000` — a segment-map miss for foreign memory.
         //
-        // There is no buffer Cordial can hand back here that is safe for the
+        // There is no buffer Vanta can hand back here that is safe for the
         // engine to free through its own allocator, because that allocator's
         // bookkeeping is not reachable from here (its `malloc`/`free` are not
         // exported). The only safe move is to never produce the host
@@ -192,7 +192,7 @@ FILE* s_fopen(const char* path, const char* mode) {
 
 /// `open` is variadic: the mode argument exists only for `O_CREAT`/`O_TMPFILE`.
 /// Reading it unconditionally would walk the register save area for an argument
-/// the caller never pushed, which is the mistake that makes `CORDIAL_TRACE=1`
+/// the caller never pushed, which is the mistake that makes `VANTA_TRACE=1`
 /// abort the engine.
 int s_open(const char* path, int flags, ...) {
     unsigned mode = 0;
@@ -208,13 +208,13 @@ int s_open(const char* path, int flags, ...) {
     return r;
 }
 
-/// `statvfs`, which the engine imports and Cordial had never intercepted.
+/// `statvfs`, which the engine imports and Vanta had never intercepted.
 ///
 /// Two separate defects, and the second is why this is not just a redirect.
 ///
 /// **It was not path-translated.** Every other path-taking call here is; this
 /// one went straight to the host with whatever the engine built, and because it
-/// was not in the table it did not appear in `CORDIAL_TRACE_PATHS=1` output
+/// was not in the table it did not appear in `VANTA_TRACE_PATHS=1` output
 /// either. A trace that cannot see a call is not evidence the call did not
 /// happen, and a conclusion in flag-init.md §23.2 -- "storage is never
 /// attempted, 19,296 path calls and none of them `rbx-storage`" -- was drawn
@@ -271,13 +271,13 @@ int s_statvfs(const char* path, bionic_statvfs* out) {
 
 } // namespace
 
-extern "C" struct CordialSystemSymbol {
+extern "C" struct VantaSystemSymbol {
     const char* name;
     void* addr;
 };
 
 /// Point the redirect at a host directory. Passing null or "" disables it.
-extern "C" void cordial_set_system_root(const char* root) {
+extern "C" void vanta_set_system_root(const char* root) {
     if (!root || !*root) {
         g_root_len = 0;
         g_root[0] = '\0';
@@ -294,12 +294,12 @@ extern "C" void cordial_set_system_root(const char* root) {
 
 /// Turn on the path log. Separate from the root so tracing works even when the
 /// redirect is disabled.
-extern "C" void cordial_set_path_trace(int on) {
+extern "C" void vanta_set_path_trace(int on) {
     g_trace = on != 0;
 }
 
-extern "C" const CordialSystemSymbol* cordial_system_symbols(size_t* count) {
-    static const CordialSystemSymbol table[] = {
+extern "C" const VantaSystemSymbol* vanta_system_symbols(size_t* count) {
+    static const VantaSystemSymbol table[] = {
         {"stat", (void*)&s_stat},
         {"lstat", (void*)&s_lstat},
         {"access", (void*)&s_access},

@@ -31,7 +31,7 @@ Raw enumeration output is in [`analysis/`](analysis):
 
 The runtime surface is small and bounded. The framework surface is large but heavily
 weighted toward AndroidX support libraries that ship *inside* the APK — only the
-`android/*` platform classes (about 630 of the 3,466) are Cordial's responsibility.
+`android/*` platform classes (about 630 of the 3,466) are Vanta's responsibility.
 
 ## 2. Runtime layer — the native link surface
 
@@ -42,7 +42,7 @@ Every Android library the APK's native code links against. This is the complete 
 | `libc.so` | all | **implement** | bionic. The single largest Phase 1 item — 490 of the 644 undefined symbols are libc/libm/libdl. |
 | `libm.so` | all | **implement** | Mostly satisfiable from glibc directly. |
 | `libdl.so` | all | **implement** | Must be the *runtime's* loader, not the host's — `dlopen` has to resolve inside the Android namespace. |
-| `liblog.so` | most | **stub-inert** | `__android_log_*`. Route to Cordial's log. Trivial and high value — do it first. (Spec §9a also called this the source of `onLogLine`; that event was never built, see liblog.cpp.) |
+| `liblog.so` | most | **stub-inert** | `__android_log_*`. Route to Vanta's log. Trivial and high value — do it first. (Spec §9a also called this the source of `onLogLine`; that event was never built, see liblog.cpp.) |
 | `libGLESv2.so` | `libroblox` | **implement** | 74 undefined `gl*` symbols. → Mesa. |
 | `libEGL.so` | `libroblox` | **implement** | 17 undefined `egl*` symbols. → Mesa/EGL. |
 | `libandroid.so` | `libroblox`, `libsurface_util_jni`, `libimage_processing_util_jni` | **implement** | 31 symbols. NDK native API: `ANativeWindow`, `AInputEvent`, `ALooper`, `AChoreographer`, `AAssetManager`, `ASensor`. This is where host input and windowing actually meet Roblox. |
@@ -73,12 +73,12 @@ direction is therefore **resolvable ahead of time by symbol name** — no need t
 that as a small residue to check, not the main mechanism.)
 
 The reverse direction — native calling *into* Java via `FindClass`/`GetMethodID` — is what
-Cordial must actually provide, and it is defined by the Roblox Java classes those 518
+Vanta must actually provide, and it is defined by the Roblox Java classes those 518
 natives belong to.
 
 ### 3.2 Roblox's own JNI-facing classes
 
-Grouped from [`jni-natives.tsv`](analysis/jni-natives.tsv). Each is a Java class Cordial's
+Grouped from [`jni-natives.tsv`](analysis/jni-natives.tsv). Each is a Java class Vanta's
 framework layer must be able to instantiate and call.
 
 | Class | On launch path | Notes |
@@ -105,7 +105,7 @@ not on a hand-rolled activity or the older `NativeActivity`. That matters a lot:
 
 - `GameActivity` is **open source under Apache 2.0** (AndroidX Games / `games-activity`).
   Its Java side, its JNI contract, and its input and text-input plumbing are all readable.
-  Cordial does not have to infer this interface — it can read it.
+  Vanta does not have to infer this interface — it can read it.
 - It pins down exactly what the framework layer owes the game: a `SurfaceView`, the
   `SurfaceHolder.Callback` sequence, `Choreographer` frame callbacks, and the
   `gametextinput` IME bridge for the on-screen keyboard (which on desktop should map to
@@ -169,14 +169,14 @@ So the fix in spec §4.2 is two things, not one:
 2. **A WebView implementation.** `android.webkit.WebView`, `WebViewClient`,
    `WebChromeClient`, `WebSettings`, `CookieManager`, `JavascriptInterface`,
    `PermissionRequest`, `WebResourceRequest`. Sober solves the analogous problem with
-   WebKitGTK, and Cordial will need the same. **This is a substantial Phase 2 workstream
+   WebKitGTK, and Vanta will need the same. **This is a substantial Phase 2 workstream
    that the architecture spec does not currently name anywhere.** It is also on the login
    path (captcha is a WebView), so it is not optional.
 
 ### 3.6 Passkeys — harder than §4.3 assumes, and worth confirming early
 
 The spec's §4.3 reference flow assumes Roblox calls
-`androidx.credentials.CredentialManager` and that Cordial's JNI stub can intercept it.
+`androidx.credentials.CredentialManager` and that Vanta's JNI stub can intercept it.
 What is actually in the APK:
 
 - **`android.credentials.CredentialManager`** — the *platform* API (API 34+): 12 classes
@@ -190,16 +190,16 @@ What is actually in the APK:
 
 So there are two possible interception points and they have very different costs:
 
-- **Platform path** (`android.credentials.CredentialManager`) — Cordial implements the
+- **Platform path** (`android.credentials.CredentialManager`) — Vanta implements the
   framework class directly and dispatches to libfido2 / `xdg-desktop-portal`. This is the
   §4.3 flow and it works.
 - **Play Services path** (`androidx.credentials.playservices.*`) — the AndroidX shim calls
-  into GMS, which does not exist on Linux. Cordial would have to satisfy a Play Services
+  into GMS, which does not exist on Linux. Vanta would have to satisfy a Play Services
   interface instead of a documented platform one.
 
 AndroidX `CredentialManager` prefers the platform API on API ≥34 and falls back to the
 Play Services controller below that. Roblox targets SDK 35, so **the platform path should
-be the live one** — but this depends on what Cordial reports as its API level, and it is
+be the live one** — but this depends on what Vanta reports as its API level, and it is
 exactly the kind of assumption that costs a week if wrong.
 
 **First Phase 2 task: confirm which path executes**, by instrumenting the call rather than
@@ -232,7 +232,7 @@ there rather than discovering it later.
 
 Derived from the above, cheapest-useful-first:
 
-1. `liblog` → Cordial's log. Trivial. Spec §9a said `onLogLine`, `onJoin` and `onLeave`
+1. `liblog` → Vanta's log. Trivial. Spec §9a said `onLogLine`, `onJoin` and `onLeave`
    would be built from it; none of the three was, and the log parsing that does
    exist reads the engine's own log file instead — see `bloxstrap_rpc`.
 2. `Build.*` + `__system_property_get` + `DisplayMetrics` — desktop identification. Small,

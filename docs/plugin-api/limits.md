@@ -7,9 +7,9 @@ Each limit is a decision, not a gap. Knowing which one you have hit stops you de
 | You cannot | Why | Decision |
 |---|---|---|
 | Run code inside the Roblox process: no hooking, no memory patching, no injected script environment | Enforcement has to live outside the boundary it enforces, and a capability that revocation cannot revoke is a promise, not a guarantee. Absent from the surface, not disabled, so there is nothing to re-enable in a fork. | [ADR-001](../adr/ADR-001-in-process-hooking.md) |
-| Read or write Cordial's memory, or use a shared-memory transport | Capabilities mean something only if holding fewer lets you do less, and an address-space boundary does not depend on Cordial being correct. A call that is too slow across the pipe needs a better shape, not a shortcut past the broker. | [ADR-003](../adr/ADR-003-plugin-isolation.md) |
-| Draw on top of the game, or in Cordial's own window | A third party hooking the presentation path is what Cordial refuses to do, and shipping a supported way for someone else to do it would be the same refusal in name only. Capture works today and needs nothing from Cordial. | [ADR-009](../adr/ADR-009-capture-yes-overlay-injection-no.md) |
-| Read the DataModel, the Lua state or anything else inside the engine | Those live in the engine's address space. Cordial answers the Android platform calls the client makes, and the DataModel is never one of them. | [ADR-001](../adr/ADR-001-in-process-hooking.md) |
+| Read or write Vanta's memory, or use a shared-memory transport | Capabilities mean something only if holding fewer lets you do less, and an address-space boundary does not depend on Vanta being correct. A call that is too slow across the pipe needs a better shape, not a shortcut past the broker. | [ADR-003](../adr/ADR-003-plugin-isolation.md) |
+| Draw on top of the game, or in Vanta's own window | A third party hooking the presentation path is what Vanta refuses to do, and shipping a supported way for someone else to do it would be the same refusal in name only. Capture works today and needs nothing from Vanta. | [ADR-009](../adr/ADR-009-capture-yes-overlay-injection-no.md) |
+| Read the DataModel, the Lua state or anything else inside the engine | Those live in the engine's address space. Vanta answers the Android platform calls the client makes, and the DataModel is never one of them. | [ADR-001](../adr/ADR-001-in-process-hooking.md) |
 | Touch files, network, environment or subprocesses | A Deno process with no permissions, under the capability broker. A second, independent layer. | [ADR-003](../adr/ADR-003-plugin-isolation.md), [ADR-018](../adr/ADR-018-plugin-sub-sandboxing.md) |
 | Widen the sandbox from your manifest | A Flatpak permission is app-wide and permanent while a capability is per-plugin and revocable. Open an issue instead; see [capabilities](capabilities.md#effects-never-channels). | [ADR-007](../adr/ADR-007-host-resources-are-brokered.md) |
 | Write your own preference values, or read or write another plugin's settings | There is no `preferences.set`, and `settings.*` has no field to name another plugin. Enforced by an absent parameter, not a check. | [ADR-020](../adr/ADR-020-declarative-plugin-preferences.md) |
@@ -19,13 +19,13 @@ What does exist for the surfaces above: `notify.send`, asset overlays and the de
 
 ## What a plugin can learn about the game
 
-Less than the DataModel and more than nothing. A plugin holding `state.read` can call [`state.get`](surface.md#session-state-stateget) for the place, universe, server, user id and join time. A plugin holding `presence.set` can hear [`cordial/game.presence`](events.md#core-events). Three more core events arrive under `lifecycle.read`: a profile name, a version string and a shutdown. There is no player list, frame rate or memory figure: those need engine introspection.
+Less than the DataModel and more than nothing. A plugin holding `state.read` can call [`state.get`](surface.md#session-state-stateget) for the place, universe, server, user id and join time. A plugin holding `presence.set` can hear [`vanta/game.presence`](events.md#core-events). Three more core events arrive under `lifecycle.read`: a profile name, a version string and a shutdown. There is no player list, frame rate or memory figure: those need engine introspection.
 
 ## A known method with no effect answers `error`
 
-A method Cordial knows but has not wired an effect for answers `error`, not `denied`, so you are not sent looking for a permission that was never the problem.
+A method Vanta knows but has not wired an effect for answers `error`, not `denied`, so you are not sent looking for a permission that was never the problem.
 
 | Message | Where |
 |---|---|
 | `flags.setDynamic is not implemented yet` | The client's plugin host. Permanent: its effect needs a live write into the engine's flag table. |
-| `no broker wired for "assets.override"` | The `cordial-plugins` crate's test-only `Session`. |
+| `no broker wired for "assets.override"` | The `vanta-plugins` crate's test-only `Session`. |

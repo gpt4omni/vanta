@@ -1,7 +1,7 @@
-// A virtual pointer that stays alive, for driving Cordial's own widgets in a
+// A virtual pointer that stays alive, for driving Vanta's own widgets in a
 // nested compositor.
 //
-// This exists because nothing else here can click. `cordial_click` goes to the
+// This exists because nothing else here can click. `vanta_click` goes to the
 // engine's input entry points, one layer below the display server, so it can
 // never reach a GTK widget -- which is most of what the text editor now is.
 // `wlrctl pointer` binds zwlr_virtual_pointer_v1, sends the motion and exits
@@ -27,7 +27,7 @@
 // of pointer capture cannot be reached at all on a machine with no real mouse.
 //
 // **The button argument is not a convenience.** Left was the only one this
-// sent, and left is the one button Cordial's pointer lock deliberately does
+// sent, and left is the one button Vanta's pointer lock deliberately does
 // *not* capture for -- a left drag is how every slider and scrollbar in
 // Roblox's own interface is used. So the capture path could not be driven
 // from here at all: the right-button camera drag, the lock it takes and the

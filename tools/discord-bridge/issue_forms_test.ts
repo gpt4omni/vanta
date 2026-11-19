@@ -191,7 +191,7 @@ Deno.test("a form with five required fields cannot spare a slot, and opens witho
   assertEquals(layoutWithLabels(form), null);
   const modal = modalFor(form, "main", picker) as { components: unknown[]; custom_id: string };
   assertEquals(modal.components.length, 5);
-  assertEquals(modal.custom_id, "cordial-issue:t:main", "no `:l`, so nothing expects a picker");
+  assertEquals(modal.custom_id, "vanta-issue:t:main", "no `:l`, so nothing expects a picker");
 });
 
 Deno.test("the follow-up's field list agrees with whether the picker took a slot", () => {
@@ -226,16 +226,16 @@ Deno.test("multi-select answers keep their separate values, commas and all", () 
   const data = {
     components: [
       { type: 18, component: { custom_id: "title", value: "x" } },
-      { type: 18, component: { custom_id: "cordial-labels", values: ["area: a, b", "gpu:amd"] } },
+      { type: 18, component: { custom_id: "vanta-labels", values: ["area: a, b", "gpu:amd"] } },
       { type: 18, component: { custom_id: "empty", values: [] } },
     ],
   };
   assertEquals(modalSelections(data), {
-    "cordial-labels": ["area: a, b", "gpu:amd"],
+    "vanta-labels": ["area: a, b", "gpu:amd"],
     "empty": [],
   });
   // The single-answer reader is unchanged: it joins, which is right for a dropdown.
-  assertEquals(modalValues(data)["cordial-labels"], "area: a, b, gpu:amd");
+  assertEquals(modalValues(data)["vanta-labels"], "area: a, b, gpu:amd");
 });
 
 Deno.test("the log archive field is the web form's alone, and every bug form asks for it", () => {

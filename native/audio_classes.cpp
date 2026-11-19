@@ -39,12 +39,12 @@
 //
 // Not paused, not muted, not connected-but-inactive — absent. A capture stream
 // in any of those states still keeps the desktop's microphone indicator lit
-// and still shows every other application that Cordial is holding the capture
+// and still shows every other application that Vanta is holding the capture
 // device, which is the harm; whether samples are flowing is not the part a
 // user can see. `CaptureStream::close()` therefore destroys the `pw_stream`
 // rather than deactivating it.
 //
-// There are exactly four callers of `CaptureStream::open()` in Cordial, three of
+// There are exactly four callers of `CaptureStream::open()` in Vanta, three of
 // them named here and the AAudio input stream in `aaudio.cpp` the fourth:
 // `AudioRecord::startRecording` and `WebRtcAudioRecord::startRecording` below,
 // and `AudioRecorderObject::start_capture` in `opensles.cpp`, which runs only
@@ -61,9 +61,9 @@
 // it held again: a `pw-dump` sampler independently caught the node while
 // `SL_RECORDSTATE_RECORDING` and not otherwise, and 590 buffers of real
 // samples were read across two record/pause cycles, proving data flowed
-// rather than the stream merely existing. A real `cordial-run` session with
+// rather than the stream merely existing. A real `vanta-run` session with
 // this change built in, 25 s at Roblox's Landing screen with no voice call
-// joined, showed zero `cordial-`-named nodes in `pw-dump` throughout. What
+// joined, showed zero `vanta-`-named nodes in `pw-dump` throughout. What
 // that does not cover — `WebRtcAudioRecord`'s own JNI glue actually being
 // driven by the engine end to end — needs a live voice call; see this class's
 // own comment and the report accompanying the change that added it.
@@ -75,7 +75,7 @@
 //   one. `enumerate_devices()` walks the PipeWire registry and reads
 //   properties; it never constructs a `CaptureStream`. If a device picker ever
 //   starts lighting the microphone indicator, that invariant is what broke.
-//   The Settings microphone picker is that device picker: `cordial_audio_sources`
+//   The Settings microphone picker is that device picker: `vanta_audio_sources`
 //   lists, `set_input_device` stores a `node.name` and moves a stream that is
 //   already open, and neither creates one. A chosen source is applied only where
 //   one of the callers above opens its stream.
@@ -105,12 +105,12 @@
 #include "aaudio.h"
 #include "pipewire_backend.h"
 
-namespace cordial {
+namespace vanta {
 
 // Defined in `jni_shim.cpp`. Declared here, outside the anonymous namespace
 // below, because a declaration written *inside* it would name a distinct,
 // unique-per-translation-unit symbol rather than the real
-// externally-linked `cordial::process_env` -- a link error waiting to
+// externally-linked `vanta::process_env` -- a link error waiting to
 // happen the day `WebRtcAudioTrack`'s pump thread below actually needs it,
 // rather than the compile error it should be.
 jnivm::ENV* process_env();
@@ -271,7 +271,7 @@ public:
     std::string productName;
 
     /// PipeWire converts on the graph edge, so a device's *native* rate is not
-    /// the set of rates a stream may ask for. These are the rates Cordial will
+    /// the set of rates a stream may ask for. These are the rates Vanta will
     /// actually accept from Roblox and honour, which is what the getter is
     /// asked to describe.
     static std::shared_ptr<jnivm::Array<jint>> rates(ENV*, Object*) {
@@ -307,7 +307,7 @@ public:
     /// PipeWire's `node.description` verbatim — "Raptor Lake-P/U/H cAVS
     /// Speaker", the same string the user's own volume control shows. The
     /// point of a device picker is that the user recognises the entry, so
-    /// anything invented here (a tidied-up name, a Cordial-branded one) makes
+    /// anything invented here (a tidied-up name, a Vanta-branded one) makes
     /// the list worse however much better it reads.
     static std::shared_ptr<CharSequence> getProductName(ENV*, Object* self) {
         return chars(self_of(self)->productName);
@@ -365,7 +365,7 @@ std::string default_source_node_name() {
 }
 
 /// Where a recording that is about to open should connect: the source the
-/// user chose in Settings (`CORDIAL_AUDIO_SOURCE`) if it is there, otherwise the
+/// user chose in Settings (`VANTA_AUDIO_SOURCE`) if it is there, otherwise the
 /// default source as it is at this moment. Empty chosen means the second, which
 /// is exactly what these two callers did before there was a microphone picker.
 /// Enumeration only -- nothing here opens a stream.
@@ -431,14 +431,14 @@ public:
         }
         // Once, and only the first time. Whether Roblox asks for the device
         // list at all is a question `--dump-classes` cannot answer — the dump
-        // lists this class because Cordial registered it, not because anything
+        // lists this class because Vanta registered it, not because anything
         // called it — and it is the difference between a device list that is
         // used and one that is merely correct.
         static bool announced = false;
         if (!announced) {
             announced = true;
             std::fprintf(stderr,
-                "I/Cordial-Audio           AudioManager.getDevices(0x%X) called by the engine; "
+                "I/Vanta-Audio           AudioManager.getDevices(0x%X) called by the engine; "
                 "answering with %zu of %zu PipeWire device(s), default first.\n",
                 flags, chosen.size(), devices.size());
         }
@@ -459,7 +459,7 @@ public:
         if (!announced) {
             announced = true;
             std::fprintf(stderr,
-                "I/Cordial-Audio           AudioManager.getCommunicationDevice called by the "
+                "I/Vanta-Audio           AudioManager.getCommunicationDevice called by the "
                 "engine.\n");
         }
         for (const audio::DeviceInfo& d : audio::enumerate_devices()) {
@@ -469,10 +469,10 @@ public:
     }
 
     static jboolean isMicrophoneMute(ENV*, Object*) {
-        // Cordial has no global microphone mute of its own, and reporting the
+        // Vanta has no global microphone mute of its own, and reporting the
         // *host's* mute state would be reporting on a control Roblox cannot
         // then operate through `setMicrophoneMute`. False is the truthful
-        // answer to "is Cordial muting the microphone", which is the question
+        // answer to "is Vanta muting the microphone", which is the question
         // this object is being asked.
         return false;
     }
@@ -545,7 +545,7 @@ public:
         // shows one of them and hides the rest is a log nobody can count with.
         // Constructing one opens nothing; only `startRecording` does.
         std::fprintf(stderr,
-            "I/Cordial-Audio           android.media.AudioRecord constructed (%d Hz, "
+            "I/Vanta-Audio           android.media.AudioRecord constructed (%d Hz, "
             "channelConfig 0x%X, format %d); no capture stream until startRecording.\n",
             sampleRateInHz, channelConfig, audioFormat);
         r->sampleRate = sampleRateInHz > 0 ? sampleRateInHz : DEFAULT_SAMPLE_RATE;
@@ -556,7 +556,7 @@ public:
             // later. `getState()` staying UNINITIALIZED is how AudioRecord
             // says this, and every caller checks it before recording.
             std::fprintf(stderr,
-                "E/Cordial-Audio           AudioRecord asked for encoding %d; only "
+                "E/Vanta-Audio           AudioRecord asked for encoding %d; only "
                 "ENCODING_PCM_16BIT (2) is supported, so this recorder reports "
                 "STATE_UNINITIALIZED and will not open the microphone.\n", audioFormat);
             r->sampleRate = 0; // makes getState() report UNINITIALIZED, below
@@ -606,7 +606,7 @@ public:
         return 0;
     }
 
-    /// **One of exactly two places in Cordial that open the microphone.**
+    /// **One of exactly two places in Vanta that open the microphone.**
     static void startRecording(ENV*, Object* self) {
         auto* r = as(self);
         if (!r || r->sampleRate <= 0) return;
@@ -619,7 +619,7 @@ public:
             // cost of: the caller would sit reading zero bytes forever with
             // nothing to explain why.
             std::fprintf(stderr,
-                "E/Cordial-Audio           AudioRecord.startRecording could not open a "
+                "E/Vanta-Audio           AudioRecord.startRecording could not open a "
                 "capture stream; staying stopped rather than reporting a recording that "
                 "is not happening.\n");
             return;
@@ -696,7 +696,7 @@ static auto to_jni(ENV* env, const std::shared_ptr<T>& p) {
 }
 
 /// Look up a native function pointer the *engine* registered on one of its
-/// own classes via `RegisterNatives`, the way `cordial_game_activity_start` in
+/// own classes via `RegisterNatives`, the way `vanta_game_activity_start` in
 /// `game_activity.cpp` reaches AGDK's lifecycle natives.
 ///
 /// This is not a style choice: `docs/analysis/jni-natives.tsv` -- the
@@ -742,9 +742,9 @@ bool cache_audio_parameters(ENV* env, Object* self, jlong native_audio_manager);
 /// WebRTC's voice engine asks Java for the platform's audio parameters once,
 /// at construction, and then builds its whole audio device module around the
 /// answers. On real Android this class is Kotlin/Java running in the app; that
-/// cannot execute under Cordial (there is no JVM — the same established
+/// cannot execute under Vanta (there is no JVM — the same established
 /// finding that governs `MainGameActivity.bootstrapTheApp`), so the class is
-/// implemented here instead and answers from what Cordial can actually do.
+/// implemented here instead and answers from what Vanta can actually do.
 ///
 /// **`init()` used to report failure, deliberately** — the parameter getters
 /// were honest, but the uplink was only half the path: WebRTC also needed
@@ -805,7 +805,7 @@ public:
         if (!said) {
             said = true;
             std::fprintf(stderr,
-                "I/Cordial-Audio           WebRtcAudioManager.init reports %s: WebRtcAudioTrack "
+                "I/Vanta-Audio           WebRtcAudioManager.init reports %s: WebRtcAudioTrack "
                 "implements the downlink and WebRtcAudioRecord implements the uplink, so a voice "
                 "session can both send and receive.\n", cached ? "success" : "failure");
         }
@@ -839,7 +839,7 @@ public:
     }
 
     // Android's hardware audio effects. There are none here — PipeWire's echo
-    // canceller is a separate module the user opts into, not something Cordial
+    // canceller is a separate module the user opts into, not something Vanta
     // can claim on the device's behalf — and saying otherwise would have
     // WebRTC switch off its own software AEC in favour of one that does not
     // exist, which is audible as echo rather than as an error.
@@ -938,7 +938,7 @@ bool cache_audio_parameters(ENV* env, Object* self, jlong native_audio_manager) 
                                        "nativeCacheAudioParameters");
     if (!fn) {
         std::fprintf(stderr,
-            "W/Cordial-Audio           WebRtcAudioManager.init: nativeCacheAudioParameters was "
+            "W/Vanta-Audio           WebRtcAudioManager.init: nativeCacheAudioParameters was "
             "never registered by the engine; its own audio device module will not have these "
             "figures cached, and init() is told so rather than reporting success anyway.\n");
         return false;
@@ -1068,7 +1068,7 @@ public:
         auto* r = as(self);
         if (!r || sample_rate <= 0 || num_channels <= 0) {
             std::fprintf(stderr,
-                "E/Cordial-Audio           WebRtcAudioRecord.initRecording(%d Hz, %d ch): "
+                "E/Vanta-Audio           WebRtcAudioRecord.initRecording(%d Hz, %d ch): "
                 "refusing an impossible format.\n", sample_rate, num_channels);
             return -1;
         }
@@ -1083,7 +1083,7 @@ public:
         // to migrate a running recording onto a new format, only a refusal.
         if (r->recording.load()) {
             std::fprintf(stderr,
-                "E/Cordial-Audio           WebRtcAudioRecord.initRecording(%d Hz, %d ch): called "
+                "E/Vanta-Audio           WebRtcAudioRecord.initRecording(%d Hz, %d ch): called "
                 "while already recording; reallocating recordBuffer now would free memory the "
                 "pump thread may be reading, so refusing rather than risking a use-after-free.\n",
                 sample_rate, num_channels);
@@ -1093,7 +1093,7 @@ public:
             env, "org/webrtc/voiceengine/WebRtcAudioRecord", "nativeCacheDirectBufferAddress");
         if (!cache_fn) {
             std::fprintf(stderr,
-                "E/Cordial-Audio           WebRtcAudioRecord.initRecording: "
+                "E/Vanta-Audio           WebRtcAudioRecord.initRecording: "
                 "nativeCacheDirectBufferAddress was never registered by the engine, so there is "
                 "nobody on the other end of a buffer this would hand over; refusing rather than "
                 "opening a microphone nothing will ever read from.\n");
@@ -1118,13 +1118,13 @@ public:
         reinterpret_cast<CacheFn>(cache_fn)(jni, thiz, jbuf, r->nativeAudioRecord);
 
         std::fprintf(stderr,
-            "I/Cordial-Audio           WebRtcAudioRecord.initRecording(%d Hz, %d ch): %u byte "
+            "I/Vanta-Audio           WebRtcAudioRecord.initRecording(%d Hz, %d ch): %u byte "
             "buffer cached with the engine; no capture stream until startRecording.\n",
             sample_rate, num_channels, r->bufferBytes);
         return static_cast<jint>(r->bufferBytes);
     }
 
-    /// **One of exactly two places in Cordial that open the microphone** —
+    /// **One of exactly two places in Vanta that open the microphone** —
     /// `AudioRecord::startRecording` above is the other, and
     /// `pipewire_backend.h`'s own comment on `CaptureStream::open` names both
     /// as the only permitted callers.
@@ -1132,7 +1132,7 @@ public:
         auto* r = as(self);
         if (!r || !r->recordBuffer) {
             std::fprintf(stderr,
-                "W/Cordial-Audio           WebRtcAudioRecord.startRecording called before a "
+                "W/Vanta-Audio           WebRtcAudioRecord.startRecording called before a "
                 "successful initRecording; refusing.\n");
             return false;
         }
@@ -1141,7 +1141,7 @@ public:
             env, "org/webrtc/voiceengine/WebRtcAudioRecord", "nativeDataIsRecorded");
         if (!data_fn) {
             std::fprintf(stderr,
-                "E/Cordial-Audio           WebRtcAudioRecord.startRecording: nativeDataIsRecorded "
+                "E/Vanta-Audio           WebRtcAudioRecord.startRecording: nativeDataIsRecorded "
                 "was never registered by the engine; there is nowhere to deliver samples, so "
                 "refusing rather than opening a microphone that would record into nothing.\n");
             return false;
@@ -1153,7 +1153,7 @@ public:
         r->targetNode = source_node_name_for_recording();
         if (!r->capture.open(r->sampleRate, r->channels, r->targetNode)) {
             std::fprintf(stderr,
-                "E/Cordial-Audio           WebRtcAudioRecord.startRecording could not open a "
+                "E/Vanta-Audio           WebRtcAudioRecord.startRecording could not open a "
                 "capture stream; staying stopped rather than reporting a recording that is not "
                 "happening.\n");
             return false;
@@ -1165,7 +1165,7 @@ public:
         auto self_ref = std::static_pointer_cast<WebRtcAudioRecord>(r->shared_from_this());
         r->pump = std::thread([self_ref, data_fn] { self_ref->run_pump(data_fn); });
         std::fprintf(stderr,
-            "I/Cordial-Audio           WebRtcAudioRecord.startRecording: microphone opened at "
+            "I/Vanta-Audio           WebRtcAudioRecord.startRecording: microphone opened at "
             "%u Hz, %u channel(s).\n", r->sampleRate, r->channels);
         return true;
     }
@@ -1250,7 +1250,7 @@ public:
         capture.close(); // idempotent; covers a stop before any start
         if (was_recording) {
             std::fprintf(stderr,
-                "I/Cordial-Audio           WebRtcAudioRecord: microphone closed.\n");
+                "I/Vanta-Audio           WebRtcAudioRecord: microphone closed.\n");
         }
     }
 
@@ -1265,7 +1265,7 @@ private:
     /// **Every exit from this function closes `capture`, structurally.**
     /// This used to be an early return's job on the attach-failure path below
     /// -- `recording.store(false); return;`, with no `capture.close()` beside
-    /// it -- and it was reachable in review: `cordial::process_env()` failing
+    /// it -- and it was reachable in review: `vanta::process_env()` failing
     /// left the object believing it was not recording while the PipeWire
     /// capture stream `startRecording` opened stayed open underneath it. That
     /// is exactly the state the microphone rule at the top of this file exists
@@ -1291,14 +1291,14 @@ private:
 
         // This thread did not exist when the process's `JavaVM` stood up, so
         // without attaching it here every JNI call below finds nothing —
-        // `cordial::process_env()`'s own comment in `jni_shim.cpp` is the
+        // `vanta::process_env()`'s own comment in `jni_shim.cpp` is the
         // established reason to reach for `AttachCurrentThread` rather than
         // `GetEnv`, exactly as `WebRtcAudioTrack::run_pump` already relies on
         // it for the identical problem on the playback side.
-        auto* thread_env = cordial::process_env();
+        auto* thread_env = vanta::process_env();
         if (!thread_env) {
             std::fprintf(stderr,
-                "E/Cordial-Audio           WebRtcAudioRecord pump: could not attach to the "
+                "E/Vanta-Audio           WebRtcAudioRecord pump: could not attach to the "
                 "process JavaVM; recording stops here.\n");
             return; // `closer` clears `recording` and closes `capture` here.
         }
@@ -1339,8 +1339,8 @@ private:
 // because this was missing — see that class's own comment — so this is the
 // change that lets a signed-in client receive voice audio at all.
 //
-// **Which of Cordial's three audio paths carries voice chat was established
-// by running, not assumed.** A signed-in `cordial-run` reaching Roblox's Home
+// **Which of Vanta's three audio paths carries voice chat was established
+// by running, not assumed.** A signed-in `vanta-run` reaching Roblox's Home
 // screen on 2.736.1408, `--dump-classes` against the real client, shows
 // exactly `org/webrtc/voiceengine/{WebRtcAudioManager,WebRtcAudioRecord,
 // WebRtcAudioTrack}` under `org/webrtc` — no `org/webrtc/audio/*` (the newer,
@@ -1359,14 +1359,14 @@ private:
 // leaves unverified.
 //
 // **`nativeCacheDirectBufferAddress` and `nativeGetPlayoutData` are native
-// methods the *engine* provides, not ones Cordial answers.** Checked against
+// methods the *engine* provides, not ones Vanta answers.** Checked against
 // `docs/analysis/jni-natives.tsv` — the same exported-symbol table every other
 // JNI binding in this tree is checked against — and neither name appears
 // there as a `Java_org_webrtc_voiceengine_WebRtcAudioTrack_native...` export.
 // WebRTC's own C++ audio glue therefore binds them the way AGDK binds
 // `GameActivity`'s lifecycle methods: dynamically, through `RegisterNatives`,
 // which is why `find_registered_native` above exists and is used below
-// exactly as `cordial_game_activity_start` uses its own copy of the same
+// exactly as `vanta_game_activity_start` uses its own copy of the same
 // trick in `game_activity.cpp`.
 //
 // **The pull loop stands in for WebRTC's own `AudioTrackThread`.** Real
@@ -1394,7 +1394,7 @@ private:
 // recalled from WebRTC's own long-public `WebRtcAudioTrack.java` and is
 // `INFERRED` rather than read out of Roblox's bytecode body — Roblox's copy
 // of this class is not decompiled anywhere in this tree, only its declared
-// method table is. The buffer-size arithmetic below is Cordial's own choice
+// method table is. The buffer-size arithmetic below is Vanta's own choice
 // (WE are standing in for the Java method's entire implementation, so nothing
 // downstream depends on reproducing its exact original formula), not a
 // transcription of anything Roblox or WebRTC ships.
@@ -1453,7 +1453,7 @@ public:
         auto* t = as(self);
         if (!t || sample_rate <= 0 || num_channels <= 0) {
             std::fprintf(stderr,
-                "E/Cordial-Audio           WebRtcAudioTrack.initPlayout(%d Hz, %d ch): refusing "
+                "E/Vanta-Audio           WebRtcAudioTrack.initPlayout(%d Hz, %d ch): refusing "
                 "an impossible format.\n", sample_rate, num_channels);
             return -1;
         }
@@ -1461,7 +1461,7 @@ public:
             env, "org/webrtc/voiceengine/WebRtcAudioTrack", "nativeCacheDirectBufferAddress");
         if (!cache_fn) {
             std::fprintf(stderr,
-                "E/Cordial-Audio           WebRtcAudioTrack.initPlayout: "
+                "E/Vanta-Audio           WebRtcAudioTrack.initPlayout: "
                 "nativeCacheDirectBufferAddress was never registered by the engine, so there is "
                 "nobody on the other end of a buffer this would hand over; refusing rather than "
                 "caching one nothing will ever fill.\n");
@@ -1488,7 +1488,7 @@ public:
         reinterpret_cast<CacheFn>(cache_fn)(jni, thiz, jbuf, t->nativeAudioTrack);
 
         std::fprintf(stderr,
-            "I/Cordial-Audio           WebRtcAudioTrack.initPlayout(%d Hz, %d ch, factor=%.2f): "
+            "I/Vanta-Audio           WebRtcAudioTrack.initPlayout(%d Hz, %d ch, factor=%.2f): "
             "%u byte buffer cached with the engine.\n", sample_rate, num_channels, factor,
             t->bufferBytes);
         return static_cast<jint>(t->bufferBytes);
@@ -1503,7 +1503,7 @@ public:
         auto* t = as(self);
         if (!t || !t->playoutBuffer) {
             std::fprintf(stderr,
-                "W/Cordial-Audio           WebRtcAudioTrack.startPlayout called before a "
+                "W/Vanta-Audio           WebRtcAudioTrack.startPlayout called before a "
                 "successful initPlayout; refusing.\n");
             return false;
         }
@@ -1512,7 +1512,7 @@ public:
             env, "org/webrtc/voiceengine/WebRtcAudioTrack", "nativeGetPlayoutData");
         if (!pull_fn) {
             std::fprintf(stderr,
-                "E/Cordial-Audio           WebRtcAudioTrack.startPlayout: nativeGetPlayoutData "
+                "E/Vanta-Audio           WebRtcAudioTrack.startPlayout: nativeGetPlayoutData "
                 "was never registered by the engine; there is nothing to pull data from, so "
                 "refusing rather than opening a stream that would play silence forever.\n");
             return false;
@@ -1521,7 +1521,7 @@ public:
                             /*container_bits=*/16, /*big_endian=*/false,
                             /*max_pending_buffers=*/4, audio::configured_output_device())) {
             std::fprintf(stderr,
-                "E/Cordial-Audio           WebRtcAudioTrack.startPlayout: PipeWire refused a "
+                "E/Vanta-Audio           WebRtcAudioTrack.startPlayout: PipeWire refused a "
                 "%u Hz, %u channel S16 stream.\n", t->sampleRate, t->channels);
             return false;
         }
@@ -1540,7 +1540,7 @@ public:
         auto self_ref = std::static_pointer_cast<WebRtcAudioTrack>(t->shared_from_this());
         t->pump = std::thread([self_ref, pull_fn] { self_ref->run_pump(pull_fn); });
         std::fprintf(stderr,
-            "I/Cordial-Audio           WebRtcAudioTrack.startPlayout: pulling playout data at "
+            "I/Vanta-Audio           WebRtcAudioTrack.startPlayout: pulling playout data at "
             "%u Hz, %u channel(s).\n", t->sampleRate, t->channels);
         return true;
     }
@@ -1662,7 +1662,7 @@ public:
             std::lock_guard<std::mutex> guard(lock_);
             owned_.clear();
         }
-        std::fprintf(stderr, "I/Cordial-Audio           WebRtcAudioTrack: playout stream closed.\n");
+        std::fprintf(stderr, "I/Vanta-Audio           WebRtcAudioTrack: playout stream closed.\n");
     }
 
     ~WebRtcAudioTrack() { stop(); }
@@ -1710,20 +1710,20 @@ private:
                     self->owned_.clear();
                 }
                 std::fprintf(stderr,
-                    "I/Cordial-Audio           WebRtcAudioTrack: playout stream closed (pump "
+                    "I/Vanta-Audio           WebRtcAudioTrack: playout stream closed (pump "
                     "exited without stop() -- see run_pump's own comment).\n");
             }
         } closer{this};
 
         // This thread did not exist when the process's `JavaVM` stood up, so
         // without attaching it here every JNI call below finds nothing --
-        // `cordial::process_env()`'s own comment in `jni_shim.cpp` is the
+        // `vanta::process_env()`'s own comment in `jni_shim.cpp` is the
         // established reason to reach for `AttachCurrentThread` rather than
         // `GetEnv` for exactly this situation.
-        auto* thread_env = cordial::process_env();
+        auto* thread_env = vanta::process_env();
         if (!thread_env) {
             std::fprintf(stderr,
-                "E/Cordial-Audio           WebRtcAudioTrack pump: could not attach to the "
+                "E/Vanta-Audio           WebRtcAudioTrack pump: could not attach to the "
                 "process JavaVM; playout stops here.\n");
             return; // `closer` clears `open_`/`playing` and closes `stream` here.
         }
@@ -1763,7 +1763,7 @@ private:
                 const uint64_t n = ++dropped;
                 if ((n & (n - 1)) == 0) {
                     std::fprintf(stderr,
-                        "W/Cordial-Audio           WebRtcAudioTrack pump: no room after 500 ms, "
+                        "W/Vanta-Audio           WebRtcAudioTrack pump: no room after 500 ms, "
                         "dropped %llu buffer(s) so far -- the playback stream is not draining.\n",
                         static_cast<unsigned long long>(n));
                 }
@@ -1788,12 +1788,12 @@ private:
 
 } // namespace
 
-/// `CORDIAL_AUDIO_SELFTEST=1` prints the device list Roblox would be given, at
+/// `VANTA_AUDIO_SELFTEST=1` prints the device list Roblox would be given, at
 /// the moment the audio classes are registered.
 ///
 /// It exists because of a gap that took a while to notice: the whole audio
 /// backend can be verified out of process (`native/audio_probe.cpp` does), and
-/// none of that says whether it works *inside* `cordial-run`, where bionic's
+/// none of that says whether it works *inside* `vanta-run`, where bionic's
 /// linker, libjnivm and a second libc are in the same address space. Until
 /// something in Roblox actually asks for audio, this is the only way to find
 /// out, and "nothing asked, so nothing was tested" is how a backend stays
@@ -1803,20 +1803,20 @@ private:
 /// the microphone rule at the top of this file, which this must not be the
 /// exception to.
 void audio_selftest() {
-    if (!std::getenv("CORDIAL_AUDIO_SELFTEST")) return;
+    if (!std::getenv("VANTA_AUDIO_SELFTEST")) return;
     std::vector<audio::DeviceInfo> devices = audio::enumerate_devices();
     std::fprintf(stderr,
-        "I/Cordial-Audio           selftest: PipeWire reports %zu audio device(s).\n",
+        "I/Vanta-Audio           selftest: PipeWire reports %zu audio device(s).\n",
         devices.size());
     for (const audio::DeviceInfo& d : devices) {
         auto info = make_device_info(d);
         std::fprintf(stderr,
-            "I/Cordial-Audio           selftest:   id=%d %s%s type=%d productName='%s'\n",
+            "I/Vanta-Audio           selftest:   id=%d %s%s type=%d productName='%s'\n",
             info->id, d.is_source ? "input " : "output", d.is_default ? " (host default)" : "",
             info->type, info->productName.c_str());
     }
     std::fprintf(stderr,
-        "I/Cordial-Audio           selftest: capture streams open = %u (must be 0: listing "
+        "I/Vanta-Audio           selftest: capture streams open = %u (must be 0: listing "
         "microphones does not use one).\n", audio::active_capture_streams());
 }
 
@@ -1867,28 +1867,28 @@ public:
     /// latency produces underruns rather than an error anybody can trace.
     static jboolean supportsLowLatency(jnivm::ENV*, jnivm::Class*) { return JNI_FALSE; }
 
-    /// **AAudio: true unless `CORDIAL_AUDIO=java` asked otherwise, or there is
+    /// **AAudio: true unless `VANTA_AUDIO=java` asked otherwise, or there is
     /// no PipeWire session to be true about.**
     ///
     /// This used to be an unconditional false, with a comment saying to flip
     /// it "the day `libaaudio.so` is real, not before". That day came in two
     /// halves. First `native/aaudio.cpp` implemented the 25 entry points this
     /// build looks up, over PipeWire, and `symtab.rs` registered them as a
-    /// virtual `libaaudio.so` — behind `CORDIAL_AUDIO=aaudio`, because an
+    /// virtual `libaaudio.so` — behind `VANTA_AUDIO=aaudio`, because an
     /// audio backend nobody has measured must not become the default on an
     /// update. Then it was measured, capture was implemented, and it became
-    /// the default; `CORDIAL_AUDIO=java` is the way back.
+    /// the default; `VANTA_AUDIO=java` is the way back.
     ///
     /// Either way the answer is conditional on exactly the same reading of
-    /// `CORDIAL_AUDIO` that decides whether the library exists at all. The two
-    /// cannot disagree: both call `cordial_audio_backend_is_aaudio`, and there
+    /// `VANTA_AUDIO` that decides whether the library exists at all. The two
+    /// cannot disagree: both call `vanta_audio_backend_is_aaudio`, and there
     /// is one definition of it.
     ///
     /// **This predicate, not `dlopen`, is the real gate**, and that was worth
     /// measuring rather than assuming. `docs/analysis/aaudio-contract.md` had
-    /// it that Roblox's `dlopen("libaaudio.so")` fails because Cordial
+    /// it that Roblox's `dlopen("libaaudio.so")` fails because Vanta
     /// registers no such library. It does not fail — it never happens. A
-    /// signed-in run into place 1818 with `CORDIAL_TRACE_DLSYM=1` records six
+    /// signed-in run into place 1818 with `VANTA_TRACE_DLSYM=1` records six
     /// guest `dlopen` calls (`libc`, `libcamera2ndk`, `libmediandk`,
     /// `libvulkan`, `libandroid` twice) and no audio library among them:
     /// FMOD asks this Java method first and never looks for the library when
@@ -1898,7 +1898,7 @@ public:
     ///
     /// **Saying yes here is a commitment, not a preference, and that is the
     /// most consequential thing measured on 2026-08-22.** A control run
-    /// (`CORDIAL_AUDIO=aaudio-refuse`) answered this true and then reported
+    /// (`VANTA_AUDIO=aaudio-refuse`) answered this true and then reported
     /// `AAUDIO_ERROR_UNAVAILABLE` from every `openStream`. FMOD tried twice —
     /// a probe with no callbacks, then the real stream — and on the second
     /// refusal **gave up on audio entirely**. It did not fall back to
@@ -1915,10 +1915,10 @@ public:
     /// must then refuse — costing the Java fallback that would have reported
     /// the same failure in the one place people already know to look.
     static jboolean supportsAAudio(jnivm::ENV*, jnivm::Class*) {
-        if (!cordial_audio_backend_is_aaudio()) return JNI_FALSE;
+        if (!vanta_audio_backend_is_aaudio()) return JNI_FALSE;
         if (!audio::host_backend_available()) {
             std::fprintf(stderr,
-                "W/Cordial-FMOD            AAudio is selected but no PipeWire session is "
+                "W/Vanta-FMOD            AAudio is selected but no PipeWire session is "
                 "reachable; answering supportsAAudio() false so FMOD keeps its "
                 "AudioDevice fallback. Claiming AAudio here would cost all audio, not just "
                 "the low-latency path -- FMOD does not fall back once a stream it opened "
@@ -1967,12 +1967,12 @@ public:
     /// this refuses instead of opening a stream at 2 Hz.
     jboolean init(jnivm::ENV*, jint channels, jint rate, jint buffer_frames, jint buffer_count) {
         std::fprintf(stderr,
-            "I/Cordial-FMOD            AudioDevice.init(channels=%d, rate=%d, frames=%d, "
+            "I/Vanta-FMOD            AudioDevice.init(channels=%d, rate=%d, frames=%d, "
             "buffers=%d)\n", channels, rate, buffer_frames, buffer_count);
 
         if (rate < 8000 || rate > 192000 || channels < 1 || channels > 8) {
             std::fprintf(stderr,
-                "E/Cordial-FMOD            AudioDevice.init: refusing (channels=%d, rate=%d). "
+                "E/Vanta-FMOD            AudioDevice.init: refusing (channels=%d, rate=%d). "
                 "The argument order measured on 2026-08-06 was (channels, rate, frames, "
                 "buffers); this build appears to pass something else. Reporting failure rather "
                 "than opening a stream at a guessed format.\n", channels, rate);
@@ -1998,14 +1998,14 @@ public:
         // The sink comes from `configured_output_device()` rather than from
         // anything FMOD said, and it cannot come from anywhere else: Roblox's
         // own picker is populated by FMOD's output backend, which presents a
-        // single device on every path Cordial provides, and the AAudio path
+        // single device on every path Vanta provides, and the AAudio path
         // has no `AAudioStreamBuilder_setDeviceId` for the engine to ask with
         // (`docs/analysis/aaudio-contract.md`). Empty is the default and means
         // the session's own default sink, followed live.
         if (!stream_.open(static_cast<uint32_t>(rate), static_cast<uint32_t>(channels),
                           16, 16, false, depth, audio::configured_output_device())) {
             std::fprintf(stderr,
-                "E/Cordial-FMOD            AudioDevice.init: PipeWire refused a %d Hz, %d "
+                "E/Vanta-FMOD            AudioDevice.init: PipeWire refused a %d Hz, %d "
                 "channel S16 stream; reporting failure to FMOD.\n", rate, channels);
             return JNI_FALSE;
         }
@@ -2021,7 +2021,7 @@ public:
         pending_depth_ = depth;
         open_ = true;
         std::fprintf(stderr,
-            "I/Cordial-FMOD            AudioDevice.init: PipeWire playback open at %d Hz, %d "
+            "I/Vanta-FMOD            AudioDevice.init: PipeWire playback open at %d Hz, %d "
             "channel(s), S16.\n", rate, channels);
         return JNI_TRUE;
     }
@@ -2062,7 +2062,7 @@ public:
                 const uint64_t n_dropped = ++dropped;
                 if ((n_dropped & (n_dropped - 1)) == 0) {
                     std::fprintf(stderr,
-                        "W/Cordial-FMOD            AudioDevice.write: no room after 500 ms, "
+                        "W/Vanta-FMOD            AudioDevice.write: no room after 500 ms, "
                         "dropped %llu buffer(s) so far — the playback stream is not draining.\n",
                         static_cast<unsigned long long>(n_dropped));
                 }
@@ -2083,7 +2083,7 @@ public:
     ///
     ///   RBX Worker B   AudioDevice::close  -> holds lock_
     ///                  PlaybackStream::set_active -> pw_thread_loop_lock, waits
-    ///   cordial-pipewire  loop_iterate -> Impl::process -> holds the loop lock
+    ///   vanta-pipewire  loop_iterate -> Impl::process -> holds the loop lock
     ///                  AudioDevice::drained -> lock_, waits
     ///
     /// Every `stream_` entry point takes PipeWire's thread-loop lock, and the
@@ -2091,7 +2091,7 @@ public:
     /// across any `stream_` call is an AB-BA against PipeWire's own loop, and
     /// it never recovers.
     ///
-    /// It cost two days pointed at the wrong component. Cordial's pump stays
+    /// It cost two days pointed at the wrong component. Vanta's pump stays
     /// perfectly healthy through this -- `epoll_wait` in `looper::pump` at 1%
     /// CPU, 74 million polls on an earlier specimen -- because nothing is wrong
     /// with the pump. The engine's audio worker is blocked, so the engine stops
@@ -2127,7 +2127,7 @@ public:
             std::lock_guard<std::mutex> guard(lock_);
             owned_.clear();
         }
-        std::fprintf(stderr, "I/Cordial-FMOD            AudioDevice.close: playback stream closed.\n");
+        std::fprintf(stderr, "I/Vanta-FMOD            AudioDevice.close: playback stream closed.\n");
     }
 
     static void Register(jnivm::ENV* env) {
@@ -2175,7 +2175,7 @@ private:
     std::mutex lock_;
     std::condition_variable space_;
     bool open_ = false;
-    cordial::audio::PlaybackStream stream_;
+    vanta::audio::PlaybackStream stream_;
     std::vector<std::unique_ptr<uint8_t[]>> owned_;
 };
 
@@ -2192,4 +2192,4 @@ void register_audio_classes(jnivm::ENV* env) {
     audio_selftest();
 }
 
-} // namespace cordial
+} // namespace vanta

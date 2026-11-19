@@ -6,7 +6,7 @@
  * history. That means email addresses, absolute home paths
  * (`/home/<username>/...`), IP addresses, and shell-prompt/`Host:`-style
  * machine hostnames show up constantly. Everything below is redacted on
- * write, before anything ever lands in raw.jsonl — Cordial is a public repo
+ * write, before anything ever lands in raw.jsonl — Vanta is a public repo
  * and this corpus is other people's bug reports with no license grant to us,
  * so it stays local (see the repo `.gitignore` entry for this directory's
  * `data/`) and scrubbed regardless.

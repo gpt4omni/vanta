@@ -1,6 +1,6 @@
-# Contributing to Cordial
+# Contributing to Vanta
 
-Cordial is a runtime for a 116 MB stripped binary nobody here has the source to.
+Vanta is a runtime for a 116 MB stripped binary nobody here has the source to.
 That shapes everything about how work gets done on it, and this document is
 mostly about that method rather than about code style.
 
@@ -67,22 +67,22 @@ Useful switches:
 
 | | |
 |---|---|
-| `CORDIAL_ANDROID_TRACE=1` | every Android API call Cordial serves |
-| `CORDIAL_TRACE_PATHS=1` | every path-taking libc call, with thread id |
-| `CORDIAL_COUNT_GL=1` | graphics call counts on exit |
-| `CORDIAL_MONITOR=<n>` | open the window on another monitor |
+| `VANTA_ANDROID_TRACE=1` | every Android API call Vanta serves |
+| `VANTA_TRACE_PATHS=1` | every path-taking libc call, with thread id |
+| `VANTA_COUNT_GL=1` | graphics call counts on exit |
+| `VANTA_MONITOR=<n>` | open the window on another monitor |
 
-`CORDIAL_TRACE=1` is **ABI-unsafe** — it wraps variadic functions with
+`VANTA_TRACE=1` is **ABI-unsafe** — it wraps variadic functions with
 fixed-arity declarations and makes the engine abort. It cannot answer "which
-path?" questions; `CORDIAL_TRACE_PATHS=1` can.
+path?" questions; `VANTA_TRACE_PATHS=1` can.
 
 ## Debugging facts that cost real time to learn
 
 - **lldb breakpoints inside `libroblox.so` do not work, and fail silently.**
-  Cordial `mmap`s it outside the system linker, so lldb never lists the image and
+  Vanta `mmap`s it outside the system linker, so lldb never lists the image and
   every breakpoint stays unresolved with hit count 0. The working technique is
   `memory write` of `0xCC`, then rewinding `$pc` and restoring the byte on trap.
-  Crash-stop backtraces and breakpoints in Cordial's own code are unaffected.
+  Crash-stop backtraces and breakpoints in Vanta's own code are unaffected.
 - **Read syscall arguments from `/proc/<pid>/task/<tid>/syscall`** while lldb has
   the process stopped, rather than from registers. It gives the number and all
   six arguments with no guesswork about the libc wrapper's register shuffling.
@@ -116,13 +116,13 @@ obfuscation-as-security.
 
 ## The licence is settled
 
-Cordial is GPL-3.0-or-later and stays that way. Requests to relicense — to MIT,
+Vanta is GPL-3.0-or-later and stays that way. Requests to relicense — to MIT,
 to Apache-2.0, to dual-licence, to carve out an exception for one downstream —
 are declined, and the issue is closed with a link to this section rather than
 argued out.
 
 There is **one exception, and it is named so that it is not an opening**:
-`crates/cordial-protocol` is `MIT OR Apache-2.0`. It is the interface other
+`crates/vanta-protocol` is `MIT OR Apache-2.0`. It is the interface other
 runtimes and launchers implement (the message types, the codec, the manifest type
 and the conformance cases, with nothing of the client in it), and a protocol
 crate that a program under another licence cannot link is not doing its job.
@@ -149,7 +149,7 @@ they are different questions rather than the same one wearing a hat:
 
 ## No Roblox code, ever
 
-Cordial ships no Roblox code, APK, asset or decompiled material, and never will.
+Vanta ships no Roblox code, APK, asset or decompiled material, and never will.
 Do not commit any, do not vendor any, and do not paste decompiler output into an
 issue or a comment.
 
@@ -163,26 +163,26 @@ not the tool, it is what you take away.
 Use a throwaway account, and put it on a different IP from the one your real
 account uses — a VPN is the easy way.
 
-This is not because Cordial does anything bannable. It runs the official build,
+This is not because Vanta does anything bannable. It runs the official build,
 does not touch the engine's process, and asset overlays are the same thing
 Bloxstrap and Sober already do in the open. The risk is collateral, not causal:
 enforcement at this scale is automated, it runs in waves, and accounts that share
 an address get associated with each other. If a test account is ever caught in a
-wave — for any reason, including one that has nothing to do with Cordial — you do
+wave — for any reason, including one that has nothing to do with Vanta — you do
 not want the account you actually care about sitting next to it.
 
-Cordial cannot make that decision for you and does not try to hide anything from
+Vanta cannot make that decision for you and does not try to hide anything from
 anyone. Testing pre-release software that loads a game client is simply not
 something to do on an account you would be upset to lose.
 
 The same goes for reporting: if you hit an account problem while testing, say so
-in the issue. A ban that turns out to be Cordial's fault is the single most
+in the issue. A ban that turns out to be Vanta's fault is the single most
 important bug this project could have, and it is only findable if people mention
 it.
 
 ## Practical
 
-Besides Clang, `crates/cordial-shell` (the core shell — window, chooser,
+Besides Clang, `crates/vanta-shell` (the core shell — window, chooser,
 minimal settings; see [ADR-002](docs/adr/ADR-002-core-shell-and-ui-handoff.md)
 and [ADR-011](docs/adr/ADR-011-wayland-and-libadwaita.md)) needs GTK4 ≥ 4.10
 and libadwaita ≥ 1.4 development headers on `PKG_CONFIG_PATH`, because
@@ -196,21 +196,21 @@ sudo pacman -S gtk4 libadwaita                    # Arch
 ```
 
 Play in VR is the `vr` feature: off in a plain `cargo build`, on in every
-package, and turned on with `--features cordial-runtime/vr`. Nothing in the
+package, and turned on with `--features vanta-runtime/vr`. Nothing in the
 next paragraph is needed without it.
 
 On x86-64 the VR mode's translator, dynarmic (`third_party/dynarmic`, a
 submodule with submodules of its own, which `--recursive` fetches), also needs
 Boost's headers: `boost-devel`, `libboost-dev` or `boost`. `cargo test` with it builds a
-small arm64 test image for `crates/cordial-guest` and needs `lld` and `llvm`
+small arm64 test image for `crates/vanta-guest` and needs `lld` and `llvm`
 for it; without them the tests that run it are ignored, and a build warning
 says why. The build compiles the loader and dynarmic with `patches/0005`--`0008`
 applied, in a copy under `target/`, and leaves the submodules untouched
 ([`patches/README.md`](patches/README.md)).
 
 ```bash
-git clone --recursive https://github.com/luohoa97/cordial
-cd cordial
+git clone --recursive https://github.com/gpt4omni/vanta
+cd vanta
 cargo build --release      # Clang required; AOSP bionic does not build with GCC
 cargo test --release
 ```
@@ -252,7 +252,7 @@ it did before audio existed here. `webkitgtk6.0-devel` is the same shape for the
 web views.
 
 **That optionality is a trap worth naming.** Those two probes mean the tree
-compiles either way and quietly produces a different Cordial, so two people on
+compiles either way and quietly produces a different Vanta, so two people on
 the same commit can measure different binaries and neither can tell. In a
 project whose method is "verify by running", that costs more than a missing
 feature.
@@ -266,7 +266,7 @@ just check
 
 `flake.nix` pins Clang, Rust, GTK4, libadwaita **and** both optional
 dependencies, so everyone builds the same thing. It prints the version of each
-on entry. It builds Cordial and nothing else: you still run the client on your
+on entry. It builds Vanta and nothing else: you still run the client on your
 own host with `just dev`, because the engine's behaviour depends on the real
 graphics stack, compositor and glibc — `--host-libc` makes that dependence
 explicit — and a hermetic runtime would be measuring something nobody ships.
@@ -277,24 +277,24 @@ and should not need it.
 
 **What has been run, as of 2026-10-01.** `packages.default` was built from this
 tree on the developer's Fedora Atomic host and the result inspected, but not
-launched into a game. `cordial --help` and `cordial --diagnostics` ran from the
+launched into a game. `vanta --help` and `vanta --diagnostics` ran from the
 built output, `ldd` on both binaries reports nothing `not found`, and
-`readelf -d` shows `cordial-run` linked WebKitGTK. The PipeWire, ALSA and
+`readelf -d` shows `vanta-run` linked WebKitGTK. The PipeWire, ALSA and
 PulseAudio backends are compiled in. `cargo test` is not run by the Nix build.
 Nobody has run the `devShells.default` shell end to end, and the remote form,
-`nix run "github:luohoa97/cordial?submodules=1"`, is `INFERRED` from the local
+`nix run "github:gpt4omni/vanta?submodules=1"`, is `INFERRED` from the local
 build and has not been tried against a pushed commit.
 
 Two things the first build found. `eachDefaultSystem` evaluates x86_64-darwin,
 which current nixpkgs refuses to evaluate, so the flake lists Linux systems
 only. And `cargoBuildFeatures` is overwritten by nixpkgs' `buildFeatures`, so
 the first package built cleanly with no web view; the flake now sets
-`buildFeatures` and fails the build if `cordial-run` links no WebKitGTK.
+`buildFeatures` and fails the build if `vanta-run` links no WebKitGTK.
 
 **The submodules need `?submodules=1`.** Flakes do not fetch them otherwise;
-from a checkout use `nix build '.?submodules=1#cordial'`. The package installs
+from a checkout use `nix build '.?submodules=1#vanta'`. The package installs
 the same files as the AUR package, puts `deno` on the wrapper's `PATH`, and
-reports `Install unknown` in `cordial --diagnostics`, because nothing there
+reports `Install unknown` in `vanta --diagnostics`, because nothing there
 recognises a `/nix/store` path yet.
 
 On an ostree host `nix` has no writable store to start with, and a bare
@@ -311,7 +311,7 @@ your home directory works with no change to the host, and is how the build above
 was done:
 
 ```bash
-nix --store "local?root=$HOME/.cache/cordial-nix" build '.?submodules=1#cordial' -L
+nix --store "local?root=$HOME/.cache/vanta-nix" build '.?submodules=1#vanta' -L
 ```
 
 The binaries it produces point at `/nix/store`, which only exists inside that
@@ -335,7 +335,7 @@ Before opening a pull request:
 - your commit message says what you **measured**, not just what you changed
 
 Licensed GPL-3.0-or-later. By contributing you agree your work ships under it,
-except in `crates/cordial-protocol`, where it ships under `MIT OR Apache-2.0`.
+except in `crates/vanta-protocol`, where it ships under `MIT OR Apache-2.0`.
 Third-party notices live in
 [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md) and must be kept accurate;
 MIT and Apache-2.0 obligations are satisfied only while those notices travel

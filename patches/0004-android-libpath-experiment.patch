@@ -4,7 +4,7 @@
    }
  }
  
-+// Cordial addition, not upstream: overrides a loaded library's realpath_ as
++// Vanta addition, not upstream: overrides a loaded library's realpath_ as
 +// pure metadata -- nothing is reopened or remapped, and every byte already
 +// mapped stays exactly where it was. Meant to be called between deferring a
 +// library's constructors and running them (see mcpelauncher_defer_next_ctors
@@ -14,8 +14,8 @@
 +// Exists to test docs/analysis/flag-init.md §31/§30: a root-privileged text
 +// compare showed Sober's engine mapped from an authentic Android install
 +// path (/data/app/~~<hash>/com.roblox.client-<hash>/lib/x86_64/libroblox.so)
-+// with zero altered bytes, while Cordial maps the identical engine from
-+// ~/.cache/cordial/lib/x86_64/libroblox.so -- nothing shaped like a package
++// with zero altered bytes, while Vanta maps the identical engine from
++// ~/.cache/vanta/lib/x86_64/libroblox.so -- nothing shaped like a package
 +// layout. do_dladdr() below answers a self-lookup with exactly this field
 +// (si->get_realpath()), which is the one piece of "where am I" the engine can
 +// reach before JNI_OnLoad has even run, since RbxStorage::init's failing
@@ -36,22 +36,22 @@
    return __loader_dlvsym(handle, symbol, version, caller_addr);
  }
  
-+// Cordial addition, not upstream: docs/analysis/flag-init.md §31 asks whether
++// Vanta addition, not upstream: docs/analysis/flag-init.md §31 asks whether
 +// the engine locates its own private data directory by walking up from its
 +// own library path, the way an Android app finds /data/user/0/<pkg> from
 +// /data/app/<pkg>/lib/<abi>/. dladdr() and dl_iterate_phdr() are the two ways
 +// guest code can ask the linker "where am I" (the third, /proc/self/maps, is
-+// a plain file read and already visible in CORDIAL_TRACE_PATHS=1 -- and never
++// a plain file read and already visible in VANTA_TRACE_PATHS=1 -- and never
 +// appears there). Tracing which of these two the engine actually calls, and
 +// with what result, answers the question by observation instead of by
 +// picking one to patch and hoping.
  __attribute__((__weak__))
  int dladdr(const void* addr, Dl_info* info) {
 -  return __loader_dladdr(addr, info);
-+  static const bool trace = getenv("CORDIAL_TRACE_DLADDR") != nullptr;
++  static const bool trace = getenv("VANTA_TRACE_DLADDR") != nullptr;
 +  int r = __loader_dladdr(addr, info);
 +  if (trace) {
-+    fprintf(stderr, "[cordial-dladdr-trace] dladdr(%p) -> %d fname=%s fbase=%p\n", addr, r,
++    fprintf(stderr, "[vanta-dladdr-trace] dladdr(%p) -> %d fname=%s fbase=%p\n", addr, r,
 +            (r && info && info->dli_fname) ? info->dli_fname : "(null)",
 +            (r && info) ? info->dli_fbase : nullptr);
 +  }
@@ -63,15 +63,15 @@
   * This needs to be defined as weak because it is also defined in libc.a.
   * Without this, static executables will have a multiple definition error.
   */
-+// Cordial addition, not upstream: same question as dladdr() above, the other
++// Vanta addition, not upstream: same question as dladdr() above, the other
 +// route. Only traces that a call happened -- not the per-entry dlpi_name,
 +// which the callback the caller supplies receives directly and this wrapper
 +// cannot see without intercepting that callback too.
  __attribute__((__weak__))
  int dl_iterate_phdr(int (*cb)(struct dl_phdr_info* info, size_t size, void* data), void* data) {
-+  static const bool trace = getenv("CORDIAL_TRACE_DLADDR") != nullptr;
++  static const bool trace = getenv("VANTA_TRACE_DLADDR") != nullptr;
 +  if (trace) {
-+    fprintf(stderr, "[cordial-dladdr-trace] dl_iterate_phdr called\n");
++    fprintf(stderr, "[vanta-dladdr-trace] dl_iterate_phdr called\n");
 +  }
    return __loader_dl_iterate_phdr(cb, data);
  }

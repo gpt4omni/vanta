@@ -22,8 +22,8 @@
 # costs nothing to add and is worth more than the emulated smoke test
 # elsewhere in this project's toolchain: it is `cargo test` actually executing
 # aarch64 code on an aarch64 CPU, not qemu standing in for one. This is
-# separate from whether *Cordial itself* runs on aarch64 -- see
-# docs/multiarch.md and packaging/rpm/cordial.spec's `ExclusiveArch` for that
+# separate from whether *Vanta itself* runs on aarch64 -- see
+# docs/multiarch.md and packaging/rpm/vanta.spec's `ExclusiveArch` for that
 # question, which this test matrix does not answer by itself, only exercises
 # the workspace's own Rust and native code on the architecture.
 name: test
@@ -57,8 +57,8 @@ jobs:
         # "unavailable" arms — the shape that made web views do nothing for
         # months and audio do nothing before that.
         #
-        # `boost-devel` is for dynarmic (crates/cordial-guest, behind
-        # `cordial-runtime/vr`), which find_package()s Boost's headers on
+        # `boost-devel` is for dynarmic (crates/vanta-guest, behind
+        # `vanta-runtime/vr`), which find_package()s Boost's headers on
         # x86-64; `llvm` and `lld` also build that crate's arm64 test image.
         run: |
           dnf install -y --setopt=install_weak_deps=False \
@@ -80,7 +80,7 @@ jobs:
         # shape that hid this feature being absent for months.
         run: cargo test --workspace
       - name: cargo test with the web view and VR
-        run: cargo test --workspace --features cordial-shell/webview,cordial-runtime/webview,cordial-runtime/vr
+        run: cargo test --workspace --features vanta-shell/webview,vanta-runtime/webview,vanta-runtime/vr
 
   # The Discord issue bridge generates its modals from `.github/ISSUE_TEMPLATE/`
   # and fetches them at *runtime*, so an edit to a template needs no redeploy.

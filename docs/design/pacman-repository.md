@@ -1,18 +1,18 @@
-# Cordial's own pacman repository, and why it is not the AUR
+# Vanta's own pacman repository, and why it is not the AUR
 
 Arch has three readings worth keeping separate, more than Debian or Fedora
 get in [`apt-repository.md`](apt-repository.md) and
 [`rpm-repository.md`](rpm-repository.md), because Arch's own ecosystem has a
 third option neither of those has an equivalent of.
 
-1. **Cordial's own pacman repository.** A `repo-add` database at a URL
-   Cordial controls, added as a custom repository in `pacman.conf` and
-   installed with a plain `pacman -S cordial`, the same shape
-   [`packaging/cordial.flatpakrepo`](../../packaging/cordial.flatpakrepo)
+1. **Vanta's own pacman repository.** A `repo-add` database at a URL
+   Vanta controls, added as a custom repository in `pacman.conf` and
+   installed with a plain `pacman -S vanta`, the same shape
+   [`packaging/vanta.flatpakrepo`](../../packaging/vanta.flatpakrepo)
    gives `flatpak remote-add`. This is what §1 below covers, and it is
    built, signed and published; see "Current status" below.
 2. **The AUR.** Arch's own community package repository, where
-   `packaging/aur/cordial/PKGBUILD` already lives and already builds --
+   `packaging/aur/vanta/PKGBUILD` already lives and already builds --
    `release.yml`'s `arch` job runs `makepkg` against it on every push, and
    that is where the `.pkg.tar.zst` this document's repository packages
    comes from. **Submitting it is currently blocked on AUR account sign-ups
@@ -32,21 +32,21 @@ authority the way apt and dnf each do -- Arch's own repos (`core`, `extra`)
 carry a much narrower set of packages than either Debian's or Fedora's, and
 almost nothing outside that narrow set is expected to live there. The AUR
 and Chaotic-AUR above are the two channels that actually matter for a
-package like Cordial, and both are named rather than re-argued from
+package like Vanta, and both are named rather than re-argued from
 scratch.
 
 ## Current status
 
-**Published and signed.** On 2026-09-30 `arch/x86_64/cordial.db` was served
-with a detached `cordial.db.sig` that verified as a good signature against
-`arch/cordial-archive-keyring.asc`. No package file was fetched and `pacman -Sy`
+**Published and signed.** On 2026-09-30 `arch/x86_64/vanta.db` was served
+with a detached `vanta.db.sig` that verified as a good signature against
+`arch/vanta-archive-keyring.asc`. No package file was fetched and `pacman -Sy`
 was not run. The `-debug` package is deliberately not in the repository: at
 over 100 MB it exceeds Pages' per-file limit
 ([`pacman.yml`](../../.github/workflows/pacman.yml)). The paragraphs further down
 that speak of a missing secret or a 404 on `/arch/` describe the state before
 the key was added.
 
-## §1. Cordial's own repository
+## §1. Vanta's own repository
 
 ### What is signed, and what that does and does not cover
 
@@ -54,18 +54,18 @@ the key was added.
 takes one or more built `.pkg.tar.zst` files and produces:
 
 ```
-arch/x86_64/cordial.db.tar.gz          # the repository database, repo-add output
-arch/x86_64/cordial.db.tar.gz.sig      # detached signature of the database
-arch/x86_64/cordial.files.tar.gz       # file lists, repo-add output
-arch/x86_64/cordial.files.tar.gz.sig   # detached signature of the file list
-arch/x86_64/cordial-<version>-x86_64.pkg.tar.zst
-arch/cordial-archive-keyring.asc       # the public half, for pacman-key --add
+arch/x86_64/vanta.db.tar.gz          # the repository database, repo-add output
+arch/x86_64/vanta.db.tar.gz.sig      # detached signature of the database
+arch/x86_64/vanta.files.tar.gz       # file lists, repo-add output
+arch/x86_64/vanta.files.tar.gz.sig   # detached signature of the file list
+arch/x86_64/vanta-<version>-x86_64.pkg.tar.zst
+arch/vanta-archive-keyring.asc       # the public half, for pacman-key --add
 ```
 
 **The signature is on the database, not on the individual package** -- the
 same design [`apt-repository.md`](apt-repository.md) argues for `Release`
 and [`rpm-repository.md`](rpm-repository.md) argues for `repomd.xml`,
-applied to `repo-add`'s own output. `repo-add -s` signs `cordial.db.tar.gz`
+applied to `repo-add`'s own output. `repo-add -s` signs `vanta.db.tar.gz`
 after building it; pacman checks that signature when `SigLevel` requires a
 database signature, and refuses a database whose signature does not match.
 
@@ -86,12 +86,12 @@ this repository has to say so explicitly rather than relying on
 `SigLevel`'s repository-wide default, which normally expects both:
 
 ```
-[cordial]
-Server = https://luohoa97.github.io/cordial/arch/$arch
+[vanta]
+Server = https://gpt4omni.github.io/vanta/arch/$arch
 SigLevel = DatabaseRequired PackageNever
 ```
 
-`DatabaseRequired` demands a valid signature on `cordial.db.tar.gz`, matching
+`DatabaseRequired` demands a valid signature on `vanta.db.tar.gz`, matching
 what `repo-add -s` actually produces; `PackageNever` says plainly that
 individual packages carry no signature to check, rather than silently
 failing every install the way a bare `SigLevel = Required` would once
@@ -131,7 +131,7 @@ trap 'rm -rf "$GNUPGHOME"' EXIT
 #    "Import the signing key" step uses `gpg --batch --import`, never
 #    `--pinentry-mode loopback --passphrase`).
 gpg --batch --passphrase '' --quick-generate-key \
-    'Cordial Pacman Repository <choose-an-address-you-monitor>' \
+    'Vanta Pacman Repository <choose-an-address-you-monitor>' \
     rsa4096 sign 2y
 
 # 3. Read back the fingerprint -- this becomes ARCH_GPG_KEY_ID.
@@ -145,18 +145,18 @@ echo "$FPR"
 #    exported here for the maintainer's own record;
 #    packaging/pacman/build-repo.sh re-exports it itself from the imported
 #    key during each signed run.
-gpg --armor --export-secret-keys "$FPR" > cordial-pacman-signing-key.private.asc
-gpg --armor --export             "$FPR" > cordial-pacman-signing-key.public.asc
+gpg --armor --export-secret-keys "$FPR" > vanta-pacman-signing-key.private.asc
+gpg --armor --export             "$FPR" > vanta-pacman-signing-key.public.asc
 
 # 5. Set the two repository secrets .github/workflows/pacman.yml reads.
-gh secret set ARCH_GPG_PRIVATE_KEY -R luohoa97/cordial < cordial-pacman-signing-key.private.asc
-gh secret set ARCH_GPG_KEY_ID      -R luohoa97/cordial --body "$FPR"
+gh secret set ARCH_GPG_PRIVATE_KEY -R gpt4omni/vanta < vanta-pacman-signing-key.private.asc
+gh secret set ARCH_GPG_KEY_ID      -R gpt4omni/vanta --body "$FPR"
 
 # 6. Rebuild the repository now, rather than waiting for the next push.
-gh workflow run pacman.yml -R luohoa97/cordial
+gh workflow run pacman.yml -R gpt4omni/vanta
 ```
 
-**GitHub secrets are write-only.** `cordial-pacman-signing-key.private.asc`
+**GitHub secrets are write-only.** `vanta-pacman-signing-key.private.asc`
 needs a durable, access-controlled home before the scratch keyring and loose
 `.asc` files are deleted, the same warning `apt-repository.md` and
 `rpm-repository.md` give for their own keys.
@@ -164,18 +164,18 @@ needs a durable, access-controlled home before the scratch keyring and loose
 ### What ties this together in CI
 
 1. **`release.yml`**'s existing `arch` job runs `makepkg` against
-   `packaging/aur/cordial/PKGBUILD` inside `archlinux:base-devel` and
-   uploads the result as the `cordial-arch` artifact, exactly as it did
+   `packaging/aur/vanta/PKGBUILD` inside `archlinux:base-devel` and
+   uploads the result as the `vanta-arch` artifact, exactly as it did
    before this change.
 2. **`.github/workflows/pacman.yml`**, new, triggers when that job's
-   workflow finishes, downloads `cordial-arch` from that specific run, and
+   workflow finishes, downloads `vanta-arch` from that specific run, and
    runs `build-repo.sh` against it -- but only when `ARCH_GPG_PRIVATE_KEY`
    is set. Unlike `yum.yml` and `apt.yml`, which run on the bare
    `ubuntu-latest` runner, this job's own container is
    `archlinux:base-devel`, because `repo-add` and `pacman-key` are Arch-only
    tools with nothing to `apt-get`.
 3. **`flatpak.yml`**'s "Assemble the Pages tree" step looks up
-   `pacman.yml`'s latest successful run, downloads `cordial-pacman-repo`
+   `pacman.yml`'s latest successful run, downloads `vanta-pacman-repo`
    from it, and copies it into `pages/arch/` alongside `pages/apt/` and
    `pages/rpm/`. Absent a successful run, that step says so and publishes
    without `/arch/`.
@@ -187,7 +187,7 @@ run rather than one from the same commit.
 ### Installing it, and verifying the key
 
 ```bash
-curl -fsSL https://luohoa97.github.io/cordial/arch/cordial-archive-keyring.asc \
+curl -fsSL https://gpt4omni.github.io/vanta/arch/vanta-archive-keyring.asc \
     | sudo pacman-key --add -
 sudo pacman-key --lsign-key <fingerprint>   # from "The key" below
 ```
@@ -196,7 +196,7 @@ Then add the repository to `/etc/pacman.conf` (the block under "pacman.conf's
 SigLevel" above), and:
 
 ```bash
-sudo pacman -Sy cordial
+sudo pacman -Sy vanta
 ```
 
 `pacman-key --lsign-key` locally signs the imported key, which is what lets
@@ -217,7 +217,7 @@ rather than silently accepting either key.
 
 ### What this does and does not fix
 
-Signing proves `cordial.db.tar.gz` -- and the packages it lists -- was
+Signing proves `vanta.db.tar.gz` -- and the packages it lists -- was
 produced by whoever holds the private key. It does not prove that person is
 trustworthy, and it is a different guarantee from the AUR (community
 scrutiny of a `PKGBUILD` before anyone runs it) or Arch's own `core`/`extra`
@@ -228,6 +228,6 @@ client, the same gap named for each of the other two channels.
 
 ## Notes moved from docs/install.md (2026-10-02)
 
-The release-page `.pkg.tar.zst` is built by the same `makepkg` run an AUR user's own machine would do, and its cosign signature is keyless, so there is no key to add to a keyring and none to trust. On 2026-09-30 `cordial.db.sig` verified as a good signature against the published keyring; `pacman -Sy` was not run, and neither was the `pacman.conf` stanza. The `SigLevel = DatabaseRequired PackageNever` line comes from the section above, which says itself that it was reasoned from `pacman.conf(5)` rather than tried.
+The release-page `.pkg.tar.zst` is built by the same `makepkg` run an AUR user's own machine would do, and its cosign signature is keyless, so there is no key to add to a keyring and none to trust. On 2026-09-30 `vanta.db.sig` verified as a good signature against the published keyring; `pacman -Sy` was not run, and neither was the `pacman.conf` stanza. The `SigLevel = DatabaseRequired PackageNever` line comes from the section above, which says itself that it was reasoned from `pacman.conf(5)` rather than tried.
 
-The `cordial`, `cordial-bin` and `cordial-git` AUR packages belong to an account that is not the maintainer's (`taxin-404`). On 2026-09-30 they were copies of `packaging/aur/` from 0.17.0, fetching only from this repository, and `cordial-bin`'s checksum matched the official 0.17.0 release file.
+The `vanta`, `vanta-bin` and `vanta-git` AUR packages belong to an account that is not the maintainer's (`taxin-404`). On 2026-09-30 they were copies of `packaging/aur/` from 0.17.0, fetching only from this repository, and `vanta-bin`'s checksum matched the official 0.17.0 release file.

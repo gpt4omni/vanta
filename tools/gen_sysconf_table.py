@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regenerate crates/cordial-runtime/src/bionic/sysconf_table.rs.
+"""Regenerate crates/vanta-runtime/src/bionic/sysconf_table.rs.
 
 bionic and glibc each number the `_SC_*` selectors for `sysconf()` in their own
 way, and they agree on almost nothing: of the 147 constants bionic defines, 145
@@ -23,7 +23,7 @@ import sys
 import tempfile
 
 DEST = pathlib.Path(__file__).resolve().parent.parent / (
-    "crates/cordial-runtime/src/bionic/sysconf_table.rs"
+    "crates/vanta-runtime/src/bionic/sysconf_table.rs"
 )
 
 

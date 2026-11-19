@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""End-to-end test of Cordial's pointer lock, with real buttons and real keys.
+"""End-to-end test of Vanta's pointer lock, with real buttons and real keys.
 
 Three behavioural changes to the lock shipped on 2026-09-04 -- Escape becoming
 a toggle, the right-drag latch, and the latch's timeout -- and none of them
 could be tested by anything that existed:
 
-  * **`cordial_click` and `cordial_key` cannot reach this code.** They call
+  * **`vanta_click` and `vanta_key` cannot reach this code.** They call
     `input::script_button` and `input::pass_key_event` directly, one layer
     below the Wayland handlers where the lock decision is made. Driving them
     exercises the engine's input path and nothing of `dispatch_pointer_button`
@@ -36,11 +36,11 @@ before it.
 
 The engine's own request needs a signed-in account and a joined experience, so
 the false-to-true transition the latch keys on comes from the `fakeenginelock`
-seam. Cordial's reaction to that transition is measured here.
+seam. Vanta's reaction to that transition is measured here.
 
 **A hand-run first-person session on 2026-09-04 supplied the rest, and it
 disagreed with the seam's premise.** On engine 2.736.0.1408, scrolling into
-first person took the engine's answer to true and Cordial requested the lock;
+first person took the engine's answer to true and Vanta requested the lock;
 Escape dropped it and a second Escape took it back. But holding the right button
 in third person left the answer *false* for the whole drag -- so the
 false-to-true crossing this file simulates is not something that build was seen
@@ -50,7 +50,7 @@ state machine; it no longer stands in for observed engine behaviour.
 And a headless nested sway never confirms a constraint: it answers no request
 with `locked`, which the protocol permits and gives it no way to announce. So
 `confirmed` is false throughout and every assertion is on `requested`, which is
-the half Cordial decides. Whether a real compositor then grants these requests
+the half Vanta decides. Whether a real compositor then grants these requests
 is not tested here and is not what changed.
 
 Usage:  tools/pointer-lock-e2e.py [--profile NAME] [--keep]
@@ -59,9 +59,9 @@ Usage:  tools/pointer-lock-e2e.py [--profile NAME] [--keep]
 import argparse, os, re, socket, subprocess, sys, time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-HOLDERS = os.environ.get("CORDIAL_HOLDER_BIN", "/tmp/cordial-wl-holders")
-BOX = "cordial"
-OUT = os.environ.get("CORDIAL_LOCK_E2E_OUT", "/tmp/cordial-lock-e2e")
+HOLDERS = os.environ.get("VANTA_HOLDER_BIN", "/tmp/vanta-wl-holders")
+BOX = "vanta"
+OUT = os.environ.get("VANTA_LOCK_E2E_OUT", "/tmp/vanta-lock-e2e")
 
 BUTTON_SECONDARY = 2          # input::BUTTON_SECONDARY
 KEY_ESC = 1                   # evdev
@@ -158,7 +158,7 @@ exec sh -c 'printf %s "$WAYLAND_DISPLAY" > {stamp}'
 
 
 def start_sway(width, height):
-    stamp, cfg = "/tmp/cordial-lock-e2e-display", "/tmp/cordial-lock-e2e-sway.cfg"
+    stamp, cfg = "/tmp/vanta-lock-e2e-display", "/tmp/vanta-lock-e2e-sway.cfg"
     for f in (stamp, cfg):
         if os.path.exists(f):
             os.unlink(f)
@@ -168,14 +168,14 @@ def start_sway(width, height):
         ["distrobox", "enter", BOX, "--", "bash", "-lc",
          f"exec env -u WAYLAND_DISPLAY -u DISPLAY WLR_BACKENDS=headless "
          f"WLR_LIBINPUT_NO_DEVICES=1 WLR_HEADLESS_OUTPUTS=1 "
-         f"sway -c {cfg} > /tmp/cordial-lock-e2e-sway.log 2>&1"],
+         f"sway -c {cfg} > /tmp/vanta-lock-e2e-sway.log 2>&1"],
         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     deadline = time.time() + 25
     while time.time() < deadline:
         if os.path.exists(stamp) and os.path.getsize(stamp):
             return sway_pid(cfg), open(stamp).read().strip()
         time.sleep(0.2)
-    raise RuntimeError("sway never reported a display; see /tmp/cordial-lock-e2e-sway.log")
+    raise RuntimeError("sway never reported a display; see /tmp/vanta-lock-e2e-sway.log")
 
 
 def sway_pid(cfg):
@@ -191,7 +191,7 @@ def profile_holder(profile):
     Never `pgrep -f`: the pattern matches the shell running it. `pidof` matches
     the executable, which the engine's thread rename does not touch.
     """
-    for pid in sh(["pidof", "cordial-run"]).stdout.split():
+    for pid in sh(["pidof", "vanta-run"]).stdout.split():
         try:
             argv = open(f"/proc/{pid}/cmdline").read().split("\0")
         except OSError:
@@ -210,8 +210,8 @@ def main():
     args = ap.parse_args()
 
     os.makedirs(OUT, exist_ok=True)
-    binary = os.path.join(ROOT, "target/release/cordial-run")
-    lib = os.path.expanduser("~/.cache/cordial/lib/x86_64")
+    binary = os.path.join(ROOT, "target/release/vanta-run")
+    lib = os.path.expanduser("~/.cache/vanta/lib/x86_64")
     apk = os.path.expanduser(
         "~/.var/app/org.vinegarhq.Sober/data/sober/packages/x86_64/"
         "com.roblox.client/base.apk")
@@ -238,11 +238,11 @@ def main():
                       "swaymsg -t get_seats -r").stdout
         if '"capabilities": 0' in caps or '"keyboards": 0' in caps:
             sys.exit("FAIL: the seat has no devices; every reading below would be "
-                     "taken with Cordial's own input paths switched off")
+                     "taken with Vanta's own input paths switched off")
 
         env = dict(os.environ)
         env.update(WAYLAND_DISPLAY=display, GDK_BACKEND="wayland",
-                   CORDIAL_DEV_CONTROL="1", CORDIAL_TRACE_MOUSE="1")
+                   VANTA_DEV_CONTROL="1", VANTA_TRACE_MOUSE="1")
         log = open(log_path, "w")
         client = subprocess.Popen(
             [binary, "--lib-dir", lib, "--apk", apk, "--host-libc",
@@ -266,7 +266,7 @@ def main():
         time.sleep(10)
 
         dev = Devctl(os.path.expanduser(
-            f"~/.local/share/cordial/profiles/{args.profile}/devctl.sock"))
+            f"~/.local/share/vanta/profiles/{args.profile}/devctl.sock"))
         print(f"== {dev.send('info')}")
         run_cases(case, dev, kbd, ptr, args)
     finally:
@@ -299,7 +299,7 @@ def centre(ptr, args):
 
 def run_cases(case, dev, kbd, ptr, args):
     # **`requested`, not `confirmed`, and the distinction is the whole test.**
-    # Cordial decides whether to ask for the lock; the compositor decides
+    # Vanta decides whether to ask for the lock; the compositor decides
     # whether to grant it, and a headless nested sway grants nothing -- it
     # never sends `locked` for any request, which the protocol allows and gives
     # it no way to say. A first version of this file asserted on the granted
@@ -339,7 +339,7 @@ def run_cases(case, dev, kbd, ptr, args):
     case.check("the engine's request is honoured", dev.lock().get("requested"), "true")
 
     # **Escape is no longer special.** It used to set a suppression latch here
-    # and this block asserted the toggle. Cordial does not second-guess the
+    # and this block asserted the toggle. Vanta does not second-guess the
     # lock while the window has focus any more -- the compositor owns the way
     # out (Super, an overview) and the protocol requires it to have one. With
     # the engine's answer pinned true by the seam, Escape must change nothing.

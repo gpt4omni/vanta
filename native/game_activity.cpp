@@ -1,7 +1,7 @@
 // Driving AGDK `GameActivity` bring-up.
 //
 // On Android the platform calls `GameActivity.initializeNativeCode` from Java
-// with a real Activity behind it. Cordial has no Java, so it constructs the
+// with a real Activity behind it. Vanta has no Java, so it constructs the
 // arguments through libjnivm and calls the exported JNI native directly:
 //
 //     jlong Java_com_google_androidgamesdk_GameActivity_initializeNativeCode(
@@ -30,25 +30,25 @@
 #include <vector>
 
 /// One contact as it crosses the C ABI, mirrored on the Rust side as
-/// `cordial_linker_sys::game_activity::TouchContact`. The two definitions are
+/// `vanta_linker_sys::game_activity::TouchContact`. The two definitions are
 /// the same three words in the same order and have to stay that way.
 ///
-/// At file scope rather than inside `namespace cordial` because it appears in
+/// At file scope rather than inside `namespace vanta` because it appears in
 /// the signature of an `extern "C"` entry point at the bottom of this file, and
-/// an elaborated `struct CordialTouchContact` written there would silently
+/// an elaborated `struct VantaTouchContact` written there would silently
 /// declare a *second*, unrelated type rather than referring to this one.
-struct CordialTouchContact {
+struct VantaTouchContact {
     int id;
     float x, y;
 };
 
-namespace cordial {
+namespace vanta {
 std::shared_ptr<jnivm::Object> make_display_metrics(jnivm::ENV* env);
 /// Defined beside `Insets` in init_params.cpp. Declared rather than
 /// duplicated for the same reason make_display_metrics is: one class, one
 /// definition, and the insets the engine gets here are the same object the
 /// rest of the framework layer hands out.
-std::shared_ptr<Insets> cordial_make_zero_insets(jnivm::ENV* env);
+std::shared_ptr<Insets> vanta_make_zero_insets(jnivm::ENV* env);
 std::shared_ptr<jnivm::Object> make_resources(jnivm::ENV* env);
 void set_display_size(int width, int height);
 
@@ -64,7 +64,7 @@ BootstrapFn bootstrap_callback() { return g_bootstrap; }
 
 /// Convert a C++ object into a `jobject` the way libjnivm expects.
 ///
-/// A raw `cordial::to_jni(env, p)` looks right — libjnivm does
+/// A raw `vanta::to_jni(env, p)` looks right — libjnivm does
 /// represent a `jobject` as its own `Object*` — but it skips the two things
 /// `ToJNIType` does on the way:
 ///
@@ -128,7 +128,7 @@ public:
 /// `android.content.res.AssetManager`
 ///
 /// Deliberately empty. The native side reaches assets through
-/// `AAssetManager_fromJava`, which Cordial answers with its single process-wide
+/// `AAssetManager_fromJava`, which Vanta answers with its single process-wide
 /// manager (see `android::asset`), so this object carries no state — it exists
 /// to satisfy `initializeNativeCode`'s signature.
 class AssetManager : public Object {
@@ -158,7 +158,7 @@ public:
     // `setWindowFlags` for soft-input-mode-style window flags), and an
     // unresolved call here risks the same silent pending-exception hazard
     // `NativeTextBoxInfo`'s doc comment describes — resolving is the point,
-    // not what either does with its arguments, which Cordial has no window
+    // not what either does with its arguments, which Vanta has no window
     // manager flags or `EditorInfo` layout to apply.
     void setImeEditorInfoFields(ENV*, jint, jint, jint) {}
     void setWindowFlags(ENV*, jint, jint) {}
@@ -166,7 +166,7 @@ public:
     /// `getWindowInsets(int)` and `getWaterfallInsets()`.
     ///
     /// Both return an `androidx.core.graphics.Insets` with every edge zero,
-    /// and that is the true answer rather than a placeholder: Cordial's window
+    /// and that is the true answer rather than a placeholder: Vanta's window
     /// has no status bar, no navigation bar, no display cutout and no gesture
     /// exclusion areas, so there is nothing for the engine to inset its layout
     /// by. A phone's values invented here would push Roblox's UI inward from
@@ -179,7 +179,7 @@ public:
     /// `WindowInsetsCompat$Type`'s own comment records that its bit values only
     /// have to be distinct for exactly this reason.
     std::shared_ptr<Object> getWindowInsets(ENV* env, jint /*typeMask*/) {
-        return cordial_make_zero_insets(env);
+        return vanta_make_zero_insets(env);
     }
     /// **`Insets`, not `Object`, and the difference is whether it binds at
     /// all.** libjnivm derives the descriptor from this signature, so declaring
@@ -194,7 +194,7 @@ public:
     /// signature the dex says nothing about would be guessing at a contract
     /// rather than matching one.
     std::shared_ptr<Insets> getWaterfallInsets(ENV* env) {
-        return cordial_make_zero_insets(env);
+        return vanta_make_zero_insets(env);
     }
 
     /// `bootstrapTheApp()` — the app's startup, called by the engine and until
@@ -212,7 +212,7 @@ public:
     /// — three consecutive lines. The engine calls the app's bootstrap, gets a
     /// placeholder that does nothing, looks for flags, finds none, and reports
     /// failure. That check happens *inside* `initializeNativeCode`, which is why
-    /// two days of varying the settings call changed nothing: Cordial delivered
+    /// two days of varying the settings call changed nothing: Vanta delivered
     /// the document correctly and did it after the verdict had already been
     /// reached.
     ///
@@ -222,13 +222,13 @@ public:
     /// way ART does, so it is registered here, on the class the engine actually
     /// asks.
     ///
-    /// The work itself belongs to Cordial's host-application side, which owns
+    /// The work itself belongs to Vanta's host-application side, which owns
     /// the settings document and the flag-name list, so this forwards to a
     /// callback installed before `initializeNativeCode` runs. With no callback
     /// installed it says so rather than returning quietly — an unanswered
     /// bootstrap that looks answered is how this cost two days.
     void bootstrapTheApp(ENV*) {
-        auto fn = cordial::bootstrap_callback();
+        auto fn = vanta::bootstrap_callback();
         if (!fn) {
             fprintf(stderr,
                     "[roblox] bootstrapTheApp: no bootstrap installed; the engine "
@@ -262,7 +262,7 @@ constexpr jint kToolTypeFinger = 1;
 constexpr jint kToolTypeMouse = 3;
 
 // There used to be an `input_is_touch()` here: one `static const bool` read out
-// of `CORDIAL_INPUT_TOUCH` at first use, seeding `source` and `toolType` for
+// of `VANTA_INPUT_TOUCH` at first use, seeding `source` and `toolType` for
 // every event the process would ever build. Its own comment already named the
 // bug — "an input device that changed identity mid-session would be a stranger
 // thing than either choice" — and the answer is that a *device* does not
@@ -273,7 +273,7 @@ constexpr jint kToolTypeMouse = 3;
 // So the fields below are set by the factory that builds the event, from the
 // device that produced it, and nothing in this file reads the environment any
 // more. On a real phone the APK's own Java is what reads
-// `MotionEvent.getSource()` and picks a native; Cordial replaces that Java, so
+// `MotionEvent.getSource()` and picks a native; Vanta replaces that Java, so
 // the routing is ours and it lives one layer up in `android::input`, where the
 // origin of an event is still known.
 
@@ -291,7 +291,7 @@ struct MotionPointer {
 /// `android.view.MotionEvent`, synthesised from a host pointer or touch event.
 ///
 /// `onTouchEventNative`'s signature carries the event's scalar fields as
-/// unpacked primitive arguments (see `cordial_game_activity_touch`, below) — that
+/// unpacked primitive arguments (see `vanta_game_activity_touch`, below) — that
 /// unpacking is exactly what AGDK's own Java-side `processMotionEvent` does
 /// before calling the native. What is *not* unpacked, and has to come from this
 /// object when the native side (`GameActivityMotionEvent_fromJava` in AGDK's own
@@ -344,7 +344,7 @@ public:
     // The wheel, in detents: +1 is one notch away from the user (or one notch
     // to the right), matching what `android.view.MotionEvent` documents for
     // AXIS_VSCROLL/AXIS_HSCROLL. Zero on every event that is not ACTION_SCROLL,
-    // which is all of them except the ones `cordial_game_activity_scroll`
+    // which is all of them except the ones `vanta_game_activity_scroll`
     // makes.
     jfloat vscroll = 0.0f, hscroll = 0.0f;
 
@@ -365,7 +365,7 @@ public:
 
     jint getPointerId(ENV*, jint index) { return at(index).id; }
     // One tool type for the whole event: every contact in a `MotionEvent` here
-    // comes from the same device, because Cordial builds one event per device
+    // comes from the same device, because Vanta builds one event per device
     // rather than merging a finger and a mouse into a single dispatch the way a
     // real Android InputReader could.
     jint getToolType(ENV*, jint) { return toolType; }
@@ -381,7 +381,7 @@ public:
     // Populating them without also sending ACTION_SCROLL would be the useless
     // half of the pair — an axis nothing asks about on an event that does not
     // say a wheel moved — so the two landed together, and the scroll path in
-    // `cordial_game_activity_scroll` is the only thing that sets them.
+    // `vanta_game_activity_scroll` is the only thing that sets them.
     jfloat getAxisValue(ENV*, jint axis, jint index) {
         if (axis == 0) return at(index).x;
         if (axis == 1) return at(index).y;
@@ -456,7 +456,7 @@ public:
     /// `action` arrives already packed: for `ACTION_POINTER_DOWN`/`_UP` Android
     /// carries the index of the contact the event is *about* in bits 8-15, and
     /// the caller in `android::input` is where that packing is done and tested.
-    static std::shared_ptr<MotionEvent> CreateTouch(ENV* env, const CordialTouchContact* contacts,
+    static std::shared_ptr<MotionEvent> CreateTouch(ENV* env, const VantaTouchContact* contacts,
                                                     int count, jint action, jlong eventTime,
                                                     jlong downTime) {
         auto p = std::make_shared<MotionEvent>();
@@ -515,7 +515,7 @@ public:
 ///
 /// Android text fields do not receive keystrokes. They receive *state*: the
 /// complete contents of the field, the selection, and any in-progress composing
-/// region from an IME. Cordial had no implementation of this, which is why keys
+/// region from an IME. Vanta had no implementation of this, which is why keys
 /// reached `onKeyDownNative` and the login form's text boxes stayed empty — the
 /// engine resolves these five fields and nothing was ever answering them.
 ///
@@ -575,11 +575,11 @@ std::atomic<unsigned> g_ime_state_generation{0};
 std::atomic<int> g_ime_soft_keyboard_active{0};
 } // namespace
 
-extern "C" void cordial_ime_set_state(const char* text, int sel_start, int sel_end,
+extern "C" void vanta_ime_set_state(const char* text, int sel_start, int sel_end,
                                       int comp_start, int comp_end) {
-    if (getenv("CORDIAL_TRACE_TEXT")) {
+    if (getenv("VANTA_TRACE_TEXT")) {
         fprintf(stderr,
-                "[cordial] InputConnection.setState text=%zu bytes sel=[%d,%d) composing=[%d,%d)\n",
+                "[vanta] InputConnection.setState text=%zu bytes sel=[%d,%d) composing=[%d,%d)\n",
                 text ? strlen(text) : 0, sel_start, sel_end, comp_start, comp_end);
     }
     {
@@ -593,16 +593,16 @@ extern "C" void cordial_ime_set_state(const char* text, int sel_start, int sel_e
     g_ime_state_generation.fetch_add(1, std::memory_order_acq_rel);
 }
 
-extern "C" void cordial_ime_set_soft_keyboard_active(int active, int flags) {
-    if (getenv("CORDIAL_TRACE_TEXT")) {
-        fprintf(stderr, "[cordial] InputConnection.setSoftKeyboardActive(%d, flags=%d)\n", active, flags);
+extern "C" void vanta_ime_set_soft_keyboard_active(int active, int flags) {
+    if (getenv("VANTA_TRACE_TEXT")) {
+        fprintf(stderr, "[vanta] InputConnection.setSoftKeyboardActive(%d, flags=%d)\n", active, flags);
     }
     g_ime_soft_keyboard_active.store(active, std::memory_order_release);
 }
 
-extern "C" void cordial_ime_restart_input() {
-    if (getenv("CORDIAL_TRACE_TEXT")) {
-        fprintf(stderr, "[cordial] InputConnection.restartInput\n");
+extern "C" void vanta_ime_restart_input() {
+    if (getenv("VANTA_TRACE_TEXT")) {
+        fprintf(stderr, "[vanta] InputConnection.restartInput\n");
     }
     // `restartInput` means "forget whatever editing session was in progress",
     // which is exactly what bumping the generation without changing the
@@ -611,14 +611,14 @@ extern "C" void cordial_ime_restart_input() {
     g_ime_state_generation.fetch_add(1, std::memory_order_acq_rel);
 }
 
-/// Read-side, for `crates/cordial-linker-sys` to expose to `android::input`.
-extern "C" unsigned cordial_ime_state_generation() {
+/// Read-side, for `crates/vanta-linker-sys` to expose to `android::input`.
+extern "C" unsigned vanta_ime_state_generation() {
     return g_ime_state_generation.load(std::memory_order_acquire);
 }
-extern "C" int cordial_ime_soft_keyboard_active() {
+extern "C" int vanta_ime_soft_keyboard_active() {
     return g_ime_soft_keyboard_active.load(std::memory_order_acquire);
 }
-extern "C" int cordial_ime_state_text(char* buf, int n) {
+extern "C" int vanta_ime_state_text(char* buf, int n) {
     if (!buf || n <= 0) return 0;
     std::lock_guard<std::mutex> lock(g_ime_mutex);
     int len = static_cast<int>(g_ime_text.size());
@@ -627,7 +627,7 @@ extern "C" int cordial_ime_state_text(char* buf, int n) {
     buf[len] = '\0';
     return len;
 }
-extern "C" void cordial_ime_state_selection(int* start, int* end) {
+extern "C" void vanta_ime_state_selection(int* start, int* end) {
     std::lock_guard<std::mutex> lock(g_ime_mutex);
     if (start) *start = g_ime_selection_start;
     if (end) *end = g_ime_selection_end;
@@ -638,8 +638,8 @@ extern "C" void cordial_ime_state_selection(int* start, int* end) {
 /// The object the engine calls `setState`/`setSoftKeyboardActive`/
 /// `restartInput` on. On real Android this is constructed by `GameActivity`'s
 /// Java side inside `onCreateInputConnection` and handed to native code via
-/// `setInputConnectionNative`; Cordial has no Android view system to trigger
-/// that callback, so `cordial_game_activity_set_input_connection` (below)
+/// `setInputConnectionNative`; Vanta has no Android view system to trigger
+/// that callback, so `vanta_game_activity_set_input_connection` (below)
 /// constructs one directly and drives `setInputConnectionNative` itself,
 /// simulating what the platform would have done. One instance for the
 /// process's life, the same reasoning as `shared_activity`/`shared_surface`.
@@ -648,13 +648,13 @@ public:
     void setState(ENV*, std::shared_ptr<TextInputState> state) {
         if (!state) return;
         std::string text = state->text ? static_cast<std::string>(*state->text) : std::string();
-        cordial_ime_set_state(text.c_str(), state->selectionStart, state->selectionEnd,
+        vanta_ime_set_state(text.c_str(), state->selectionStart, state->selectionEnd,
                               state->composingRegionStart, state->composingRegionEnd);
     }
     void setSoftKeyboardActive(ENV*, jboolean active, jint flags) {
-        cordial_ime_set_soft_keyboard_active(active ? 1 : 0, flags);
+        vanta_ime_set_soft_keyboard_active(active ? 1 : 0, flags);
     }
-    void restartInput(ENV*) { cordial_ime_restart_input(); }
+    void restartInput(ENV*) { vanta_ime_restart_input(); }
 
     static void Register(ENV* env) {
         env->GetClass<InputConnection>("com/google/androidgamesdk/gametextinput/InputConnection");
@@ -803,7 +803,7 @@ void register_game_activity_classes(ENV* env) {
 /// the ordinary race against `initializeNativeCode` during startup.
 template <typename Build>
 int deliver_motion(long handle, Build&& build, int* consumed, char* err, size_t err_len) {
-    auto* env = cordial::process_env();
+    auto* env = vanta::process_env();
     if (!env || handle == 0) {
         snprintf(err, err_len, "no JavaVM, or no native handle");
         return -1;
@@ -827,16 +827,16 @@ int deliver_motion(long handle, Build&& build, int* consumed, char* err, size_t 
 
         // Wrapped in `PushLocalFrame`/`PopLocalFrame`: unlike the
         // once-per-launch calls elsewhere in this file, this runs once per
-        // input event, and `cordial::to_jni` parks every object it touches in
+        // input event, and `vanta::to_jni` parks every object it touches in
         // the current local frame — without popping, a long session would grow
         // that frame without bound. The contacts are plain C++ in the event
         // object rather than a Java array, so the frame holds two references
         // however many fingers are down.
         jni->PushLocalFrame(8);
 
-        auto jactivity = cordial::to_jni(env, cordial::shared_activity(env));
+        auto jactivity = vanta::to_jni(env, vanta::shared_activity(env));
         auto event = build(env);
-        auto jevent = cordial::to_jni(env, event);
+        auto jevent = vanta::to_jni(env, event);
 
         using TouchFn = jboolean (*)(JNIEnv*, jobject, jlong, jobject, jint, jint, jint, jint,
                                      jint, jlong, jlong, jint, jint, jint, jint, jint, jint,
@@ -865,24 +865,24 @@ int deliver_motion(long handle, Build&& build, int* consumed, char* err, size_t 
     }
 }
 
-} // namespace cordial
+} // namespace vanta
 
 extern "C" {
 
 /// Install what `GameActivity.bootstrapTheApp()` should run.
 ///
-/// Must be called before `cordial_game_activity_init`: the engine calls
+/// Must be called before `vanta_game_activity_init`: the engine calls
 /// `bootstrapTheApp` from inside `initializeNativeCode` and reads the flags
 /// verdict on the very next line, so anything installed afterwards is too late
 /// by construction — which is exactly the bug this exists to fix.
-void cordial_set_bootstrap(void (*fn)()) { cordial::g_bootstrap = fn; }
+void vanta_set_bootstrap(void (*fn)()) { vanta::g_bootstrap = fn; }
 
 /// Call `initializeNativeCode` and return its handle, or 0.
 ///
 /// `err` receives a message on failure. Exceptions are contained here for the
 /// same reason as in jni_shim.cpp: one crossing the Rust boundary is a core dump
 /// with no explanation.
-long cordial_game_activity_init(void* fn, const char* internal_path, const char* obb_path,
+long vanta_game_activity_init(void* fn, const char* internal_path, const char* obb_path,
                                 const char* external_path, char* err, size_t err_len) {
     using Init = jlong (*)(JNIEnv*, jobject, jstring, jstring, jstring, jobject, jbyteArray,
                            jobject);
@@ -890,33 +890,33 @@ long cordial_game_activity_init(void* fn, const char* internal_path, const char*
     // `jnivm::ENV*` are unrelated types that both arrive as `void*`, and
     // confusing them does not fail at the boundary — it fails much later, as a
     // call through a null slot in what was assumed to be the function table.
-    auto* env = cordial::process_env();
+    auto* env = vanta::process_env();
     if (!fn || !env) {
         snprintf(err, err_len, "no JavaVM or no initializeNativeCode");
         return 0;
     }
 
     try {
-        auto activity = std::make_shared<cordial::GameActivity>();
-        auto assets = std::make_shared<cordial::AssetManager>();
-        auto config = std::make_shared<cordial::Configuration>();
+        auto activity = std::make_shared<vanta::GameActivity>();
+        auto assets = std::make_shared<vanta::AssetManager>();
+        auto config = std::make_shared<vanta::Configuration>();
 
-        auto internal = cordial::jstr(internal_path);
-        auto obb = cordial::jstr(obb_path);
-        auto external = cordial::jstr(external_path);
+        auto internal = vanta::jstr(internal_path);
+        auto obb = vanta::jstr(obb_path);
+        auto external = vanta::jstr(external_path);
 
         // libjnivm represents a `jobject` as its own `Object*`, so the shared_ptrs
         // above convert by taking their raw pointer. They stay in scope for the
         // duration of the call, which is what keeps the objects alive — the
         // engine must not retain them past this without its own reference.
-        auto j = [env](const auto& p) { return cordial::to_jni(env, p); };
+        auto j = [env](const auto& p) { return vanta::to_jni(env, p); };
 
         return reinterpret_cast<Init>(fn)(
             env->GetJNIEnv(),
             j(activity),
-            cordial::to_jni(env, internal),
-            cordial::to_jni(env, obb),
-            cordial::to_jni(env, external),
+            vanta::to_jni(env, internal),
+            vanta::to_jni(env, obb),
+            vanta::to_jni(env, external),
             j(assets),
             // savedState is null on a cold start, which this always is.
             nullptr,
@@ -956,7 +956,7 @@ extern "C" {
 /// lifecycle callbacks "can block on `android_app_set_activity_state` in some
 /// Linux shims". Read there; the switches here are ours.
 ///
-/// What makes that worth a switch rather than a note is that Cordial delivers
+/// What makes that worth a switch rather than a note is that Vanta delivers
 /// the surface through the app bridge as well -- `appbridge_start_app` and
 /// both `UpdateSurface...WithPlatformParams` calls, at `load.rs:3849-3899` --
 /// so by the time the calls below run, the engine has already been told about
@@ -964,7 +964,7 @@ extern "C" {
 /// because a startup that wedges 80% of the time on a signed-in profile is the
 /// symptom mocktail describes and nobody here has ever run the arm without it.
 ///
-/// **Not to be confused with `CORDIAL_SKIP_AGDK`**, which is a far larger
+/// **Not to be confused with `VANTA_SKIP_AGDK`**, which is a far larger
 /// switch: it drops `initializeNativeCode` too, and that is what brings the
 /// TaskScheduler up. The engine will not load flags behind a live scheduler,
 /// so that path dies on `Can't initialize the TaskScheduler before flags have
@@ -976,13 +976,13 @@ extern "C" {
 /// the build it was taken on.
 static bool skip_agdk_surface()
 {
-    static const bool skip = getenv("CORDIAL_SKIP_AGDK_SURFACE") != nullptr;
+    static const bool skip = getenv("VANTA_SKIP_AGDK_SURFACE") != nullptr;
     return skip;
 }
 
 static bool skip_agdk_lifecycle()
 {
-    static const bool skip = getenv("CORDIAL_SKIP_AGDK_LIFECYCLE") != nullptr;
+    static const bool skip = getenv("VANTA_SKIP_AGDK_LIFECYCLE") != nullptr;
     return skip;
 }
 
@@ -1012,8 +1012,8 @@ static bool skip_agdk_lifecycle()
 /// this freeze: nine events delivered on the command pipe, a tenth that never
 /// arrives, and the write end of that pipe open in the same process.
 ///
-/// So these two arms answer different questions. `CORDIAL_SKIP_AGDK_STATE`
-/// drops only the pair that can block. `CORDIAL_SKIP_AGDK_FOCUS` drops only
+/// So these two arms answer different questions. `VANTA_SKIP_AGDK_STATE`
+/// drops only the pair that can block. `VANTA_SKIP_AGDK_FOCUS` drops only
 /// the one that cannot, and is the control for it -- if the freeze moves when
 /// focus alone goes, the blocking-ack account is wrong and should be dropped.
 ///
@@ -1025,13 +1025,13 @@ static bool skip_agdk_lifecycle()
 /// still reads plausibly is exactly the one somebody re-derives.
 static bool skip_agdk_state()
 {
-    static const bool skip = getenv("CORDIAL_SKIP_AGDK_STATE") != nullptr;
+    static const bool skip = getenv("VANTA_SKIP_AGDK_STATE") != nullptr;
     return skip || skip_agdk_lifecycle();
 }
 
 static bool skip_agdk_focus()
 {
-    static const bool skip = getenv("CORDIAL_SKIP_AGDK_FOCUS") != nullptr;
+    static const bool skip = getenv("VANTA_SKIP_AGDK_FOCUS") != nullptr;
     return skip || skip_agdk_lifecycle();
 }
 
@@ -1043,9 +1043,9 @@ static bool skip_agdk_focus()
 /// JNI method table rather than `dlsym`.
 ///
 /// Every call carries the handle `initializeNativeCode` returned.
-int cordial_game_activity_start(long handle, int width, int height, int format,
+int vanta_game_activity_start(long handle, int width, int height, int format,
                                 char* err, size_t err_len) {
-    auto* env = cordial::process_env();
+    auto* env = vanta::process_env();
     if (!env || handle == 0) {
         snprintf(err, err_len, "no JavaVM, or initializeNativeCode gave no handle");
         return -1;
@@ -1076,8 +1076,8 @@ int cordial_game_activity_start(long handle, int width, int height, int format,
 
         // The shared thiz and the surface starting a new lifetime — see
         // `shared_activity`/`shared_surface`'s own doc comments.
-        auto jactivity = cordial::to_jni(env, cordial::shared_activity(env));
-        auto jsurface = cordial::to_jni(env, cordial::shared_surface(env, /*make_new=*/true));
+        auto jactivity = vanta::to_jni(env, vanta::shared_activity(env));
+        auto jsurface = vanta::to_jni(env, vanta::shared_surface(env, /*make_new=*/true));
 
         using HandleOnly = void (*)(JNIEnv*, jobject, jlong);
         using SurfaceFn = void (*)(JNIEnv*, jobject, jlong, jobject);
@@ -1132,7 +1132,7 @@ int cordial_game_activity_start(long handle, int width, int height, int format,
 
         // Focus, last, and it matters more than it looks. An Android game that
         // has never been told it has the window renders as if it were in the
-        // background — which is what about one frame per second is. Cordial
+        // background — which is what about one frame per second is. Vanta
         // drove the lifecycle up to onResume and then never sent this.
         //
         // Grouped with the lifecycle half rather than the surface half because
@@ -1172,9 +1172,9 @@ extern "C" {
 ///
 /// Returns 0 on success, -1 on error (`err` populated), or -2 if
 /// `native_name` was never registered.
-int cordial_game_activity_lifecycle(long handle, const char* native_name, char* err,
+int vanta_game_activity_lifecycle(long handle, const char* native_name, char* err,
                                     size_t err_len) {
-    auto* env = cordial::process_env();
+    auto* env = vanta::process_env();
     if (!env || handle == 0) {
         snprintf(err, err_len, "no JavaVM, or no native handle");
         return -1;
@@ -1196,7 +1196,7 @@ int cordial_game_activity_lifecycle(long handle, const char* native_name, char* 
             return -2;
         }
         using HandleOnly = void (*)(JNIEnv*, jobject, jlong);
-        auto jactivity = cordial::to_jni(env, cordial::shared_activity(env));
+        auto jactivity = vanta::to_jni(env, vanta::shared_activity(env));
         reinterpret_cast<HandleOnly>(fn)(jni, jactivity, (jlong)handle);
         return 0;
     } catch (const std::exception& e) {
@@ -1209,12 +1209,12 @@ int cordial_game_activity_lifecycle(long handle, const char* native_name, char* 
 }
 
 /// `onWindowFocusChangedNative(J Z)V`, callable in both directions: `true` at
-/// bring-up (see `cordial_game_activity_start`, which still drives that call
+/// bring-up (see `vanta_game_activity_start`, which still drives that call
 /// inline) and `false` at teardown — Android sends this immediately before
 /// `onPauseNative` when a run ends, the same way it sends the `true` case
 /// immediately after `onResumeNative` when one starts.
-int cordial_game_activity_window_focus(long handle, int focused, char* err, size_t err_len) {
-    auto* env = cordial::process_env();
+int vanta_game_activity_window_focus(long handle, int focused, char* err, size_t err_len) {
+    auto* env = vanta::process_env();
     if (!env || handle == 0) {
         snprintf(err, err_len, "no JavaVM, or no native handle");
         return -1;
@@ -1236,7 +1236,7 @@ int cordial_game_activity_window_focus(long handle, int focused, char* err, size
             return -2;
         }
         using FocusFn = void (*)(JNIEnv*, jobject, jlong, jboolean);
-        auto jactivity = cordial::to_jni(env, cordial::shared_activity(env));
+        auto jactivity = vanta::to_jni(env, vanta::shared_activity(env));
         reinterpret_cast<FocusFn>(fn)(jni, jactivity, (jlong)handle,
                                       (jboolean)(focused ? JNI_TRUE : JNI_FALSE));
         return 0;
@@ -1259,8 +1259,8 @@ int cordial_game_activity_window_focus(long handle, int focused, char* err, size
 /// Uses the *existing* surface (`make_new=false`) — this does not start a new
 /// surface lifetime, it re-announces the current one, exactly as Android does
 /// when asking an already-created surface to be redrawn.
-int cordial_game_activity_surface_redraw_needed(long handle, char* err, size_t err_len) {
-    auto* env = cordial::process_env();
+int vanta_game_activity_surface_redraw_needed(long handle, char* err, size_t err_len) {
+    auto* env = vanta::process_env();
     if (!env || handle == 0) {
         snprintf(err, err_len, "no JavaVM, or no native handle");
         return -1;
@@ -1282,8 +1282,8 @@ int cordial_game_activity_surface_redraw_needed(long handle, char* err, size_t e
             return -2;
         }
         using SurfaceFn = void (*)(JNIEnv*, jobject, jlong, jobject);
-        auto jactivity = cordial::to_jni(env, cordial::shared_activity(env));
-        auto jsurface = cordial::to_jni(env, cordial::shared_surface(env, /*make_new=*/false));
+        auto jactivity = vanta::to_jni(env, vanta::shared_activity(env));
+        auto jsurface = vanta::to_jni(env, vanta::shared_surface(env, /*make_new=*/false));
         reinterpret_cast<SurfaceFn>(fn)(jni, jactivity, (jlong)handle, jsurface);
         return 0;
     } catch (const std::exception& e) {
@@ -1313,7 +1313,7 @@ extern "C" {
 ///
 /// Wrapped in `PushLocalFrame`/`PopLocalFrame`: unlike the once-per-launch
 /// calls elsewhere in this file, this runs once per input event, and
-/// `cordial::to_jni` parks every object it touches in the current local frame
+/// `vanta::to_jni` parks every object it touches in the current local frame
 /// (see its own doc comment) — without popping, a long session would grow that
 /// frame without bound.
 /// `NativeInputInterface.nativePassMouseMove(F,F,F,F)` and
@@ -1332,9 +1332,9 @@ extern "C" {
 /// Delivers the field's entire contents, not a keystroke. The caller owns the
 /// buffer and sends the whole thing each time it changes, which is what the real
 /// Android implementation does when an IME edits the text.
-int cordial_game_activity_text_input(long handle, const char* text, int sel_start, int sel_end,
+int vanta_game_activity_text_input(long handle, const char* text, int sel_start, int sel_end,
                                      char* err, size_t err_len) {
-    auto* env = cordial::process_env();
+    auto* env = vanta::process_env();
     if (!env || handle == 0) {
         snprintf(err, err_len, "no JavaVM, or no native handle");
         return -1;
@@ -1351,14 +1351,14 @@ int cordial_game_activity_text_input(long handle, const char* text, int sel_star
             snprintf(err, err_len, "onTextInputEventNative was never registered");
             return -1;
         }
-        auto state = std::make_shared<cordial::TextInputState>();
-        state->text = std::make_shared<cordial::String>(std::string(text ? text : ""));
+        auto state = std::make_shared<vanta::TextInputState>();
+        state->text = std::make_shared<vanta::String>(std::string(text ? text : ""));
         state->selectionStart = sel_start;
         state->selectionEnd = sel_end;
 
         using Call = void (*)(JNIEnv*, jobject, jlong, jobject);
-        reinterpret_cast<Call>(it->second)(jni, (jobject)cordial::to_jni(env, cordial::shared_activity(env)), (jlong)handle,
-                                           (jobject)cordial::to_jni(env, state));
+        reinterpret_cast<Call>(it->second)(jni, (jobject)vanta::to_jni(env, vanta::shared_activity(env)), (jlong)handle,
+                                           (jobject)vanta::to_jni(env, state));
         return 0;
     } catch (const std::exception& e) {
         snprintf(err, err_len, "%s", e.what());
@@ -1373,9 +1373,9 @@ int cordial_game_activity_text_input(long handle, const char* text, int sel_star
 ///
 /// On real Android, Java calls this once — from inside `onCreateInputConnection`,
 /// with the `InputConnection` it just built — to hand native code a reference it
-/// then calls back through for the rest of the session. Cordial has no view
+/// then calls back through for the rest of the session. Vanta has no view
 /// system to trigger that callback, so this drives it directly: construct one
-/// `InputConnection` (see `cordial::shared_input_connection`'s doc for why it is
+/// `InputConnection` (see `vanta::shared_input_connection`'s doc for why it is
 /// one, kept alive for the process) and call the native the same way Java would
 /// have. Meant to run once, early — see the call site in `load.rs` — not per
 /// frame.
@@ -1383,8 +1383,8 @@ int cordial_game_activity_text_input(long handle, const char* text, int sel_star
 /// Returns 0 on success, -1 on error (`err` populated), or -2 if
 /// `setInputConnectionNative` has not been registered yet, the same
 /// not-yet-vs-failed distinction `touch`/`key` make.
-int cordial_game_activity_set_input_connection(long handle, char* err, size_t err_len) {
-    auto* env = cordial::process_env();
+int vanta_game_activity_set_input_connection(long handle, char* err, size_t err_len) {
+    auto* env = vanta::process_env();
     if (!env || handle == 0) {
         snprintf(err, err_len, "no JavaVM, or no native handle");
         return -1;
@@ -1401,12 +1401,12 @@ int cordial_game_activity_set_input_connection(long handle, char* err, size_t er
             snprintf(err, err_len, "setInputConnectionNative was never registered");
             return -2;
         }
-        auto ic = cordial::shared_input_connection(env);
+        auto ic = vanta::shared_input_connection(env);
 
         using Call = void (*)(JNIEnv*, jobject, jlong, jobject);
         reinterpret_cast<Call>(it->second)(
-            jni, (jobject)cordial::to_jni(env, cordial::shared_activity(env)), (jlong)handle,
-            (jobject)cordial::to_jni(env, ic));
+            jni, (jobject)vanta::to_jni(env, vanta::shared_activity(env)), (jlong)handle,
+            (jobject)vanta::to_jni(env, ic));
         return 0;
     } catch (const std::exception& e) {
         snprintf(err, err_len, "%s", e.what());
@@ -1422,17 +1422,17 @@ int cordial_game_activity_set_input_connection(long handle, char* err, size_t er
 /// Roblox's own keyboard path, the counterpart to `nativePassMouseButton`. AGDK's
 /// `onKeyDownNative` is accepted and ignored by the interface in exactly the way
 /// `onTouchEventNative` was.
-int cordial_input_key_event(void* fn, int down, int key_code, int modifiers, int is_repeat,
+int vanta_input_key_event(void* fn, int down, int key_code, int modifiers, int is_repeat,
                             char* err, size_t err_len) {
     using Call = void (*)(JNIEnv*, jobject, jboolean, jint, jint, jboolean);
-    auto* env = cordial::process_env();
+    auto* env = vanta::process_env();
     if (!fn || !env) {
         snprintf(err, err_len, "no JavaVM, or nativePassKeyEvent is not exported");
         return -1;
     }
     try {
         auto cls = env->GetClass("com/roblox/engine/jni/NativeGLInterface");
-        reinterpret_cast<Call>(fn)(env->GetJNIEnv(), (jobject)cordial::to_jni(env, cls),
+        reinterpret_cast<Call>(fn)(env->GetJNIEnv(), (jobject)vanta::to_jni(env, cls),
                                    down ? JNI_TRUE : JNI_FALSE, key_code, modifiers,
                                    is_repeat ? JNI_TRUE : JNI_FALSE);
         return 0;
@@ -1447,19 +1447,19 @@ int cordial_input_key_event(void* fn, int down, int key_code, int modifiers, int
 
 /// `NativeGLInterface.nativePassText(J, String, Z, I)` — text entered into a
 /// focused text box, which is a different thing from a key being pressed.
-int cordial_input_pass_text(void* fn, long long which, const char* text, int flag, int cursor,
+int vanta_input_pass_text(void* fn, long long which, const char* text, int flag, int cursor,
                             char* err, size_t err_len) {
     using Call = void (*)(JNIEnv*, jobject, jlong, jstring, jboolean, jint);
-    auto* env = cordial::process_env();
+    auto* env = vanta::process_env();
     if (!fn || !env) {
         snprintf(err, err_len, "no JavaVM, or nativePassText is not exported");
         return -1;
     }
     try {
         auto cls = env->GetClass("com/roblox/engine/jni/NativeGLInterface");
-        auto str = std::make_shared<cordial::String>(std::string(text ? text : ""));
-        reinterpret_cast<Call>(fn)(env->GetJNIEnv(), (jobject)cordial::to_jni(env, cls),
-                                   (jlong)which, (jstring)cordial::to_jni(env, str),
+        auto str = std::make_shared<vanta::String>(std::string(text ? text : ""));
+        reinterpret_cast<Call>(fn)(env->GetJNIEnv(), (jobject)vanta::to_jni(env, cls),
+                                   (jlong)which, (jstring)vanta::to_jni(env, str),
                                    flag ? JNI_TRUE : JNI_FALSE, cursor);
         return 0;
     } catch (const std::exception& e) {
@@ -1482,9 +1482,9 @@ int cordial_input_pass_text(void* fn, long long which, const char* text, int fla
 /// returns the one the engine already has, because this is the same surface
 /// changing size rather than a replacement. Passing a fresh object would read
 /// to the engine as a surface it has never seen.
-int cordial_game_activity_surface_resized(long long handle, int format, int width, int height,
+int vanta_game_activity_surface_resized(long long handle, int format, int width, int height,
                                           char* err, size_t err_len) {
-    auto* env = cordial::process_env();
+    auto* env = vanta::process_env();
     if (!env) {
         snprintf(err, err_len, "no JavaVM");
         return -1;
@@ -1497,8 +1497,8 @@ int cordial_game_activity_surface_resized(long long handle, int format, int widt
             auto it = cls->natives.find(name);
             return it == cls->natives.end() ? nullptr : it->second;
         };
-        auto jactivity = cordial::to_jni(env, cordial::shared_activity(env));
-        auto jsurface = cordial::to_jni(env, cordial::shared_surface(env, /*make_new=*/false));
+        auto jactivity = vanta::to_jni(env, vanta::shared_activity(env));
+        auto jsurface = vanta::to_jni(env, vanta::shared_surface(env, /*make_new=*/false));
 
         using SurfaceChangedFn = void (*)(JNIEnv*, jobject, jlong, jobject, jint, jint, jint);
         using RectFn = void (*)(JNIEnv*, jobject, jlong, jint, jint, jint, jint);
@@ -1526,27 +1526,27 @@ int cordial_game_activity_surface_resized(long long handle, int format, int widt
 /// engine calls `showKeyboard`, the platform opens an IME, and the platform then
 /// reports the keyboard's geometry back through this. Until it arrives the
 /// engine has focused the box but has not begun capturing — which renders as a
-/// focus outline with no blinking caret, and is exactly what Cordial showed
+/// focus outline with no blinking caret, and is exactly what Vanta showed
 /// while it answered `showKeyboard` and said nothing further.
 ///
 /// The Waydroid capture has the Android side of this as
 /// `onUpdateKeyboardSize() v:false x:0 y:999 w:2491 h:0`, which is where the
 /// argument order below comes from.
 ///
-/// Cordial reports a zero-height keyboard: there is no soft keyboard taking up
+/// Vanta reports a zero-height keyboard: there is no soft keyboard taking up
 /// screen space on a desktop, and a non-zero height would make the engine shift
 /// its layout up to avoid something that is not there.
-int cordial_input_update_keyboard_size(void* fn, int visible, int x, int y, int w, int h,
+int vanta_input_update_keyboard_size(void* fn, int visible, int x, int y, int w, int h,
                                        char* err, size_t err_len) {
     using Call = void (*)(JNIEnv*, jobject, jboolean, jint, jint, jint, jint);
-    auto* env = cordial::process_env();
+    auto* env = vanta::process_env();
     if (!fn || !env) {
         snprintf(err, err_len, "no JavaVM, or updateKeyboardSize is not exported");
         return -1;
     }
     try {
         auto cls = env->GetClass("com/roblox/engine/jni/NativeGLInterface");
-        reinterpret_cast<Call>(fn)(env->GetJNIEnv(), (jobject)cordial::to_jni(env, cls),
+        reinterpret_cast<Call>(fn)(env->GetJNIEnv(), (jobject)vanta::to_jni(env, cls),
                                    visible ? JNI_TRUE : JNI_FALSE, x, y, w, h);
         return 0;
     } catch (const std::exception& e) {
@@ -1568,19 +1568,19 @@ int cordial_input_update_keyboard_size(void* fn, int visible, int x, int y, int 
 ///
 /// Driving only `nativePassText` left the login form's fields empty even with a
 /// correct handle, which is what sent this looking at the declared shapes.
-int cordial_input_sync_textbox(void* fn, const char* text, int cursor, char* err,
+int vanta_input_sync_textbox(void* fn, const char* text, int cursor, char* err,
                                size_t err_len) {
     using Call = void (*)(JNIEnv*, jobject, jstring, jint);
-    auto* env = cordial::process_env();
+    auto* env = vanta::process_env();
     if (!fn || !env) {
         snprintf(err, err_len, "no JavaVM, or syncTextboxTextAndCursorPosition2 is not exported");
         return -1;
     }
     try {
         auto cls = env->GetClass("com/roblox/engine/jni/NativeGLInterface");
-        auto str = std::make_shared<cordial::String>(std::string(text ? text : ""));
-        reinterpret_cast<Call>(fn)(env->GetJNIEnv(), (jobject)cordial::to_jni(env, cls),
-                                   (jstring)cordial::to_jni(env, str), cursor);
+        auto str = std::make_shared<vanta::String>(std::string(text ? text : ""));
+        reinterpret_cast<Call>(fn)(env->GetJNIEnv(), (jobject)vanta::to_jni(env, cls),
+                                   (jstring)vanta::to_jni(env, str), cursor);
         return 0;
     } catch (const std::exception& e) {
         snprintf(err, err_len, "%s", e.what());
@@ -1599,9 +1599,9 @@ int cordial_input_sync_textbox(void* fn, const char* text, int cursor, char* err
 /// loses focus (`hideKeyboard`) and whether its text clears is the engine's
 /// answer, delivered through its own callbacks. The dex prototype is `(J)V`
 /// (`tools/dex_method.py`, classes2.dex).
-int cordial_input_return_pressed(void* fn, long long which, char* err, size_t err_len) {
+int vanta_input_return_pressed(void* fn, long long which, char* err, size_t err_len) {
     using Call = void (*)(JNIEnv*, jobject, jlong);
-    auto* env = cordial::process_env();
+    auto* env = vanta::process_env();
     if (!fn || !env) {
         snprintf(err, err_len,
                  "no JavaVM, or nativeReturnPressedFromOnScreenKeyboard is not exported");
@@ -1609,7 +1609,7 @@ int cordial_input_return_pressed(void* fn, long long which, char* err, size_t er
     }
     try {
         auto cls = env->GetClass("com/roblox/engine/jni/NativeGLInterface");
-        reinterpret_cast<Call>(fn)(env->GetJNIEnv(), (jobject)cordial::to_jni(env, cls),
+        reinterpret_cast<Call>(fn)(env->GetJNIEnv(), (jobject)vanta::to_jni(env, cls),
                                    (jlong)which);
         return 0;
     } catch (const std::exception& e) {
@@ -1621,17 +1621,17 @@ int cordial_input_return_pressed(void* fn, long long which, char* err, size_t er
     }
 }
 
-int cordial_input_mouse_move(void* fn, float x, float y, float dx, float dy, char* err,
+int vanta_input_mouse_move(void* fn, float x, float y, float dx, float dy, char* err,
                              size_t err_len) {
     using Call = void (*)(JNIEnv*, jobject, jfloat, jfloat, jfloat, jfloat);
-    auto* env = cordial::process_env();
+    auto* env = vanta::process_env();
     if (!fn || !env) {
         snprintf(err, err_len, "no JavaVM, or nativePassMouseMove is not exported");
         return -1;
     }
     try {
         auto cls = env->GetClass("com/roblox/engine/jni/NativeInputInterface");
-        reinterpret_cast<Call>(fn)(env->GetJNIEnv(), (jobject)cordial::to_jni(env, cls), x, y, dx,
+        reinterpret_cast<Call>(fn)(env->GetJNIEnv(), (jobject)vanta::to_jni(env, cls), x, y, dx,
                                    dy);
         return 0;
     } catch (const std::exception& e) {
@@ -1643,17 +1643,17 @@ int cordial_input_mouse_move(void* fn, float x, float y, float dx, float dy, cha
     }
 }
 
-int cordial_input_mouse_button(void* fn, float x, float y, int down, int button, char* err,
+int vanta_input_mouse_button(void* fn, float x, float y, int down, int button, char* err,
                                size_t err_len) {
     using Call = void (*)(JNIEnv*, jobject, jfloat, jfloat, jboolean, jint);
-    auto* env = cordial::process_env();
+    auto* env = vanta::process_env();
     if (!fn || !env) {
         snprintf(err, err_len, "no JavaVM, or nativePassMouseButton is not exported");
         return -1;
     }
     try {
         auto cls = env->GetClass("com/roblox/engine/jni/NativeInputInterface");
-        reinterpret_cast<Call>(fn)(env->GetJNIEnv(), (jobject)cordial::to_jni(env, cls), x, y,
+        reinterpret_cast<Call>(fn)(env->GetJNIEnv(), (jobject)vanta::to_jni(env, cls), x, y,
                                    down ? JNI_TRUE : JNI_FALSE, button);
         return 0;
     } catch (const std::exception& e) {
@@ -1667,7 +1667,7 @@ int cordial_input_mouse_button(void* fn, float x, float y, int down, int button,
 
 /// `NativeInputInterface.nativePassMouseWheel(F,F,F)`.
 ///
-/// The wheel's counterpart to `cordial_input_mouse_button`, and the reason the
+/// The wheel's counterpart to `vanta_input_mouse_button`, and the reason the
 /// scroll wheel did nothing at all: the export exists, the dex declares it, and
 /// nothing here had ever called it. The dex strips parameter names, so which
 /// float is which is not readable — but every `nativePassMouse*` in that class
@@ -1678,16 +1678,16 @@ int cordial_input_mouse_button(void* fn, float x, float y, int down, int button,
 /// `delta` is in detents, positive away from the user. See
 /// `android::input::pass_mouse_wheel` for why that unit and that sign, and for
 /// the knob that flips it without a rebuild.
-int cordial_input_mouse_wheel(void* fn, float x, float y, float delta, char* err, size_t err_len) {
+int vanta_input_mouse_wheel(void* fn, float x, float y, float delta, char* err, size_t err_len) {
     using Call = void (*)(JNIEnv*, jobject, jfloat, jfloat, jfloat);
-    auto* env = cordial::process_env();
+    auto* env = vanta::process_env();
     if (!fn || !env) {
         snprintf(err, err_len, "no JavaVM, or nativePassMouseWheel is not exported");
         return -1;
     }
     try {
         auto cls = env->GetClass("com/roblox/engine/jni/NativeInputInterface");
-        reinterpret_cast<Call>(fn)(env->GetJNIEnv(), (jobject)cordial::to_jni(env, cls), x, y,
+        reinterpret_cast<Call>(fn)(env->GetJNIEnv(), (jobject)vanta::to_jni(env, cls), x, y,
                                    delta);
         return 0;
     } catch (const std::exception& e) {
@@ -1713,24 +1713,24 @@ int cordial_input_mouse_wheel(void* fn, float x, float y, float delta, char* err
 /// `MotionEvent`'s, where UP is 1 and MOVE is 2. Nothing readable in this build
 /// settles which of the two this native wants, and one session on a machine
 /// with a touchscreen would. Until that happens the mapping is `INFERRED` and
-/// `CORDIAL_NO_TOUCH=1` is how a user turns off a wrong one.
+/// `VANTA_NO_TOUCH=1` is how a user turns off a wrong one.
 ///
 /// `width`/`height` are the surface the coordinates are in. Passed rather than
 /// assumed because the engine has been told the canvas size separately through
 /// `onSurfaceChangedNative` and the two disagreeing during a resize is a
 /// mis-scaled touch, not a crash — which is the kind of bug that gets blamed on
 /// the mapping above.
-int cordial_input_pass_input(void* fn, int pointer_id, float x, float y, int action, int width,
+int vanta_input_pass_input(void* fn, int pointer_id, float x, float y, int action, int width,
                              int height, char* err, size_t err_len) {
     using Call = void (*)(JNIEnv*, jobject, jint, jfloat, jfloat, jint, jint, jint);
-    auto* env = cordial::process_env();
+    auto* env = vanta::process_env();
     if (!fn || !env) {
         snprintf(err, err_len, "no JavaVM, or nativePassInput is not exported");
         return -1;
     }
     try {
         auto cls = env->GetClass("com/roblox/engine/jni/NativeInputInterface");
-        reinterpret_cast<Call>(fn)(env->GetJNIEnv(), (jobject)cordial::to_jni(env, cls), pointer_id,
+        reinterpret_cast<Call>(fn)(env->GetJNIEnv(), (jobject)vanta::to_jni(env, cls), pointer_id,
                                    x, y, action, width, height);
         return 0;
     } catch (const std::exception& e) {
@@ -1759,7 +1759,7 @@ int cordial_input_pass_input(void* fn, int pointer_id, float x, float y, int act
 // comment carries the whole argument.
 //
 // No rumble. `android/os/Vibrator` is declared in the dex and implemented
-// nowhere in Cordial, and a force-feedback call that silently does nothing is
+// nowhere in Vanta, and a force-feedback call that silently does nothing is
 // the stub that lies. It is absent rather than stubbed.
 //
 // The atomic-gating rule these serve -- resolve all of the registration natives
@@ -1780,9 +1780,9 @@ int cordial_input_pass_input(void* fn, int pointer_id, float x, float y, int act
 /// against `(II)` here, and `nativeSetTVRemoteSupportedKey(IIZ)` against
 /// `(IIZI)`. Three for three is a structural control rather than a hunch, but it
 /// is still not an observation.
-int cordial_input_gamepad_connect(void* fn, int id, int gamepad_type, char* err, size_t err_len) {
+int vanta_input_gamepad_connect(void* fn, int id, int gamepad_type, char* err, size_t err_len) {
     using Call = void (*)(JNIEnv*, jobject, jint, jint);
-    auto* env = cordial::process_env();
+    auto* env = vanta::process_env();
     if (!fn || !env) {
         snprintf(err, err_len,
                  "no JavaVM, or nativeGamepadConnectEventWithGamepadType is not exported");
@@ -1790,7 +1790,7 @@ int cordial_input_gamepad_connect(void* fn, int id, int gamepad_type, char* err,
     }
     try {
         auto cls = env->GetClass("com/roblox/engine/jni/NativeInputInterface");
-        reinterpret_cast<Call>(fn)(env->GetJNIEnv(), (jobject)cordial::to_jni(env, cls), id,
+        reinterpret_cast<Call>(fn)(env->GetJNIEnv(), (jobject)vanta::to_jni(env, cls), id,
                                    gamepad_type);
         return 0;
     } catch (const std::exception& e) {
@@ -1806,16 +1806,16 @@ int cordial_input_gamepad_connect(void* fn, int id, int gamepad_type, char* err,
 ///
 /// The only one of the six that carries no type, which is itself the evidence
 /// that the engine keeps the type it was handed at connect.
-int cordial_input_gamepad_disconnect(void* fn, int id, char* err, size_t err_len) {
+int vanta_input_gamepad_disconnect(void* fn, int id, char* err, size_t err_len) {
     using Call = void (*)(JNIEnv*, jobject, jint);
-    auto* env = cordial::process_env();
+    auto* env = vanta::process_env();
     if (!fn || !env) {
         snprintf(err, err_len, "no JavaVM, or nativeGamepadDisconnectEvent is not exported");
         return -1;
     }
     try {
         auto cls = env->GetClass("com/roblox/engine/jni/NativeInputInterface");
-        reinterpret_cast<Call>(fn)(env->GetJNIEnv(), (jobject)cordial::to_jni(env, cls), id);
+        reinterpret_cast<Call>(fn)(env->GetJNIEnv(), (jobject)vanta::to_jni(env, cls), id);
         return 0;
     } catch (const std::exception& e) {
         snprintf(err, err_len, "%s", e.what());
@@ -1835,17 +1835,17 @@ int cordial_input_gamepad_disconnect(void* fn, int id, char* err, size_t err_len
 /// the one the Android platform contract implies, because the Java caller on a
 /// real device is handed a `KeyEvent` from an `InputDevice` and has
 /// `getKeyCode()` and `getAction()` to forward. Nothing here observed it.
-int cordial_input_gamepad_button(void* fn, int id, int key_code, int action, char* err,
+int vanta_input_gamepad_button(void* fn, int id, int key_code, int action, char* err,
                                  size_t err_len) {
     using Call = void (*)(JNIEnv*, jobject, jint, jint, jint);
-    auto* env = cordial::process_env();
+    auto* env = vanta::process_env();
     if (!fn || !env) {
         snprintf(err, err_len, "no JavaVM, or nativeGamepadButtonEvent is not exported");
         return -1;
     }
     try {
         auto cls = env->GetClass("com/roblox/engine/jni/NativeInputInterface");
-        reinterpret_cast<Call>(fn)(env->GetJNIEnv(), (jobject)cordial::to_jni(env, cls), id,
+        reinterpret_cast<Call>(fn)(env->GetJNIEnv(), (jobject)vanta::to_jni(env, cls), id,
                                    key_code, action);
         return 0;
     } catch (const std::exception& e) {
@@ -1867,17 +1867,17 @@ int cordial_input_gamepad_button(void* fn, int id, int key_code, int action, cha
 /// structural supporting this one. `android::gamepad` sends the unused
 /// components as 0.0 rather than repeating a value into them, because an
 /// invented number is harder to recognise as wrong than a zero.
-int cordial_input_gamepad_axis(void* fn, int id, int axis, float x, float y, float z, char* err,
+int vanta_input_gamepad_axis(void* fn, int id, int axis, float x, float y, float z, char* err,
                                size_t err_len) {
     using Call = void (*)(JNIEnv*, jobject, jint, jint, jfloat, jfloat, jfloat);
-    auto* env = cordial::process_env();
+    auto* env = vanta::process_env();
     if (!fn || !env) {
         snprintf(err, err_len, "no JavaVM, or nativeGamepadAxisEvent is not exported");
         return -1;
     }
     try {
         auto cls = env->GetClass("com/roblox/engine/jni/NativeInputInterface");
-        reinterpret_cast<Call>(fn)(env->GetJNIEnv(), (jobject)cordial::to_jni(env, cls), id, axis,
+        reinterpret_cast<Call>(fn)(env->GetJNIEnv(), (jobject)vanta::to_jni(env, cls), id, axis,
                                    x, y, z);
         return 0;
     } catch (const std::exception& e) {
@@ -1899,10 +1899,10 @@ int cordial_input_gamepad_axis(void* fn, int id, int axis, float x, float y, flo
 ///
 /// Slots INFERRED from the difference against `nativeSetTVRemoteSupportedKey(IIZ)`,
 /// which is this method minus the trailing type.
-int cordial_input_gamepad_supported_key(void* fn, int id, int key_code, int supported,
+int vanta_input_gamepad_supported_key(void* fn, int id, int key_code, int supported,
                                         int gamepad_type, char* err, size_t err_len) {
     using Call = void (*)(JNIEnv*, jobject, jint, jint, jboolean, jint);
-    auto* env = cordial::process_env();
+    auto* env = vanta::process_env();
     if (!fn || !env) {
         snprintf(err, err_len,
                  "no JavaVM, or nativeSetGamepadSupportedKeyWithGamepadType is not exported");
@@ -1910,7 +1910,7 @@ int cordial_input_gamepad_supported_key(void* fn, int id, int key_code, int supp
     }
     try {
         auto cls = env->GetClass("com/roblox/engine/jni/NativeInputInterface");
-        reinterpret_cast<Call>(fn)(env->GetJNIEnv(), (jobject)cordial::to_jni(env, cls), id,
+        reinterpret_cast<Call>(fn)(env->GetJNIEnv(), (jobject)vanta::to_jni(env, cls), id,
                                    key_code, supported ? JNI_TRUE : JNI_FALSE, gamepad_type);
         return 0;
     } catch (const std::exception& e) {
@@ -1932,10 +1932,10 @@ int cordial_input_gamepad_supported_key(void* fn, int id, int key_code, int supp
 /// INFERRED, and the argument names in this signature are a hypothesis rather
 /// than a reading. If a logcat capture taken with a pad attached ever lands in
 /// `docs/traces/`, this is the line it settles first.
-int cordial_input_gamepad_supported_motion(void* fn, int id, int axis, int source, int supported,
+int vanta_input_gamepad_supported_motion(void* fn, int id, int axis, int source, int supported,
                                            int gamepad_type, char* err, size_t err_len) {
     using Call = void (*)(JNIEnv*, jobject, jint, jint, jint, jboolean, jint);
-    auto* env = cordial::process_env();
+    auto* env = vanta::process_env();
     if (!fn || !env) {
         snprintf(err, err_len,
                  "no JavaVM, or nativeSetGamepadSupportedMotionWithGamepadType is not exported");
@@ -1943,7 +1943,7 @@ int cordial_input_gamepad_supported_motion(void* fn, int id, int axis, int sourc
     }
     try {
         auto cls = env->GetClass("com/roblox/engine/jni/NativeInputInterface");
-        reinterpret_cast<Call>(fn)(env->GetJNIEnv(), (jobject)cordial::to_jni(env, cls), id, axis,
+        reinterpret_cast<Call>(fn)(env->GetJNIEnv(), (jobject)vanta::to_jni(env, cls), id, axis,
                                    source, supported ? JNI_TRUE : JNI_FALSE, gamepad_type);
         return 0;
     } catch (const std::exception& e) {
@@ -1960,30 +1960,30 @@ int cordial_input_gamepad_supported_motion(void* fn, int id, int axis, int sourc
 /// The same both-pipes policy the button and move paths already follow: AGDK's
 /// contract is real and the engine consumes it, it is simply not what
 /// hit-tests the Lua UI. Unlike those two this one is unpacked by hand rather
-/// than sharing `cordial_game_activity_touch`, because a scroll carries no
+/// than sharing `vanta_game_activity_touch`, because a scroll carries no
 /// pressed button and no gesture start — see `MotionEvent::CreateScroll`.
 ///
-/// Returns 0 / -1 / -2 exactly as `cordial_game_activity_touch` does.
-int cordial_game_activity_scroll(long handle, float x, float y, float hscroll, float vscroll,
+/// Returns 0 / -1 / -2 exactly as `vanta_game_activity_touch` does.
+int vanta_game_activity_scroll(long handle, float x, float y, float hscroll, float vscroll,
                                  long long event_time_ms, int* consumed, char* err,
                                  size_t err_len) {
-    return cordial::deliver_motion(
+    return vanta::deliver_motion(
         handle,
-        [&](cordial::ENV* env) {
-            return cordial::MotionEvent::CreateScroll(env, x, y, hscroll, vscroll,
+        [&](vanta::ENV* env) {
+            return vanta::MotionEvent::CreateScroll(env, x, y, hscroll, vscroll,
                                                       (jlong)event_time_ms);
         },
         consumed, err, err_len);
 }
 
-int cordial_game_activity_touch(long handle, int action, float x, float y, int button_state,
+int vanta_game_activity_touch(long handle, int action, float x, float y, int button_state,
                                 int action_button, long long event_time_ms,
                                 long long down_time_ms, int* consumed, char* err,
                                 size_t err_len) {
-    return cordial::deliver_motion(
+    return vanta::deliver_motion(
         handle,
-        [&](cordial::ENV* env) {
-            return cordial::MotionEvent::Create(env, x, y, action, button_state, action_button,
+        [&](vanta::ENV* env) {
+            return vanta::MotionEvent::Create(env, x, y, action, button_state, action_button,
                                                 (jlong)event_time_ms, (jlong)down_time_ms);
         },
         consumed, err, err_len);
@@ -1991,7 +1991,7 @@ int cordial_game_activity_touch(long handle, int action, float x, float y, int b
 
 /// Deliver a set of finger contacts through `onTouchEventNative`.
 ///
-/// The multi-contact counterpart to `cordial_game_activity_touch`, and the
+/// The multi-contact counterpart to `vanta_game_activity_touch`, and the
 /// reason `MotionEvent` grew a contact vector: the single-contact path hard-
 /// coded `pointerCount=1`, `getPointerId` ignored its index argument and
 /// returned 0, and `getPointerCount` returned the literal 1 — so a second
@@ -2005,19 +2005,19 @@ int cordial_game_activity_touch(long handle, int action, float x, float y, int b
 /// two `_POINTER_` actions; see `android::input`, which owns that arithmetic
 /// and has the tests for it.
 ///
-/// Returns 0 / -1 / -2 exactly as `cordial_game_activity_touch` does.
-int cordial_game_activity_touch_multi(long handle, int action,
-                                      const struct CordialTouchContact* contacts, int count,
+/// Returns 0 / -1 / -2 exactly as `vanta_game_activity_touch` does.
+int vanta_game_activity_touch_multi(long handle, int action,
+                                      const struct VantaTouchContact* contacts, int count,
                                       long long event_time_ms, long long down_time_ms,
                                       int* consumed, char* err, size_t err_len) {
     if (!contacts || count <= 0) {
         snprintf(err, err_len, "a touch event with no contacts");
         return -1;
     }
-    return cordial::deliver_motion(
+    return vanta::deliver_motion(
         handle,
-        [&](cordial::ENV* env) {
-            return cordial::MotionEvent::CreateTouch(env, contacts, count, action,
+        [&](vanta::ENV* env) {
+            return vanta::MotionEvent::CreateTouch(env, contacts, count, action,
                                                      (jlong)event_time_ms, (jlong)down_time_ms);
         },
         consumed, err, err_len);
@@ -2026,12 +2026,12 @@ int cordial_game_activity_touch_multi(long handle, int action,
 /// Deliver a synthesised key event through `onKeyDownNative`/`onKeyUpNative`.
 ///
 /// `down` selects which of the two natives is called; both share the single
-/// `(J, KeyEvent) -> Z` signature. See `cordial_game_activity_touch`'s doc
+/// `(J, KeyEvent) -> Z` signature. See `vanta_game_activity_touch`'s doc
 /// comment for the return-code convention and the local-frame wrapping.
-int cordial_game_activity_key(long handle, int down, int key_code, int scan_code, int meta_state,
+int vanta_game_activity_key(long handle, int down, int key_code, int scan_code, int meta_state,
                               int repeat_count, int unicode_char, long long event_time_ms,
                               long long down_time_ms, int* consumed, char* err, size_t err_len) {
-    auto* env = cordial::process_env();
+    auto* env = vanta::process_env();
     if (!env || handle == 0) {
         snprintf(err, err_len, "no JavaVM, or no native handle");
         return -1;
@@ -2056,12 +2056,12 @@ int cordial_game_activity_key(long handle, int down, int key_code, int scan_code
 
         jni->PushLocalFrame(8);
 
-        auto jactivity = cordial::to_jni(env, cordial::shared_activity(env));
-        auto event = cordial::KeyEvent::Create(env, down ? JNI_TRUE : JNI_FALSE, (jint)key_code,
+        auto jactivity = vanta::to_jni(env, vanta::shared_activity(env));
+        auto event = vanta::KeyEvent::Create(env, down ? JNI_TRUE : JNI_FALSE, (jint)key_code,
                                                (jint)scan_code, (jint)meta_state,
                                                (jint)repeat_count, (jint)unicode_char,
                                                (jlong)event_time_ms, (jlong)down_time_ms);
-        auto jevent = cordial::to_jni(env, event);
+        auto jevent = vanta::to_jni(env, event);
 
         using KeyFn = jboolean (*)(JNIEnv*, jobject, jlong, jobject);
         jboolean r = reinterpret_cast<KeyFn>(fn)(jni, jactivity, (jlong)handle, jevent);
@@ -2093,17 +2093,17 @@ int cordial_game_activity_key(long handle, int down, int key_code, int scan_code
 // table, and these natives arrive through `RegisterNatives` at run time. The one
 // WebRTC symbol that *is* exported is a loader, which is what registers them.
 //
-// Cordial has depended on that distinction for months without being able to
+// Vanta has depended on that distinction for months without being able to
 // *see* it: `terminateNativeCode` is looked up in `cls->natives` a few hundred
 // lines above precisely because it is absent from `nm -D`. So the machinery to
 // answer this was already here and there was no way to ask.
 //
 // Now there is, and it costs one call: the answer to "is this path dead or is
-// Cordial simply not on it" is a list rather than an argument.
-extern "C" int cordial_registered_natives(const char* class_name, char* out, size_t out_len) {
+// Vanta simply not on it" is a list rather than an argument.
+extern "C" int vanta_registered_natives(const char* class_name, char* out, size_t out_len) {
     if (!class_name || !out || out_len == 0) return -1;
     out[0] = '\0';
-    jnivm::ENV* env = cordial::process_env();
+    jnivm::ENV* env = vanta::process_env();
     if (!env) {
         snprintf(out, out_len, "no JNI environment yet");
         return -1;

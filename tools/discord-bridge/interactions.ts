@@ -202,13 +202,13 @@ export async function handle(
   }
 
   if (interaction.type === InteractionType.MESSAGE_COMPONENT) {
-    if (verb === "cordial-issue-open") {
+    if (verb === "vanta-issue-open") {
       const form = find(rest[0]);
       if (!form) return { response: ephemeral(unknownForm(rest[0])) };
       const picker = await labelPicker(context, form, interaction);
       return { response: { type: ResponseType.MODAL, data: modalFor(form, "main", picker) } };
     }
-    if (verb === "cordial-issue-extra") {
+    if (verb === "vanta-issue-extra") {
       const form = find(rest[0]);
       // `:l` says the main dialog gave a slot to the label picker, which moved
       // one more optional field into this follow-up.
@@ -223,10 +223,10 @@ export async function handle(
       // The issue number rides in the custom_id, because the submit that
       // follows arrives as a fresh interaction with no memory of this one and
       // there is deliberately nowhere to keep it.
-      modal.custom_id = `cordial-issue:${form.slug}:extra:${rest[1]}`;
+      modal.custom_id = `vanta-issue:${form.slug}:extra:${rest[1]}`;
       return { response: { type: ResponseType.MODAL, data: modal } };
     }
-    if (verb === "cordial-edit-open") {
+    if (verb === "vanta-edit-open") {
       return {
         response: await openEditor(
           context,
@@ -236,9 +236,9 @@ export async function handle(
         ),
       };
     }
-    if (verb === "cordial-close" || verb === "cordial-reopen" || verb === "cordial-fixed") {
-      const open = verb === "cordial-reopen";
-      const completed = verb === "cordial-fixed";
+    if (verb === "vanta-close" || verb === "vanta-reopen" || verb === "vanta-fixed") {
+      const open = verb === "vanta-reopen";
+      const completed = verb === "vanta-fixed";
       if (completed && !isModerator(interaction.member, context.moderatorRoleIds)) {
         return {
           response: ephemeral(
@@ -266,12 +266,12 @@ export async function handle(
       };
     }
 
-    if (verb === "cordial-comment") {
+    if (verb === "vanta-comment") {
       return {
         response: {
           type: ResponseType.MODAL,
           data: {
-            custom_id: `cordial-comment:${rest[0]}`,
+            custom_id: `vanta-comment:${rest[0]}`,
             title: `Comment on #${rest[0]}`.slice(0, 45),
             components: [{
               type: 18,
@@ -295,7 +295,7 @@ export async function handle(
     const values = modalValues(interaction.data);
     const who = reporter(interaction);
 
-    if (verb === "cordial-issue" && rest[1] === "main") {
+    if (verb === "vanta-issue" && rest[1] === "main") {
       const form = find(rest[0]);
       if (!form) return { response: ephemeral(unknownForm(rest[0])) };
       return {
@@ -321,7 +321,7 @@ export async function handle(
       };
     }
 
-    if (verb === "cordial-edit") {
+    if (verb === "vanta-edit") {
       return {
         response: deferred(),
         after: reporting(
@@ -345,7 +345,7 @@ export async function handle(
       };
     }
 
-    if (verb === "cordial-issue" && rest[1] === "extra") {
+    if (verb === "vanta-issue" && rest[1] === "extra") {
       const form = find(rest[0]);
       const number = Number(rest[2]);
       if (!form || !Number.isInteger(number)) {
@@ -370,7 +370,7 @@ export async function handle(
       };
     }
 
-    if (verb === "cordial-comment") {
+    if (verb === "vanta-comment") {
       const number = Number(rest[0]);
       const text = values.comment?.trim();
       if (!Number.isInteger(number) || !text) {
@@ -400,12 +400,12 @@ function threadControls(number: number): unknown[] {
         type: BUTTON,
         style: 2,
         label: "Comment on the issue",
-        custom_id: `cordial-comment:${number}`,
+        custom_id: `vanta-comment:${number}`,
       },
-      { type: BUTTON, style: 3, label: "Mark as completed", custom_id: `cordial-fixed:${number}` },
-      { type: BUTTON, style: 4, label: "Close it", custom_id: `cordial-close:${number}` },
-      { type: BUTTON, style: 2, label: "Reopen it", custom_id: `cordial-reopen:${number}` },
-      { type: BUTTON, style: 2, label: "Edit", custom_id: `cordial-edit-open:${number}` },
+      { type: BUTTON, style: 3, label: "Mark as completed", custom_id: `vanta-fixed:${number}` },
+      { type: BUTTON, style: 4, label: "Close it", custom_id: `vanta-close:${number}` },
+      { type: BUTTON, style: 2, label: "Reopen it", custom_id: `vanta-reopen:${number}` },
+      { type: BUTTON, style: 2, label: "Edit", custom_id: `vanta-edit-open:${number}` },
     ],
   }];
 }
@@ -544,9 +544,7 @@ async function fileIssue(
         type: BUTTON,
         style: 2,
         label: "Add the rest",
-        custom_id: `cordial-issue-extra:${form.slug}:${issue.number}${
-          chosen.withPicker ? ":l" : ""
-        }`,
+        custom_id: `vanta-issue-extra:${form.slug}:${issue.number}${chosen.withPicker ? ":l" : ""}`,
       }],
     }]
     : [];

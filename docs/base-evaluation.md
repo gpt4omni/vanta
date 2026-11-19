@@ -1,6 +1,6 @@
 # Phase 0 — prior-art evaluation
 
-**Question (§14 Phase 0):** should Cordial write an Android linker, bionic shim and JNI VM
+**Question (§14 Phase 0):** should Vanta write an Android linker, bionic shim and JNI VM
 from scratch, or port and adapt the minecraft-linux stack?
 
 **Answer: port. Do not write.** Three of the four hardest Phase 1–2 components already
@@ -13,7 +13,7 @@ CMake 4.4.0, x86-64.
 
 ## 1. Verdict per component
 
-| Cordial component (§3/§4) | Base | Licence | Builds here | Recommendation |
+| Vanta component (§3/§4) | Base | Licence | Builds here | Recommendation |
 |---|---|---|---|---|
 | ELF loader | `mcpelauncher-linker` + `android_bionic` + `android_core` | MIT + Apache-2.0/BSD | **yes** (clang) | **Port.** Do not write. |
 | bionic shim | `libc-shim` | **none — blocker, §5** | **yes** (clang) | **Port, once licensed.** |
@@ -40,17 +40,17 @@ Not a paper assessment — these were compiled from source on this machine:
 
 Zero errors in each. Full commands in §8.
 
-### 2.1 Consequence: Cordial's native build must use Clang, not GCC
+### 2.1 Consequence: Vanta's native build must use Clang, not GCC
 
 The bionic linker **fails to build with GCC 16** — 144 errors, all from bionic's use of
 C11 `_Atomic` inside C++ headers (`bionic_elf_tls.h`, `bionic_fdsan.h`). That is a Clang
 extension; GCC rejects it. AOSP is a Clang-only codebase and this is not going to change.
 
-Under Clang the same tree builds with **zero errors**. So: Cordial's C/C++ components
+Under Clang the same tree builds with **zero errors**. So: Vanta's C/C++ components
 require Clang. This is a real constraint on the build system, CI, and the Flatpak manifest,
 and it is better known now than discovered in month three.
 
-(Cordial's existing Meson tree builds `libbadcpu` with GCC. That stays fine — `libbadcpu`
+(Vanta's existing Meson tree builds `libbadcpu` with GCC. That stays fine — `libbadcpu`
 is independent. The constraint applies to anything that includes bionic headers.)
 
 ## 3. `mcpelauncher-linker` — the biggest single win
@@ -66,7 +66,7 @@ semantics, real `dlopen` behaviour, all of it maintained by Google and merely re
 The §3 "ELF loader" row — "Load Android `.so` objects, resolve symbols, TLS layout" — is
 done, and done better than a solo project would do it.
 
-### 3.1 The API is exactly the shape Cordial needs
+### 3.1 The API is exactly the shape Vanta needs
 
 ```c++
 namespace linker {
@@ -82,14 +82,14 @@ namespace linker {
 }
 ```
 
-That `symbols` map **is** the runtime layer's interface. Cordial builds a
+That `symbols` map **is** the runtime layer's interface. Vanta builds a
 `{name → function pointer}` table covering the 644 undefined symbols from
 [`framework-api-inventory.md`](framework-api-inventory.md), hands it to `load_library`, and
-the linker resolves Roblox's imports against Cordial's implementations. The inventory stops
+the linker resolves Roblox's imports against Vanta's implementations. The inventory stops
 being a document and becomes a literal table to fill in.
 
 It also links `libziparchive` and ships `zip_archive_stream_entry.cc`, so it can map a `.so`
-**straight out of the APK** without extracting it first. Cordial gets that for free.
+**straight out of the APK** without extracting it first. Vanta gets that for free.
 
 ## 4. `libc-shim` covers most of the bionic gap — measured, not guessed
 
@@ -158,7 +158,7 @@ mechanism behind §4.2's "Roblox thinks you're mobile".
 The repository contains no `LICENSE`, `COPYING`, or SPDX header. The only copyright
 notices inside it belong to vendored third-party files (OpenBSD `strlcpy`, Berkeley
 `setjmp`). Under default copyright the project's own ~6,600 lines are **all rights
-reserved** and cannot be copied into Cordial.
+reserved** and cannot be copied into Vanta.
 
 **Action, and it is cheap:** open an issue asking the authors to add an explicit licence.
 Every neighbouring repository by the same authors is MIT, so this reads as an oversight
@@ -177,32 +177,32 @@ rather than a decision. Until it is resolved:
 as are `mcpelauncher-client` and the Qt UI. The *libraries* (linker, jnivm, game-window)
 are MIT; the *glue* is GPL.
 
-Cordial currently declares MIT. Linking GPL-3.0 code would relicense Cordial. So:
+Vanta currently declares MIT. Linking GPL-3.0 code would relicense Vanta. So:
 
 - **Link:** the MIT/Apache libraries.
 - **Read, do not copy:** `mcpelauncher-client`. It is the best available worked example of
   how these pieces fit together, and reading it to understand the architecture is fine —
   copying it is not.
-- Decide Cordial's own licence deliberately before Phase 1 lands. If GPL-3.0 is
+- Decide Vanta's own licence deliberately before Phase 1 lands. If GPL-3.0 is
   acceptable, the constraint disappears and `mcpelauncher-client` becomes directly
   reusable. That is a real option worth considering rather than defaulting to MIT out of
   habit.
 
 ## 6. What this does *not* solve
 
-Phase 0's job is to stop Cordial rewriting solved problems, not to pretend the project is
+Phase 0's job is to stop Vanta rewriting solved problems, not to pretend the project is
 nearly done.
 
-**Graphics is entirely Cordial's problem.** Nothing in the stack maps GLES2/EGL onto Mesa
+**Graphics is entirely Vanta's problem.** Nothing in the stack maps GLES2/EGL onto Mesa
 for this workload. minecraft-linux carries a patched ANGLE fork for Minecraft's
 RenderDragon; Roblox's renderer is different and the 91 `gl*`/`egl*` symbols will need
 their own work. Historically this is where Android-on-desktop projects lose the most time,
 and Phase 0 has not reduced that risk at all.
 
-**The framework layer is still Cordial's problem.** `libjnivm` provides the *mechanism* —
+**The framework layer is still Vanta's problem.** `libjnivm` provides the *mechanism* —
 a JNI VM that lets C++ classes masquerade as Java ones. It does not provide
 `android.app.Activity`, `android.view.SurfaceHolder`, `android.webkit.WebView`, or
-`android.credentials.CredentialManager`. Those are Cordial's to write, against
+`android.credentials.CredentialManager`. Those are Vanta's to write, against
 `GameActivity`'s Apache-2.0 source. The inventory's 630 platform classes remain the
 backlog.
 
@@ -212,7 +212,7 @@ in `CredentialManager`, camera2, and a WebView. Expect the framework layer to di
 substantially even where the runtime layer does not.
 
 **Audio, syscall translation (binder/ashmem/ion), and multi-instance namespacing** have no
-prior art here and are Cordial's to write.
+prior art here and are Vanta's to write.
 
 ### 6.1 One unexpected gift: `libjnivm` can generate the backlog for you
 
@@ -230,7 +230,7 @@ Phase 2 and it should be turned on from the first launch attempt.
 
 1. **Resolve the `libc-shim` licence question** (§5.1). It gates the approach, an issue
    costs five minutes, and the answer changes the plan.
-2. **Switch Cordial's native build to Clang** and add the three libraries as subprojects.
+2. **Switch Vanta's native build to Clang** and add the three libraries as subprojects.
    `libbadcpu` stays on Meson/GCC; the bionic-derived tree needs Clang and CMake, so
    expect a two-build-system repository or a Meson wrapper around CMake.
 3. **Get `linker::load_library` to load `libroblox.so` out of the APK** with a symbol map

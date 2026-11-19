@@ -61,7 +61,7 @@ Established by breakpoint, not inference:
 ## The watchpoint result — what actually happens to the field
 
 A hardware watchpoint on the faulting field (`0x7fffb17c70a0`, set from a
-breakpoint in Cordial's own `cordial_appbridge_init`, ASLR disabled so the
+breakpoint in Vanta's own `vanta_appbridge_init`, ASLR disabled so the
 address reproduces) answers it:
 
 - The field **is** written — twice, both times with **zero**.
@@ -71,13 +71,13 @@ address reproduces) answers it:
 - Scanning the whole of `nativeAppBridgeV2InitWithParams` finds **no non-zeroing
   store to `+0x400` at all**.
 
-So the object is created and zeroed by the app-bridge init on Cordial's calling
+So the object is created and zeroed by the app-bridge init on Vanta's calling
 thread, and nothing ever puts a `JNIEnv` in it. The game thread then reads it and
 faults. This is not a missing Java class or a wrong argument — it is a field the
 engine expects some *other* path to populate, and that path is not running.
 
 The obvious candidate is thread attachment: the engine may expect the thread that
-will run the game to attach to the JavaVM and cache its environment here. Cordial
+will run the game to attach to the JavaVM and cache its environment here. Vanta
 drives the whole bring-up from one thread, and AGDK's game thread was created
 before the bridge object existed.
 
@@ -139,7 +139,7 @@ plain register store at all. Remaining possibilities, none yet tested:
   from another instance rather than constructed empty
 
 The last is the most interesting: it would mean the bridge object is supposed to
-be initialised *from* something, and Cordial is producing a fresh empty one.
+be initialised *from* something, and Vanta is producing a fresh empty one.
 
 ## Inside `nativeAppBridgeStartLuaAppDM`
 
@@ -171,7 +171,7 @@ retried.
   calls `socket()`, so it fails before reaching the network.
 - **Activity lifecycle.** All nine `JNIActivityLifecycleCallbacks` stages fire in
   Android's order. It changed nothing.
-- **AGDK interference.** `CORDIAL_SKIP_AGDK=1` drives the app bridge with no
+- **AGDK interference.** `VANTA_SKIP_AGDK=1` drives the app bridge with no
   `initializeNativeCode` and no GameActivity at all. Same crash, same
   instruction, on a thread Roblox creates itself — so it is not an artefact of
   running two bring-ups together.
@@ -180,7 +180,7 @@ retried.
 
 # Resolved: libjnivm handed unknown threads a null ENV
 
-The blocker was in Cordial, not in Roblox.
+The blocker was in Vanta, not in Roblox.
 
 `jnivm::VM::GetEnv()` is, in full:
 
@@ -195,7 +195,7 @@ a thread the VM has never seen **default-constructs a null `shared_ptr`, inserts
 it, and returns a reference to it**. The caller gets `nullptr`, with no error
 raised anywhere.
 
-`cordial::process_env()` was exactly that call, and all thirteen JNI hooks in
+`vanta::process_env()` was exactly that call, and all thirteen JNI hooks in
 this build go through it. The engine invokes those hooks from threads it creates
 itself, so on every one of those threads the hooks ran with a null `ENV` — and
 the engine stored the null where it expected a `JNIEnv`. The field was never
@@ -251,13 +251,13 @@ frame 5  libc start_thread
 The thread is named `Main` and **the engine spawns it itself** from inside
 `nativeGameGlobalInit`; it then calls `nativeAppBridgeStartLuaAppDM` — the Lua
 app DataModel, which is what this platform actually renders — without waiting
-for us. Cordial calls `nativeAppBridgeV2StartAppWithParams` and hands over the
+for us. Vanta calls `nativeAppBridgeV2StartAppWithParams` and hands over the
 surface only *after* its own `StartLuaAppDM` call, so the ordering is a live
 suspect: the engine's thread may be arriving at the app before the surface it
 depends on exists.
 
 The invoke interface is being used correctly by the engine, so this is not an
-attach problem: `CORDIAL_JNI_TRACE=1` records 30 `GetEnv` and 2
+attach problem: `VANTA_JNI_TRACE=1` records 30 `GetEnv` and 2
 `AttachCurrentThread` calls, all against our JavaVM.
 
 ---
@@ -270,9 +270,9 @@ the render path, and the flags failure recorded above.
 **`nativeInitClientSettings`, `nativeInitClientSettingsSigned`,
 `nativeInitClientSettingsCached[Compressed]` and
 `nativePostClientSettingsLoadedInitialization3` are never called, and no path in
-Cordial can call them.** They are wired only to an async network-response
+Vanta can call them.** They are wired only to an async network-response
 callback (dex `vi/e$f`, methods `a`/`b`), never to the synchronous
-`ActivityNativeMain.N2()` / `vi/e.j` chain Cordial replicates. Cordial never
+`ActivityNativeMain.N2()` / `vi/e.j` chain Vanta replicates. Vanta never
 constructs that callback, never drives it, and never times it out.
 
 `InitParams::Create` hands the engine `baseURL = "https://www.roblox.com"`, so
@@ -315,7 +315,7 @@ accompanying claim that the thread is "blocked, not racing" does not hold. The
 reorder is kept because it is harmless and matches the engine's own order, but
 it is not a fix and should not be counted as progress.
 
-**How to judge a fix from here:** not by how far Cordial's own log gets, which
+**How to judge a fix from here:** not by how far Vanta's own log gets, which
 is a race. By the crash address moving, and by the flags verdict line changing.
 
 ---
@@ -347,13 +347,13 @@ bare typed placeholder for `android.view.Surface` with no native window behind
 it, so the engine cannot resolve `StartAppParams.surface` into a real window and
 leaves the delegate null. The recommendation was to give it a real native peer.
 
-**Disconfirmed by running it.** With `CORDIAL_ANDROID_TRACE=1`:
+**Disconfirmed by running it.** With `VANTA_ANDROID_TRACE=1`:
 
 ```
 [android] ANativeWindow_fromSurface -> 0x55fd52fb4e18
 ```
 
-The engine does call `ANativeWindow_fromSurface` on that Surface, and Cordial
+The engine does call `ANativeWindow_fromSurface` on that Surface, and Vanta
 returns a real, non-null `ANativeWindow` backed by the open X11 window. The
 surface handoff works. Backing `AppSurface` with "a real native peer" would have
 been effort spent on a component that is already correct.
@@ -361,7 +361,7 @@ been effort spent on a component that is already correct.
 This is the seventh confident diagnosis on this binary to fail on contact, and
 it failed the same way as the others: the reasoning was sound, the code it
 described really is a placeholder, and the conclusion still did not hold —
-because the placeholder is sufficient. `ANativeWindow_fromSurface` is Cordial's
+because the placeholder is sufficient. `ANativeWindow_fromSurface` is Vanta's
 own implementation, so the Java `Surface` never needed state; the window is
 resolved on our side regardless of what the object contains.
 
@@ -379,7 +379,7 @@ for.
 ## Both bring-up paths crash in the same function
 
 The full AGDK path segfaults too — `libroblox+0x2ccd912`, versus `+0x2ccd937` on
-the `CORDIAL_SKIP_AGDK` path. Same call chain in both:
+the `VANTA_SKIP_AGDK` path. Same call chain in both:
 
 ```
 nativeGameGlobalInit -> nativeAppBridgeStartLuaAppDM -> here

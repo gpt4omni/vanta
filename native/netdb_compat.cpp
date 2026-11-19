@@ -126,7 +126,7 @@ extern "C" {
 /// its canonical name are owned by this allocation, and the host's list is
 /// released before returning. That keeps `freeaddrinfo` below a plain free of
 /// our own memory instead of a lifetime shared with glibc's allocator.
-int cordial_getaddrinfo(const char* node, const char* service,
+int vanta_getaddrinfo(const char* node, const char* service,
                         const BionicAddrinfo* hints, BionicAddrinfo** res) {
     struct addrinfo host_hints;
     struct addrinfo* host_hints_p = nullptr;
@@ -185,21 +185,21 @@ int cordial_getaddrinfo(const char* node, const char* service,
     return 0;
 }
 
-void cordial_freeaddrinfo(BionicAddrinfo* p) {
+void vanta_freeaddrinfo(BionicAddrinfo* p) {
     free_bionic_list(p);
 }
 
 } // extern "C"
 
-extern "C" struct CordialNetdbSymbol {
+extern "C" struct VantaNetdbSymbol {
     const char* name;
     void* addr;
 };
 
-extern "C" const CordialNetdbSymbol* cordial_netdb_symbols(size_t* count) {
-    static const CordialNetdbSymbol table[] = {
-        {"getaddrinfo", (void*)&cordial_getaddrinfo},
-        {"freeaddrinfo", (void*)&cordial_freeaddrinfo},
+extern "C" const VantaNetdbSymbol* vanta_netdb_symbols(size_t* count) {
+    static const VantaNetdbSymbol table[] = {
+        {"getaddrinfo", (void*)&vanta_getaddrinfo},
+        {"freeaddrinfo", (void*)&vanta_freeaddrinfo},
     };
     *count = sizeof(table) / sizeof(table[0]);
     return table;

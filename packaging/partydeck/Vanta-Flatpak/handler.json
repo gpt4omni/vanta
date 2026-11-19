@@ -1,0 +1,23 @@
+{
+  "name": "Vanta (Flatpak)",
+  "author": "Vanta",
+  "version": "1",
+  "info": "Roblox through the Vanta Flatpak, one profile per player. Sign each profile in once from a normal Vanta window first; see docs/partydeck.md.",
+  "spec_ver": 3,
+  "path_gameroot": "/usr/bin",
+  "runtime": "",
+  "exec": "flatpak",
+  "args": "run --command=vanta io.github.gpt4omni.Vanta --profile $PROFILE --play --fullscreen",
+  "env": "",
+  "sdl2_override": "No",
+  "pause_between_starts": 3.0,
+  "use_mangohud": false,
+  "use_goldberg": false,
+  "ps_xinput": true,
+  "steam_appid": null,
+  "game_null_paths": [],
+  "overrides": {
+    "profile_unique_dirs": false,
+    "disable_mount_gamedirs": true
+  }
+}

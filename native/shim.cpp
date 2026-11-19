@@ -15,12 +15,12 @@
 
 extern "C" {
 
-void cordial_linker_init() {
+void vanta_linker_init() {
     linker::init();
 }
 
 // names/addrs are parallel arrays of length n. Returns a library handle, or null.
-void* cordial_linker_load_library(const char* name, const char* const* names,
+void* vanta_linker_load_library(const char* name, const char* const* names,
                                   void* const* addrs, size_t n) {
     std::unordered_map<std::string, void*> symbols;
     symbols.reserve(n);
@@ -30,12 +30,12 @@ void* cordial_linker_load_library(const char* name, const char* const* names,
     return linker::load_library(name, symbols);
 }
 
-void cordial_linker_update_ld_library_path(const char* path) {
+void vanta_linker_update_ld_library_path(const char* path) {
     linker::update_LD_LIBRARY_PATH(path);
 }
 
-void* cordial_linker_dlopen(const char* filename, int flags) {
-    // `CORDIAL_TRACE_DLOPEN=1` reports every request and how long it took.
+void* vanta_linker_dlopen(const char* filename, int flags) {
+    // `VANTA_TRACE_DLOPEN=1` reports every request and how long it took.
     //
     // Roblox reaches several subsystems this way rather than through DT_NEEDED
     // — Vulkan is the known one — so this is the only place that shows which
@@ -43,7 +43,7 @@ void* cordial_linker_dlopen(const char* filename, int flags) {
     // promptly. FMOD's Android output prefers AAudio and falls back to OpenSL
     // ES; if that fallback depends on `dlopen("libaaudio.so")` failing fast,
     // a slow or hanging miss would be a real bug rather than a cosmetic one.
-    static const bool trace = getenv("CORDIAL_TRACE_DLOPEN") != nullptr;
+    static const bool trace = getenv("VANTA_TRACE_DLOPEN") != nullptr;
     if (!trace) {
         return linker::dlopen(filename, flags);
     }
@@ -52,16 +52,16 @@ void* cordial_linker_dlopen(const char* filename, int flags) {
     auto us = std::chrono::duration_cast<std::chrono::microseconds>(
                   std::chrono::steady_clock::now() - start)
                   .count();
-    fprintf(stderr, "[cordial] dlopen(%s) -> %s in %lldus\n", filename ? filename : "(null)",
+    fprintf(stderr, "[vanta] dlopen(%s) -> %s in %lldus\n", filename ? filename : "(null)",
             h ? "ok" : "NULL", (long long)us);
     return h;
 }
 
-// EXPERIMENTAL, cordial-agent-defer: cordial-agent-defer's split-phase
+// EXPERIMENTAL, vanta-agent-defer: vanta-agent-defer's split-phase
 // dlopen. Declared here rather than added to mcpelauncher's own public
 // header (`public_include/mcpelauncher/linker.h`) because that header is
 // shared surface and this pair exists only to test whether deferring
-// libroblox.so's ELF constructors past Cordial's own directory setup is
+// libroblox.so's ELF constructors past Vanta's own directory setup is
 // coherent — see docs/analysis/flag-init.md §26 and patches/README.md for
 // the patch this corresponds to once (if) it earns a permanent home.
 //
@@ -80,7 +80,7 @@ void* cordial_linker_dlopen(const char* filename, int flags) {
 extern "C" __attribute__((weak)) void mcpelauncher_defer_next_ctors(int defer);
 extern "C" __attribute__((weak)) void mcpelauncher_run_deferred_ctors(void* handle);
 
-void cordial_linker_defer_next_ctors(int defer) {
+void vanta_linker_defer_next_ctors(int defer) {
     if (mcpelauncher_defer_next_ctors) {
         mcpelauncher_defer_next_ctors(defer);
         return;
@@ -88,11 +88,11 @@ void cordial_linker_defer_next_ctors(int defer) {
     fprintf(stderr, "[linker] constructor deferral unavailable: patches/0003 is not applied\n");
 }
 
-int cordial_linker_defer_available() {
+int vanta_linker_defer_available() {
     return mcpelauncher_defer_next_ctors != nullptr;
 }
 
-void cordial_linker_run_deferred_ctors(void* handle) {
+void vanta_linker_run_deferred_ctors(void* handle) {
     if (mcpelauncher_run_deferred_ctors) {
         mcpelauncher_run_deferred_ctors(handle);
     }
@@ -104,7 +104,7 @@ void cordial_linker_run_deferred_ctors(void* handle) {
 // code. Nothing is reopened; this is metadata only.
 extern "C" __attribute__((weak)) void mcpelauncher_set_realpath(void* handle, const char* path);
 
-void cordial_linker_set_realpath(void* handle, const char* path) {
+void vanta_linker_set_realpath(void* handle, const char* path) {
     if (mcpelauncher_set_realpath) {
         mcpelauncher_set_realpath(handle, path);
         return;
@@ -114,7 +114,7 @@ void cordial_linker_set_realpath(void* handle, const char* path) {
 
 // docs/vr/dynarmic-design.md §2: linking the Quest build's arm64 objects into
 // an x86-64 process for the translator to run. `patches/0006`, which
-// crates/cordial-linker-sys/build.rs applies (patches/apply.rs); weak for the
+// crates/vanta-linker-sys/build.rs applies (patches/apply.rs); weak for the
 // reason the block above gives, so a loader built without it links and
 // `--guest-arm64` says why it cannot run rather than failing to build.
 extern "C" __attribute__((weak)) void mcpelauncher_set_guest_machine(int machine);
@@ -123,7 +123,7 @@ extern "C" __attribute__((weak)) size_t mcpelauncher_guest_ctors(void* handle, i
                                                                  void** init_func,
                                                                  void*** init_array);
 
-int cordial_linker_set_guest_machine(int machine) {
+int vanta_linker_set_guest_machine(int machine) {
     if (!mcpelauncher_set_guest_machine) {
         return 0;
     }
@@ -131,7 +131,7 @@ int cordial_linker_set_guest_machine(int machine) {
     return 1;
 }
 
-int cordial_linker_mark_guest(void* handle, int machine) {
+int vanta_linker_mark_guest(void* handle, int machine) {
     if (!mcpelauncher_mark_guest) {
         return 0;
     }
@@ -140,7 +140,7 @@ int cordial_linker_mark_guest(void* handle, int machine) {
 }
 
 // Returns the DT_INIT_ARRAY length, or (size_t)-1 when the patch is absent.
-size_t cordial_linker_guest_ctors(void* handle, int* machine, void** init_func,
+size_t vanta_linker_guest_ctors(void* handle, int* machine, void** init_func,
                                   void*** init_array) {
     if (!mcpelauncher_guest_ctors) {
         return static_cast<size_t>(-1);
@@ -148,19 +148,19 @@ size_t cordial_linker_guest_ctors(void* handle, int* machine, void** init_func,
     return mcpelauncher_guest_ctors(handle, machine, init_func, init_array);
 }
 
-void* cordial_linker_dlsym(void* handle, const char* symbol) {
+void* vanta_linker_dlsym(void* handle, const char* symbol) {
     return linker::dlsym(handle, symbol);
 }
 
-const char* cordial_linker_dlerror() {
+const char* vanta_linker_dlerror() {
     return linker::dlerror();
 }
 
-size_t cordial_linker_get_library_base(void* handle) {
+size_t vanta_linker_get_library_base(void* handle) {
     return linker::get_library_base(handle);
 }
 
-void cordial_linker_get_library_code_region(void* handle, size_t* base, size_t* size) {
+void vanta_linker_get_library_code_region(void* handle, size_t* base, size_t* size) {
     size_t b = 0, s = 0;
     linker::get_library_code_region(handle, b, s);
     *base = b;

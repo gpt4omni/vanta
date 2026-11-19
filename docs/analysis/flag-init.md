@@ -6,7 +6,7 @@ Disassembly against the same `libroblox.so` (Roblox for Android 2.732.1043) used
 using `objdump`/`nm`/`readelf` plus two small scratch scripts (a direct-`call`-site
 scanner and a rip-relative-`lea`-site scanner, same technique `render-gate.md` §2
 used for `eglCreateWindowSurface`). Cross-checked against `native/init_params.cpp`
-(read, not modified) and reproduced once against the built `cordial-load` binary
+(read, not modified) and reproduced once against the built `vanta-load` binary
 without rebuilding it, since `native/*.cpp` is being edited concurrently.
 
 **Bottom line up front:** `nativeInitializeNativeFlags` itself is not the function
@@ -19,7 +19,7 @@ binary lives in a small, separate helper reached through a completely different,
 shape `render-gate.md` §2 already found for `eglCreateWindowSurface`'s trigger, and
 for the same reason: something calls it through a function pointer this pass cannot
 resolve statically. What *is* pinned down precisely is the gating condition on that
-call, and a live, currently-wrong piece of Cordial's own code that feeds
+call, and a live, currently-wrong piece of Vanta's own code that feeds
 `nativeInitializeNativeFlags` a single "flag name" that is actually Roblox's entire
 22,318-flag settings document.
 
@@ -36,7 +36,7 @@ com/roblox/client/flags/FlagJniInterface.nativeInitializeNativeFlags([Ljava/lang
 ```
 
 Every `call *0xNN(%rax)` in this function was decoded against the exact
-`JNINativeInterface` layout Cordial's own libjnivm ships
+`JNINativeInterface` layout Vanta's own libjnivm ships
 (`third_party/libjnivm/include/jni.h`), counted field-by-field rather than assumed
 from memory — the header has an extra `ToReflectedField` slot that a memorized
 table would miss, and getting one offset wrong cascades into every later one:
@@ -58,7 +58,7 @@ Control flow, verified instruction-by-instruction:
    "(Ljava/lang/String;ZZ)V")` — matching `native/init_params.cpp`'s own
    `NativeFlagsInitResult::ctor(ENV*, jint)` and
    `addBoolean(ENV*, shared_ptr<String>, jboolean, jboolean)` hooks exactly, both
-   name and descriptor. **Cordial's Java-side stub for this class is shaped
+   name and descriptor. **Vanta's Java-side stub for this class is shaped
    correctly.**
 3. Calls a local helper at `0x215a308` with a *global* pointer (`0x77d9298`, an
    internal engine singleton, unrelated to the JNI argument) to obtain an `int` —
@@ -100,10 +100,10 @@ generic `find`; the JNI calls are all standard, guarded ones).
 
 ---
 
-## 2. The live bug: Cordial is passing the entire ClientSettings document as a single flag *name*
+## 2. The live bug: Vanta is passing the entire ClientSettings document as a single flag *name*
 
-`native/init_params.cpp`'s `cordial_init_flags` (the C++ side of `cordial_init_flags`,
-called from `crates/cordial-runtime/src/bin/load.rs`) contains this, **as of this
+`native/init_params.cpp`'s `vanta_init_flags` (the C++ side of `vanta_init_flags`,
+called from `crates/vanta-runtime/src/bin/load.rs`) contains this, **as of this
 session, unedited by this investigation**:
 
 ```cpp
@@ -116,7 +116,7 @@ session, unedited by this investigation**:
 const bool have = settings_json && *settings_json;
 auto arr = std::make_shared<jnivm::Array<jnivm::String>>(have ? 1 : 0);
 if (have) {
-    arr->Set(0, cordial::S_pub(settings_json));
+    arr->Set(0, vanta::S_pub(settings_json));
 }
 ```
 
@@ -134,7 +134,7 @@ Ran the exact command given, against the already-built binary (did **not** run
 `native/*.cpp`):
 
 ```
-CORDIAL_STUB_QUIET=1 timeout 100 ./target/release/cordial-load --lib-dir "$LIBDIR" \
+VANTA_STUB_QUIET=1 timeout 100 ./target/release/vanta-load --lib-dir "$LIBDIR" \
   --apk "$APK" --client-settings /tmp/clientsettings.json --host-libc --game-activity --run 8
 ```
 
@@ -148,13 +148,13 @@ I/rbx.JNIRobloxSettings    nativeInitializeNativeFlags: ... 0: {"applicationSett
 
 That second line is exactly step 6's "found"/"not found" log (§1), firing for array
 index 0, whose "name" is the raw JSON text — confirming, at runtime, that the array
-Cordial builds today is the one-element, whole-document array the comment says is
+Vanta builds today is the one-element, whole-document array the comment says is
 wrong. The line is truncated at roughly 4 KB, consistent with `__android_log_print`'s
 own bounded formatting buffer (not a crash by itself — the line ends cleanly with a
 newline).
 
 **Caveat on ordering:** the `onFlagsFailed` print (via `fprintf(stderr, …)`, which
-Cordial's `NativeHelper::onFlagsFailed` hook uses unbuffered) appears *before* the
+Vanta's `NativeHelper::onFlagsFailed` hook uses unbuffered) appears *before* the
 `__android_log_print`-based line in the captured file, even though §1's disassembly
 shows the per-element log is produced from inside `nativeInitializeNativeFlags`,
 which — per §1 — cannot itself call `onFlagsFailed`. The most likely explanation is
@@ -168,7 +168,7 @@ installed, and `coredumpctl` (`core_pattern` is piped to `systemd-coredump`) lis
 no core for this crash — its storage is not retaining dumps here (other processes'
 crashes show the same `COREFILE missing`). This is worth recording so a future
 session does not repeat the attempt: getting a real backtrace requires either
-installing a debugger, or Cordial installing its own `SIGSEGV` handler (the
+installing a debugger, or Vanta installing its own `SIGSEGV` handler (the
 terminate-handler precedent in `native/jni_shim.cpp`, per `findings.md` §8.2, is the
 right shape for this).
 
@@ -190,7 +190,7 @@ GetMethodID(cachedClass, "gameActivity_onFlagsFailed", "()V")   ; class ref cach
 CallVoidMethod(cachedInstance, thatMethodID)                     ; instance cached at 0x6eba780
 ```
 
-— i.e. this is precisely the JNI call that reaches Cordial's
+— i.e. this is precisely the JNI call that reaches Vanta's
 `NativeHelper::onFlagsFailed` hook (`native/init_params.cpp:279`). A sibling copy
 seven bytes later (`0x29c937d`) is structurally identical but calls
 `"gameActivity_onEngineInitialized"` instead (`0x462ada`) — both share the
@@ -229,7 +229,7 @@ under what real-world condition `this->[0x8]` ends up non-null with state
 worth marking `11`, is not determined here.**
 
 What can be said with confidence: `this`, `this->[0x10]`, and `this->[0x8]` are
-**not** Java objects and are **not** anything Cordial's JNI layer
+**not** Java objects and are **not** anything Vanta's JNI layer
 (`NativeFlagsInitResult`, `NativeHelper`, etc.) constructs or touches — they are
 private, internal C++ engine state, invisible to JNI entirely. Nothing in
 `native/init_params.cpp` initialises or influences this object graph one way or
@@ -292,13 +292,13 @@ registration itself.** This rules it out as the missing piece.
 
 ## 5. What's verified vs inferred
 
-**Verified** (disassembly, cross-checked against Cordial's own `jni.h` and
+**Verified** (disassembly, cross-checked against Vanta's own `jni.h` and
 `native/init_params.cpp`, and against a live reproduction):
 - `nativeInitializeNativeFlags`'s full body, all three of its private helpers,
-  builds `NativeFlagsInitResult` exactly as Cordial's Java-side stub expects
+  builds `NativeFlagsInitResult` exactly as Vanta's Java-side stub expects
   (§1), takes a `String[]` of flag *names* (not a document), and cannot itself
   call `onFlagsFailed` or crash on the input it's given.
-- `native/init_params.cpp`'s `cordial_init_flags` currently packs the entire
+- `native/init_params.cpp`'s `vanta_init_flags` currently packs the entire
   settings document as element 0 of that array when `--client-settings` is
   supplied, contradicting its own comment (§2) — reproduced live.
 - The sole reference to `"gameActivity_onFlagsFailed"` in the binary, its sole
@@ -313,7 +313,7 @@ registration itself.** This rules it out as the missing piece.
   §3, or specifically triggered by whatever indirectly invokes `0x29c52cc`. No
   backtrace was obtainable in this sandbox (§2) to confirm the exact faulting
   instruction.
-- Why `this->[0x8]` (§3) ends up non-null/marked-11 at all in Cordial's run — this
+- Why `this->[0x8]` (§3) ends up non-null/marked-11 at all in Vanta's run — this
   requires knowing what real Android's flags subsystem normally does to populate
   it, which is internal engine state with no JNI-visible surface.
 
@@ -330,7 +330,7 @@ registration itself.** This rules it out as the missing piece.
 
 ## 6. Recommendation
 
-1. **Fix the discrepancy in `native/init_params.cpp`'s `cordial_init_flags`
+1. **Fix the discrepancy in `native/init_params.cpp`'s `vanta_init_flags`
    (§2) to match its own comment** — always construct a zero-length array,
    regardless of whether `settings_json` is non-empty. This is confirmed-wrong
    today and reproducibly wastes a multi-KB log line and a hash lookup on a
@@ -390,7 +390,7 @@ this fix:
 
 i.e. libjnivm was looking for a **static** method literally named `<init>`
 whose signature has the **return type folded in**, not the instance
-constructor Cordial registered. The cause is in libjnivm itself
+constructor Vanta registered. The cause is in libjnivm itself
 (`third_party/libjnivm/src/jnivm/internal/method.cpp:13-24`,
 `jnivm::GetMethodID`):
 
@@ -415,7 +415,7 @@ reason to report `onFlagsFailed`.
 This is not specific to `NativeFlagsInitResult` — it is true of *every*
 `<init>` this codebase registers via a real `NewObject`/`GetMethodID` path from
 the engine's side. It happened not to matter elsewhere because every other
-class in `native/init_params.cpp` is constructed by *Cordial's own C++ code*
+class in `native/init_params.cpp` is constructed by *Vanta's own C++ code*
 calling a `Create()` factory directly (never through JNI dispatch), so the
 libjnivm rewrite was never exercised for them. `NativeFlagsInitResult` is
 the one class the *engine itself* constructs via `NewObject`, which is exactly
@@ -438,7 +438,7 @@ reaching the caller. **`gameActivity_onFlagsFailed` still fires afterward
 warned.
 
 Also fixed in the same pass: §2's confirmed live bug (the whole ClientSettings
-document being packed as a single array element) — `cordial_init_flags` now
+document being packed as a single array element) — `vanta_init_flags` now
 always builds a zero-length array, matching its own comment, regardless of
 whether `--client-settings` is set.
 
@@ -452,7 +452,7 @@ fetching `ClientSettings` over the network: it reads whatever bundled/cached
 flag defaults the engine has and hands them back via the same `new` +
 repeated `add(name, value)` idiom `nativeInitializeNativeFlags` uses for its
 own result object. Nothing in the shipping dex calls it on the
-`ActivityNativeMain` chain Cordial drives (dex xref: its only caller is a
+`ActivityNativeMain` chain Vanta drives (dex xref: its only caller is a
 different startup path), so it was entirely dead code here, and its Java
 counterpart class was completely unimplemented.
 
@@ -460,7 +460,7 @@ Implemented `ClientLocalFlags` (dex-verified shape: `<init>()V`,
 `add(String,String)V`, `getAll()Lorg/json/JSONObject;`, `isEmpty()Z`,
 `size()I`) plus a minimal `org.json.JSONObject` stub, using the same
 static-factory `<init>` registration §7.1 established is required. Wired a
-`cordial_read_local_flags` bridge and call it right after
+`vanta_read_local_flags` bridge and call it right after
 `nativeInitializeNativeFlags`. **Result: it runs cleanly (no crash, no
 unresolved-symbol noise) but calls `add()` zero times** — this build has no
 bundled local flag defaults on disk, so the engine constructs an empty
@@ -473,19 +473,19 @@ bundled local flag defaults on disk, so the engine constructs an empty
 onFlagsFailed`", reached from one caller at `libroblox+0x29c553c`. **Both
 addresses were placed as raw hardware breakpoints and neither one was ever
 hit before the process crashed** — even though, in the same run without those
-breakpoints, `onFlagsFailed` demonstrably fired (Cordial's own hook printed
+breakpoints, `onFlagsFailed` demonstrably fired (Vanta's own hook printed
 `[roblox] flags FAILED`). This is exactly the kind of static-analysis error
 the top of this file warns about: the string-reference scan found *a*
 call site for the string `"gameActivity_onFlagsFailed"`, but not necessarily
 *the* one actually exercised at runtime by this code path.
 
-Breaking instead on Cordial's own hook —
-`cordial::NativeHelper::onFlagsFailed` (a real symbol in `cordial-load`,
+Breaking instead on Vanta's own hook —
+`vanta::NativeHelper::onFlagsFailed` (a real symbol in `vanta-load`,
 `nm`-verified, so no address guessing needed) — hits reliably, and its
 backtrace is unambiguous:
 
 ```
-frame #0  cordial::NativeHelper::onFlagsFailed
+frame #0  vanta::NativeHelper::onFlagsFailed
 frame #1  jnivm::Wrap<...>::InstanceInvoke
 frame #2  jnivm::MDispatchBase2<void>::CallMethod
 frame #3  jnivm::MDispatchBase<void,jobject*>::CallMethod(..., va_list)
@@ -500,7 +500,7 @@ frame #12 libc.so.6`__clone3 + 44
 ```
 
 **This call happens on a separate `pthread`, spawned via `start_thread`/
-`__clone3` — not on the thread that runs Cordial's sequential bring-up code
+`__clone3` — not on the thread that runs Vanta's sequential bring-up code
 (`nativeInitializeNativeFlags`, `readLocalFlags`, `nativeInitClientSettings`,
 etc. all run on the "calling" thread; this backtrace contains none of those
 frames).** §3's outer-caller address (frame #7, `0x29c553c`) is confirmed
@@ -509,7 +509,7 @@ correct — the return address matches exactly — but §3's claim that the
 level of the call chain (frame #6 is closer to that address; the actual
 `GetMethodID`+`CallVoidMethod` pair is one level deeper, around
 `0x29c8fxx`/frame #5). More importantly: **this whole chain runs
-independently of, and after, whatever Cordial's own thread has done.**
+independently of, and after, whatever Vanta's own thread has done.**
 
 This was confirmed empirically, not just from one backtrace: `onFlagsFailed`
 fires with the *identical* character (same log line, same async-thread
@@ -526,8 +526,8 @@ now confirmed live rather than inferred from disassembly alone.
 ### 7.4 `nativeInitClientSettings` / `nativePostClientSettingsLoadedInitialization3` — wired, with one new hazard found
 
 Per the architecture Roblox ships: these `NativeGLInterface` natives are not
-the engine asking Cordial for settings over JNI — they are the interface a
-**host app** uses to hand the engine settings *it* already fetched. Cordial
+the engine asking Vanta for settings over JNI — they are the interface a
+**host app** uses to hand the engine settings *it* already fetched. Vanta
 is the host app here, so calling these directly (with real data, no forged
 HTTP responses) is the legitimate interface, not a workaround. Dex-verified
 descriptors:
@@ -539,7 +539,7 @@ nativeInitClientSettingsCached(Ljava/lang/String;Ljava/lang/String;Ljava/lang/St
 nativePostClientSettingsLoadedInitialization3(Ljava/util/List;)V
 ```
 
-Implemented `cordial_init_client_settings` (unsigned variant only — deliberately
+Implemented `vanta_init_client_settings` (unsigned variant only — deliberately
 not touching `...Signed`, since forging a signature would misrepresent real
 account/server state) and called it with the real `--client-settings` document
 in the middle argument, empty strings for the other two (their exact roles
@@ -558,10 +558,10 @@ thread** — verified live under `lldb`: `SIGSEGV`, fault address `0x8`, inside
 `libc.so.6\`_IO_fflush`, called from inside the engine's own implementation
 of this native. This is a *worse* regression than the pre-existing
 asynchronous crash (§3's `libroblox+0x2ccd937`, `SingleSurfaceAppImpl`'s null
-`JNIEnv`) — it happens earlier, synchronously, and on Cordial's own thread
-instead of an engine-internal one. **The call is implemented (`cordial_
+`JNIEnv`) — it happens earlier, synchronously, and on Vanta's own thread
+instead of an engine-internal one. **The call is implemented (`vanta_
 post_client_settings_loaded` / `game_activity::post_client_settings_loaded`)
-but gated behind `CORDIAL_TRY_POST_CLIENT_SETTINGS=1` and not run by
+but gated behind `VANTA_TRY_POST_CLIENT_SETTINGS=1` and not run by
 default** — an empty list is evidently not what this native expects, and
 guessing further was not attempted this session (time-boxed). Whatever real
 list contents it wants remain undetermined.
@@ -577,10 +577,10 @@ as shipped, introduce no new crash.
 all** before this session — `opt.flag_overrides` existed as a CLI field with
 no corresponding call anywhere in `native/init_params.cpp` or `load.rs`. That
 fully explains §3's original "no extra logging" result: nothing was ever
-invoked. A `cordial_preload_flag_overrides` bridge (dex-verified descriptor
+invoked. A `vanta_preload_flag_overrides` bridge (dex-verified descriptor
 `MainGameActivity.nativePreloadFlagOverrides(Ljava/lang/String;)V`, an
 *instance* native — second JNI argument is an Activity object, following
-`cordial_set_init_params`'s precedent of a bare placeholder `jnivm::Object`)
+`vanta_set_init_params`'s precedent of a bare placeholder `jnivm::Object`)
 is now wired and called with the file's raw contents.
 
 A second bug was caught in the same pass, while fixing the first: an initial
@@ -612,7 +612,7 @@ project's own earlier assumptions rather than the engine's real expectation).
 **Fixed, verified live:**
 - `NativeFlagsInitResult`'s constructor now actually runs (§7.1) — this was a
   real, confirmed bug (unreachable native constructor), not a hypothesis.
-- `cordial_init_flags` no longer packs the whole ClientSettings document as a
+- `vanta_init_flags` no longer packs the whole ClientSettings document as a
   single array element (§7.1, closing §2/§6.1).
 - `readLocalFlags()` / `ClientLocalFlags` implemented and called (§7.2) —
   runs cleanly, contributes nothing (no bundled local defaults in this build).
@@ -627,7 +627,7 @@ project's own earlier assumptions rather than the engine's real expectation).
 **Not fixed — honest negative result:** `gameActivity_onFlagsFailed` still
 fires. It is confirmed, by breakpoint (not inference), to run on a separate
 pthread whose creation and decision-making this session could not trace back
-to any Cordial-controlled input — every synchronous call this session added
+to any Vanta-controlled input — every synchronous call this session added
 or removed left its behaviour identical. The condition that "chooses failure
 over success" is internal engine state on that background thread, still not
 identified. The highest-leverage next step is the same as §6.4 named:
@@ -640,7 +640,7 @@ entry point is, not just its later call stack).
 
 ## §8. Client settings are not what the flags verdict depends on
 
-Cordial now fetches Roblox's real client-settings document and the engine accepts
+Vanta now fetches Roblox's real client-settings document and the engine accepts
 it: `nativeInitClientSettings` returns `0`, and
 `nativePostClientSettingsLoadedInitialization3` then succeeds. (That call used to
 crash synchronously in `_IO_fflush`; the crash was a *consequence* of the
@@ -675,11 +675,11 @@ not "do I have flags".
 
 ## §9. Where the verdict is actually made
 
-A breakpoint on Cordial's own `NativeHelper::onFlagsFailed` gives the real call
+A breakpoint on Vanta's own `NativeHelper::onFlagsFailed` gives the real call
 chain (offsets into `libroblox.so`, ASLR disabled, base `0x7fffefec0000`):
 
 ```
-onFlagsFailed  (Cordial)
+onFlagsFailed  (Vanta)
   <- libjnivm CallMethod
   <- 0x29c8fff   JNI varargs wrapper
   <- 0x29c9349   inside a small reporter function starting at 0x29c92eb
@@ -723,7 +723,7 @@ disassembly.
 
 ## §10. Answered — and not the blocker
 
-**Breakpoints inside `libroblox.so` do not work, and never have.** Cordial
+**Breakpoints inside `libroblox.so` do not work, and never have.** Vanta
 `mmap`s the library with its own bionic loader, so the system dynamic linker
 never registers it: lldb's `image list` never lists it, and
 `breakpoint set --address`/`--shlib` stay permanently `unresolved, hit count 0`.
@@ -732,7 +732,7 @@ The only technique that works is writing `0xCC` into the target address with
 
 This is worth knowing before anything else here: **any earlier claim in this repo
 of "I set a breakpoint in the engine" is suspect unless it used that method.**
-Breakpoints in Cordial's *own* code (`onFlagsFailed`, the Rust driver) resolve
+Breakpoints in Vanta's *own* code (`onFlagsFailed`, the Rust driver) resolve
 normally, and crash-stop backtraces are genuine — only breakpoints inside the
 mapped engine silently never fire.
 
@@ -760,7 +760,7 @@ straight-line and unguarded, so if it were reached it would call
 `gameActivity_onFlagsLoaded`. Across five runs `onFlagsLoaded` is never resolved
 or called. So the success path is gated by something upstream inside
 `nativePreloadFlagOverrides` that this harness never satisfies — which is
-interesting, because `nativePreloadFlagOverrides` is a function Cordial *does*
+interesting, because `nativePreloadFlagOverrides` is a function Vanta *does*
 call, and whose payload format is still unknown.
 
 **Priority, stated plainly.** A parallel investigation confirmed that the flags
@@ -778,7 +778,7 @@ Run with `tools/hook_descriptors.py`, a JNI-traced startup, and the engine's own
 ### The engine log exists, and it says the flags load
 
 `<profile>/data/files/appData/logs/*.log`. Earlier work looked for it in the
-wrong place and concluded none was written; that was wrong. Cordial's `FlagCache`
+wrong place and concluded none was written; that was wrong. Vanta's `FlagCache`
 compresses 1273559 bytes to 366594 and writes them, channel `production`,
 tombstone valid. Sober's writes 362169 on the same document. So `onFlagsFailed`
 is misleading in the way §7 suspected and now on the engine's own evidence rather
@@ -806,8 +806,8 @@ All three are fixed. The sweep is down to one, `getWaterfallInsets`.
 
 ### None of them is the cause
 
-`CORDIAL_TRACE_PATHS=1` over a `--run 10` startup: zero paths containing
-`rbx-storage`, byte-identical in that respect to the `CORDIAL_NO_BOOTSTRAP=1`
+`VANTA_TRACE_PATHS=1` over a `--run 10` startup: zero paths containing
+`rbx-storage`, byte-identical in that respect to the `VANTA_NO_BOOTSTRAP=1`
 control taken minutes later. `onFlagsFailed` still fires. Delivering in Sober's
 order — settings, then post, then flag names, read off its log at 3.700s and
 3.796s — did not change it.
@@ -819,15 +819,15 @@ at 3.796751s: `ClientRunInfo` git hash, base url and channel; then
 `AppPlatformQoSEmergencyHandler was instanced`; then the `Mimalloc` block; then
 `RbxStorage::init [INIT] user: flagLoaded` at 3.820885s.
 
-Cordial's log contains **none** of those, zero occurrences each, on a run where
+Vanta's log contains **none** of those, zero occurrences each, on a run where
 the `AndroidGLView` channel is demonstrably open because another line on it
 appears. Comparing distinct log channels over the same ten seconds, Sober reaches
-ten and Cordial seven; absent are `AppPlatformQoSEmergency`, `KeyRing`,
+ten and Vanta seven; absent are `AppPlatformQoSEmergency`, `KeyRing`,
 `Mimalloc`, `NetworkClient`, `RbxStorage` and `RbxTransportDummyClient`.
 `NetworkClient` is expected on a startup-only run and `Mimalloc` is explained by
-Cordial not linking it. The other four are not explained.
+Vanta not linking it. The other four are not explained.
 
-So: Cordial's call to `nativePostClientSettingsLoadedInitialization3` returns
+So: Vanta's call to `nativePostClientSettingsLoadedInitialization3` returns
 without the engine's own body of it having run. The two symbols it needs on the
 way in are now answered and the body still does not run. The one difference left
 that this session can point at is the argument — an empty `List` whose `size()`
@@ -868,7 +868,7 @@ timestamp, description, and on the long form process name and more.
 
 **Who populates it:** the app, from
 `ActivityManager.getHistoricalProcessExitReasons()`. **What it means empty:** the
-previous run recorded no abnormal exit. So Cordial's empty `ArrayList` is not a
+previous run recorded no abnormal exit. So Vanta's empty `ArrayList` is not a
 placeholder standing in for something unknown — it is the correct value, and
 filling it would be telling the engine about crashes that did not happen.
 
@@ -881,7 +881,7 @@ native and this session cannot name it.
 
 It is exported (`0x295cc6c`) and carries the identical
 `(Ljava/util/List<Lcom/roblox/engine/jni/model/ApplicationExitInfoCpp;>;)V`, and
-Cordial had never called it, which made it the obvious next candidate on this
+Vanta had never called it, which made it the obvious next candidate on this
 handshake. Called with the same empty list, before the settings call, on a
 `--run 10` startup: it returns cleanly and changes nothing. Zero `RbxStorage`,
 zero `ClientRunInfo`, zero `AppPlatformQoS`, zero `[FLog::AndroidGLView] native*`
@@ -894,17 +894,17 @@ here instead of left behind a flag for somebody to find and switch on.
 Worth noting for whoever picks this up: the export addresses put
 `nativeSetAppPreviousExitReasons` (`0x295cc6c`) next to
 `nativeInitClientSettingsSigned` (`0x295c421`), `...Cached` (`0x295c731`) and
-`...CachedCompressed` (`0x295c9ad`), while the two natives Cordial actually calls
+`...CachedCompressed` (`0x295c9ad`), while the two natives Vanta actually calls
 sit far away at `0x20b6981` and `0x20f2f6d`. That is an observation about layout
-and nothing more, but the newer cluster is the one Cordial has never reached.
+and nothing more, but the newer cluster is the one Vanta has never reached.
 
 ### §11.3 The strongest form of the remaining question
 
 `[FLog::AndroidGLView] nativeInitClientSettings` appears in Sober's log and never
-in Cordial's, and this is not a verbosity difference. Cordial's log does contain
+in Vanta's, and this is not a verbosity difference. Vanta's log does contain
 `[FLog::AndroidGLView] rbx.datamodel: setTaskSchedulerBackgroundMode()` at
 severity 6 — the same channel at the same level as Sober's line. The log opens at
-1.806s and Cordial's third call to that native happens after the Vulkan device
+1.806s and Vanta's third call to that native happens after the Vulkan device
 lines at 3.4s, well inside the window.
 
 So: the same channel, the same level, an open log, a call that returns 0, and no
@@ -919,7 +919,7 @@ body of `nativeInitClientSettings` "does not appear to execute", on the strength
 of `[FLog::AndroidGLView] nativeInitClientSettings` never appearing. The
 reasoning did not survive its own control.
 
-Cordial made that call three times per run, the first before the log file opens
+Vanta made that call three times per run, the first before the log file opens
 at 1.806s, so the missing line could have been an artifact of ordering. Gating
 the pre-`initializeNativeCode` call off and re-running settles it: `FlagCache`
 still fires nine times and still writes the document. So the body runs, well
@@ -933,15 +933,15 @@ Four further leads, each dead, each recorded so it is not re-run:
 * **`FFlagStartRbxStorageInitRighAfterFlags=False`.** The premise of this whole
   line is that the store constructs off the flags-loaded event because that flag
   is True. Overriding it to False, which should route construction back to the
-  direct call Cordial already makes, applies cleanly (`1 override(s) applied`)
+  direct call Vanta already makes, applies cleanly (`1 override(s) applied`)
   and produces no `RbxStorage` line and no `rbx-storage` path. Storage does not
   construct on the other path either.
 * **`nativeSetAppPreviousExitReasons`** — §11.2, inert.
 * **`nativeRegisterJavaFlagProvider`** — exported by the engine and never called
-  by Cordial, which made it look like the missing registration step. It is **not
+  by Vanta, which made it look like the missing registration step. It is **not
   declared anywhere in the dex**: no Java class in this APK has a counterpart for
   it, so it is not on any path this build takes. A tempting name is not a lead.
-* **The natives Cordial does not call.** The engine exports 91 on
+* **The natives Vanta does not call.** The engine exports 91 on
   `NativeGLInterface`, `MainGameActivity` and `FlagJniInterface` together;
   `load.rs` calls 42. The 49 it does not are lifecycle (`PauseApp`, `LeaveGame`),
   purchase, VR, text-box and the three unused client-settings variants. Nothing
@@ -949,26 +949,26 @@ Four further leads, each dead, each recorded so it is not re-run:
 
 **The one divergence left that is not explained.** Sober logs
 `nativeInitializeNativeFlags: Registered Flag Provider ID from Java: 0`.
-No Cordial run in this session logs it, and in its place Cordial emits the same
+No Vanta run in this session logs it, and in its place Vanta emits the same
 `JNIRobloxSettings nativeInitializeNativeFlags:` prefix with an empty message,
 while every other line on that tag formats correctly (`... 0: <name> not
 found.`). Whether that empty line is the provider-registration message arriving
-without its value, or Cordial's `__android_log_print` shim dropping a format it
+without its value, or Vanta's `__android_log_print` shim dropping a format it
 does not handle, is **not established** — and the distinction matters, because
-one is an engine-state difference and the other is a logging bug in Cordial.
+one is an engine-state difference and the other is a logging bug in Vanta.
 That is the next thing to settle, and it is one instrumented run away.
 
-### §11.5 Retraction: the flag-provider divergence was Cordial's own log filter
+### §11.5 Retraction: the flag-provider divergence was Vanta's own log filter
 
 §11.4 closed by naming one unexplained divergence — Sober logs
 `nativeInitializeNativeFlags: Registered Flag Provider ID from Java: 0` and no
-Cordial run does. **That is wrong and is retracted.** It also described an "empty
+Vanta run does. **That is wrong and is retracted.** It also described an "empty
 message" line in its place, which never existed; that was an artifact of the
 `grep -o` pattern used to look for it, not of any run.
 
 Sober's line is at `debug:` priority. `native/liblog.cpp`'s `minimum_priority()`
-defaults to `ANDROID_LOG_INFO` and drops everything below it, so Cordial had been
-discarding the line before it reached a terminal. `CORDIAL_LOG_LEVEL=d` on the
+defaults to `ANDROID_LOG_INFO` and drops everything below it, so Vanta had been
+discarding the line before it reached a terminal. `VANTA_LOG_LEVEL=d` on the
 same build:
 
     Registered Flag Provider ID from Java: 0
@@ -976,12 +976,12 @@ same build:
     Registered Flag Provider ID from Java: 1
     flagCount = 139.
 
-Cordial registers a flag provider, exactly as Sober does.
+Vanta registers a flag provider, exactly as Sober does.
 
 **The general warning, which is worth more than the retraction.** Sober's log
-file contains `debug:` lines; Cordial's stderr, at its default level, does not.
+file contains `debug:` lines; Vanta's stderr, at its default level, does not.
 Any comparison between the two that concludes something from an *absence* on the
-Cordial side is invalid unless it was taken at `CORDIAL_LOG_LEVEL=d`. Two
+Vanta side is invalid unless it was taken at `VANTA_LOG_LEVEL=d`. Two
 conclusions in this session were drawn that way and one of them survived only
 because it was tested.
 
@@ -990,7 +990,7 @@ absences in §11 and §11.4. Those were read from the engine's own `FLog` file i
 `<profile>/data/files/appData/logs`, which the engine writes directly and which
 `liblog.cpp` does not filter.
 
-One real difference does fall out of the debug run: Cordial registers **three**
+One real difference does fall out of the debug run: Vanta registers **three**
 flag providers per launch, IDs 0, 1 and 2, because it calls
 `nativeInitializeNativeFlags` three times — the early call, `bootstrapTheApp`,
 and the original post-init block. Sober registers one. Whether repeated
@@ -998,13 +998,13 @@ registration is harmless is not established.
 
 ### §11.6 One delivery, not three. Measured, and still not the fix
 
-The debug run in §11.5 showed Cordial registering flag providers 0, 1 and 2 on a
+The debug run in §11.5 showed Vanta registering flag providers 0, 1 and 2 on a
 single launch where Sober registers 0 and stops. Three deliveries: the pre-init
 call, `bootstrapTheApp`, and the original post-init block. A fourth would have
 followed, because the engine calls `bootstrapTheApp` **twice** per launch — two
 `Call Member Function ... bootstrapTheApp ()V` in the trace.
 
-Now one. The pre-init call runs only under `CORDIAL_NO_BOOTSTRAP=1`, the
+Now one. The pre-init call runs only under `VANTA_NO_BOOTSTRAP=1`, the
 post-init block is skipped when the bootstrap delivered, and `run_bootstrap`
 swaps a flag so the engine's second call is a no-op. `Registered Flag Provider
 ID from Java: 0`, once, matching Sober exactly.
@@ -1014,26 +1014,26 @@ It is not the fix. Same run: zero `RbxStorage` in the engine log, zero
 
 One thing did move, and it is recorded because it is the only quantity in this
 whole session that responded to anything: `onFlagsFailed` is reported **twice**
-with the single delivery and **four times** in the `CORDIAL_NO_BOOTSTRAP=1`
+with the single delivery and **four times** in the `VANTA_NO_BOOTSTRAP=1`
 control taken minutes later. So the verdict is reported once per delivery
 attempt, not once per launch. That is consistent with the verdict being a
 property of each attempt rather than a latched startup state, which is new, and
 nobody should read more into it than that.
 
-### §11.7 The ordering, read file-to-file: Cordial starts the app bridge first
+### §11.7 The ordering, read file-to-file: Vanta starts the app bridge first
 
-§11 and §11.4 compared Cordial's `FLog` file against Sober's *captured stdout*,
+§11 and §11.4 compared Vanta's `FLog` file against Sober's *captured stdout*,
 which after §11.5 is not a comparison anyone should trust. Sober writes its own
 `FLog` file, `appData/logs/<version>_<ts>_Player_<id>_last.log`, the same sink in
 the same format from the same build. Redone file-to-file, the earlier reading
 survives: Sober's file carries all seven lines (`AndroidGLView`
 `nativeInitClientSettings` ×1, `ClientRunInfo` ×3, `RbxStorage` ×2,
-`AppPlatformQoSEmergency` ×1, `Mimalloc` ×43) and Cordial's carries none.
+`AppPlatformQoSEmergency` ×1, `Mimalloc` ×43) and Vanta's carries none.
 
 What the file-to-file view adds is the sequence, and it is not what this document
 has assumed.
 
-| | Sober | Cordial |
+| | Sober | Vanta |
 |---|---|---|
 | log opens | 1.652 `RobloxChannel has been set to production` | 1.781 |
 | | *engine silent for 2.05 s* | |
@@ -1044,24 +1044,24 @@ has assumed.
 | `initializeWithAppStarter` | 3.906 | 1.781 |
 | `InitializedLuaApp` | — | 3.102 |
 
-**Sober brings the app bridge up 200 ms after the content store. Cordial brings
+**Sober brings the app bridge up 200 ms after the content store. Vanta brings
 it up first, and it is the very first thing the engine logs.** Sober's engine
 does nothing at all between 1.652 s and 3.700 s: it is waiting for the host
-application to hand it settings, and only starts once it has them. Cordial's
+application to hand it settings, and only starts once it has them. Vanta's
 engine is already into `nativeAppBridgeV2Init`, `initializeWithAppStarter` and
 `InitializedLuaApp` while that handshake is still going on.
 
-Channels Sober reaches and Cordial never does, whole file against whole file:
+Channels Sober reaches and Vanta never does, whole file against whole file:
 `AppPlatformQoSEmergency`, `KeyRing`, `Mimalloc`, `RbxStorage`, plus
 `AssetProvider`, `NetworkClient`, `RbxTransportDummyClient`,
 `RbxTransportRnaExpConnection` and `TrackerAnimationStreamSourceTrace`, which are
 join-time and expected absent from a startup-only run. `Mimalloc` is explained by
-Cordial not linking it. `AppPlatformQoSEmergency`, `KeyRing` and `RbxStorage` all
-sit inside the window Cordial skips past.
+Vanta not linking it. `AppPlatformQoSEmergency`, `KeyRing` and `RbxStorage` all
+sit inside the window Vanta skips past.
 
 **This is the named divergence, and it is an ordering one, not a missing
 symbol.** Every symbol on the path now resolves and every argument is now known
-correct; what differs is when Cordial does the handshake relative to starting the
+correct; what differs is when Vanta does the handshake relative to starting the
 engine's application layer. The next experiment is to deliver settings after
 `nativeAppBridgeV2InitWithParams` rather than inside `initializeNativeCode`, and
 watch for `RbxStorage::init`. That is a reordering of `load.rs`, it is not
@@ -1069,35 +1069,35 @@ attempted here, and it should be done with the `--run 8` startup and a control.
 
 ### §11.8 The reordering §11.7 proposed was run. It crashes
 
-`CORDIAL_LATE_SETTINGS=1` moves the whole handshake out of
+`VANTA_LATE_SETTINGS=1` moves the whole handshake out of
 `initializeNativeCode` and into Sober's position, after
 `nativeAppBridgeV2InitWithParams`. Two runs, both `--run 8`:
 
 | | SIGSEGV | reached the app bridge |
 |---|---|---|
-| `CORDIAL_LATE_SETTINGS=1` | 2 of 2 | no |
+| `VANTA_LATE_SETTINGS=1` | 2 of 2 | no |
 | default (`bootstrapTheApp` delivers) | 0 of 2 | yes |
-| `CORDIAL_NO_BOOTSTRAP=1` | 0 of 1 | yes |
+| `VANTA_NO_BOOTSTRAP=1` | 0 of 1 | yes |
 
 The engine dies before the bridge is reached, so the late delivery never runs at
-all. **Cordial cannot adopt Sober's ordering by moving the call.** Sober's engine
+all. **Vanta cannot adopt Sober's ordering by moving the call.** Sober's engine
 can afford to sit idle from 1.652 s to 3.700 s because the Kotlin activity
-lifecycle is what will eventually hand it settings; Cordial drives the natives
+lifecycle is what will eventually hand it settings; Vanta drives the natives
 directly and by that point has advanced past the state in which they can arrive.
 
 So §11.7's ordering observation stands as a description and dies as a fix. The
 difference is real and it is not something a reordering of `load.rs` can close.
-Whatever Sober's engine is waiting for during those two seconds, Cordial never
+Whatever Sober's engine is waiting for during those two seconds, Vanta never
 enters that state — and identifying *that* state, rather than any further symbol,
 is what the next session should chase.
 
 The gate is left in `load.rs` with the crash recorded in the comment beside it,
-on the same reasoning 7.4 kept `CORDIAL_TRY_POST_CLIENT_SETTINGS`: the experiment
+on the same reasoning 7.4 kept `VANTA_TRY_POST_CLIENT_SETTINGS`: the experiment
 has a result and the next person should not have to rebuild it to find out.
 
 ### §11.9 There is no state. Those two seconds are the application's, not the engine's
 
-§11.8 ended by saying Sober's engine "spends two seconds in a state Cordial never
+§11.8 ended by saying Sober's engine "spends two seconds in a state Vanta never
 enters" and that identifying that state was the next thing to chase. There is no
 such state, and that closing sentence is retracted.
 
@@ -1118,10 +1118,10 @@ Sober's lifecycle log accounts for the time in its own terms: `fs_init` 1132 ms,
 `check_security` 465 ms, `runtime_handler` 716 ms. That is a launcher doing
 launcher work between two engine calls.
 
-Cordial's equivalent stretch is short because Cordial's work is short: the
+Vanta's equivalent stretch is short because Vanta's work is short: the
 settings document is already on disk under a six-hour cache, there is no security
 check, no gamemode integration and no device enumeration of that weight. The
-compressed timeline in §11.7's table is Cordial being faster, not Cordial
+compressed timeline in §11.7's table is Vanta being faster, not Vanta
 skipping a phase. Nothing in the gap is a prerequisite the engine is waiting on,
 which is also why §11.8's reordering could not work and should not have been
 expected to.
@@ -1130,7 +1130,7 @@ One detail worth carrying, unrelated to the verdict: Sober applies its **own**
 `app_settings` manifest on top of Roblox's document —
 `{"app_settings":{"FStringRenderTextureBudgetByRam":""}, ...}` — so the two
 clients are not running byte-identical flag sets even when they fetch the same
-document. Cordial applies no such overlay. That has not been tested against the
+document. Vanta applies no such overlay. That has not been tested against the
 verdict and is recorded only so nobody assumes the flag sets match exactly.
 
 ### §11.10 Sober's `app_settings` overlay — applied, no effect
@@ -1141,7 +1141,7 @@ because "untested" is not a place to leave something that was raised as a
 difference.
 
 Sober's manifest carries exactly one entry: `FStringRenderTextureBudgetByRam=""`.
-Given to Cordial through `CORDIAL_FLAGS`, `--run 10` startup, against a control
+Given to Vanta through `VANTA_FLAGS`, `--run 10` startup, against a control
 run taken immediately afterwards on the same build:
 
 | | overrides applied | `RbxStorage` | `onFlagsFailed` |
@@ -1167,7 +1167,7 @@ measured rather than assumed. The client is healthy at the moment it is dropped:
 
 In the same run: `bootstrapTheApp` delivered once, `onFlagsFailed` twice,
 `FlagCache` wrote, and `KeyRing` logged two parsed configs — so `KeyRing`, listed
-in §11.7 as a channel Cordial never reaches, is simply join-time and is reached
+in §11.7 as a channel Vanta never reaches, is simply join-time and is reached
 normally. That entry in §11.7's list is wrong and is corrected here.
 
 The store is still not constructed, and for the first time the engine says so in
@@ -1195,7 +1195,7 @@ not blocked.
 **There is no way to initialise it directly.** `RbxStorage` is engine-internal.
 The engine exports `LocalStorageManager_initStorageManagerNative`, `...V3`, the
 `memstorage` family and the `localstorageplatforminterface` family — all of which
-are *LocalStorage*, a different thing that Cordial already has working
+are *LocalStorage*, a different thing that Vanta already has working
 (`appData/LocalStorage/*.json` is populated). Nothing exported, and nothing in the
 dex, constructs `RbxStorage`. There is no handle to pull.
 
@@ -1225,7 +1225,7 @@ not being asked to.
 ### §12.1 `NativeFlagsInitResult` — three methods implemented and never registered
 
 Found while chasing the above, fixed, and **not** the cause. The dex declares
-five members; Cordial registered two:
+five members; Vanta registered two:
 
     <init>                   (I)V                        registered
     addBoolean               (Ljava/lang/String;ZZ)V     registered
@@ -1249,13 +1249,13 @@ it back.
 
 ### §12.2 Where that leaves the verdict
 
-The flag handshake completes on Cordial's side. 138 of 139 names accepted, the
+The flag handshake completes on Vanta's side. 138 of 139 names accepted, the
 flag cache written, static and dynamic overrides demonstrably in effect. The
-engine then reports `onFlagsFailed` over JNI without having asked Cordial a single
+engine then reports `onFlagsFailed` over JNI without having asked Vanta a single
 further question — no unresolved lookup, no failed call, no log line at any
 verbosity. Every symbol on the path resolves and every argument is correct.
 
-So the verdict is not a reaction to anything Cordial does or fails to do at the
+So the verdict is not a reaction to anything Vanta does or fails to do at the
 JNI boundary. That is a much narrower statement than this document has been able
 to make before, and it rules out the entire class of fix it has been pursuing
 since §7.
@@ -1263,20 +1263,20 @@ since §7.
 ## §13. mocktail does not take the 304, and the difference is visible
 
 The experiment that had been deferred for two days. mocktail 1.0.3, Flatpak,
-signed in and joined to place 17625359962 — the same place Cordial dies in.
+signed in and joined to place 17625359962 — the same place Vanta dies in.
 
     Joining game ... place 17625359962 at 10.60.0.203     84.048s
     Connection accepted from 128.116.51.33|61655          84.102s
     last engine timestamp                                333.512s
     Disconnect / Peer Disconnected / Connection lost            0
 
-**249 seconds connected and still running**, against Cordial's 60.6. So the 304
+**249 seconds connected and still running**, against Vanta's 60.6. So the 304
 is not something every third-party client gets, not a property of the engine on
 Linux, and not unavoidable. A working comparison now exists.
 
 ### The startup difference, counted on the same place and the same day
 
-| | mocktail | Cordial |
+| | mocktail | Vanta |
 |---|---|---|
 | `onFlagsFailed` | **0** | 2 |
 | `RbxStorage::init` | **[INIT] 0.164s, [DONE] 1.037s** | never (only "not initialized" errors) |
@@ -1288,7 +1288,7 @@ This is the chain ad985a8 proposed, now with the other side of it. The client
 that raises the flags-loaded event builds its content store and keeps its
 connection; the client that reports `onFlagsFailed` does neither.
 
-mocktail's order, which Cordial reproduces up to the third line and then stops:
+mocktail's order, which Vanta reproduces up to the third line and then stops:
 
     0.139  nativeInitClientSettings
     0.155  [FlagCache] Deferring flag cache write to post TTI
@@ -1299,19 +1299,19 @@ mocktail's order, which Cordial reproduces up to the third line and then stops:
     0.159  AppPlatformQoSEmergencyHandler was instanced
     0.164  RbxStorage::init [INIT] user: flagLoaded
 
-**`ClientRunInfo` is the first thing Cordial does not reach.** It is the engine
+**`ClientRunInfo` is the first thing Vanta does not reach.** It is the engine
 stating its own run identity — git hash, base url, channel — immediately after
-the post-settings call, and six milliseconds before the store is built. Cordial
+the post-settings call, and six milliseconds before the store is built. Vanta
 makes both calls, gets 0 and "ok" from them, and produces none of these lines.
 
-### Two things mocktail does that Cordial does not do at all
+### Two things mocktail does that Vanta does not do at all
 
 Neither is established as the cause. Both are recorded because they are
 differences between a client that works and one that does not, which is a much
 better position than this document has been in.
 
 **It presents as a PC, not a phone.** `src/runtime/device_profile.cc` reports
-`device profile=pc-windows-11 class=pc model="Windows 11 PC"`. Cordial tells the
+`device profile=pc-windows-11 class=pc model="Windows 11 PC"`. Vanta tells the
 engine it is an Android tablet — 6d8c280 built a User-Agent saying exactly that,
 on the reasoning that the real Android client sends it. mocktail's choice is the
 opposite one and mocktail is the client that survives.
@@ -1319,30 +1319,30 @@ opposite one and mocktail is the client that survives.
 **It bootstraps a tracker identity before the engine starts.**
 `src/services/browser_tracker_service.cc` calls
 `https://apis.roblox.com/browser-tracker-api/device/initialize?suggestedBrowserTrackerId=`
-and keeps the `RBXEventTrackerV2` cookie it returns. Cordial has no equivalent
+and keeps the `RBXEventTrackerV2` cookie it returns. Vanta has no equivalent
 and no such cookie.
 
 This was already half-written down here and never connected to anything:
 `docs/analysis/webview-surface.md` records that `libroblox.so` carries the string
 `BrowserTrackerIdRequest: No RBXEventTrackerV2 in cookie.`, and
 `docs/design/sign-in.md` has the same endpoint in an Android capture. So the
-engine has a code path that notices this cookie missing, and Cordial has never
+engine has a code path that notices this cookie missing, and Vanta has never
 supplied it.
 
 **Not evidence, and worth stating so nobody quotes it as such:** that log string
-did **not** appear in Cordial's join log, and the only BrowserTracker line in
+did **not** appear in Vanta's join log, and the only BrowserTracker line in
 mocktail's log is mocktail's own launcher rather than the engine. Neither engine
 said anything about a tracker cookie at default verbosity. The string's presence
 in the binary shows the check exists; it does not show it fired.
 
 ### What to do next, in order
 
-1. **Raise the log level and rerun the Cordial join.** §12 established that flag
+1. **Raise the log level and rerun the Vanta join.** §12 established that flag
    overrides reach the engine, so the channels around `ClientRunInfo`,
    `BrowserTrackerIdRequest` and `AppPlatformQoS` can be turned up. Find out
    whether the engine says anything about the tracker cookie when it is missing.
-2. **Supply `RBXEventTrackerV2`.** Cordial owns the cookie jar already
-   (`crates/cordial-runtime/src/cookies.rs`) and the endpoint is a documented,
+2. **Supply `RBXEventTrackerV2`.** Vanta owns the cookie jar already
+   (`crates/vanta-runtime/src/cookies.rs`) and the endpoint is a documented,
    ordinary HTTPS request the real client makes. Nothing here forges or replays
    anything.
 3. **Try the PC device profile.** Cheap, reversible, and the client that works
@@ -1359,7 +1359,7 @@ Tried, and it does not work the way §13 assumed.
 **404**, which is a route that does not exist. `POST` with mocktail's own headers
 — `Accept: application/json`, `Content-Type: application/json`, body `{}` —
 answers **500** with an empty body, unchanged whether the User-Agent says
-`Mocktail/0.1` or `Cordial/0.5`. So the method is right and something else about
+`Mocktail/0.1` or `Vanta/0.5`. So the method is right and something else about
 the request is not.
 
 `docs/design/sign-in.md` already recorded why, from a logged-out Android capture:
@@ -1385,18 +1385,18 @@ nothing here shows the missing cookie causes the 304.** But the ordering is now
 the right way round to test: build the web window, sign in through it, and see
 whether the cookie arrives on its own.
 
-`crates/cordial-runtime/src/browser_tracker.rs` is written and tested and
+`crates/vanta-runtime/src/browser_tracker.rs` is written and tested and
 **deliberately not called from anywhere**. Wiring in a request that returns 500
-would put a line in the log saying Cordial had done something it had not.
+would put a line in the log saying Vanta had done something it had not.
 
 ## §14. The 304 no longer reproduces, and the device profile is not why
 
-Four join runs on 2026-08-18, place 17625359962, profile CordialTest, 90 seconds
+Four join runs on 2026-08-18, place 17625359962, profile VantaTest, 90 seconds
 each:
 
 | run | identity | result |
 |---|---|---|
-| pc | `CORDIAL_DEVICE_PROFILE=pc-windows-11` | connected 1.77s, last log 90.70s, **0 disconnects** |
+| pc | `VANTA_DEVICE_PROFILE=pc-windows-11` | connected 1.77s, last log 90.70s, **0 disconnects** |
 | control-1 | default android-tablet | still connected at exit |
 | control-2 | default android-tablet | still connected at exit |
 | control-3 | default android-tablet | still connected at exit |
@@ -1406,7 +1406,7 @@ Every one survived. Against twelve-plus runs that died at 60.1–60.9s with reas
 
 **The control is the point.** The PC identity run came first and looked like the
 answer; three runs with the identity left at its Android default did exactly the
-same thing. So `CORDIAL_DEVICE_PROFILE` is not what changed, and crediting it
+same thing. So `VANTA_DEVICE_PROFILE` is not what changed, and crediting it
 would have been the easiest wrong conclusion available today.
 
 ### What actually changed is not established
@@ -1423,7 +1423,7 @@ all), the texture-manager default, the webview subscription, the MessageBus
 generalisation, the refresh-rate calls, the plugin host work.
 
 The engine update is the stronger candidate on timing alone, and it is also the
-one Cordial cannot take credit for. **Nothing in this document should be read as
+one Vanta cannot take credit for. **Nothing in this document should be read as
 "the 304 was fixed".** It is not reproducing, on this build, on this day, on four
 runs.
 
@@ -1435,7 +1435,7 @@ Identical in all four. So the chain §13 established is untouched: the engine
 still reports `onFlagsFailed`, still never builds its content store, still never
 prints `ClientRunInfo`. Whatever stopped the disconnect did not fix that, and
 §13's correlation between the flags verdict and the 304 is weakened by exactly
-this — mocktail had the storage *and* stayed connected; Cordial now stays
+this — mocktail had the storage *and* stayed connected; Vanta now stays
 connected *without* it.
 
 The honest reading is that the two were never as tightly coupled as the
@@ -1452,7 +1452,7 @@ reprieve rather than a fix. `tools/join-run.sh` exists so that is one command.
 
 ### The empty `ArrayList` was never the problem
 
-`flag-init.md` §7.4 has recorded since it was written that Cordial passes
+`flag-init.md` §7.4 has recorded since it was written that Vanta passes
 `nativePostClientSettingsLoadedInitialization3` an empty `java.util.ArrayList`
 and that this is unresolved — the implication being that a real list is what the
 engine wants and that the empty one is why nothing follows.
@@ -1466,7 +1466,7 @@ native:
       return list;
     }
 
-**An empty `ArrayList`.** The same thing Cordial passes. And mocktail reaches
+**An empty `ArrayList`.** The same thing Vanta passes. And mocktail reaches
 `RbxStorage::init [INIT] user: flagLoaded` 6 ms later.
 
 So the argument is not the difference, and §7.4's open question is closed as a
@@ -1476,7 +1476,7 @@ engine evidently does not require any.
 
 ### `channelPlatformName` was carrying the wrong string
 
-Cordial passed `AndroidApp` to
+Vanta passed `AndroidApp` to
 `NativeSettingsInterface.nativeOverrideChannelPlatformName`. mocktail passes
 `GoogleAndroidApp`. Counted rather than argued, with exact whole-string matches:
 
@@ -1516,9 +1516,9 @@ The question was why mocktail has no storage gap. Its whole pre-settings path
 has now been read, and the answer is not in the shape this investigation assumed.
 
 **Between `initializeNativeCode` and the settings call, mocktail makes five
-calls.** Cordial makes four of them:
+calls.** Vanta makes four of them:
 
-| call | Cordial |
+| call | Vanta |
 |---|---|
 | `nativeSetAssetPath` | yes |
 | NativeSettings directories | yes |
@@ -1529,18 +1529,18 @@ calls.** Cordial makes four of them:
 One real gap, and it is a screen-orientation notification rather than anything
 that plausibly gates a content store. Worth closing on its own; not this.
 
-**And Cordial calls far more of the engine than mocktail does.** Counting the
-`Java_*` symbols each names: mocktail 17, Cordial 54. So the storage gap cannot
-be explained by Cordial failing to make a call mocktail makes — the set is the
+**And Vanta calls far more of the engine than mocktail does.** Counting the
+`Java_*` symbols each names: mocktail 17, Vanta 54. So the storage gap cannot
+be explained by Vanta failing to make a call mocktail makes — the set is the
 other way round.
 
 That inverts the hypothesis worth testing next: not a missing call but an
-**extra** one, something Cordial does that provokes the verdict. The obvious
-candidate was Cordial's early `nativeInitClientSettings`, made before
+**extra** one, something Vanta does that provokes the verdict. The obvious
+candidate was Vanta's early `nativeInitClientSettings`, made before
 `initializeNativeCode`, which mocktail does not do — added when the first
 `flags FAILED` was seen arriving before any settings call.
 
-**That candidate is dead too.** The call is gated behind `CORDIAL_NO_BOOTSTRAP`
+**That candidate is dead too.** The call is gated behind `VANTA_NO_BOOTSTRAP`
 and does not fire in a default run at all; a default run's log contains no
 `early client settings` line. So it is not a difference between the two clients
 in normal operation, and an earlier reading of that line in this document came
@@ -1555,7 +1555,7 @@ from a traced run with that variable set.
 - every flag routing `RbxStorage`'s construction (§12)
 - the settings document, in four variants (§7, §11)
 - a missing call in mocktail's pre-settings path (this section)
-- Cordial's early settings call (this section — it does not run)
+- Vanta's early settings call (this section — it does not run)
 
 **The honest state: the difference is still unidentified.** It is not any of the
 things that were visible from the outside, and reading mocktail's source has
@@ -1563,7 +1563,7 @@ removed candidates rather than supplied the answer. That is progress of the
 cheaper kind, and it is worth having written down before somebody spends another
 day re-testing the same seven things.
 
-## §17. The premise behind Cordial's bootstrap was wrong, and §11.8's crash is the real lead
+## §17. The premise behind Vanta's bootstrap was wrong, and §11.8's crash is the real lead
 
 mocktail's pre-`initializeNativeCode` stretch has now been read — the last part of
 its startup nobody had looked at. It does not contain the answer §16 was hoping
@@ -1583,7 +1583,7 @@ mocktail's implementation, `src/jnivm/jnivm.cc:1702`, in full:
 **One boolean. Nothing else.** And mocktail reaches
 `RbxStorage::init [INIT] user: flagLoaded` regardless.
 
-Cordial's `run_bootstrap` exists on the theory that an unresolved
+Vanta's `run_bootstrap` exists on the theory that an unresolved
 `bootstrapTheApp` causes an immediate `onFlagsFailed`. §7 established that for the
 *unresolved-symbol* case, which is real. What is now clear is that the converse
 does not follow: a resolved-but-empty `bootstrapTheApp` does not reproduce the
@@ -1593,12 +1593,12 @@ the fix.
 ### Which puts §11.8's abandoned crash back at the front
 
 mocktail delivers client settings **after `initializeNativeCode` returns**,
-sequentially, the ordinary way. Cordial tried exactly that — `CORDIAL_LATE_SETTINGS=1`
+sequentially, the ordinary way. Vanta tried exactly that — `VANTA_LATE_SETTINGS=1`
 — and **crashed twice out of two**, which is why it delivers early instead. §11.8
 records the crash and says plainly it was never root-caused.
 
 So the open question is not "what does mocktail do before `initializeNativeCode`".
-It is **why does Cordial segfault doing what mocktail does after it**. The client
+It is **why does Vanta segfault doing what mocktail does after it**. The client
 that works runs through the ordering that kills ours, and that crash was set aside
 rather than understood.
 
@@ -1607,13 +1607,13 @@ rather than understood.
 before it would load at all. A crash on an engine two versions old is not evidence
 about this one.
 
-    CORDIAL_LATE_SETTINGS=1 tools/join-run.sh late
+    VANTA_LATE_SETTINGS=1 tools/join-run.sh late
 
 That is the next experiment, and it is one command.
 
 ### Also untried, cheaper, lower odds
 
-Cordial's `Configuration` object is registered and populated with nothing
+Vanta's `Configuration` object is registered and populated with nothing
 (`native/game_activity.cpp:128`). It is handed to the same `initializeNativeCode`
 call whose next line decides the verdict. mocktail's `CreateAndroidConfiguration`
 fills fifteen fields — orientation, touchscreen, keyboard, densityDpi, screen
@@ -1634,7 +1634,7 @@ endpoint returns 500.
 
 ### Recorded as better, so nobody "fixes" it
 
-Cordial's `AssetManager`, `Configuration` and window-insets classes are
+Vanta's `AssetManager`, `Configuration` and window-insets classes are
 deliberately stateless with a documented reason each. mocktail populates its Java
 objects with synthetic hardware descriptions it cannot verify — `mcc`/`mnc` zero,
 `colorMode` zero, `navigation` one, guesses throughout. Keep the minimalism unless
@@ -1642,7 +1642,7 @@ the experiment above proves a specific field load-bearing.
 
 ## §18. `__sF` is unfinished, and the signature matches a crash already on record
 
-A comparison of Cordial's bionic/glibc boundary against mocktail's found three
+A comparison of Vanta's bionic/glibc boundary against mocktail's found three
 real ABI defects. One of them may be a crash this document has been carrying
 since §7.4.
 
@@ -1686,10 +1686,10 @@ the crash with the `__sF` gap closed and watched it go away, and that is the onl
 thing that would settle it. But it is a specific, mechanical account of a crash
 that has been described as unexplained for weeks, and it costs one experiment.
 
-It matters beyond §7.4 because §17 identified §11.8's `CORDIAL_LATE_SETTINGS`
-crash — Cordial segfaulting while doing what mocktail does successfully — as the
+It matters beyond §7.4 because §17 identified §11.8's `VANTA_LATE_SETTINGS`
+crash — Vanta segfaulting while doing what mocktail does successfully — as the
 strongest remaining lead on the flags verdict. **If both crashes are this bug,
-the ordering mocktail uses becomes available to Cordial**, and the thing §17 said
+the ordering mocktail uses becomes available to Vanta**, and the thing §17 said
 to investigate becomes the thing to fix.
 
 ### Order of work
@@ -1700,7 +1700,7 @@ to investigate becomes the thing to fix.
    only for the entry points the engine actually imports.
 2. Re-run `nativePostClientSettingsLoadedInitialization3` and see whether the
    `_IO_fflush` crash is gone. That is the test of the whole theory.
-3. Then `CORDIAL_LATE_SETTINGS=1`, which §17 wants re-tested on 2.734.0.917
+3. Then `VANTA_LATE_SETTINGS=1`, which §17 wants re-tested on 2.734.0.917
    anyway.
 4. `mallinfo` and `__cxa_thread_atexit_impl` independently — each is small,
    neither depends on the above.
@@ -1711,7 +1711,7 @@ to investigate becomes the thing to fix.
 `getaddrinfo`, because bionic's `AI_DEFAULT` is `0x600` and handing that to glibc
 returns `EAI_BADFLAGS` and fails every lookup. mocktail's `HostHints()` copies
 `ai_flags` **unmodified** — the same latent bug, not yet triggered by whatever
-its callers pass. Cordial is right here and mocktail is not; nobody should
+its callers pass. Vanta is right here and mocktail is not; nobody should
 simplify that file to match theirs.
 
 ### §18.1 The same crash, now from a third unrelated call
@@ -1728,7 +1728,7 @@ with client settings. Controlled both ways on this machine:
     gate on   exit 139  SIGSEGV
 
 That is three independent paths now: `nativePostClientSettingsLoadedInitialization3`
-(§7.4), `CORDIAL_LATE_SETTINGS` (§11.8), and `setPlatformImpl`. Three unrelated
+(§7.4), `VANTA_LATE_SETTINGS` (§11.8), and `setPlatformImpl`. Three unrelated
 natives cannot share a fault address by coincidence, and the `__sF` gap predicts
 exactly this shape for any engine path that touches a legacy stream.
 
@@ -1760,7 +1760,7 @@ engine.
 | reproducer | before | after |
 |---|---|---|
 | `setPlatformImpl` | 139, `SIGSEGV` in `_IO_fflush` | 133, `SIGTRAP` |
-| `CORDIAL_LATE_SETTINGS` | crashed 2/2, never root-caused | 133, `SIGTRAP` |
+| `VANTA_LATE_SETTINGS` | crashed 2/2, never root-caused | 133, `SIGTRAP` |
 
 §18 predicted the fault and §18.1 found a third instance of it. The prediction
 holds: with the legacy streams translated, **no reproducer produces a `SIGSEGV`
@@ -1769,13 +1769,13 @@ the whole point.
 
 ### And the named error is the answer this document has been looking for
 
-`CORDIAL_LATE_SETTINGS=1` now ends:
+`VANTA_LATE_SETTINGS=1` now ends:
 
     RBXCRASH: FatalRuntimeError
       (Can't initialize the TaskScheduler before flags have been loaded)
 
 **The engine has been saying this all along and it was arriving as a memory
-fault.** For weeks this was "Cordial crashes when it uses mocktail's ordering,
+fault.** For weeks this was "Vanta crashes when it uses mocktail's ordering,
 cause unknown" — §11.8 set it aside on exactly that basis. It is not unknown. The
 TaskScheduler is initialised before flags are loaded, and the engine treats that
 as fatal.
@@ -1814,7 +1814,7 @@ not, and everything in §§12–17 was working without it.
 ### §19.1 What the TaskScheduler line does and does not explain
 
 **Superseded in part by §22.** The conclusion below that "the gate is
-satisfied on the path Cordial actually uses" is wrong: it reads the absence of
+satisfied on the path Vanta actually uses" is wrong: it reads the absence of
 the fatal error as the gate being passed, when it is the gate never being
 reached. Kept because the narrowing it does to the late-settings ordering holds.
 
@@ -1828,7 +1828,7 @@ engine log of a 90-second join is
                           enable:false context:ASMA.start
 
 which is background mode, not initialisation, and no error accompanies it. So the
-gate is satisfied on the path Cordial actually uses.
+gate is satisfied on the path Vanta actually uses.
 
 `Can't initialize the TaskScheduler before flags have been loaded` therefore
 explains **why the late-settings ordering cannot work**, and nothing more. It is
@@ -1836,9 +1836,9 @@ not an account of `onFlagsFailed`, which still fires twice on the default path
 where the scheduler comes up cleanly.
 
 That is still worth having. §17 named §11.8's crash as the strongest remaining
-lead precisely because mocktail succeeds with an ordering that killed Cordial,
+lead precisely because mocktail succeeds with an ordering that killed Vanta,
 and the answer turns out to be that the ordering is unavailable rather than
-mysterious: something on Cordial's `initializeNativeCode` path brings the
+mysterious: something on Vanta's `initializeNativeCode` path brings the
 scheduler up, and the engine will not load flags behind it. Adopting mocktail's
 ordering would mean also deferring whatever does that, which is a different and
 larger change than reordering two calls.
@@ -1872,7 +1872,7 @@ seconds; it does not reproduce across a real play session either.
 
 That does not change §14's conclusion about *why*. Roblox shipped 2.734.0.917
 mid-session and every 304 was measured on 2.730.0.790; the engine update remains
-the stronger candidate and Cordial still cannot claim the fix. What this adds is
+the stronger candidate and Vanta still cannot claim the fix. What this adds is
 that the reprieve is not an artefact of short runs.
 
 ### And the texture flag is doing something
@@ -1896,13 +1896,13 @@ reaches the engine and changes which manager runs" is no longer inferred.
 The early `nativeInitClientSettings` call was added because the first
 `flags FAILED` was seen arriving before settings had been delivered at all — the
 answer arriving after the question it was meant to inform. It was then wired
-behind `CORDIAL_NO_BOOTSTRAP`, so "settings early" and "no bootstrap" have only
+behind `VANTA_NO_BOOTSTRAP`, so "settings early" and "no bootstrap" have only
 ever been true together and the useful half was never tested alone.
 
-`CORDIAL_EARLY_SETTINGS=1` decouples them. Controlled on the same build:
+`VANTA_EARLY_SETTINGS=1` decouples them. Controlled on the same build:
 
     baseline                   early=0  onFlagsFailed=2  RbxStorage=0  ClientRunInfo=0
-    CORDIAL_EARLY_SETTINGS=1   early=1  onFlagsFailed=2  RbxStorage=0  ClientRunInfo=0
+    VANTA_EARLY_SETTINGS=1   early=1  onFlagsFailed=2  RbxStorage=0  ClientRunInfo=0
 
 The call fires and nothing moves. **Candidate ten, eliminated.**
 
@@ -1918,7 +1918,7 @@ ordering without also changing the bootstrap and it will be wanted again.
 
 Ten now. The empty `ArrayList`; `channelPlatformName`; the device identity; every
 flag routing `RbxStorage`'s construction; four settings-document variants; a
-missing call in mocktail's pre-settings path; Cordial's early settings call as
+missing call in mocktail's pre-settings path; Vanta's early settings call as
 originally wired; the `Configuration` object being empty; delivering settings
 before `initializeNativeCode` with the bootstrap intact; and — from §17 —
 `bootstrapTheApp` needing to deliver anything, which mocktail disproves by
@@ -1974,7 +1974,7 @@ From a plain `--run 12` with no overrides at all:
 
 `NativeDM` is `RBX::NativeDataModelManager` — the class `init_params.cpp` already
 names as the writer of `onFlagsFailed`, from `getFlagsFromEngine_`'s completion
-lambda. **`Flags-Not-Received` is its own word for the state Cordial is stuck
+lambda. **`Flags-Not-Received` is its own word for the state Vanta is stuck
 in**, and every lifecycle callback the engine delivers turns round and returns on
 it. That is the mechanism by which nothing downstream happens: not a missing
 call, a latched state.
@@ -1986,13 +1986,13 @@ Absent from the log, and they are the rest of that class's vocabulary:
 ### §19.1 was wrong about the TaskScheduler and this is the retraction
 
 §19.1 concluded "in a working default run the TaskScheduler is fine … the gate is
-satisfied on the path Cordial actually uses", reasoning from the absence of the
+satisfied on the path Vanta actually uses", reasoning from the absence of the
 fatal error. Absence of the error is not evidence the gate was passed; it is
 equally what never reaching the gate looks like, and that is the case here.
-`RbxStorage::init` and `ClientRunInfo` are absent from every Cordial run, and both
+`RbxStorage::init` and `ClientRunInfo` are absent from every Vanta run, and both
 sit downstream of it.
 
-The one scheduler line Cordial does produce —
+The one scheduler line Vanta does produce —
 `setTaskSchedulerBackgroundMode() enable:false context:ASMA.start` — lands at
 **0.480s**, while the same line on real Android lands at 0.417s *after*
 `RbxStorage::init`. It is background mode rather than initialisation either way,
@@ -2001,12 +2001,12 @@ read it as.
 
 ### The signature theory, killed by a control before it cost anything
 
-Cordial's flag cache write logs `Wrote signatureSize: 0`, and the engine exports
+Vanta's flag cache write logs `Wrote signatureSize: 0`, and the engine exports
 `nativeInitClientSettingsSigned(String, String, String, String)I` alongside the
-plain three-argument form Cordial calls. That is a tidy story and it is false:
+plain three-argument form Vanta calls. That is a tidy story and it is false:
 **Sober logs `Wrote signatureSize: 0` as well**, on the run at
 `2.734.0.917_20260819T003213Z`, and Sober reaches `flagLoaded`. Nothing is gated
-on a signature Cordial is failing to supply.
+on a signature Vanta is failing to supply.
 
 ### The flags themselves are fine, and this is now measured rather than argued
 
@@ -2045,7 +2045,7 @@ loud logging is exhausted does not follow from that sweep.
 ### mocktail does not solve this. It patches the byte
 
 The comparison this project has run against mocktail for weeks assumed mocktail
-reaches the flags-loaded state legitimately and Cordial fails to. It does not.
+reaches the flags-loaded state legitimately and Vanta fails to. It does not.
 `src/legacy/legacy_runtime.cc:13354` (Apache-2.0, read directly):
 
 ```cpp
@@ -2066,7 +2066,7 @@ is not the only one; `MOCKTAIL_PATCH_STAGE6_START_LUA_DM_FORCE_SAME_THREAD` and
 `ForceStage6DataModelPatcherForceLocalFlag` sit beside it. The function is named
 for our fatal error.
 
-**Cordial cannot do this and will not.** In-process memory patching is exactly
+**Vanta cannot do this and will not.** In-process memory patching is exactly
 what [ADR-001](../adr/ADR-001-in-process-hooking.md) and
 [ADR-003](../adr/ADR-003-plugin-isolation.md) make *absent* rather than disabled,
 so that no fork can extract the primitive. That decision stands; this is the
@@ -2091,16 +2091,16 @@ Sober's log for 2026-08-19, at the same landmarks:
     3.091522 [DFLog::RbxStorage] RbxStorage::init [INIT] user: flagLoaded
     3.093661 [FLog::JNIAppBridge] nativeAppBridgeAppStart:
 
-Cordial has none of the block between `nativePostClientSettingsLoadedInitialization3`
+Vanta has none of the block between `nativePostClientSettingsLoadedInitialization3`
 and `RbxStorage::init`, and its `nativeAppBridgeV2Init` is the **first** line in
 its log at 0.228s where Sober's app bridge starts at 3.093s, after the storage is
-up. Sober also *reads* an existing tombstone where Cordial writes a fresh one.
+up. Sober also *reads* an existing tombstone where Vanta writes a fresh one.
 
 Whether Sober patches memory to get there is **not established** — the reference
 tree here (`~/Projects/sober-oss-reference`) contains only `libbadcpu`, and its
 `decompiled/` directory is off-limits under AGENTS.md. So "Sober does it
 legitimately" is *not* a claim this section makes. What is observed is only that
-Sober reaches the state and Cordial does not.
+Sober reaches the state and Vanta does not.
 
 ### Where this leaves it
 
@@ -2113,7 +2113,7 @@ Not fixed. What is now established rather than guessed:
 * `getFlagsFromEngine_`'s completion chooses failure with all of that in place,
   and `initialize:` / `continueAfterFlagsLoaded_` never log.
 * The only known implementation past the gate forces it with a memory write
-  Cordial has permanently ruled out.
+  Vanta has permanently ruled out.
 
 The next experiment is the one this section could not run: get
 `getFlagsFromEngine_:` and `initialize: state:{}. areFlagsLoaded:{}.` to print.
@@ -2128,7 +2128,7 @@ All measured on the same build with controls, after §22.
 
 **Fourteen: the engine's own compressed flag cache, handed back.** The engine
 writes `flag_cache.dat` — 365074 bytes here — and exports three settings natives
-besides the plain three-string form Cordial has always used. Cordial had never
+besides the plain three-string form Vanta has always used. Vanta had never
 handed one back, so every launch looked cold to the engine with the cache sitting
 on disk beside it. `nativeInitClientSettingsCachedCompressed([B, String, String,
 String, long, boolean)I` now takes it:
@@ -2148,11 +2148,11 @@ signature/compression header the write log describes.
 Not pursued, and the reason matters: **the plain path already returns 0.** Making
 a second path also return 0 would be a fourteenth way of establishing "the
 settings were accepted", which is the one thing never in doubt. The wrapper stays
-because it is correct and someone will want it, behind `CORDIAL_CACHED_SETTINGS`.
+because it is correct and someone will want it, behind `VANTA_CACHED_SETTINGS`.
 
 **Fifteen: not calling `nativeGameGlobalInit` at all.** §9's captured stack
 reaches the failure reporter through it, and §22's ordering test only moved it.
-`CORDIAL_NO_GLOBAL_INIT=1` skips the pair outright. The run segfaults later,
+`VANTA_NO_GLOBAL_INIT=1` skips the pair outright. The run segfaults later,
 exactly as the original comment predicted — `StartLuaAppDM` crashes on a null
 `JNIEnv` the globals init was supposed to store — but it gets far enough to
 answer the question:
@@ -2196,12 +2196,12 @@ reachable. **How it does so is not established** and cannot be from here: the
 reference tree holds only `libbadcpu`, and its `decompiled/` directory is
 off-limits. "Sober does it legitimately" is not a claim this document makes.
 
-So the honest position: Cordial cannot reach this state through the interface
+So the honest position: Vanta cannot reach this state through the interface
 Roblox exposes to its host application, and the alternative on the table is the
 one [ADR-001](../adr/ADR-001-in-process-hooking.md) and
 [ADR-003](../adr/ADR-003-plugin-isolation.md) make *absent* rather than disabled,
 so that a fork cannot extract the primitive. That decision was taken when no
-feature depended on it. One does now. Reversing it is a change to Cordial's
+feature depended on it. One does now. Reversing it is a change to Vanta's
 security posture, in a public GPL repository with a fork already layering exploit
 functionality on it, and it belongs to the project owner rather than to whoever
 is next to run out of eliminations.
@@ -2225,7 +2225,7 @@ a scan of every readable process for an executable mapping over 50 MB finds
 Chrome, WebKitGTK and two LLVM copies, and nothing of Sober's. `flatpak enter`
 would cross the namespace but `setns` needs `CAP_SYS_ADMIN`, so it exits without
 output as an ordinary user. The mapping is also anonymous rather than named,
-exactly as Cordial's own loader leaves it, so it could not have been found by
+exactly as Vanta's own loader leaves it, so it could not have been found by
 name either.
 
 Recorded rather than quietly dropped, because the next person will have the same
@@ -2235,7 +2235,7 @@ directory off-limits under AGENTS.md.
 
 ### One inference not made
 
-`CORDIAL_LATE_SETTINGS=1` still ends the way §19 recorded, `SIGTRAP` at 0.231 s
+`VANTA_LATE_SETTINGS=1` still ends the way §19 recorded, `SIGTRAP` at 0.231 s
 with `RBXCRASH: FatalRuntimeError (Can't initialize the TaskScheduler before
 flags have been loaded)`. The default path produces no such error.
 
@@ -2244,7 +2244,7 @@ therefore as evidence that `Flag::areFlagsLoaded()` is already true there while
 only `NativeDataModelManager` is uninformed. **That is precisely the reasoning
 §19.1 got wrong and §22 retracted**: absence of the error is equally what never
 attempting the initialisation looks like, and the default path shows no sign of
-attempting it — no `RbxStorage::init`, no `ClientRunInfo`. Cordial's own
+attempting it — no `RbxStorage::init`, no `ClientRunInfo`. Vanta's own
 `setTaskSchedulerBackgroundMode` call is background mode, not initialisation, and
 does not bear on it.
 
@@ -2262,7 +2262,7 @@ naming a channel in `flags.json` sets it to quiet at every value including the
 largest tried. That conclusion is wrong as stated, and the sweep it invalidated
 (§21) is not thereby exonerated either — this only settles the mechanism.
 
-Roblox's own cached settings document (`~/.cache/cordial/clientsettings.json`)
+Roblox's own cached settings document (`~/.cache/vanta/clientsettings.json`)
 already answers what §22 did not check: `FLog`/`DFLog` values there are not one
 shape. Most are a bare verbosity number (`FLogNetwork = "7"`,
 `DFLogHttpTraceError = "12"`), but a real minority are a severity name with an
@@ -2314,7 +2314,7 @@ the **139 Android-app feature flags** in `docs/traces/native-flag-names.txt`
 an entirely different namespace from the engine's internal `FLog`/`DFLog`
 channels, which are read out of the `applicationSettings` document at
 `nativeInitClientSettings` time and never touch `FlagJniInterface` at all. The
-probe was run again here with `CORDIAL_FLOG_PROBE=DFLogRbxStorage,FLogGraphics,
+probe was run again here with `VANTA_FLOG_PROBE=DFLogRbxStorage,FLogGraphics,
 FLogAppShellReporter` immediately after confirming (by grepping the same run's
 stdout) that `nativeInitializeNativeFlags` had already registered its 139
 names — so this is not a timing gap, either. `nativeGetFInt` is simply the
@@ -2349,7 +2349,7 @@ fix, and it produces what nineteen sections of this document were looking for:
     [FLog::NativeDM] initializeLuaApp_:
     [FLog::NativeDM] startLuaApp_:
 
-and on Cordial's side `[roblox] flags loaded (1300800 bytes)` —
+and on Vanta's side `[roblox] flags loaded (1300800 bytes)` —
 `gameActivity_onFlagsLoaded`, with a real `ByteBuffer`, for the first time.
 
 Controlled on one build, three consecutive runs each:
@@ -2357,17 +2357,17 @@ Controlled on one build, three consecutive runs each:
 | | `flagsLoaded` | `continueAfterFlagsLoaded_` | `Flags-Not-Received` |
 |---|---|---|---|
 | default | 1 | 1 | 1 |
-| `CORDIAL_LATE_POST_MS=off CORDIAL_LATE_RETRY=off` | 0 | 0 | 4 |
+| `VANTA_LATE_POST_MS=off VANTA_LATE_RETRY=off` | 0 | 0 | 4 |
 
 ### Why fifteen eliminations missed it
 
 Every one of them moved the settings call and the post call **together**. §11
-recorded the symptom exactly — "Cordial's call to
+recorded the symptom exactly — "Vanta's call to
 `nativePostClientSettingsLoadedInitialization3` returns without the engine's own
 body of it having run" — and then spent five sections looking for a missing
 argument, a missing prerequisite call, or a wrong document. The body was fine.
 The call was early. Nothing that moved both could ever show that, because moving
-them together late is `CORDIAL_LATE_SETTINGS`, which dies on the TaskScheduler
+them together late is `VANTA_LATE_SETTINGS`, which dies on the TaskScheduler
 gate before the post call matters.
 
 ### Three claims in this document were wrong
@@ -2383,7 +2383,7 @@ of breakpoints on `getaddrinfo`, `connect` and `SSL_connect` never being hit
 during startup. The engine fetches
 `clientsettingscdn.roblox.com/v2/settings-compressed/application/GoogleAndroidApp.zst`
 itself, from `bootstrapTheApp_`. Those breakpoints never fired because this code
-path had never run. Cordial supplying the document is still correct and still
+path had never run. Vanta supplying the document is still correct and still
 what makes `areFlagsLoaded` true — but "the engine does not fetch" is false.
 
 **§22 on logging.** It said the verbose `NativeDM` lines were open but not
@@ -2403,9 +2403,9 @@ mysterious:
     [DFLog::RbxmFileManager] LocalStorageManager is not available.
     [FLog::LocalStorageHandler] Not available on the current platform.
 
-Storage waits on the platform local-storage handler, which Cordial implements in
+Storage waits on the platform local-storage handler, which Vanta implements in
 `native/local_storage.cpp` but installs only behind
-`CORDIAL_LOCAL_STORAGE_SET_PLATFORM_IMPL`. With that on, `setPlatformImpl ok` now
+`VANTA_LOCAL_STORAGE_SET_PLATFORM_IMPL`. With that on, `setPlatformImpl ok` now
 succeeds where §19 recorded it crashing — and the process then dies `SIGTRAP`
 after repeated `djinni (djinni_support.cpp:529): weakRef`.
 
@@ -2435,7 +2435,7 @@ chain never ran. Done, and none of it moves storage:
 * Three consecutive launches against one warm root, so the flag cache and
   tombstone are present: no storage on any of them, and the tombstone is never
   *read* on any launch, only written. Sober reads one.
-* `CORDIAL_LOCAL_STORAGE_SET_PLATFORM_IMPL=1`: `setPlatformImpl ok` now succeeds
+* `VANTA_LOCAL_STORAGE_SET_PLATFORM_IMPL=1`: `setPlatformImpl ok` now succeeds
   where §19 recorded it crashing, and the process then dies `SIGTRAP` after
   repeated `djinni (djinni_support.cpp:529): weakRef`. **This is a dead end
   regardless** — Sober logs `[FLog::LocalStorageHandler] Not available on the
@@ -2459,7 +2459,7 @@ other path. That is a lead, not a result, and it is written down as an
 unreproduced observation precisely so nobody quotes it as evidence that storage
 works.
 
-**Where this leaves it.** `DFLog::RbxStorage` has never appeared in a Cordial log
+**Where this leaves it.** `DFLog::RbxStorage` has never appeared in a Vanta log
 at all, on any run, so there is no engine statement about storage to read — the
 absence of `RbxStorage::init` is consistent both with "never attempted" and with
 "attempted and unlogged", and §22 is the standing warning about which of those
@@ -2474,7 +2474,7 @@ blocking the question, not the storage code.
 the logging mechanism was blocking the answer. It is not: the filesystem answers
 it without any log channel.
 
-`CORDIAL_TRACE_PATHS=1`, one 35-second run, **19,296 intercepted path calls, zero
+`VANTA_TRACE_PATHS=1`, one 35-second run, **19,296 intercepted path calls, zero
 of them containing `rbx-storage`**. The absence of `RbxStorage::init` from the
 log is therefore "never attempted". Nothing is being initialised quietly.
 
@@ -2500,19 +2500,19 @@ never reaches for the content store.
 
 ### The block is short by three steps, and they are consecutive
 
-Against Sober at the same point, Cordial's post-settings block is missing exactly
+Against Sober at the same point, Vanta's post-settings block is missing exactly
 the three lines that run together at the end of it:
 
-    Sober                                          Cordial
+    Sober                                          Vanta
     IxpStorageManager: Failed to open cache file   absent
     TombstoneCache: Tombstone 1 ... read from file absent
     TombstoneCache: Setting holdout state: false   present
     LocalStorageHandler: Not available             present
     RbxStorage::init [INIT] user: flagLoaded       absent
 
-Cordial reaches `Setting holdout` and `LocalStorageHandler`, so it is not that
+Vanta reaches `Setting holdout` and `LocalStorageHandler`, so it is not that
 the block stops early. It skips the Ixp cache open and the tombstone *read* while
-still writing a tombstone of its own — and Cordial's write goes to
+still writing a tombstone of its own — and Vanta's write goes to
 `cache/tombstone.dat`, **relative**, where Sober's is absolute. Both
 `<profile>/run/cache/tombstone.dat` and `<profile>/data/cache/cache/tombstone.dat`
 exist on disk here, which is what a relative write and an absolute read look like
@@ -2527,7 +2527,7 @@ try, and it is where the next session should start.
 ### §23.3 The two routes to `flagLoaded` are not the difference
 
 Sober reaches `flagLoaded` from the application handing the settings document
-over. Cordial now reaches it from the engine fetching its own inside
+over. Vanta now reaches it from the engine fetching its own inside
 `bootstrapTheApp_`. Both end in `continueAfterFlagsLoaded_`, and only Sober's is
 followed by `RbxStorage::init [INIT] user: flagLoaded`, which made "the routes
 are not equivalent to whatever asks for storage" the obvious next theory.
@@ -2540,17 +2540,17 @@ the late post call, against a control without it, on fresh data roots:
 
 The switch is kept, off by default, as the record. Sixteen candidates now.
 
-### §23.4 The settings document Cordial supplies is the wrong one, and that is not the storage bug either
+### §23.4 The settings document Vanta supplies is the wrong one, and that is not the storage bug either
 
-Cordial fetches `clientsettingscdn.roblox.com/v2/settings/application/**AndroidApp**`
+Vanta fetches `clientsettingscdn.roblox.com/v2/settings/application/**AndroidApp**`
 and separately calls `nativeOverrideChannelPlatformName` to say it is
 **`GoogleAndroidApp`**. When the engine went looking for flags itself, it fetched
 `.../application/GoogleAndroidApp.zst` — its own name for itself, not the one
-Cordial had handed it.
+Vanta had handed it.
 
 The two documents are not the same. `AndroidApp` carries 22,196 flags,
 `GoogleAndroidApp` 22,610; 441 values differ, 27 of them with `Storage`, `Cache`,
-`Ixp` or `Tombstone` in the name. So Cordial has been running the client on a
+`Ixp` or `Tombstone` in the name. So Vanta has been running the client on a
 document meant for a slightly different application than the one it claims to be.
 
 **It is not the storage bug.** Supplying `GoogleAndroidApp` via
@@ -2575,9 +2575,9 @@ runs, and its own tests assert that `statvfs` and `statfs` succeed on the
 `rbx-storage` path. `RbxStorage::init` reports `availableDiskSpace` as part of
 starting, so storage asks the filesystem for room before it builds anything.
 
-Cordial created none of those directories. Two of them,
+Vanta created none of those directories. Two of them,
 `appData/LocalStorage` and `appData/OTAPatchBackups`, were already visible as
-failed opens in Cordial's own path trace, which should have been the clue.
+failed opens in Vanta's own path trace, which should have been the clue.
 
 **And `statvfs` was not intercepted at all.** The engine imports it —
 `libroblox.so statvfs` is in `undefined-symbols.tsv`, and `nm -D` shows
@@ -2656,8 +2656,8 @@ Two further facts:
   and no raw-pointer reference in `.data`/`.data.rel.ro`, so it is reached only
   by indirect dispatch — the same honest edge §3 and render-gate.md §2 hit — and
   across ~85 s of live breakpoint coverage it was **never hit**. The specific
-  call Sober's log shows completing is one this build never issues in Cordial.
-* `AssetProvider` fires at **startup** in Cordial. §11 lists it as join-time and
+  call Sober's log shows completing is one this build never issues in Vanta.
+* `AssetProvider` fires at **startup** in Vanta. §11 lists it as join-time and
   expected absent from a startup-only run on Sober. Another instance of the
   ordering scramble §11 already names.
 
@@ -2703,7 +2703,7 @@ as facts about `0x230bd3a` and say nothing about storage initialisation.
 `0x230bcc2`, the `flagLoaded`-labelled thing, is 120 bytes ending exactly where
 the getter begins — a thunk sitting in front of it, not a caller of init.
 
-**Whether `0x23121ae` is entered in Cordial is not established.** That is now the
+**Whether `0x23121ae` is entered in Vanta is not established.** That is now the
 question, and it is a different one from the last three sections'.
 
 **Use `.eh_frame` for this from now on.** Every address in §3, §9 and §23.6 was
@@ -2746,7 +2746,7 @@ The getter's 22 hits per run carry four distinct labels — `AssetProvider`,
 `http-available`, `http-write-init-only`, and **`flagLoaded`**.
 
 **That retracts §23.6's claim that the `flagLoaded` call never happens in
-Cordial.** It does, twice per run. The earlier reading was an attach race: three
+Vanta.** It does, twice per run. The earlier reading was an attach race: three
 runs missed it because the probe attached after it had already gone past. With
 the getter instrumented for longer it appears every time. The rest of §23.6's
 getter findings stand; that one does not.
@@ -2776,7 +2776,7 @@ few non-patch knobs, both on by default:
 `MOCKTAIL_ASMA_START_TASK_SCHEDULER_FOREGROUND` calls
 `setTaskSchedulerBackgroundMode` in foreground mode, and
 `MOCKTAIL_TASK_SCHEDULER_FOREGROUND_ON_MAIN_THREAD` routes that call onto the
-main thread. Cordial makes the same call — its log carries
+main thread. Vanta makes the same call — its log carries
 `setTaskSchedulerBackgroundMode() enable:false context:ASMA.start` at 0.480s —
 but nothing here has ever checked which thread it runs on, and mocktail
 considered that worth a dedicated switch.
@@ -2787,7 +2787,7 @@ by proximity.
 
 ### §24.1 The scheduler is already in foreground mode, and the job still does not run
 
-§24 named mocktail's two non-patch scheduler knobs as the lead. Cordial already
+§24 named mocktail's two non-patch scheduler knobs as the lead. Vanta already
 satisfies what they do. From an ordinary run:
 
     0.554648  [FLog::AndroidGLView] rbx.datamodel: setTaskSchedulerBackgroundMode() enable:false context:ASMA.start
@@ -2839,8 +2839,8 @@ approached by observing that object at runtime rather than by decompiling it.
 §24 said `0x23121ae` is never entered, on four instrumented runs. **That is
 wrong, and the instrument was the reason.** Every probe in §23 and §24 attached
 to an already-running process, and the `lldb` attach handshake is slower than the
-moment that matters. Launching `cordial-run` *under* lldb with
-`eLaunchFlagStopAtEntry`, then breaking on Cordial's own
+moment that matters. Launching `vanta-run` *under* lldb with
+`eLaunchFlagStopAtEntry`, then breaking on Vanta's own
 `mcpelauncher_linker_notifylldb` (`linker_soinfo.cpp:546`, called the instant
 `libroblox.so` is mapped and before one instruction of it runs) and planting the
 storage breakpoints in that same stop, changes the answer. Reproduced across six
@@ -2864,9 +2864,9 @@ and is simply not the one taken.
 The caller label at that one call is **`"RbxStorage"`**, not `"flagLoaded"`, and
 it fires **during `libroblox.so`'s ELF constructors — before `JNI_OnLoad`**.
 Backtrace: `notifylldb` ← `soinfo::call_constructors` ← `do_dlopen` ←
-`cordial_linker_sys::dlopen` ← `load.rs`.
+`vanta_linker_sys::dlopen` ← `load.rs`.
 
-And it fails. Under `CORDIAL_TRACE_PATHS=1`, same thread, two runs:
+And it fails. Under `VANTA_TRACE_PATHS=1`, same thread, two runs:
 
     stat("./appData")    = 0
     stat("./appData")    = 0
@@ -2885,7 +2885,7 @@ Waydroid capture shows Android's winner:
     [DFLog::RbxStorage] RbxStorage::init [INIT] user: flagLoaded, availableDiskSpace: 60655730688 bytes
     [DFLog::RbxStorage] RbxStorage::init [DONE] … dbOpenCount: 1
 
-On Android `flagLoaded` wins the race and succeeds. In Cordial `"RbxStorage"`
+On Android `flagLoaded` wins the race and succeeds. In Vanta `"RbxStorage"`
 wins it first, during ELF construction, before flags exist — and fails. When
 `flagLoaded` arrives later (twice a run, per §24's own count) it is handed the
 already-"initialised" broken object and never retries.
@@ -2898,7 +2898,7 @@ taken and cached before `JNI_OnLoad` ran.
 
 **What does the pre-`JNI_OnLoad` caller need that resolves empty?** It cannot be
 a JNI or `Context` query — there is no JNI yet. It has to be something native
-resolves at constructor time, and every directory Cordial sets
+resolves at constructor time, and every directory Vanta sets
 (`nativeSetFilesDirectory` and the rest) is set *after* `dlopen` returns, so none
 of them exist yet when this runs.
 
@@ -2919,8 +2919,8 @@ has now drawn a wrong conclusion from that twice.
 
 ### §25.1 The empty stats come from inside `RbxStorage::init`, after the `[INIT]` emit site
 
-Walked up from the empty `stat("")` by breakpointing Cordial's own `s_stat`
-shim — no disassembly needed, since Cordial owns that wrapper — and printing a
+Walked up from the empty `stat("")` by breakpointing Vanta's own `s_stat`
+shim — no disassembly needed, since Vanta owns that wrapper — and printing a
 backtrace only when the path is empty. Three independent launches, identical
 offsets:
 
@@ -2935,7 +2935,7 @@ function, makes two *successful* `stat("./appData")` calls at `0x23125ef` and
 `0x2312c9d`, and they go through the **same** generic leaf utility as the empty
 ones. So this is not a broken subroutine — it is the same "does this path exist"
 helper, called from a different point, with an empty argument. Call counts match
-the original `CORDIAL_TRACE_PATHS=1` trace line for line: two `./appData`, three
+the original `VANTA_TRACE_PATHS=1` trace line for line: two `./appData`, three
 empty, one thread.
 
 ### And the ordering raises a bigger question
@@ -2950,7 +2950,7 @@ Those addresses put the observed execution in this order inside
 
 `0x2312fe3` is executed — it is a return address in the backtrace — and it is
 **0x27 bytes past the `[INIT]` emit site**. `[DFLog::RbxStorage] RbxStorage::init
-[INIT]` has never appeared in a Cordial engine log, at any channel setting, in any
+[INIT]` has never appeared in a Vanta engine log, at any channel setting, in any
 run.
 
 If `0x2312fbc` also executes, then that line is being emitted and swallowed, and
@@ -2962,7 +2962,7 @@ failing later, on the empty paths.
 between them would explain both. It is one breakpoint to settle and it is being
 settled now. Recorded because the possibility changes what several earlier
 sections mean, and because a channel read during ELF construction — before
-Cordial's settings document is delivered at all — would be unreachable by any
+Vanta's settings document is delivered at all — would be unreachable by any
 flag, which would explain six clean negatives on `DFLogRbxStorage` that were read
 as "storage is not running".
 
@@ -3027,7 +3027,7 @@ On Android the winner is `flagLoaded` and it succeeds, so the constructor-time
 call either does not happen there or finds that component populated. Which of
 those is the question, and it decides the fix: either stop the early call, or
 make the component non-empty before `dlopen` — the only window that exists,
-since every directory Cordial sets is set after `dlopen` returns.
+since every directory Vanta sets is set after `dlopen` returns.
 
 The `[DONE]` emit site was not located; two mechanical scans found no reference,
 and pushing further would have crossed from observing into reading. So how far
@@ -3042,7 +3042,7 @@ contains exactly two `RbxStorage` lines in the whole file — `[INIT]` then
 `[DONE]`, both `user: flagLoaded`, 28.5 ms apart — and `[INIT]` fires at 0.4158 s,
 *after* `nativeInitClientSettings` at 0.3752 s. There is no earlier attempt, no
 failed attempt, and nothing labelled `"RbxStorage"` anywhere before it. **The
-constructor-time call Cordial makes does not happen on Android.** So this is not
+constructor-time call Vanta makes does not happen on Android.** So this is not
 "Android supplies a value we do not"; it is "Android does not take this path".
 
 **`getenv` is ruled out.** Breakpoint on `getenv`, callers classified by whether
@@ -3051,7 +3051,7 @@ the return address falls inside `libroblox.so`, gated against a breakpoint at
 each, **all after `JNI_OnLoad`** — `OPENSSL_ia32cap`, `SSLKEYLOGFILE`, proxy
 variables. Zero before. Definitive.
 
-**System properties are ruled out too.** `CORDIAL_TRACE_PROPS=1` now names every
+**System properties are ruled out too.** `VANTA_TRACE_PROPS=1` now names every
 `__system_property_get` and what it was told. An unknown key returns the empty
 string, which is exactly the `stat("")` shape, and properties are one of the few
 things readable that early on Android — so this was the strongest remaining
@@ -3086,11 +3086,11 @@ the `[INIT]`/`[DONE]` timing regardless — Android's single successful init is 
 0.4158 s, well after settings — so a client that fails at 0.0 s and memoises it
 needs a retry no matter what the gate turns out to be.
 
-## §27. Cordial can defer libroblox.so's own constructors past its directory
+## §27. Vanta can defer libroblox.so's own constructors past its directory
 ## setup — and that is coherent but does not help, and going further is not
 ## coherent at all
 
-Cordial owns its loader (`third_party/mcpelauncher-linker`, vendored), and
+Vanta owns its loader (`third_party/mcpelauncher-linker`, vendored), and
 `do_dlopen` (`bionic/linker/linker.cpp:2178`) already does its work in two
 separable steps: `find_library` maps and relocates the object, and only then,
 separately, does `si->call_constructors()` run the ELF constructors —
@@ -3103,9 +3103,9 @@ called late instead of immediately without changing what a normal load does.
 `mcpelauncher_defer_next_ctors(1)` makes the next `dlopen` skip the
 constructor step; `mcpelauncher_run_deferred_ctors(handle)` runs it later.
 Both are new exports, called from nowhere in the default path —
-`crates/cordial-runtime/src/bin/load.rs` only reaches them behind
-`CORDIAL_DEFER_CTORS=1` (defer past the four `NativeSettingsInterface`
-directory setters, then run constructors) and `CORDIAL_DEFER_PAST_SETTINGS=1`
+`crates/vanta-runtime/src/bin/load.rs` only reaches them behind
+`VANTA_DEFER_CTORS=1` (defer past the four `NativeSettingsInterface`
+directory setters, then run constructors) and `VANTA_DEFER_PAST_SETTINGS=1`
 (additionally defer past a direct, out-of-band call to
 `nativeInitClientSettings` — bypassing `bootstrapTheApp`'s normal callback
 route entirely, since that route needs `initializeNativeCode`, which needs
@@ -3116,7 +3116,7 @@ constructors already run).
 Three plain runs, XDG_DATA_HOME wiped between each: `nativeSetFilesDirectory`,
 `nativeSetCacheDirectory`, `nativeSetExternalDirectory` and
 `nativeSetBaseDataDirectories` all report `ok (pre-ctors)` — called through
-Cordial's own `JNIEnv` (`linker::jni::create_vm()`, independent of
+Vanta's own `JNIEnv` (`linker::jni::create_vm()`, independent of
 libroblox.so's own state) before a single constructor of libroblox.so has
 run — and `mcpelauncher_run_deferred_ctors` then returns without crashing
 every time. This is the answer to the question this section set out to
@@ -3134,8 +3134,8 @@ It also changes nothing. All three runs still show the exact §25 signature —
     stat("")            = -1
 
 — and no `rbx-storage.db` appears anywhere under the profile in any of them
-(checked with `find ~/.cache/cordial-agent-defer -iname '*rbx-storage*'`;
-only the empty directories Cordial itself pre-creates are ever there). A
+(checked with `find ~/.cache/vanta-agent-defer -iname '*rbx-storage*'`;
+only the empty directories Vanta itself pre-creates are ever there). A
 fourth run, launched under `lldb` with `eLaunchFlagStopAtEntry` per this
 document's own rule, breakpointed on `mcpelauncher_run_deferred_ctors`,
 `mcpelauncher_linker_notifylldb`, and the two §25/§26 offsets
@@ -3168,8 +3168,8 @@ appears above — the crash was never evidence about the engine.
 
 ### Deferring further, past settings delivery, is not coherent
 
-`CORDIAL_DEFER_PAST_SETTINGS=1` fetches the real client-settings document
-(`cordial_runtime::client_settings::load`, a genuine HTTP round trip, done
+`VANTA_DEFER_PAST_SETTINGS=1` fetches the real client-settings document
+(`vanta_runtime::client_settings::load`, a genuine HTTP round trip, done
 before any of libroblox.so's constructors have run) and calls
 `Java_com_roblox_engine_jni_NativeGLInterface_nativeInitClientSettings`
 directly on the resolved symbol, out of band, the same way the directory
@@ -3185,9 +3185,9 @@ fetched and before any further output. A third run under `lldb` caught it
 precisely:
 
     CRASH: signal SIGSEGV: address not mapped to object (fault address=0x10)
-    #3 cordial_init_client_settings
-    #4 cordial_linker_sys::game_activity::init_client_settings
-    #5 cordial_run::main (load.rs:1214, the CORDIAL_DEFER_PAST_SETTINGS call site)
+    #3 vanta_init_client_settings
+    #4 vanta_linker_sys::game_activity::init_client_settings
+    #5 vanta_run::main (load.rs:1214, the VANTA_DEFER_PAST_SETTINGS call site)
 
 Fault address `0x10` — a small, fixed offset from a null pointer — is the
 shape of a `this`-pointer or vtable read on an object that has not been
@@ -3201,7 +3201,7 @@ state**, unlike the four directory setters, and calling it before
 Android's ordering from outside the engine: `RbxStorage::init`'s broken call
 happens *during* constructors (§26), and the settings delivery Android's
 capture puts *before* a successful storage init cannot be called until
-*after* constructors — so within Cordial's process, as it is built today,
+*after* constructors — so within Vanta's process, as it is built today,
 there is no point at which both "constructors have not yet reached
 `RbxStorage::init`" and "settings have already been delivered" are true at
 once. Deferring the constructor that contains the bug cannot outrun a
@@ -3241,8 +3241,8 @@ nothing in this document had actually timed the two against each other.
 
 ### Directly measured: it happens after `JNI_OnLoad`, right after `nativeInitClientSettings`
 
-Plain runs, no debugger — `CORDIAL_TRACE_PATHS=1 CORDIAL_TRACE_DLSYM=1
-XDG_DATA_HOME=~/.cache/cordial-agent-gate ./target/release/cordial-run
+Plain runs, no debugger — `VANTA_TRACE_PATHS=1 VANTA_TRACE_DLSYM=1
+XDG_DATA_HOME=~/.cache/vanta-agent-gate ./target/release/vanta-run
 --lib-dir ... --apk ... --host-libc --game-activity --run N`, log-line order
 read directly off the child's own stdout/stderr (a single file, and the
 informational milestones in it are printed by `load.rs`'s own control-flow
@@ -3291,7 +3291,7 @@ tried first and **produced a self-contradictory result**: it reported the
 cannot exist that early — `load.rs` performs a genuine, unconditional
 `std::thread::sleep(Duration::from_millis(250))` before the `late post:
 postClientSettingsLoadedInitialization3 ok (after 250 ms)` line
-(`crates/cordial-runtime/src/bin/load.rs:2977`), and that line was already
+(`crates/vanta-runtime/src/bin/load.rs:2977`), and that line was already
 present in a file read 150ms after process launch. Six lldb-instrumented runs
 (three with the trace env vars, three as a control without them) all showed
 this same impossible compression, consistently. The most likely mechanism:
@@ -3313,7 +3313,7 @@ undebugged run is what settled this section.** Filed alongside the other four
 The three candidate categories the last session was asked to check —
 `dlopen`/`dlsym`, file-existence checks, `/proc` reads, all before
 `JNI_OnLoad` — were checked directly, three plain runs, no debugger,
-`CORDIAL_TRACE_DLSYM=1 CORDIAL_TRACE_PATHS=1`, boundary taken at the literal
+`VANTA_TRACE_DLSYM=1 VANTA_TRACE_PATHS=1`, boundary taken at the literal
 `JNI_OnLoad returned` log line (line 144, identical in all three runs):
 
 * **`dlopen`/`dlsym`**: exactly one of each, every run — `dlopen(libc.so, 2)`
@@ -3338,7 +3338,7 @@ on a spawned thread. So this negative answers the question exactly as asked,
 without answering the question that actually matters now: what does *that*
 thread read, in the few log lines between `nativeInitClientSettings -> 0` and
 its own `stat("./appData")`, that could differ from Android. Nothing
-Cordial-traceable appears there either (no `[paths]` or dlsym-trace line from
+Vanta-traceable appears there either (no `[paths]` or dlsym-trace line from
 that tid before its first `stat`), which is consistent with §26.1's own
 ABI-shape finding that the empty value is computed inside the callee from
 state not visible at the caller's frame — not new evidence, but no longer
@@ -3346,7 +3346,7 @@ resting on a mistaken "before flags exist" premise.
 
 ### §28.2 The retry route: `nativeRetryInit` is already called twice, and it does not retry storage
 
-Cordial's own default run already calls
+Vanta's own default run already calls
 `Java_com_roblox_client_startup_MainGameActivity_nativeRetryInit` — the one
 exported native whose name says "retry" — twice: an early `retryInit ok` and,
 250ms-sleep-gated, a `late retry: nativeRetryInit ok`. Both happen inside the
@@ -3356,7 +3356,7 @@ entire run. **The getter-slowpath-direct-call-site breakpoint fired exactly
 once in all six runs, despite two `nativeRetryInit` calls occurring inside
 that same window.** `nativeRetryInit` does not cause `RbxStorage::init` to
 run again — it is a real, exported, app-facing native, already exercised by
-Cordial, and it is a clean negative for this specific candidate, not an
+Vanta, and it is a clean negative for this specific candidate, not an
 inferred one.
 
 The rest of the app-facing JNI surface was checked by name against
@@ -3382,11 +3382,11 @@ just in a window that turns out not to contain the failing call. The one
 tested retry candidate (`nativeRetryInit`) is a clean negative. The
 LocalStorageManager family remains an open, untested lead.
 
-## §29. Nothing Cordial can reach is consulted at the moment of failure
+## §29. Nothing Vanta can reach is consulted at the moment of failure
 
 Three results, each with a control.
 
-**The directory setters, at the earliest timing that exists.** `CORDIAL_DEFER_CTORS=1`
+**The directory setters, at the earliest timing that exists.** `VANTA_DEFER_CTORS=1`
 calls all four `NativeSettingsInterface` setters *before* `libroblox.so`'s own ELF
 constructors run — before `JNI_OnLoad`, before `bootstrapTheApp` can fire. They
 report `ok (pre-ctors)`. **The identical three `stat("") = -1` still happen.** §27
@@ -3394,7 +3394,7 @@ eliminated the setters; this eliminates them again under a strictly stronger
 timing condition, and it is a controlled negative rather than an inference.
 
 **No JNI call happens at the point of failure.** Rebuilt with
-`CORDIAL_JNI_TRACE=1` and run with `CORDIAL_TRACE_PATHS=1`: on the failing
+`VANTA_JNI_TRACE=1` and run with `VANTA_TRACE_PATHS=1`: on the failing
 thread, between `nativeInitClientSettings -> 0` and its three `stat("")`, there
 are **zero** method-ID resolutions and zero invocations. Whatever supplies the
 empty root is not being fetched from Java at the moment it is used.
@@ -3417,9 +3417,9 @@ retried.
 
 ### The sixth instrument artefact, and this one is subtle
 
-The first `CORDIAL_JNI_TRACE` run appeared to show JNI activity clustered right
+The first `VANTA_JNI_TRACE` run appeared to show JNI activity clustered right
 after the failure. It was not real. libjnivm's `LOG` writes to **stdout** via
-`printf`; Cordial's path tracer writes to **stderr**. Redirected to a file,
+`printf`; Vanta's path tracer writes to **stderr**. Redirected to a file,
 stdout is block-buffered and stderr is not, so the interleaving in the log is not
 temporal order. `stdbuf -o0 -e0` and two reruns gave the true ordering, which is
 the zero-JNI-calls result above.
@@ -3435,8 +3435,8 @@ assume it before assuming anything about Roblox.
 ### Where this leaves the question
 
 Storage fails on a root that is empty at the moment of use, and at that moment
-nothing in the JNI surface Cordial implements is being consulted. So the value is
-either cached from earlier than any Cordial code runs, or is an engine-internal
+nothing in the JNI surface Vanta implements is being consulted. So the value is
+either cached from earlier than any Vanta code runs, or is an engine-internal
 default nothing in the app-facing interface can reach.
 
 The next observational angle, and it has not been tried: **trace what runs on
@@ -3454,7 +3454,7 @@ absent. That is a decision for the project owner, not a measurement.
 
 §29 left one observational angle untried: who creates the thread storage fails
 on, and what runs on it first. `native/thread_trace.cpp` answers it — an
-`pthread_create` interception behind `CORDIAL_TRACE_THREADS=1`, inert otherwise,
+`pthread_create` interception behind `VANTA_TRACE_THREADS=1`, inert otherwise,
 logging the caller and start routine as `libroblox.so+offset` read from
 `/proc/self/maps`. Three fresh runs, three wiped data roots, identical shape:
 
@@ -3476,7 +3476,7 @@ worker-spawn site handing out a queued task — which corroborates §24's
 "storage initialisation is a scheduled task" with a mechanism rather than an
 inference.
 
-Control, same session: with `CORDIAL_TRACE_THREADS` unset, zero `[threads]` lines
+Control, same session: with `VANTA_TRACE_THREADS` unset, zero `[threads]` lines
 and the identical failure sequence. The interception neither hides nor alters it.
 
 ### The conclusion, stated with evidence rather than as a guess
@@ -3494,13 +3494,13 @@ That is the ADR-001 decision point §22.1 first reached about the flags gate —
 had to withdraw, because the flags gate turned out to be reachable after all and
 §23 fixed it. This time it is not a guess: every route the interface offers has
 been tried and measured, and the last one was instrumented by intercepting a libc
-symbol in Cordial's own shim rather than by inferring.
+symbol in Vanta's own shim rather than by inferring.
 
 So the remaining option is the memory write
 [ADR-001](../adr/ADR-001-in-process-hooking.md) and
 [ADR-003](../adr/ADR-003-plugin-isolation.md) make deliberately *absent* — the
 same thing mocktail does, one of its 98 patch functions. **That is a decision for
-the project owner about Cordial's security posture, not a measurement**, and it
+the project owner about Vanta's security posture, not a measurement**, and it
 carries more than storage: a fork is building a script executor on this codebase,
 and the primitive is absent precisely so there is nothing to extract.
 
@@ -3516,7 +3516,7 @@ read as one timeline.
 The flags half of the same investigation *was* reachable and is fixed:
 `onFlagsLoaded` fires, `areFlagsLoaded:true`, and the `NativeDataModelManager`
 chain runs to `startLuaApp_`. The difference between the two halves is the whole
-lesson — one gate was an ordering mistake in Cordial, the other is inside the
+lesson — one gate was an ordering mistake in Vanta, the other is inside the
 engine, and only measurement told them apart.
 
 ## §31. Sober does not patch, and it loads the engine from a real Android path
@@ -3548,7 +3548,7 @@ layout:
 
     /data/app/~~<base64>/com.roblox.client-<base64>/lib/x86_64/libroblox.so
 
-Cordial loads from `~/.cache/cordial/lib/x86_64/libroblox.so`. Nothing about that
+Vanta loads from `~/.cache/vanta/lib/x86_64/libroblox.so`. Nothing about that
 path looks like an installed Android package.
 
 **Hypothesis, untested at the time of writing:** the engine derives its private
@@ -3564,7 +3564,7 @@ same function are `./appData`, resolved against the working directory, while the
 failing one is empty. Two different roots, one of which has a fallback and one of
 which does not.
 
-**This is testable without any memory write**, and that is the point. Cordial
+**This is testable without any memory write**, and that is the point. Vanta
 already remaps `/system/<rest>` onto a host directory in
 `native/system_paths.cpp`; the same machinery could present the engine with an
 Android-shaped `/data/app/...` path for its own library, and an Android-shaped
@@ -3581,15 +3581,15 @@ said to establish which one the engine reads before patching one and hoping.
 `patches/0004-android-libpath-experiment.patch` (applied) makes all three
 observable and one of them controllable: `mcpelauncher_set_realpath`
 overwrites what the linker's `soinfo` reports as a loaded library's own path
-— pure metadata, nothing reopened or remapped — and `CORDIAL_TRACE_DLADDR=1`
+— pure metadata, nothing reopened or remapped — and `VANTA_TRACE_DLADDR=1`
 traces every `dladdr()` and `dl_iterate_phdr()` call. Wired into
-`crates/cordial-runtime/src/bin/load.rs` behind `CORDIAL_ANDROID_LIBPATH=1`:
+`crates/vanta-runtime/src/bin/load.rs` behind `VANTA_ANDROID_LIBPATH=1`:
 defer `libroblox.so`'s constructors, overwrite its realpath to
-`/data/app/~~cordialAAAAAAAAAAAAAA==/com.roblox.client-cordialBBBBBBBBBBBB==
+`/data/app/~~vantaAAAAAAAAAAAAAA==/com.roblox.client-vantaBBBBBBBBBBBB==
 /lib/x86_64/libroblox.so`, run the deferred constructors.
 
 **`dladdr()` is called zero times.** Across two complete runs to `app ready:
-Landing` (`CORDIAL_TRACE_DLADDR=1`, one with the override and one without),
+Landing` (`VANTA_TRACE_DLADDR=1`, one with the override and one without),
 `grep -c 'dladdr('` on the trace is 0, both times. The engine's guest-facing
 `libdl.so` import — confirmed present via `readelf -d`, so this is not a
 question of whether it could reach the symbol — is simply never called this
@@ -3605,15 +3605,15 @@ backtrace, not of a single lookup computing a directory ahead of time. Nothing
 calls it during library load, during `JNI_OnLoad`, or at any point up to the
 exact log line the empty-path failure already occupies.
 
-**The third route was already closed.** `CORDIAL_TRACE_PATHS=1` intercepts
+**The third route was already closed.** `VANTA_TRACE_PATHS=1` intercepts
 `open`, `fopen`, `stat`, `lstat`, `access`, `opendir`, `realpath`, `readlink`
 and `statvfs` — every way to read `/proc/self/maps` or `/proc/self/exe` that
 does not go through `dladdr`/`dl_iterate_phdr`. Across a full run, `/proc/self`
 appears exactly once, as `fopen("/proc/self/oom_score")`, called repeatedly
 for what is visibly a memory-pressure check, never `maps` or `exe`.
 
-**The control.** With the override applied and traced (`CORDIAL_ANDROID_
-LIBPATH=1` together with `CORDIAL_TRACE_DLADDR=1` and `CORDIAL_TRACE_PATHS=1`,
+**The control.** With the override applied and traced (`VANTA_ANDROID_
+LIBPATH=1` together with `VANTA_TRACE_DLADDR=1` and `VANTA_TRACE_PATHS=1`,
 two repeats, both clean — `soinfo realpath overridden to …` printed, `con
 structors returned without crashing` printed, `app ready: Landing` reached —
 the three `stat("")` calls are byte-for-byte identical to the unmodified
@@ -3627,7 +3627,7 @@ own evidence: Sober's engine still maps from a real, unaltered, Android-shaped
 path, and that fact is untouched by this result. What is retracted is the
 explanation offered for *why* the path might matter — none of the three
 channels a native library has for learning its own path are used at the point
-where the failure happens, so the shape of the path Cordial hands the linker
+where the failure happens, so the shape of the path Vanta hands the linker
 is, on this evidence, not what `RbxStorage::init` is missing. Something else
 about Sober's environment — most plausibly a value delivered through JNI from
 a live `Context` object (`getApplicationInfo().dataDir`, `getFilesDir()` by
@@ -3640,7 +3640,7 @@ untested and is candidate twenty-two.
 §32 narrowed candidate twenty-two to a JNI route: `Context.getApplicationInfo()`
 called and `dataDir` read off the result, cached before `RbxStorage::init`'s
 first attempt. `getApplicationInfo` is declared in the shipping dex
-(`tools/dex_method.py`), Cordial hooks nothing for it, and a field read on an
+(`tools/dex_method.py`), Vanta hooks nothing for it, and a field read on an
 unresolved placeholder is the exact shape of four earlier bugs here. That made
 it worth asking directly, before writing a single line of implementation:
 does the engine ever call it?
@@ -3648,15 +3648,15 @@ does the engine ever call it?
 `native/jni_shim.cpp` and `third_party/libjnivm`'s `GetFieldID`/`GetMethodID`
 log every resolution attempt — `Found symbol`, `Unresolved symbol` and
 `Constructed Unresolved symbol` — when built with
-`-DCORDIAL_JNI_TRACE=ON`/`-DJNIVM_ENABLE_TRACE=ON`, and log every dispatched
+`-DVANTA_JNI_TRACE=ON`/`-DJNIVM_ENABLE_TRACE=ON`, and log every dispatched
 call besides. That is a full record of everything the engine asked libjnivm
 for, not a sample.
 
-Built with `CORDIAL_JNI_TRACE=1 cargo build --release --bin cordial-run`
-(confirmed in the build log: `CORDIAL_JNI_TRACE:BOOL=ON`,
+Built with `VANTA_JNI_TRACE=1 cargo build --release --bin vanta-run`
+(confirmed in the build log: `VANTA_JNI_TRACE:BOOL=ON`,
 `JNIVM_ENABLE_TRACE:BOOL=ON`, and libjnivm's `internal/field.cpp` and
 `internal/method.cpp` recompiled), then run twice against Sober's real APK
-with `CORDIAL_JNI_TRACE=1 ./cordial-run --host-libc --game-activity --run
+with `VANTA_JNI_TRACE=1 ./vanta-run --host-libc --game-activity --run
 25` (and `--run 30` on the repeat), own data root, `stdbuf -o0 -e0` per the
 buffering warning. Both runs are clean and reach `app ready: Landing`, the
 same late-startup marker §32 used as its measurement window; `onFlagsFailed`
@@ -3669,7 +3669,7 @@ Across both full traces, from `JNI_OnLoad` to `Landing`:
     grep -ni 'getApplicationInfo\|ApplicationInfo\|dataDir' run.log
         -> zero real hits. The only substring matches are
            `nativeSetBaseDataDirectories` (a distinct, already-hooked
-           Cordial-side call) and `ApplicationExitInfoCpp` (an unrelated
+           Vanta-side call) and `ApplicationExitInfoCpp` (an unrelated
            crash-reporting class the engine does FindClass on).
 
     grep -n 'android/content/Context\b\|android/content/pm/ApplicationInfo' run.log
@@ -3708,20 +3708,20 @@ untested.
 `jni-natives.tsv` that is exported, has no caller, and was not already accounted
 for (`nativeSetBaseUrl`'s omission is explained in `load.rs`'s own comments).
 Dex prototype `(Ljava/lang/String;)V`, wired temporarily into the pre-constructor
-path with a distinctive marker directory and run under `CORDIAL_TRACE_PATHS=1`.
+path with a distinctive marker directory and run under `VANTA_TRACE_PATHS=1`.
 The call succeeds and prints before storage runs; storage's failure is
 byte-for-byte identical to baseline and the marker string appears nowhere in the
 trace. Edit reverted.
 
 **`getFilesDir()` by method call — dead**, which closes the candidate §33 named
 as untested. Two runs with the JNI trace on, to `app ready: Landing`.
-`SessionReporterJavaInterface.getFilesDir()` — a hook Cordial already implements,
+`SessionReporterJavaInterface.getFilesDir()` — a hook Vanta already implements,
 `android_classes.cpp` returning `files_dir()` — is *resolved* once during hook
 registration and **never dispatched**: zero `Call Static Function … getFilesDir`
 lines in either full trace. `Context` and `ApplicationInfo` are still never
 `FindClass`'d, consistent with §33.
 
-So the infrastructure to answer is in place before the failure — Cordial's class
+So the infrastructure to answer is in place before the failure — Vanta's class
 and method table is fully populated by then — and the engine simply never places
 a call.
 
@@ -3742,7 +3742,7 @@ winner between two measurements on the strength of which is more recent would be
 the seventh.
 
 Whoever takes this next should settle it first, because it decides whether
-anything Cordial does before `dlopen` returns can matter at all — and it is one
+anything Vanta does before `dlopen` returns can matter at all — and it is one
 plain, undebugged run with `stdbuf -o0 -e0`, log ordering, and a marker printed
 either side of `dlopen`.
 
@@ -3769,12 +3769,12 @@ question rather than an engineering one.
 
 `dlopen` returns and `JNI_OnLoad` completes long before `nativeInitClientSettings`
 runs, which is itself before the failure. So the attempt is **not** during ELF
-construction, and everything Cordial does before `dlopen` returns is available to
+construction, and everything Vanta does before `dlopen` returns is available to
 it by the time it fails.
 
 **`AssetManager` is dead too, and finding that required fixing the instrument
-first.** `android/asset.rs` traced overlay *hits* under `CORDIAL_TRACE_ASSETS`,
-but the **miss** trace was gated on `CORDIAL_TRACE` — the flag AGENTS.md says
+first.** `android/asset.rs` traced overlay *hits* under `VANTA_TRACE_ASSETS`,
+but the **miss** trace was gated on `VANTA_TRACE` — the flag AGENTS.md says
 never to set, because it wraps variadics unsafely and aborts the engine. **A miss
 had therefore never been observable.** That is the same shape as §23.5's path
 trace not wrapping `statvfs`, and it is the seventh instrument fault this
@@ -3785,7 +3785,7 @@ repeats. Every miss is the engine's normal prefix probe — `android/<path>` the
 `ExtraContent/<path>` then `content/<path>` — resolving under a later prefix. Of
 56 distinct basenames, exactly one never resolves anywhere,
 `fonts/NotoSansCJK-Regular.ttc`, and `unzip -l` confirms it is genuinely absent
-from the APK rather than a Cordial gap. Nothing missing is root- or
+from the APK rather than a Vanta gap. Nothing missing is root- or
 settings-shaped.
 
 And the timing settles it independently: **AssetManager's first request lands
@@ -3830,7 +3830,7 @@ the process.
 
 The other half of this same investigation *was* reachable, and is fixed:
 `onFlagsLoaded` fires, `areFlagsLoaded:true`, the chain runs to `startLuaApp_`.
-One gate was an ordering mistake in Cordial and the other is inside the engine.
+One gate was an ordering mistake in Vanta and the other is inside the engine.
 Only measurement told them apart, and it took seven retractions to trust the
 measurements.
 
@@ -3848,34 +3848,34 @@ Three things worth having on record.
 
 **It is the same spawned-thread shape.** Sober's block runs on `80cfb4c0` and its
 `RbxStorage::init` lands 1.5 ms later on `a93d86c0` — a different thread, exactly
-as Cordial's failure runs on a thread spawned from a pool. So the mechanism is
+as Vanta's failure runs on a thread spawned from a pool. So the mechanism is
 not different; Sober's simply succeeds.
 
-**`availableDiskSpace` is a live measurement, and Cordial's provider is never
+**`availableDiskSpace` is a live measurement, and Vanta's provider is never
 asked.** Sober reports 3,284,131,840 bytes here and 1,972,330,496 in an earlier
 run, so it is reading something real and varying. Android reported
-60,655,730,688. Cordial's `LocalStorageManager.getAllocatableBytes` — the JNI
+60,655,730,688. Vanta's `LocalStorageManager.getAllocatableBytes` — the JNI
 method whose own comment claims storage gates on it — is **never called** (§29,
 instrumented). So whatever supplies that number to storage, it is not that
 method, and `init_params.cpp`'s comment overstates a mechanism that does not
 fire. Worth correcting there.
 
-**Two lines Cordial never produces, still.** `IxpStorageManager: Failed to open
-cache file` and the tombstone **read**. Cordial writes a tombstone — to a
+**Two lines Vanta never produces, still.** `IxpStorageManager: Failed to open
+cache file` and the tombstone **read**. Vanta writes a tombstone — to a
 relative `cache/tombstone.dat` — and no read line ever appears. Both were noted
 early and set aside when the framing was "storage is never asked for". Under the
 current framing, where storage *is* entered and fails on an empty root, a missing
 read immediately upstream of the failure is worth one more look than it has had —
-though note Sober's Ixp line is a *failure* that Sober logs and Cordial does not,
+though note Sober's Ixp line is a *failure* that Sober logs and Vanta does not,
 which is as likely to be a channel difference as a behavioural one.
 
 None of this is a candidate yet. It is the shape of the successful path recorded
 properly, so the next attempt starts from a comparison rather than from a guess.
 
-### §35.2 Cordial's block skips three steps in the middle, not at the end
+### §35.2 Vanta's block skips three steps in the middle, not at the end
 
 Channel sets compared over the window from process start to Sober's
-`RbxStorage::init`. Exactly three channels appear on Sober and never in Cordial:
+`RbxStorage::init`. Exactly three channels appear on Sober and never in Vanta:
 
     [DFLog::AppPlatformQoSEmergency]
     [FLog::IxpStorageManager]
@@ -3884,7 +3884,7 @@ Channel sets compared over the window from process start to Sober's
 The third is the failure itself. The other two matter because of *where* they sit.
 Sober's order is ClientRunInfo → **QoS handler instanced** → Mimalloc → Build
 system id → AppMemUsageStatus → **IxpStorageManager** → tombstone **read** →
-holdout → LocalStorageHandler → storage. Cordial produces ClientRunInfo →
+holdout → LocalStorageHandler → storage. Vanta produces ClientRunInfo →
 Mimalloc → Build system id → AppMemUsageStatus → holdout → LocalStorageHandler,
 and then fails.
 
@@ -3895,14 +3895,14 @@ anything assumed so far.
 And it is not a flag. `DFFlagEnableAppPlatformQoSEmergencyOnStartup3` is **True**
 in the live document, alongside `DFIntPlatformQoSEmergencyType = 1` and a
 `DFStringPlatformQoSEmergencyEndpointList` carrying about thirty endpoint
-patterns. The QoS handler is enabled and Cordial still never instantiates it.
+patterns. The QoS handler is enabled and Vanta still never instantiates it.
 
 Two readings, and nothing here separates them:
 
 * the three steps are attempted and each fails silently, in which case whatever
   they have in common is the lead — all three touch storage or the network, and
   the endpoint list is by far the largest single string in the settings document;
-* or they are logged on channels Cordial's build has quiet, in which case this is
+* or they are logged on channels Vanta's build has quiet, in which case this is
   a fourth instrument fault of the same family as the seven already recorded and
   the block is fine.
 
@@ -3911,7 +3911,7 @@ path tracers now cover misses, so instrument whether the QoS handler's
 constructor and the Ixp cache open are *attempted* at all. §22.3's finding that
 channel values are heterogeneous — a bare number silences a channel that wants a
 severity name — makes the second reading more plausible than it looks, and the
-tombstone case is the tell: Cordial demonstrably *does* open
+tombstone case is the tell: Vanta demonstrably *does* open
 `cache/tombstone.dat` (it is in the path trace) while never logging a read.
 
 ### §35.3 The three missing steps are not missing. Eighth instrument fault
@@ -3927,10 +3927,10 @@ trace from §29, and it settles it against §35.2's more interesting reading:
 **Both steps are attempted.** The Ixp cache open happens twice — once relative,
 once absolute — and fails both times because the file genuinely does not exist,
 which is precisely what Sober logs as `Failed to open cache file for reading`.
-The tombstone is opened and one of those opens succeeds. Cordial does the work
+The tombstone is opened and one of those opens succeeds. Vanta does the work
 and says nothing; Sober does the same work and logs it.
 
-So `[FLog::IxpStorageManager]` and the tombstone read are absent from Cordial's
+So `[FLog::IxpStorageManager]` and the tombstone read are absent from Vanta's
 log because **those channels are quiet in this build**, not because the steps are
 skipped. §35.2's framing — "the block is missing three steps from the middle" —
 is wrong, and the only genuinely missing thing in that sequence is
@@ -3946,7 +3946,7 @@ codebase:
 > measurement rather than the thing measured — and channel absence specifically
 > has produced three of them.
 
-Which also retires channel comparison as a diagnostic here. Sober and Cordial
+Which also retires channel comparison as a diagnostic here. Sober and Vanta
 having different channel sets says something about which channels are enabled and
 nothing about what either client did.
 
@@ -3963,7 +3963,7 @@ engine text, so *something* gets there without rewriting instructions.
 That contradiction is the whole remaining question, and it is a real one rather
 than a gap in effort.
 
-### §35.4 Sober's working store sits in `appData`, which Cordial already resolves
+### §35.4 Sober's working store sits in `appData`, which Vanta already resolves
 
 Where the working store actually lives, on this machine:
 
@@ -3975,12 +3975,12 @@ Where the working store actually lives, on this machine:
     ~/.var/app/org.vinegarhq.Sober/cache/sober/rbx-storage/                (cache side)
 
 **The root is `appData`** — the same directory that holds `ClientSettings`,
-`logs` and `LocalStorage`, and the same directory Cordial resolves without
+`logs` and `LocalStorage`, and the same directory Vanta resolves without
 trouble: it stats `./appData` successfully twice in the failing function, and
 writes its own engine log into the absolute equivalent.
 
 So the empty root storage dies on is **not** `appData` and not the files
-directory. Cordial has both, correctly, and storage still fails — which narrows
+directory. Vanta has both, correctly, and storage still fails — which narrows
 what the empty value can be rather than pointing at it.
 
 `rbx-storage.id` is worth noting for whoever picks this up: a separate identity
@@ -4008,9 +4008,9 @@ engine *data* at a known point, which is a different instrument from anything
 built here, and it is the honest next step rather than a twenty-sixth candidate
 drawn from an exhausted surface.
 
-## §36. Storage has worked. Under Cordial. And it logged nothing
+## §36. Storage has worked. Under Vanta. And it logged nothing
 
-`/var/home/neilluo/.cache/cordial-agent-t/cordial/profiles/default/data/files/appData/`
+`/var/home/neilluo/.cache/vanta-agent-t/vanta/profiles/default/data/files/appData/`
 contains, right now:
 
     rbx-storage.db        49152 bytes, a real SQLite database
@@ -4023,7 +4023,7 @@ added in §23.5 makes a single empty `rbx-storage/` and nothing inside it.
 
 Created at 17:45:25 on 19 August, which pins it to one run — the engine log
 `2.734.0.917_20260819T074525Z_Player_ec3a3_last.log`, from the
-`CORDIAL_LATE_POST_MS=2000 CORDIAL_LATE_RETRY=1 --run 35` repeats.
+`VANTA_LATE_POST_MS=2000 VANTA_LATE_RETRY=1 --run 35` repeats.
 
 **That log contains zero `RbxStorage` lines.**
 
@@ -4038,7 +4038,7 @@ on a channel that is silent **even when storage succeeds**.
 > silent even on success is wrong, and it was load-bearing for a lot of scoring.
 > `DFLog::RbxStorage` logs both ends of a successful init at **Critical**, which
 > prints irrespective of channel level — Sober's log shows it. The belief came
-> from Cordial's one working run logging nothing, and one silent success does not
+> from Vanta's one working run logging nothing, and one silent success does not
 > establish a silent channel. Separately, §44 identifies `DFLog::RbxmFileManager`
 > as an on-by-default one-line-per-run marker that scores whether the store came
 > up, and it retro-scores every engine log already on disk.
@@ -4119,7 +4119,7 @@ that the working root had 43 `ContentProvider_*` directories where every
 reproduction attempt had almost none. The test profile settles it without another
 run:
 
-    ~/.local/share/cordial/profiles/CordialTest
+    ~/.local/share/vanta/profiles/VantaTest
       ContentProvider_* directories:  91
       rbx-storage.db:                  0
       engine-created partitions:       0
@@ -4136,7 +4136,7 @@ What that root has which none of the others do is simply *more of everything* �
 around twenty runs under a dozen different environment combinations, several of
 which crashed partway. A store created by a run that died mid-way through some
 other experiment would explain both the existence and the difficulty of
-reproducing it, and would mean the trigger is a state Cordial reaches
+reproducing it, and would mean the trigger is a state Vanta reaches
 occasionally rather than a setting.
 
 **That is speculation and is labelled as such.** It is not a candidate, it has no
@@ -4155,7 +4155,7 @@ every score taken from it across this document is void.
 > silent even on success is wrong, and it was load-bearing for a lot of scoring.
 > `DFLog::RbxStorage` logs both ends of a successful init at **Critical**, which
 > prints irrespective of channel level — Sober's log shows it. The belief came
-> from Cordial's one working run logging nothing, and one silent success does not
+> from Vanta's one working run logging nothing, and one silent success does not
 > establish a silent channel. Separately, §44 identifies `DFLog::RbxmFileManager`
 > as an on-by-default one-line-per-run marker that scores whether the store came
 > up, and it retro-scores every engine log already on disk.
@@ -4202,7 +4202,7 @@ even on success, which voids most of the scoring in this document.
 > silent even on success is wrong, and it was load-bearing for a lot of scoring.
 > `DFLog::RbxStorage` logs both ends of a successful init at **Critical**, which
 > prints irrespective of channel level — Sober's log shows it. The belief came
-> from Cordial's one working run logging nothing, and one silent success does not
+> from Vanta's one working run logging nothing, and one silent success does not
 > establish a silent channel. Separately, §44 identifies `DFLog::RbxmFileManager`
 > as an on-by-default one-line-per-run marker that scores whether the store came
 > up, and it retro-scores every engine log already on disk.
@@ -4217,7 +4217,7 @@ measurement first.** It has been right eight times out of nine.
 
 §36 pins the store to `…T074525Z_Player_ec3a3_last.log` because that is the
 nearest-named log to the file's creation. **That attribution is off by one
-launch.** Both logs still exist in `cordial-agent-t` and were read directly:
+launch.** Both logs still exist in `vanta-agent-t` and were read directly:
 
     ec3a3  starts 07:45:25.241Z, last line 07:45:46.131Z (clean APP_CMD_DESTROY)
     08d78  starts 07:45:47.245Z, last line 07:46:06.425Z (clean APP_CMD_DESTROY)
@@ -4267,17 +4267,17 @@ concurrent builds, so the number moves under you.
 
 **`getAllocatableBytes` — the Java hook this project already answers via
 `statvfs(".")` (§ near `native/init_params.cpp`'s `LocalStorageManager`) — is
-never called on a plain landing-page run.** Checked two ways: `CORDIAL_ANDROID_TRACE=1`
+never called on a plain landing-page run.** Checked two ways: `VANTA_ANDROID_TRACE=1`
 shows no call, and a temporary `fprintf` was added directly to
 `LocalStorageManager::getAllocatableBytes`, built, run, and printed nothing over
 several runs (`cargo build --release` and `cargo test --workspace` both passed
 before removing the print; the removal was verified with `git diff --stat`
 showing no residual change). So whatever `RbxStorage::init`'s `AssetProvider`
-caller declines on (§23.6) is not asking Cordial through that surface.
+caller declines on (§23.6) is not asking Vanta through that surface.
 
-It does ask the kernel directly: `CORDIAL_TRACE_PATHS=1` shows the engine calling
+It does ask the kernel directly: `VANTA_TRACE_PATHS=1` shows the engine calling
 raw `statvfs()` itself, three times, on `./appData` and the profile's
-`data/files` directory, independent of any hook Cordial answers. That call
+`data/files` directory, independent of any hook Vanta answers. That call
 already sees this machine's real, currently-thin headroom — nothing here spoofs
 it — which keeps disk space a live candidate for §23.6's still-open question
 even though the JNI route is ruled out as the channel.
@@ -4331,7 +4331,7 @@ watched address, byte-identical across three separate runs:
 `12 2e 2f 61 70 70 44 61 74 61 00 …`, nine characters plus terminator, and the
 byte immediately before the data pointer reads `0x12` — `9 << 1`, the libc++
 short-string-optimisation size tag for a 9-byte string in the "short" (non-heap)
-representation. This is the *same string* Cordial's `stat("./appData")` already
+representation. This is the *same string* Vanta's `stat("./appData")` already
 succeeds on twice in this same function (§25). A correct candidate is built and
 then discarded, in the same frame, by the very next thing that frame does.
 
@@ -4341,7 +4341,7 @@ it is used — consistent with everything §26–§37 already measured, now with
 write that produces the emptiness identified rather than inferred from its
 absence.
 
-### No Cordial-owned filesystem shim runs between the write and the wipe
+### No Vanta-owned filesystem shim runs between the write and the wipe
 
 `s_stat`, `s_lstat`, `s_access`, `s_opendir`, `s_realpath`, `s_readlink`,
 `s_open` and `s_statvfs` were all breakpointed — host code, so these resolve
@@ -4350,7 +4350,7 @@ normally, unlike anything inside `libroblox.so` — armed the instant
 runs recorded the whole sequence end to end: the earliest host call of any kind
 (an unrelated `s_lstat`, on a different thread entirely) fires roughly ninety log
 lines *after* the wipe, never inside the window. Whatever discards `./appData`
-does so without asking the host anything Cordial answers through the symbol
+does so without asking the host anything Vanta answers through the symbol
 table — not `getAllocatableBytes` (already ruled out, §37), not a path check,
 not a directory setter, nothing that would show up as a call out of
 `libroblox.so` at all in this window.
@@ -4366,19 +4366,19 @@ characterising rather than a new finding about the poke itself.
 ### What this settles, and what it does not
 
 This is §35's contradiction addressed from the write side rather than the read
-side. Sober's engine text is byte-identical to Cordial's (§31) because nothing
+side. Sober's engine text is byte-identical to Vanta's (§31) because nothing
 here is a missing instruction: the code that builds a correct `./appData`
 candidate runs in both, measured directly for the first time rather than assumed
 from binary equality. What differs is that something immediately downstream
 discards it, and that discarding is not conditioned — in this window, by this
-measurement — on anything Cordial supplies. Disk headroom (§37), the storage
+measurement — on anything Vanta supplies. Disk headroom (§37), the storage
 flags (§36.1) and content activity (§36.2) were already ruled out as gating
 variables; none of them appear as a call here either, which is a second,
 independent way of ruling them out for this specific step.
 
-**Engine-internal, not a host input Cordial withholds — for this step
+**Engine-internal, not a host input Vanta withholds — for this step
 specifically.** The question §35 left open — does the empty value come from
-something Cordial can supply, or is it discarded inside the engine with nothing
+something Vanta can supply, or is it discarded inside the engine with nothing
 to hand it — is now measured rather than inferred: the wipe happens with no
 observable host call in the window, on two independently instrumented runs. Per
 the rule this document has needed nine times already, that is not proof against
@@ -4401,7 +4401,7 @@ left: what, read *before* `0x23121ae`, the branch at `0x23160ec` is conditioned
 on — which means placing a watchpoint on whatever that branch reads, not on the
 path buffer, and accepting that the read may predate this function entirely.
 
-## §39. Local storage is unavailable because Cordial skips `setPlatformImpl`, and §38's "engine-internal" framing is superseded
+## §39. Local storage is unavailable because Vanta skips `setPlatformImpl`, and §38's "engine-internal" framing is superseded
 
 §38 ended by proposing a disassembly: find what the branch at `0x23160ec` is
 conditioned on. **Do not start there.** Asking the running engine what it thought
@@ -4420,31 +4420,31 @@ engine log beside it:
     t=3.824s  Warning [DFLog::RbxmFileManager]    LocalStorageManager is not available.
 
 "Not available on the current platform" is what a missing **platform
-implementation** reports, and Cordial's own startup log says so in as many words,
+implementation** reports, and Vanta's own startup log says so in as many words,
 three lines below `initStorageManagerNativeV3 ok`:
 
     setPlatformImpl skipped (measured to crash the process a few calls later;
-    set CORDIAL_LOCAL_STORAGE_SET_PLATFORM_IMPL=1 to try it anyway)
+    set VANTA_LOCAL_STORAGE_SET_PLATFORM_IMPL=1 to try it anyway)
 
 So the sequence §26–§38 spent nine sections characterising — a correct
 `"./appData"` built and then wiped — sits **downstream of a platform impl the
-engine was never given**. §38's measurement is not wrong: no Cordial-owned
+engine was never given**. §38's measurement is not wrong: no Vanta-owned
 filesystem shim is called between the write and the wipe, and that remains true.
-Its *framing* is what this supersedes. "Engine-internal, not a host input Cordial
+Its *framing* is what this supersedes. "Engine-internal, not a host input Vanta
 withholds" reads as "there is nothing to supply", and there is: `setPlatformImpl`
 is a host input, it is withheld, and it is withheld deliberately by a line of
-Cordial's own that predates this whole investigation. The wipe was measured
+Vanta's own that predates this whole investigation. The wipe was measured
 inside a function that had already been told this platform has no local storage.
 
 This is the ninth time in this document that an absence was read as evidence
-about the engine rather than as evidence about Cordial's own instrumentation or
+about the engine rather than as evidence about Vanta's own instrumentation or
 defaults, and it is the most expensive: the "no host call in the window" result
 is *true*, was measured four times, and still pointed the wrong way, because the
 window it measured began after the decision had been made.
 
 ### What happens when it is not skipped
 
-`CORDIAL_LOCAL_STORAGE_SET_PLATFORM_IMPL=1`, same root, same run length:
+`VANTA_LOCAL_STORAGE_SET_PLATFORM_IMPL=1`, same root, same run length:
 
     setPlatformImpl ok
     [JNIVM]: Exception with Message `djinni (djinni_support.cpp:529): weakRef` was thrown   (x10)
@@ -4475,11 +4475,11 @@ question about libjnivm and djinni, not about `libroblox.so`'s text.
 ### What this changes for whoever continues
 
 The remaining question is no longer "what condition byte selects the wipe". It is
-"why does djinni's weak reference to Cordial's platform impl come back null", and
+"why does djinni's weak reference to Vanta's platform impl come back null", and
 that is answerable in code both projects can read, with a debugger that works,
 against sources that are not stripped. `patches/` is where a libjnivm fix would
 go — the submodule points at a repository this project cannot push to, and
-anything Cordial calls that exists only under a patch must be a weak symbol with
+anything Vanta calls that exists only under a patch must be a weak symbol with
 a null check naming the missing patch, per `native/shim.cpp`.
 
 Whether fixing it produces a store is not established and should not be assumed.
@@ -4489,7 +4489,7 @@ measured, not yet an explanation for the *store*.
 
 ## §40. `setPlatformImpl` works and is now on by default; the weak reference was a missing `java.lang.ref.WeakReference`, not a broken `NewWeakGlobalRef`; storage still does not initialise and the engine says why
 
-§39 left one question: "why does djinni's weak reference to Cordial's platform
+§39 left one question: "why does djinni's weak reference to Vanta's platform
 impl come back null". It also offered an answer, labelled `INFERRED` —
 `third_party/libjnivm/src/jnivm/vm.cpp:313`'s `NewWeakGlobalRef` returning
 `(jweak)nullptr`. **That inference is wrong, and this section retracts it.**
@@ -4501,7 +4501,7 @@ dead weak reference surfaces — `UnpackJObject`'s `weak->wrapped.lock()` failin
 which was instrumented in the same build. libjnivm's weak-reference support is
 not involved in this failure at all.
 
-What is involved is visible in a `CORDIAL_JNI_TRACE=ON` run, in the twelve lines
+What is involved is visible in a `VANTA_JNI_TRACE=ON` run, in the twelve lines
 between the last `IPlatformLocalStorageHandler` method binding and the first
 throw:
 
@@ -4567,8 +4567,8 @@ Same build, six runs, one profile root each, 25 s apiece.
 Before the fix, the same call on the same tree gave 13 `weakRef` exceptions and
 exit 133, reproduced twice. That warning disappearing is the only direct evidence
 the engine accepted the implementation rather than taking it and failing quietly,
-and it is why `crates/cordial-runtime/src/bin/load.rs` now makes the call
-unconditionally instead of behind `CORDIAL_LOCAL_STORAGE_SET_PLATFORM_IMPL`.
+and it is why `crates/vanta-runtime/src/bin/load.rs` now makes the call
+unconditionally instead of behind `VANTA_LOCAL_STORAGE_SET_PLATFORM_IMPL`.
 Three further runs on the new default path: exit 0, `setPlatformImpl ok`, no
 djinni exception, no `LocalStorageHandler` warning.
 
@@ -4583,23 +4583,23 @@ different class from the `ILocalStorageHandlerCore`/`IPlatformLocalStorageHandle
 pair this section fixes, exactly as `native/local_storage.cpp`'s own header has
 said since it was written.
 
-One more measurement narrows it. In a full `CORDIAL_JNI_TRACE=ON` run that
+One more measurement narrows it. In a full `VANTA_JNI_TRACE=ON` run that
 reached `engine initialised` and `app ready: Startup` — well past both
 `RbxmFileManager` warnings, which land at t≈1.1 s and t≈3.4 s — the engine never
 asks libjnivm for `com/roblox/client/LocalStorageManager` at all. Not
-`getAllocatableBytes`, which Cordial hooks; not a constructor; nothing. Thirty-nine
+`getAllocatableBytes`, which Vanta hooks; not a constructor; nothing. Thirty-nine
 distinct classes are looked up in that run and it is not among them. So whatever
 decides "LocalStorageManager is not available" decides it without asking the
 platform, and **adding methods to that class cannot be the fix**. That is a
 negative result and it closes off the most obvious next thing to try.
 
 The count of negatives is now forty-something plus nine. What §39 and §40
-together establish is that two of them had causes, both in Cordial, both
+together establish is that two of them had causes, both in Vanta, both
 findable by running the thing rather than reading the binary — and that the
 store's own gate is still unexplained and is no longer where anyone has been
 looking.
 
-## §41. `RbxStorage::init` is never called under Cordial, and two things this file believed are wrong
+## §41. `RbxStorage::init` is never called under Vanta, and two things this file believed are wrong
 
 Sober is on this machine, its store works, and nobody had read its log. Doing
 that answers in one line what §26–§40 approached from the inside:
@@ -4617,7 +4617,7 @@ AGENTS.md have been relying on.**
 **`DFLog::RbxStorage` is not silent on success.** AGENTS.md states it is, and
 that claim is what "voids every `grep -c 'RbxStorage::init'` in the repo".
 Sober logs both ends of a successful init at **Critical**, which prints
-irrespective of channel level. The claim came from Cordial's one working run
+irrespective of channel level. The claim came from Vanta's one working run
 logging nothing, and one silent success does not establish that the channel is
 silent — it establishes that that run did not log, which is a different and
 much smaller fact. Greps for `RbxStorage::init` are meaningful after all.
@@ -4634,7 +4634,7 @@ cause is withdrawn.
 
 ### What is now established
 
-Cordial's engine log contains **zero** `RbxStorage` lines, at any severity, in
+Vanta's engine log contains **zero** `RbxStorage` lines, at any severity, in
 a run with `DFLogRbxStorage` forced to 7 as well as in runs without it. Since
 Sober's init logs at Critical, absence here is not a channel-level artifact:
 **`RbxStorage::init` is not being called at all.** Every section from §26
@@ -4648,12 +4648,12 @@ Java: 0` and `flagCount = 0`, on a different thread from the init itself.
 
 ### What is not established, and must not be assumed
 
-Cordial calls `FlagJniInterface.nativeInitializeNativeFlags` — same exported
+Vanta calls `FlagJniInterface.nativeInitializeNativeFlags` — same exported
 symbol, confirmed present — and its log shows 59 `... N: <name> not found.`
 lines but **no** `Registered Flag Provider ID from Java` and no `flagCount =`.
-It is tempting to read that as "Cordial never registers a provider, so
+It is tempting to read that as "Vanta never registers a provider, so
 flagLoaded never fires". **Do not.** Sober's two lines are captured at debug
-level and Cordial's at Info, so their absence here may be a logging artifact
+level and Vanta's at Info, so their absence here may be a logging artifact
 rather than a behavioural difference. This file has read an absence as
 evidence nine times and been wrong; establish it with something that does not
 depend on log level before building on it.
@@ -4666,8 +4666,8 @@ variable either.
 ### The next step
 
 Find what emits the engine's internal flags-loaded notification that
-`RbxStorage::init` subscribes to, and establish whether Cordial emits it —
-by a means independent of log level. Cordial reaches `[roblox] flags loaded
+`RbxStorage::init` subscribes to, and establish whether Vanta emits it —
+by a means independent of log level. Vanta reaches `[roblox] flags loaded
 (1305506 bytes)` and `areFlagsLoaded:true`, so the flags themselves arrive;
 what is unknown is whether the *notification* Sober's init hangs off is
 raised. That is a question about one signal, not about storage, and it is the
@@ -4676,14 +4676,14 @@ first time this investigation has had a working control to compare against.
 ## §42. The post-settings block is nearly complete; `IxpStorageManager` and `RbxStorage` are the two that never appear
 
 §41 established that `RbxStorage::init` is never called. This narrows where to
-look, by comparing Cordial's engine log against Sober's on the same machine.
+look, by comparing Vanta's engine log against Sober's on the same machine.
 
 **A caveat that must travel with the table.** Sober's `latest.log` covers a much
-longer session than an 18-second Cordial run, so the *counts* are not
+longer session than an 18-second Vanta run, so the *counts* are not
 comparable and no conclusion is drawn from a count difference. Presence versus
 absence is what this reads:
 
-    marker              cordial   sober
+    marker              vanta   sober
     Mimalloc                 43      43
     Build system id           1       1
     ClientRunInfo             3       3
@@ -4692,7 +4692,7 @@ absence is what this reads:
     IxpStorageManager         0       1     <- absent
     RbxStorage                0      10     <- absent
 
-Cordial produces the block the `CORDIAL_LATE_POST_MS` comment describes almost
+Vanta produces the block the `VANTA_LATE_POST_MS` comment describes almost
 in full. Mimalloc's forty-three option lines match exactly, `Build system id`
 matches, and `ClientRunInfo` — which this document spent sections on — is
 present three times in both. So the late post is doing its job and the block
@@ -4708,7 +4708,7 @@ are four lines apart:
     D       nativeInitializeNativeFlags: Registered Flag Provider ID from Java: 0
     Critical[DFLog::RbxStorage]        RbxStorage::init [INIT] user: flagLoaded
 
-Cordial reaches `AppMemUsageStatus`, `TombstoneCache` and the
+Vanta reaches `AppMemUsageStatus`, `TombstoneCache` and the
 `LocalStorageHandler` warning, and registers the flag provider identically
 (§41, and the registration is confirmed byte-for-byte against the Waydroid
 capture). It does not produce the `IxpStorageManager` line, and it does not
@@ -4776,8 +4776,8 @@ notification on that side is looking in the wrong place.
 
 ### `IxpStorageManager` hangs off the Lua app, not the flags path
 
-Two of the 223 Cordial engine logs on this machine contain the channel, both in
-`~/.cache/cordial-agent-t`, `2.734.0.917_20260819T0745{25,47}Z`. In the second:
+Two of the 223 Vanta engine logs on this machine contain the channel, both in
+`~/.cache/vanta-agent-t`, `2.734.0.917_20260819T0745{25,47}Z`. In the second:
 
     0.281692  Warning [FLog::DataModelPatchConfigurer] getCachedPatch: get patch from content provider for Model
     0.293493          [FLog::DataModelPatchConfigurer] deserializeAndVerifyPatch with blake3
@@ -4790,7 +4790,7 @@ Two of the 223 Cordial engine logs on this machine contain the channel, both in
 IXP initialises inside `initializeLuaAppWithLoggedInUser`, **a full second
 before that run's post-settings block**. On Android the Lua app starts and the
 settings post lands within the same two milliseconds, so the two appear
-adjacent; under Cordial they are a second apart and the adjacency dissolves.
+adjacent; under Vanta they are a second apart and the adjacency dissolves.
 `IxpStorageManager` was never in the post-settings block, and §42's table put it
 there because Sober's timing put it there.
 
@@ -4812,16 +4812,16 @@ So §35.3's "eighth instrument fault" was itself a misreading. The rule it
 derived — an absence in a log is not an absence in the engine — is still right,
 and is what the next paragraph rests on. Only the file identification was wrong.
 
-### The subsystem has run under Cordial many times, and said nothing
+### The subsystem has run under Vanta many times, and said nothing
 
 `ixp_cache_random_id` appears as a literal in `libroblox.so` and nowhere else:
 not in the APK's dex (`unzip -p base.apk '*.dex' | strings | grep -c` is 0) and
-not in Cordial's own source. Only the engine writes it. Eleven Cordial profiles
+not in Vanta's own source. Only the engine writes it. Eleven Vanta profiles
 have one, each holding a distinct 36-byte UUID, at
 `<profile>/data/files/ixp_cache_random_id` — the same shape as Sober's, which
 lives at `data/sober/assets/ixp_cache_random_id` and has held one UUID since
-Sober's first launch on 2026-07-24. In `cordial-agent-policy` and
-`cordial-agent-crash`, both single-run profiles, the file's mtime is inside the
+Sober's first launch on 2026-07-24. In `vanta-agent-policy` and
+`vanta-agent-crash`, both single-run profiles, the file's mtime is inside the
 same second as the profile's only engine log, and neither log mentions the
 channel.
 
@@ -4869,7 +4869,7 @@ established** and is a question for the local-storage thread, not this one.
 `FLog::LocalStorageHandler` also stopped appearing today, and that one is
 already explained: §40 made `setPlatformImpl` unconditional, and the code
 comment records the control — the warning appears twice a run when the call is
-skipped and not at all when it is made. §42's table listing Cordial as producing
+skipped and not at all when it is made. §42's table listing Vanta as producing
 it was measured before that landed. Not a regression.
 
 ### The answer, and the branch this closes
@@ -4881,15 +4881,15 @@ The two absences are **not the same fact**:
   answering `flagLoaded`;
 * they are not ordered with respect to each other in the working control, so
   neither can be upstream of the other;
-* they dissociate in Cordial's own history. Two of 223 logs carry
+* they dissociate in Vanta's own history. Two of 223 logs carry
   `IxpStorageManager` and eleven profiles carry IXP's own file; **not one log,
   and no profile, has ever carried `RbxStorage::init`**. A shared dependency
   cannot produce that.
 
 **IXP is a dead end for storage.** It is worth writing down that today's build
 also stopped running it, because that is a real behavioural change with a date
-range around it — between the `cordial-agent-t` run at 2026-08-19 07:45Z and the
-`cordial-agent-repro` runs at 2026-08-19 20:50Z, which is the window holding
+range around it — between the `vanta-agent-t` run at 2026-08-19 07:45Z and the
+`vanta-agent-repro` runs at 2026-08-19 20:50Z, which is the window holding
 `5c5266a`, `e8badbb`, `9a0de84` and the 06:39-onwards batch. But it is a
 different bug from the one this document is about, and the storage question does
 not go through it.
@@ -4906,7 +4906,7 @@ dismissed into the cheapest scoring instrument this investigation has had.
 
 Build `v0.6.0-9-gaf6e108-dirty` throughout, and `-dirty` is not incidental:
 `third_party/mcpelauncher-linker`'s `bionic` carries another session's
-`CORDIAL_TRACE_DLSYM` additions, and `native/platform_classes.cpp` and
+`VANTA_TRACE_DLSYM` additions, and `native/platform_classes.cpp` and
 `native/CMakeLists.txt` were being edited by a parallel agent while these runs
 were taken. Nothing measured below is in those files.
 
@@ -4923,11 +4923,11 @@ and that class declares nothing else but `<init>`. `IPlatformLocalStorageHandler
 declares twelve methods. The dex also shows both interfaces carrying a
 `$CppProxy` with the `native_*` family, which `readelf --dyn-syms` confirms
 `libroblox.so` exports — so the scaffolding runs in both directions and only the
-`IPlatformLocalStorageHandler` direction is Cordial's to answer.
+`IPlatformLocalStorageHandler` direction is Vanta's to answer.
 
-### §44.2 What Cordial hands over, printed from the registered side
+### §44.2 What Vanta hands over, printed from the registered side
 
-`CORDIAL_TRACE_LOCAL_STORAGE=1` now dumps the descriptors
+`VANTA_TRACE_LOCAL_STORAGE=1` now dumps the descriptors
 `native/local_storage.cpp` actually registered, rather than the ones the engine
 asks for. That distinction is the whole point: §40's stolen `typeid` was silent
 because the JNI trace prints the *engine's* descriptor, which is always correct,
@@ -4976,14 +4976,14 @@ engine only looks up may still be one the engine would use if it worked.
 
 §43 recorded `Warning [DFLog::RbxmFileManager] LocalStorageManager is not
 available.` as "new as of today and absent on 2026-08-19". It is neither. Every
-engine log on this machine, scored (399 of them, `CordialTest` excluded):
+engine log on this machine, scored (399 of them, `VantaTest` excluded):
 
     2.730.0.790   64 warned   183 silent
     2.732.0.1043   0 warned    44 silent
     2.734.0.917  105 warned     4 silent
 
 On 2026-08-19 alone it appears in 98 of 103 logs. §43 compared today's run
-against two `cordial-agent-t` runs and generalised from a pair; those two happen
+against two `vanta-agent-t` runs and generalised from a pair; those two happen
 to be members of the four-run exception below, which is the least representative
 sample on the disk.
 
@@ -4991,13 +4991,13 @@ sample on the disk.
 
     Sober, 2.734.0.917, store works:        0 RbxmFileManager lines
     docs/traces/waydroid-roblox-startup:    0 RbxmFileManager lines
-    Cordial, current build, 6 runs:         2 per run
+    Vanta, current build, 6 runs:         2 per run
 
 The ordering in the two working captures says what the line means. On Waydroid
 `RbxStorage::init [DONE]` lands at 0.4445 and `getCachedPatch: get patch from
 content provider for Model` at 0.5135, followed immediately by
 `deserializeAndVerifyPatch` with nothing between them. Sober is the same shape,
-`[DONE]` at 5.520 and the patch fetch at 5.579. Under Cordial the patch fetch is
+`[DONE]` at 5.520 and the patch fetch at 5.579. Under Vanta the patch fetch is
 at 1.4637 and the warning lands 83 microseconds later, in the slot the working
 captures pass through silently.
 
@@ -5012,7 +5012,7 @@ is absent, in every capture available.
 ### §44.7 The four exceptions are the working run and its neighbours
 
 Of 105 current-engine runs that reach the patch fetch, four do not print the
-warning. All four are in `~/.cache/cordial-agent-t`, and two of them are
+warning. All four are in `~/.cache/vanta-agent-t`, and two of them are
 `ec3a3` and `08d78` — §36/§37's one positive.
 
     062512Z   silent
@@ -5047,20 +5047,20 @@ where the engine wrote its tombstone:
 Relative resolves against the process working directory, which is
 `<profile>/run` (`load.rs` `set_current_dir`), so the two forms are two
 different files and the engine had a cache directory in one case and an empty
-one in the other. Cordial calls `nativeSetCacheDirectory` with an absolute path
+one in the other. Vanta calls `nativeSetCacheDirectory` with an absolute path
 on every run and prints `ok`, so the value is delivered; in 101 runs out of 105
 it is not in effect by the time the flag cache resolves its paths.
 
 Three attempts to reproduce the silent state, all negative, all scored on the
 marker and the filesystem together:
 
-    CORDIAL_DEFER_CTORS=1, fresh roots, x3         warned, tombstone REL, db=0
-    CORDIAL_LATE_POST_MS=2000 CORDIAL_LATE_RETRY=1,
+    VANTA_DEFER_CTORS=1, fresh roots, x3         warned, tombstone REL, db=0
+    VANTA_LATE_POST_MS=2000 VANTA_LATE_RETRY=1,
       one root, three warm passes, --run 35, x3    warned, tombstone REL, db=0
     plain landing-page, fresh roots, x7            warned, tombstone REL, db=0
 
 The second of those is the configuration §36 named for the working run, run
-warm rather than fresh this time, and it does not do it. `CORDIAL_DEFER_CTORS`
+warm rather than fresh this time, and it does not do it. `VANTA_DEFER_CTORS`
 sets the four directory setters before `libroblox.so`'s constructors run, which
 is the most direct way to give the engine a cache directory early, and it does
 not do it either — consistent with §27, and now measured on an instrument §27
@@ -5081,10 +5081,10 @@ Whoever takes it should score on `grep -c RbxmFileManager` and the tombstone
 path form rather than on the filesystem, run enough times to see the rate, and
 report the rate rather than a single outcome.
 
-## §45. mocktail does not force the flags-loaded byte on this build; all four working captures run `postClientSettingsLoadedInitialization3` *before* `nativeAppBridgeV2Init` and Cordial runs it after, in 109 logs out of 109
+## §45. mocktail does not force the flags-loaded byte on this build; all four working captures run `postClientSettingsLoadedInitialization3` *before* `nativeAppBridgeV2Init` and Vanta runs it after, in 109 logs out of 109
 
 Build `0.6.0-13-gd5eb7e2-dirty` for the two runs at the end; the `-dirty` is
-another session's `CORDIAL_EARLY_DIRS` and cacert work in `load.rs` and this
+another session's `VANTA_EARLY_DIRS` and cacert work in `load.rs` and this
 section changed no code. Everything before those two runs is read off files
 already on this disk and cost nothing.
 
@@ -5093,7 +5093,7 @@ already on this disk and cost nothing.
 The brief was: mocktail's store works and mocktail *forces* the engine's
 flags-loaded byte at `g_libroblox_base + 0x75a8250`
 (`ForceNativeFlagsLoadedForTaskScheduler`, `src/legacy/legacy_runtime.cc`), so
-read that byte in a live Cordial process and find out whether Cordial reaches
+read that byte in a live Vanta process and find out whether Vanta reaches
 the same state.
 
 mocktail does not force it on this build. The write is gated three deep:
@@ -5107,7 +5107,7 @@ mocktail does not force it on this build. The write is gated three deep:
 `config/roblox_compatibility.json` carries three profiles.
 `allow_legacy_binary_patches` is **true only for 2.721.1108** — the one marked
 `legacy-researched`, `default_allowed: false`. Both `supported` builds have it
-false, and Cordial's build is not in the manifest at all -- mocktail runs it
+false, and Vanta's build is not in the manifest at all -- mocktail runs it
 as `(experimental)`, which is precisely the state in which the legacy patches
 stay off.
 
@@ -5119,7 +5119,7 @@ The installed Flatpak says so at runtime, in a session whose store works:
     Critical [DFLog::RbxStorage] RbxStorage::init [INIT] user: flagLoaded, ...
     Critical [DFLog::RbxStorage] RbxStorage::init [DONE] ... dbOpenCount: 3
 
-That Build ID is byte-identical to the one in `~/.cache/cordial/lib/x86_64/libroblox.so`
+That Build ID is byte-identical to the one in `~/.cache/vanta/lib/x86_64/libroblox.so`
 (`readelf -n`). All three mocktail session logs on this machine print
 `legacy binary patches: disabled` and all three print two `RbxStorage::init`
 lines. **mocktail's store comes up with the forcing function inert**, so
@@ -5139,14 +5139,14 @@ live known-good process, and per the brief's own caution no value is reported.
 
 ### §45.3 mocktail is a third working control, and the most useful one yet
 
-Same Build ID, same host, same `libroblox.so`, and — like Cordial and unlike
+Same Build ID, same host, same `libroblox.so`, and — like Vanta and unlike
 Sober — not an Android environment. Its logs are at
 `~/.var/app/space.bigrat.mocktail/.local/state/mocktail/logs/`, its store at
 `.../data/mocktail/android/data/files/appData/rbx-storage.db`. It prints an
 `[engine] <call>` marker for every native it drives, so the whole startup
 sequence is readable without instrumenting anything.
 
-### §45.4 The signature: post-settings init runs before the app bridge in every capture where the store works, and after it in every Cordial run on this disk
+### §45.4 The signature: post-settings init runs before the app bridge in every capture where the store works, and after it in every Vanta run on this disk
 
 Three landmarks, from four captures, all read off logs already present:
 
@@ -5154,15 +5154,15 @@ Three landmarks, from four captures, all read off logs already present:
     docs/traces/waydroid-...       0.4114    0.4158             0.5045
     Sober, 2026-08-20_14-38-41     7.5676    7.5770             7.5873
     mocktail, 2026-08-19 02:20     2.0976    2.1113             3.2502
-    Cordial, ef907 (typical)       2.5938    absent             0.2277
+    Vanta, ef907 (typical)       2.5938    absent             0.2277
 
 The three working captures have the same shape to the millisecond-pattern:
 `nativePostClientSettingsLoadedInitialization3`, then `RbxStorage::init` 4–14 ms
-later on a different thread, then `nativeAppBridgeV2Init`. Cordial inverts it —
+later on a different thread, then `nativeAppBridgeV2Init`. Vanta inverts it —
 the bridge is up first and the post-settings block arrives one to three seconds
 afterwards, by which time the Lua app is running and Vulkan has a swapchain.
 
-Scored across every current-engine log on this machine (`CordialTest`
+Scored across every current-engine log on this machine (`VantaTest`
 excluded), 109 logs, of which 75 carry both timestamps:
 
     BRIDGE_FIRST  75 / 75
@@ -5170,19 +5170,19 @@ excluded), 109 logs, of which 75 carry both timestamps:
     RbxStorage::init present   0 / 109
 
 `FFlagStartRbxStorageInitRighAfterFlags = True` is in the very settings
-document Cordial hands the engine, which is consistent with the trigger the
+document Vanta hands the engine, which is consistent with the trigger the
 working captures name in their own line (`user: flagLoaded`). That the
 ordering is the *cause* rather than another symptom is **`INFERRED`** — what is
 measured is that the two populations separate perfectly on it.
 
 ### §45.5 The existing knob does not move it, with a control in the same session
 
-`CORDIAL_EARLY_SETTINGS=1` is the closest thing already in the tree: it calls
+`VANTA_EARLY_SETTINGS=1` is the closest thing already in the tree: it calls
 `nativeInitClientSettings` before `initializeNativeCode`. One control and one
 arm, same binary, same reused data root, minutes apart:
 
     control              bridge 1.3429   post3 3.3509   BRIDGE_FIRST   rbxinit 0   warn 2   db 0
-    CORDIAL_EARLY_SETTINGS=1
+    VANTA_EARLY_SETTINGS=1
                          bridge 1.5683   post3 3.5012   BRIDGE_FIRST   rbxinit 0   warn 2   db 0
 
 The early call reports `early client settings (1274772 bytes) -> 0`, so it is
@@ -5216,7 +5216,7 @@ is not enabled` lines in a session whose store works. Score on
 **The historical positive contains no `RbxStorage::init` line.** `ec3a3` ran
 21.1 s, exited cleanly, is 263 lines, and has zero `RbxStorage` lines at any
 severity — yet the eight partition directories under
-`~/.cache/cordial-agent-t/.../appData/rbx-storage/` carry mtimes of
+`~/.cache/vanta-agent-t/.../appData/rbx-storage/` carry mtimes of
 07:45:25.902Z, 0.66 s into that run, and `rbx-storage.db` is a real 49,152-byte
 `SQLite format 3` file stamped 07:46:02.73Z, inside `08d78`, which also has zero
 `RbxStorage` lines. Only one log file exists per run, so nothing is truncated.
@@ -5228,7 +5228,7 @@ made by `RbxStorage::init` and §36/§37/§44.7 have been crediting the wrong
 thing for three sections. **I have not established which**, and it should be
 settled before anyone builds on §41 again. One candidate worth checking rather
 than assuming: `DFIntRbxStorageInitHundredthsPercent = 1000` appears in the
-settings document Cordial feeds the engine, and the neighbouring
+settings document Vanta feeds the engine, and the neighbouring
 `...HundredthsPercent` names in that file are sampling rates. Whether it gates
 this log line is **`INFERRED` and untested** — and it would have to be
 reconciled with all four working captures printing the line.
@@ -5237,7 +5237,7 @@ reconciled with all four working captures printing the line.
 
 The byte branch is closed for the reason that it was never open. The ordering
 signature is the first thing that separates every working capture from every
-Cordial run on this disk with no exceptions on either side, it was established
+Vanta run on this disk with no exceptions on either side, it was established
 entirely offline, and it is testable by making the engine's post-settings body
 run before `nativeAppBridgeV2Init` — which is what mocktail does by driving the
 sequence itself rather than waiting to be asked.
@@ -5246,14 +5246,14 @@ sequence itself rather than waiting to be asked.
 
 Build `0.6.0-15-g8784c1e-dirty` for every run in §46.2–§46.5 and
 `0.6.0-16-ge76e4df-dirty` for the cold-root run in §46.6; the tree was dirty
-throughout with the `CORDIAL_EARLY_DIRS`/cacert work §45 also ran against, plus
+throughout with the `VANTA_EARLY_DIRS`/cacert work §45 also ran against, plus
 this section's own edits, and from 15:49 with a parallel session's
 `native/init_params.cpp` and `flags.rs` changes, which land after every run
 except the cold one.
 
 ### §46.1 The result
 
-`CORDIAL_EARLY_DIRS=files,cache` — both `nativeSetFilesDirectory` and
+`VANTA_EARLY_DIRS=files,cache` — both `nativeSetFilesDirectory` and
 `nativeSetCacheDirectory` called before `GameActivity.initializeNativeCode`
 rather than only after it returns — brings the content store up. A real
 `SQLite format 3` file at `<filesDir>/appData/rbx-storage.db` with the engine's
@@ -5265,7 +5265,7 @@ own schema
       score INTEGER DEFAULT 0 NOT NULL, ttl INTEGER DEFAULT 0 NOT NULL)
 
 carrying nine to eleven rows of `RBXH`-framed cached responses, beside the eight
-`rbx-storage/p*` partition directories and `rbx-storage-sc/`. Cordial pre-creates
+`rbx-storage/p*` partition directories and `rbx-storage-sc/`. Vanta pre-creates
 the empty `appData/rbx-storage` directory itself; the partitions, the
 session-scoped directory and the database are the engine's.
 
@@ -5283,22 +5283,22 @@ temporary one under the cache directory, and being handed one of the two is
 being handed neither. Against a base rate of roughly one store in twenty-six
 launches, twelve for twelve is not the base rate.
 
-`CORDIAL_EARLY_DIRS` now defaults to `files,cache`. It defaulted to `cache`,
+`VANTA_EARLY_DIRS` now defaults to `files,cache`. It defaulted to `cache`,
 which is measured here to do nothing for storage.
 
 ### §46.2 The ordering hypothesis was testable, was tested, and is wrong
 
 §45.4's signature — `postClientSettingsLoadedInitialization3` before
-`nativeAppBridgeV2Init` in all three working captures and in none of 109 Cordial
+`nativeAppBridgeV2Init` in all three working captures and in none of 109 Vanta
 logs — is real as a description and is not the mechanism.
 
-`CORDIAL_POST_BEFORE_BRIDGE=<ms>` calls the post-settings native immediately
+`VANTA_POST_BEFORE_BRIDGE=<ms>` calls the post-settings native immediately
 before the app bridge and then holds the bridge for `<ms>`. It works: the
 `[FLog::AndroidGLView] nativePostClientSettingsLoadedInitialization3` line lands
 at 2.183367 against a bridge at 2.725852 in one run and 1.632804 against
 2.176352 in another, the full `[FLog::ClientRunInfo]`/`Mimalloc` block follows it
-exactly as on Android, and these are the first two Cordial logs on this machine
-that are POST_FIRST. **Neither produced a store**, with `CORDIAL_EARLY_DIRS=off`
+exactly as on Android, and these are the first two Vanta logs on this machine
+that are POST_FIRST. **Neither produced a store**, with `VANTA_EARLY_DIRS=off`
 so that nothing else was in play.
 
 The converse holds too: the twelve runs that *did* produce a store are, on the
@@ -5314,22 +5314,22 @@ One curiosity from the pre-bridge site, not chased: the block prints
 
 **In 104 of the 106 current-engine logs on this machine the first line in the
 file is `nativeAppBridgeV2Init`.** Not the first interesting line — the first
-line. Cordial calls `nativeOverrideChannelPlatformName`,
+line. Vanta calls `nativeOverrideChannelPlatformName`,
 `nativeSetRobloxChannel`, the four directory setters, `initStorageManagerNativeV3`,
 `setPlatformImpl`, the init params and `nativeReadLocalFlags` before the bridge,
 and none of them writes anything to the engine's log file. Sober's log opens on
 `RobloxChannel has been set to production` and mocktail's on
 `nativeInitClientSettings`, both well before their bridge.
 
-So a Cordial log cannot show POST_FIRST unless something arranges for the log
+So a Vanta log cannot show POST_FIRST unless something arranges for the log
 file to exist earlier, and the score of BRIDGE_FIRST 75/75, POST_FIRST 0/75 was
-guaranteed before any run was taken. §45 established a property of Cordial's
-logging, not of Cordial's ordering. (The two exceptions are in
-`~/.cache/cordial-agent-t`: `b2c9c`, whose log opens on `readLocalFlags` at
+guaranteed before any run was taken. §45 established a property of Vanta's
+logging, not of Vanta's ordering. (The two exceptions are in
+`~/.cache/vanta-agent-t`: `b2c9c`, whose log opens on `readLocalFlags` at
 0.3275 with a broken `https:///v2/...` settings URL, and `29325`, which opens on
 a `RobloxTelemetryFactory` warning.)
 
-Cordial has in fact called `postClientSettingsLoadedInitialization3` before the
+Vanta has in fact called `postClientSettingsLoadedInitialization3` before the
 bridge on every default run since the bootstrap was written — inside
 `bootstrapTheApp`, at around 0.2 s. §44's "the early call was always a no-op"
 rests on the absence of a log line it could not have produced. Whether that
@@ -5352,7 +5352,7 @@ Critical, but Critical to a file that does not exist yet goes nowhere. §41's
 the bridge, and §36's original instinct that the channel was silent was right
 for the wrong reason. `ec3a3` keeps its credit.
 
-This also means nobody has yet *seen* `RbxStorage::init` under Cordial. Getting
+This also means nobody has yet *seen* `RbxStorage::init` under Vanta. Getting
 the log open before ~0.2 s would settle the last of it; the pre-bridge post is
 one way in (it opens the log where it runs) but the store beats it by 10 ms even
 then.
@@ -5383,7 +5383,7 @@ The scorer that does work is the filesystem: `rbx-storage.db` exists, is
 
 ### §46.6 The uncommitted CA-certificate work: keep it, it is load-bearing
 
-`load.rs` carried an unattributed 126-line diff — the `CORDIAL_EARLY_DIRS` switch
+`load.rs` carried an unattributed 126-line diff — the `VANTA_EARLY_DIRS` switch
 itself and a second `cacert.pem` symlink under the files directory. It builds
 (`just build toolbox`, exit 0), and the symlink is not optional for the
 configuration that fixes storage. Gating that one link off and changing nothing
@@ -5417,7 +5417,7 @@ suites.
 What is not established: why the two directories are needed *before*
 `initializeNativeCode` rather than a second later, given that §27 set all four
 before `libroblox.so`'s constructors and got nothing; what opens the engine's log
-file, and therefore how much of every Cordial run so far has been invisible;
+file, and therefore how much of every Vanta run so far has been invisible;
 whether the early post inside `bootstrapTheApp` runs its body; and whether the
 store is actually *used* for anything beyond the eleven rows a 30-second landing
 run puts in it — nobody has yet watched an asset come back out of it.
@@ -5430,7 +5430,7 @@ and it has been quietly limiting every flag experiment in this document.
 The engine runs a `DynamicFastVariableReloader` which fetches
 `https://clientsettingscdn.roblox.com/v2/settings-compressed/application/GoogleAndroidApp.zst`
 — 1,305,506 bytes — at t≈1.6–2.3 s and applies it over the top, reverting every
-`DF*` override Cordial merged for any key that document contains.
+`DF*` override Vanta merged for any key that document contains.
 
 Measured two-directionally inside one run, which is what makes it a result
 rather than an observation:
@@ -5441,7 +5441,7 @@ rather than an observation:
     DFLogHttpTrace      = "7"       absent           logs 0.86 s -> 120.1 s
 
 The middle row settles it. An override asking for **silence** went loud again,
-at Roblox's own level, mid-run. Nothing Cordial does could cause that.
+at Roblox's own level, mid-run. Nothing Vanta does could cause that.
 
 ### What this means for every flag experiment here
 
@@ -5462,7 +5462,7 @@ A key absent from Roblox's document survives the reloader, which is why
 ### And the application name differs
 
 The engine asks for **`GoogleAndroidApp`**. `client_settings.rs` asks for
-**`AndroidApp`**. Nobody has diffed the two documents. Cordial may be merging
+**`AndroidApp`**. Nobody has diffed the two documents. Vanta may be merging
 overrides into a different settings set from the one the engine reloads.
 
 ### Addendum 2026-10-01: the reload is observable, and a re-call undoes it
@@ -5498,7 +5498,7 @@ configuration within days. Seventeen of them carry `TaskScheduler`, including
 `DFFlagTaskSchedulerRescheduleAsForeground`, `DFFlagTaskSchedulerMeasuresScheduledRestTime`
 and `FFlagTaskSchedulerRescheduleAllowed`; `FFlagEnableAndroidVsync` sits in the
 same area. `DFStringTaskSchedulerUnreliableSleepManufacturers` is published
-empty, and Cordial reports its manufacturer as `Cordial`, so it is not in play.
+empty, and Vanta reports its manufacturer as `Vanta`, so it is not in play.
 
 **Two were tried against the h2 spin and neither moved it** — 125.5 % baseline,
 126.5 % with `FFlagEnableAndroidVsync=false`, 124.8 % with
@@ -5506,7 +5506,7 @@ empty, and Cordial reports its manufacturer as `Cordial`, so it is not in play.
 
 **Those are not yet negative results and must not be quoted as any.** Nothing in
 that run establishes that an override reaches the engine. `flags: 1 override(s)
-applied` is `flags::report` printing what Cordial *resolved*, one layer above
+applied` is `flags::report` printing what Vanta *resolved*, one layer above
 delivery, and the `flagCount = 139` enumeration is a different path entirely —
 `nativeInitializeNativeFlags` takes a list of names whose *values* the engine
 loads itself, so an override would never appear in it whether it worked or not.
@@ -5527,14 +5527,14 @@ That is not evidence about delivery, because the probe was invalid two ways.
 **Roblox already ships `FLogNetwork = 7`**, so setting it to 7 asks for a state
 the engine is in already — the null was guaranteed before the run started. And
 no network logging appears in *either* arm despite that upstream value, so the
-engine's `FLog` output is not reaching Cordial's log at all. Log routing is the
+engine's `FLog` output is not reaching Vanta's log at all. Log routing is the
 confound, and no log flag can probe past it until that is understood.
 
 `DFLogHttpTrace` is genuinely not shipped by Roblox, which is what made it look
 attractive — an unshipped key survives the reloader (§47). It still produced
 nothing, for the same routing reason.
 
-Cordial's own half is working: `flags: 2 override(s) applied` against `0` in the
+Vanta's own half is working: `flags: 2 override(s) applied` against `0` in the
 control, so resolution and reporting are fine. What is unestablished is
 everything downstream of that.
 
@@ -5563,7 +5563,7 @@ every layer and merges it into the settings document. So the override path runs
 **inside `client_settings::load` and nowhere else.**
 
 An earlier draft of this section said `load.rs` calls that function in exactly
-one place, gated behind `CORDIAL_DEFER_PAST_SETTINGS`, and asked whether
+one place, gated behind `VANTA_DEFER_PAST_SETTINGS`, and asked whether
 `plan.settings` was built through it — calling that the open question that
 decided everything. **Both halves were wrong, and the correction is §48c.**
 
@@ -5576,13 +5576,13 @@ with is the particular delivery failure guessed at here.
 `plan.settings` is built by `client_settings::load`, on the ordinary path, with
 no environment variable involved:
 
-    load.rs:1912   if CORDIAL_NO_BOOTSTRAP unset && CORDIAL_LATE_SETTINGS unset
+    load.rs:1912   if VANTA_NO_BOOTSTRAP unset && VANTA_LATE_SETTINGS unset
     load.rs:1930       settings: client_settings::load(opt.client_settings…)
     load.rs:582        init_client_settings(…, &plan.settings, "", "")
 
 There are five calls to `client_settings::load` in `load.rs`, not one, and the
 gates are complementary rather than nested — `:1463` behind
-`CORDIAL_DEFER_PAST_SETTINGS`, `:1714` behind `CORDIAL_EARLY_SETTINGS`, `:2716`
+`VANTA_DEFER_PAST_SETTINGS`, `:1714` behind `VANTA_EARLY_SETTINGS`, `:2716`
 and `:3581` behind others, and `:1930` behind the absence of all of them. Exactly
 one runs per launch and by default it is `:1930`. Reading only the first grep hit
 and taking it for the whole is how the earlier claim was reached; the file is
@@ -5593,7 +5593,7 @@ caller, so §48b's other half — that overrides are merged there and nowhere el
 survives.
 
 This also rehabilitates a log line that was written off too fast. Earlier in this
-session `flags: 1 override(s) applied` was called "Cordial's own resolution, a
+session `flags: 1 override(s) applied` was called "Vanta's own resolution, a
 layer above delivery", and refused as evidence. That was too harsh:
 `flags::report` is called only from the `Ok` branch of `merge`, so the line means
 the settings document parsed, `applicationSettings` was present, and the override
@@ -5604,7 +5604,7 @@ being credited.
 
 One caveat on reading that line: it prints `resolved.len()`, the count before
 `is_roblox_flag` filtering, while the merge uses the filtered map. A
-Cordial-internal key such as `CordialGraphicsBackend` is therefore counted in the
+Vanta-internal key such as `VantaGraphicsBackend` is therefore counted in the
 number but not merged. The number is a resolution count printed at a delivery
 moment, so treat it as "the merge ran", not as "this many Roblox flags landed".
 
@@ -5624,7 +5624,7 @@ observable effect. There is one, and it is unambiguous.
 
 `DFIntTaskSchedulerTargetFps` caps the frame rate, and the cap lands on the
 requested number. Measured with input driven for the whole run
-(`CORDIAL_SCRIPT=0:focus-on,0:motion-on`, `CORDIAL_INSTR=1`), which is the only
+(`VANTA_SCRIPT=0:focus-on,0:motion-on`, `VANTA_INSTR=1`), which is the only
 present-rate measurement this project trusts, on `0.6.0-52-gd0469e7-dirty`
 (dirty is `Cargo.lock` and the `mcpelauncher-linker` submodule; no tracked source
 differs):
@@ -5652,7 +5652,7 @@ positive control has to be set below what the machine already delivers.
 
 ### What this settles
 
-**Flag delivery works.** Overrides written to `CORDIAL_FLAGS` are merged by
+**Flag delivery works.** Overrides written to `VANTA_FLAGS` are merged by
 `apply_overrides`, carried in `plan.settings`, handed to
 `nativeInitClientSettings`, and *acted upon by the engine*. §48c established the
 route by reading; this establishes it by running. The theory that no override
@@ -5662,7 +5662,7 @@ read — is now dead on evidence as well.
 **A `DFInt` override survives the settings reloader.** §47 records that `DF*`
 values are re-read and reverted at t≈1.6–2.3 s, and that was taken to mean a
 `DF*` override could not hold. This cap held for all 25 seconds of every run.
-The reloader evidently re-reads the same document Cordial supplied, so an
+The reloader evidently re-reads the same document Vanta supplied, so an
 override placed in that document is what it reverts *to*. `DF*` flags are
 therefore usable, and §47 should be read as describing where the value comes
 from rather than as a reason to avoid the family.
@@ -5711,13 +5711,13 @@ report (Flatpak, also CachyOS) both hit exactly:
 
 This is §19's crash, not a new one, and §19–§23 already explain the mechanism
 in full: `nativeGameGlobalInit` (`call_globals` in
-`crates/cordial-runtime/src/bin/load.rs`) makes the engine spawn its own "Main"
+`crates/vanta-runtime/src/bin/load.rs`) makes the engine spawn its own "Main"
 thread, which "independently races through the same StartLuaAppDM machinery"
-Cordial's own explicit `nativeAppBridgeStartLuaAppDM` /
+Vanta's own explicit `nativeAppBridgeStartLuaAppDM` /
 `nativeAppBridgeV2StartAppWithParams` calls drive on the caller's thread — a
 race the comment above that function names but nobody had previously connected
 to a live user-facing crash. §23's fix (the late
-`nativePostClientSettingsLoadedInitialization3` retry, `CORDIAL_LATE_POST_MS`,
+`nativePostClientSettingsLoadedInitialization3` retry, `VANTA_LATE_POST_MS`,
 default 250 ms) makes flags reliably load *for the default path this project
 tests* — but it runs only after `game_activity::start()` hands the surface to
 the engine, which is *after* the app-bridge block above. Both reporters' logs
@@ -5735,13 +5735,13 @@ transcript for anything about *where* this happens.
 
 ### Confirmed by running, not just by reading
 
-`CORDIAL_LATE_SETTINGS=1` (a `load.rs` knob predating this session, used in
+`VANTA_LATE_SETTINGS=1` (a `load.rs` knob predating this session, used in
 §19 to study a related ordering) reproduces the identical message and signal on
 this machine, deterministically, on demand:
 
-    XDG_DATA_HOME=~/.cache/cordial-agent-flags CORDIAL_LATE_SETTINGS=1 \
+    XDG_DATA_HOME=~/.cache/vanta-agent-flags VANTA_LATE_SETTINGS=1 \
       gdb -q -batch -ex "set pagination off" -ex run -ex "thread apply all bt 25" \
-      --args ./target/release/cordial-run --lib-dir ~/.cache/cordial/lib/x86_64 \
+      --args ./target/release/vanta-run --lib-dir ~/.cache/vanta/lib/x86_64 \
       --apk <base.apk> --host-libc --game-activity --profile <p> --run 8
 
 gives, on the crashing ("Main", LWP == PID) thread:
@@ -5752,7 +5752,7 @@ gives, on the crashing ("Main", LWP == PID) thread:
 
 27 threads total, all identified, nothing else remarkable — a `util_queue`
 thread pool from `libvulkan_intel.so`, the async-io reactor, glib/dconf/gdbus
-worker threads, and Cordial's own `looper_poll_once` pump on a *different*
+worker threads, and Vanta's own `looper_poll_once` pump on a *different*
 thread also named "Main" (the engine renames more than one thread "Main";
 AGENTS.md already knew this from `/proc/<pid>/comm`, this is the same fact from
 a live backtrace with three "Main"s in one process).
@@ -5762,7 +5762,7 @@ a live backtrace with three "Main"s in one process).
 The default, zero-env-var path — the one both reporters actually ran — does
 not crash on this host. Nine attempts:
 
-* 6 plain launches, fresh profile each time (`XDG_DATA_HOME=~/.cache/cordial-agent-flags`,
+* 6 plain launches, fresh profile each time (`XDG_DATA_HOME=~/.cache/vanta-agent-flags`,
   `--profile agent-flags-def{1..6}`), all reached `app ready: Landing` clean.
 * 3 more under `stress-ng --cpu 4 --timeout 40s` running concurrently, same
   result.
@@ -5772,7 +5772,7 @@ loses on CachyOS and not here* is not established — only guessed at. Candidate
 not yet tested: CachyOS's scheduler defaults (several CachyOS installs run a
 sched-ext scheduler such as `scx_lavd`/`scx_bore` instead of stock CFS/EEVDF,
 which would change thread wake-up latency in exactly the way that would matter
-here), a faster CPU shortening the window Cordial's main thread has to reach
+here), a faster CPU shortening the window Vanta's main thread has to reach
 the late-post fix before the engine's spawned thread gets there first, and
 first-launch state (see below). None of these were run; they are what the next
 session should try, ideally on an actual CachyOS box or under a sched-ext
@@ -5784,9 +5784,9 @@ Reporter A's initial `nativeInitializeNativeFlags` enumeration (139 flags) is
 almost all `not found`, with a handful of explicit `= false` values. Reporter
 B's is almost all real `= true`/`= false`. Both still crash. This document's
 own model says this list reflects whatever document `client_settings::load()`
-(`crates/cordial-runtime/src/client_settings.rs`) handed the engine via
+(`crates/vanta-runtime/src/client_settings.rs`) handed the engine via
 `nativeInitClientSettings` during `bootstrapTheApp` — a live fetch, a fresh
-`~/.cache/cordial/clientsettings.json`, a stale one, or nothing — and that this
+`~/.cache/vanta/clientsettings.json`, a stale one, or nothing — and that this
 happens well before the app-bridge race above, on the same thread, before
 `nativeGameGlobalInit` is ever called. Nothing here shows that richness
 difference changes *when* the app-bridge sequence runs relative to the
@@ -5800,11 +5800,11 @@ race.
 
 `tools/sober-corpus/data/raw.jsonl` has zero issues matching "initialize the
 TaskScheduler" or "TaskScheduler before flags" in title, body or comments,
-despite the corpus's 2,000+ issues and heavy overlap with Cordial's other
+despite the corpus's 2,000+ issues and heavy overlap with Vanta's other
 startup crashes. Consistent with §22/§45's finding that Sober's own startup
 ordering (settings → the missing block → `RbxStorage::init`, in that order,
 with the app-bridge calls arriving only afterward per §35.1) never puts the two
-races Cordial's does next to each other. Not proof Sober is immune — its issue
+races Vanta's does next to each other. Not proof Sober is immune — its issue
 tracker is not exhaustive and a crash-on-first-launch is exactly the kind of
 report a frustrated user files as a generic "won't start" — but it is a real
 negative result from the one corpus available.
@@ -5826,13 +5826,13 @@ reverse-engineered byte offsets for one specific build — the file is named
 corrupting arbitrary memory on a build where the offset does not land on the
 real flag, but nothing here confirms whether that offset is still meaningful,
 still misses, or lands on something else entirely for the 2.734.0.917 build
-Cordial loads — this project did not run mocktail against that exact library
+Vanta loads — this project did not run mocktail against that exact library
 to watch it. That untested half is exactly what CLAUDE.md's warning about this
 function describes: it is easy to over-read this as proof mocktail
-memory-patches its way past a check Cordial could too, and ADR-001/ADR-003
+memory-patches its way past a check Vanta could too, and ADR-001/ADR-003
 forbid that regardless of whether the patch is live on our build.
 
-What the function is worth here is not the patch — Cordial cannot and will not
+What the function is worth here is not the patch — Vanta cannot and will not
 do this — but the confirmation that a real, singular, hard byte-level
 "flags loaded" gate exists inside the engine at all, one that a working
 alternative implementation found necessary to force past rather than satisfy
@@ -5845,7 +5845,7 @@ everything above.
 Not fixed. Established, by running:
 
 * The crash is §19's `Can't initialize the TaskScheduler before flags have been
-  loaded`, reproduced on demand via `CORDIAL_LATE_SETTINGS=1`, matching both
+  loaded`, reproduced on demand via `VANTA_LATE_SETTINGS=1`, matching both
   reporters' error string and signal exactly.
 * Both reporters' processes die in the app-bridge block
   (`nativeGameGlobalInit`/`nativeAppBridgeStartLuaAppDM`/
@@ -5853,7 +5853,7 @@ Not fixed. Established, by running:
   fix ever gets a chance to mark flags loaded — so that fix cannot be the
   answer here even though it fixed the RbxStorage question it was built for.
 * The race is the one `call_globals`'s own comment already named: the engine's
-  self-spawned "Main" thread against Cordial's synchronous continuation. This
+  self-spawned "Main" thread against Vanta's synchronous continuation. This
   had not previously been connected to a crash anyone had actually seen in the
   wild.
 * `docs/traces/waydroid-roblox-startup.log.gz` corroborates the shape of the
@@ -5861,7 +5861,7 @@ Not fixed. Established, by running:
   `GetClientSettingsTask onPostExecute initialized TaskScheduler` **after**
   `RbxStorage::init [INIT] user: flagLoaded` has already started — i.e. the
   real host app does not call whatever brings the TaskScheduler up until its
-  own settings-fetch task has completed. Cordial's `nativeGameGlobalInit` call
+  own settings-fetch task has completed. Vanta's `nativeGameGlobalInit` call
   has no equivalent gate; it fires on a fixed point in the bootstrap sequence
   regardless of whether flags are confirmed loaded yet.
 
@@ -5881,7 +5881,7 @@ reports — corrected in place, same commit as this section.
 
 2026-08-30, later the same day. §50 read both GitHub issue #21 (AppImage,
 CachyOS) and its independent Flatpak report as the same crash, reproduced by
-`CORDIAL_LATE_SETTINGS=1`, with a fix shaped as "make the post-settings call
+`VANTA_LATE_SETTINGS=1`, with a fix shaped as "make the post-settings call
 run before `nativeGameGlobalInit`". A first attempt at that fix was built,
 measured at 10/10 clean under the reproducer, and was about to be committed.
 It was wrong, caught before the commit by reading the actual issue transcript
@@ -5905,7 +5905,7 @@ load because the document was refused, and the engine's assertion —
 `Can't initialize the TaskScheduler before flags have been loaded` — was
 telling the literal truth. A gate keyed on "wait until flags are loaded" is
 permanently shut for reporter A and would have turned their crash into a hang,
-which is worse: `cordial-shell/src/window.rs` routes any non-zero exit to a
+which is worse: `vanta-shell/src/window.rs` routes any non-zero exit to a
 page headed "Roblox stopped unexpectedly", and a hang shows nothing at all.
 
 ### There is no signal to wait on, and the abandoned fix would have raced anyway
@@ -5917,22 +5917,22 @@ Two more things settle it, both checked directly rather than assumed:
   sets a flag, signals a channel, or does anything Rust code could poll or
   wait on. `onFlagsFailed` fires twice on every healthy run regardless.
 * The abandoned fix's own justifying comment claimed `bootstrapTheApp` runs
-  "synchronously, from inside `initializeNativeCode`, before Cordial's own
+  "synchronously, from inside `initializeNativeCode`, before Vanta's own
   thread has made a single app-bridge call". This is false, and two log files
   already on this machine prove it without needing a new run:
 
-      ~/.cache/cordial-agent-bisect/logs/pilot-auto.log:
+      ~/.cache/vanta-agent-bisect/logs/pilot-auto.log:
         51:  native handle 0x7f913c584680
         52:  bootstrapTheApp: delivering settings and flags
 
-      ~/.cache/cordial-agent-gamepad-impl/control.log:
+      ~/.cache/vanta-agent-gamepad-impl/control.log:
         51:  bootstrapTheApp: delivering settings and flags
         52:  native handle 0x7f17a8584680
 
-  Both lines come from Cordial's own single calling thread's `println!`
+  Both lines come from Vanta's own single calling thread's `println!`
   sequence at that point in the program; two different orderings across two
   real runs means `bootstrapTheApp` is **not** guaranteed to run before
-  Cordial's own thread proceeds — it runs on the engine's own schedule,
+  Vanta's own thread proceeds — it runs on the engine's own schedule,
   asynchronously, and can land either before or after. The BootstrapPlan is
   also captured once into `static BOOTSTRAP: OnceLock<BootstrapPlan>`
   (§bootstrap plan construction) and never rebuilt, so even a correctly-timed
@@ -5947,9 +5947,9 @@ No wait was added anywhere. Three changes, all either purely additive
 
 1. **`client_settings::fetch` has real timeouts.** It was a bare
    `ureq::get(URL).call()` — no connect timeout, no read timeout, nothing but
-   an unset default. It now goes through `cordial_update::http::get_text`,
+   an unset default. It now goes through `vanta_update::http::get_text`,
    the client this project already uses for its version/changelog/APK-metadata
-   fetches, built on `cordial-update/src/http.rs`'s `CONNECT` (10s) and
+   fetches, built on `vanta-update/src/http.rs`'s `CONNECT` (10s) and
    `TIMEOUT` (20s) constants — taken from that file, not re-derived, so the
    two cannot drift apart. It also gets `url_policy`'s host-locked redirect
    handling, which the bare call never had.
@@ -5980,7 +5980,7 @@ was the intent, and nothing here changes it.
 
 ### The decisive local reproduction, found by testing what reporter A actually reported rather than reusing the existing knob
 
-`CORDIAL_LATE_SETTINGS=1` reproduces *a* `TaskScheduler`-before-flags crash,
+`VANTA_LATE_SETTINGS=1` reproduces *a* `TaskScheduler`-before-flags crash,
 but not reporter A's: it starves the engine of the handshake by moving it
 *after the app bridge*, which is a timing story, not a rejected-document
 story. The cheap, decisive test is `--client-settings` pointing at an empty
@@ -5988,7 +5988,7 @@ file — a document that reads successfully (so it is not the unreadable-path
 case) but is empty (so the engine rejects it, matching reporter A's
 `nativeInitClientSettings -> 1`):
 
-    env -u CORDIAL_LATE_SETTINGS ./cordial-run ... --client-settings /path/to/empty.json
+    env -u VANTA_LATE_SETTINGS ./vanta-run ... --client-settings /path/to/empty.json
 
     45:  bootstrapTheApp installed
     54:  bootstrapTheApp: delivering settings and flags
@@ -5998,7 +5998,7 @@ case) but is empty (so the engine rejects it, matching reporter A's
 
 Landing exactly where reporter A's did — immediately after
 `nativeSetBaseDataDirectories ok`, before `nativeGameGlobalInit` is ever
-reached. This is the reproduction `CORDIAL_LATE_SETTINGS=1` was standing in
+reached. This is the reproduction `VANTA_LATE_SETTINGS=1` was standing in
 for and never actually was.
 
 ### Measured, interleaved, same session, same host
@@ -6016,12 +6016,12 @@ alternately against the same APK and library:
 The empty-settings crash is identical on both builds, on purpose: it is a
 real, correct engine assertion given a genuinely empty document, and nothing
 here claims to fix it — only to make it legible instead of a silent gap
-followed by a signal. `CORDIAL_LATE_SETTINGS=1` was also re-checked
+followed by a signal. `VANTA_LATE_SETTINGS=1` was also re-checked
 unaffected (3/3 `RBXCRASH`, unchanged) since neither change touches that code
 path.
 
 `cargo build --release` and `cargo test --workspace` both pass on the fix
-tree — 332 passed in `cordial-runtime`'s own suite (two new tests:
+tree — 332 passed in `vanta-runtime`'s own suite (two new tests:
 `an_explicit_path_bypasses_the_network` extended to check `Source::Explicit`,
 and `an_unreadable_explicit_path_says_why_rather_than_just_no`), 0 failed,
 across two full runs. An earlier run of the full workspace suite showed two
@@ -6064,7 +6064,7 @@ gap that cost the previous session most of a day.
 
 ### A methodological note, since this file already carries two of its kind
 
-The first attempt at this fix reached 10/10 clean under `CORDIAL_LATE_SETTINGS=1`
+The first attempt at this fix reached 10/10 clean under `VANTA_LATE_SETTINGS=1`
 and very nearly became a commit on that strength alone. The reproducer was
 real and the number was real; what was wrong was believing it was reporter
 A's bug. §22 and §23.5 both record an instrument that could not see the thing
@@ -6091,7 +6091,7 @@ it was tested rather than assumed.
    every newline regardless of whether the destination is a tty or a plain
    file, which is the opposite of C's `stdio`, the thing this hypothesis
    implicitly modelled it on.
-2. The real crash, captured two ways in the same session — `CORDIAL_LATE_SETTINGS=1`
+2. The real crash, captured two ways in the same session — `VANTA_LATE_SETTINGS=1`
    piped to a plain file, and the same command run under `script` (a pty) —
    produced byte-for-byte identical content once PIDs, addresses and
    timestamps are normalised. Nothing was lost in the plain-file capture that
@@ -6132,13 +6132,13 @@ No flush-related code change is made. Adding explicit `.flush()` calls around
 the startup sequence, or duplicating output to a file, would be solving a
 problem this session could not demonstrate exists for the channel that
 matters (Rust's own `println!` narration, which is the great majority of
-Cordial's own diagnostic output) — and AGENTS.md is explicit that a claim
+Vanta's own diagnostic output) — and AGENTS.md is explicit that a claim
 without a measurement behind it does not get shipped as though it had one.
 The `legacy_stdio.cpp` question above is left as a named, untested gap rather
 than either fixed speculatively or dropped silently.
 
 ## §53. A third reporter, on Mint with two cores; the parallelism theory did not
-## reproduce, and the log says a native was missing and Cordial said nothing
+## reproduce, and the log says a native was missing and Vanta said nothing
 
 2026-09-01. A user's log, same crash as §50:
 
@@ -6153,7 +6153,7 @@ race resolves differently with two cores than with the sixteen every
 measurement here is taken on.
 
 **That theory was tested and did not reproduce.** `taskset`, same binary, same
-profile, `CORDIAL_PERFORMANCE=latency` to match, latency mode setting the same
+profile, `VANTA_PERFORMANCE=latency` to match, latency mode setting the same
 two flags at any core count so scheduling is the only thing that changes:
 
 ```
@@ -6188,14 +6188,14 @@ if plan.settings_native != 0 { ... println!("    nativeInitClientSettings -> {co
 and `settings_native` is `symbol(...).map_or(0, |p| p as usize)`. Both arms of
 the inner `match` print, so if the branch had been taken the log would show it.
 **Therefore `plan.settings_native == 0` on that machine: the engine build does
-not export `nativeInitClientSettings` under the name Cordial looks for.** The
+not export `nativeInitClientSettings` under the name Vanta looks for.** The
 settings are then never delivered and the engine aborts milliseconds later.
 
 Buffering cannot explain the gap: §52 established Rust's `Stdout` is a
 `LineWriter` unconditionally, and every line *after* the missing one survived
 in the same capture.
 
-### The bug in Cordial, which is the silence rather than the symbol
+### The bug in Vanta, which is the silence rather than the symbol
 
 An `if` with no `else` is the same defect as a stub returning success -- the
 engine proceeds on an answer that is not true -- and the whole of §50 was spent
@@ -6207,7 +6207,7 @@ is the other half.
 A missing native is now announced by name, saying plainly that flags cannot be
 delivered and that the engine will abort with this exact message. Verified
 against two controls in one session: a normal launch still prints
-`nativeInitClientSettings -> 0` and no warning, and `CORDIAL_LATE_SETTINGS=1`
+`nativeInitClientSettings -> 0` and no warning, and `VANTA_LATE_SETTINGS=1`
 -- which reproduces the identical crash by the *ordering* mechanism rather than
 a missing symbol -- produces **zero** false alarms, so the new line accuses only
 the thing it can actually see.

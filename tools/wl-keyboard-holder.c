@@ -1,4 +1,4 @@
-// A virtual keyboard that stays alive, for typing real keys at Cordial in a
+// A virtual keyboard that stays alive, for typing real keys at Vanta in a
 // nested compositor.
 //
 // This is the keyboard half of `wl-pointer-holder.c` and it exists for two
@@ -12,10 +12,10 @@
 // worked four times.
 //
 // The second reason is the one that matters. **A headless seat with no input
-// device advertises `capabilities: 0`, and Cordial reads the seat's
+// device advertises `capabilities: 0`, and Vanta reads the seat's
 // capabilities once, at `open()`.** So under a compositor whose seat never had
-// a keyboard, Cordial never binds its own `wl_keyboard` -- and Cordial's key
-// path, including the guard that stops GDK and Cordial both inserting the same
+// a keyboard, Vanta never binds its own `wl_keyboard` -- and Vanta's key
+// path, including the guard that stops GDK and Vanta both inserting the same
 // character, never runs at all. Every text-entry result taken that way was
 // taken with half the code under test switched off, which is why `NEXT.md`
 // labelled the double-insert guard `INFERRED` rather than measured.

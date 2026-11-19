@@ -7,7 +7,7 @@ re-joining brings movement back. Sober has the same report several times
 
 ## What the code says (2026-10-01, read, not run)
 
-- **Cordial does not label the mouse as a touch.** Every pointer event goes to
+- **Vanta does not label the mouse as a touch.** Every pointer event goes to
   the engine as `SOURCE_MOUSE` / `TOOL_TYPE_MOUSE` unless it arrived on a
   `wl_touch` (`native/game_activity.cpp`, `Create`, `CreateScroll`,
   `CreateTouch`). The default before `80f9ccb` was the same, so the dead state
@@ -16,7 +16,7 @@ re-joining brings movement back. Sober has the same report several times
   Wayland seat advertises a touchscreen, and always false on X11. The log line
   `PlatformParams.isTouchDevice follows` says which.
 - **The engine can still end up on a non-keyboard control scheme.** That is a
-  statement about engine state, not about what Cordial labels, and it fits the
+  statement about engine state, not about what Vanta labels, and it fits the
   symptom best: the whole keyboard movement binding set is dead together, and a
   respawn or a Movement Mode toggle restores it. `INFERRED`.
 
@@ -24,7 +24,7 @@ re-joining brings movement back. Sober has the same report several times
 
 The two `nativeAppBridgeV2UpdateSurface{App,Game}WithPlatformParams` natives
 are called by Java whenever a `SurfaceView` changes, and Sober's log shows them
-again after startup. Cordial calls them once, at start. A join made through the
+again after startup. Vanta calls them once, at start. A join made through the
 Home page's own Play button creates a new game DataModel inside the running
 engine, and nothing hands it these parameters again. The question was whether
 that is why movement is dead.
@@ -32,7 +32,7 @@ that is why movement is dead.
 The development control socket gained `updatesurface [app|game|both]` to
 deliver them again into a running client (`android::surface_params`).
 
-Method: a nested headless sway, the `CordialTest` profile, Mini War, a join
+Method: a nested headless sway, the `VantaTest` profile, Mini War, a join
 through Play. Movement scored as the screenshot difference across a 2 s hold of
 W, beside the same difference with no key held (the idle control). A ratio near
 1 means the hold changed nothing beyond idle motion.
@@ -56,7 +56,7 @@ and a run where movement is known to work, scored the same way.
 
 ## What decides it: input around the join (2026-10-05)
 
-One signed-in `CordialTest` client for the Steal An Egg joins, a second launch
+One signed-in `VantaTest` client for the Steal An Egg joins, a second launch
 for AI Town, nested headless sway, every join made by clicking Play on the game
 page. Movement is scored by a screenshot pair across a 2.5 s hold of W beside an
 idle pair, and every pair was read by eye, because UI animation and other
@@ -106,7 +106,7 @@ Steal An Egg, so the decision can fall before the callback. The mechanism has
 not been observed. It would also explain why joining from a link seems safer: a
 real pointer usually moves while the place loads.
 
-What was ruled out on the Cordial side: every pointer event goes out as
+What was ruled out on the Vanta side: every pointer event goes out as
 `SOURCE_MOUSE`/`TOOL_TYPE_MOUSE`, keys go through `nativePassKeyEvent` which
 carries no device, and the engine asks for neither an `InputDevice` nor a
 keyboard `Configuration`. mocktail sends the same natives with
@@ -125,7 +125,7 @@ experience-start announcement until eight seconds after the last thing it
 announced, which for a join is its load. Not sent when no pointer has ever been
 seen, so a touchscreen-only machine is not told it has a mouse. The decision is
 a pure function with tests; the delivery is the same native a real mouse move
-uses. `CORDIAL_NO_GAME_SEED=1` or `gameseed off` on the control socket turns it
+uses. `VANTA_NO_GAME_SEED=1` or `gameseed off` on the control socket turns it
 off, which is how the table above had a control inside one session.
 
 The first schedule on the branch (once a second, from the load) was run and
@@ -134,10 +134,10 @@ hand-driven one that fixed five of five.
 
 ## The built schedule against joins (2026-10-16)
 
-One signed-in `CordialTest` client, nested headless sway, one public place
+One signed-in `VantaTest` client, nested headless sway, one public place
 (`[UP] Just a baseplate.`, place 123974602339071) joined nine times by clicking
 Play on the search results, strictly alternating, the seed switched with `devctl
-gameseed on|off` (the same gate `CORDIAL_NO_GAME_SEED` closes). No input from
+gameseed on|off` (the same gate `VANTA_NO_GAME_SEED` closes). No input from
 the Play click until twelve seconds after the load; then a W hold of 2.5 s
 between screenshot pairs, every pair read by eye as well as scored, because
 other players move.
@@ -149,7 +149,7 @@ other players move.
 
 Together with the earlier 0 of 13 with nothing reaching the engine, that is 0
 of 18 without the seed and 4 of 4 with it. Not covered: a second place or
-client, X11, a join from a link, and the `CORDIAL_NO_GAME_SEED=1` spelling of
+client, X11, a join from a link, and the `VANTA_NO_GAME_SEED=1` spelling of
 the control (the socket verb closes the same gate). Why it works stays
 `INFERRED`.
 
@@ -168,5 +168,5 @@ above were taken after releasing the key and checking the stream was gone.
   that types before it joins.
 - Whether the Movement Mode list in Roblox's settings means anything here.
   `Set by developer` hides it in some experiences, which this one may do.
-- A run with `CORDIAL_GAMEPAD=0` is no longer interesting: the reporter has no
+- A run with `VANTA_GAMEPAD=0` is no longer interesting: the reporter has no
   controller and reproduces it with controllers off.

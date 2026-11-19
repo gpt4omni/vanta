@@ -16,7 +16,7 @@ RUN export DEBIAN_FRONTEND=noninteractive \
       libwayland-dev libvulkan-dev libxkbcommon-dev libglib2.0-dev \
       mesa-vulkan-drivers \
  && rm -rf /var/lib/apt/lists/*
-# Boost's headers are for dynarmic (crates/cordial-guest), which includes
+# Boost's headers are for dynarmic (crates/vanta-guest), which includes
 # boost::icl and boost::variant and find_package()s Boost rather than
 # bundling it. A layer of its own so that adding it did not invalidate the
 # one above, whose apt run under qemu-user is the slow step for arm64.

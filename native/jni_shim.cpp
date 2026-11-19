@@ -4,8 +4,8 @@
 
 #include <jnivm.h>
 
-extern "C" void cordial_register_android_classes(void* env);
-namespace cordial {
+extern "C" void vanta_register_android_classes(void* env);
+namespace vanta {
 void register_game_activity_classes(jnivm::ENV* env);
 void register_init_params_classes(jnivm::ENV* env);
 }
@@ -15,7 +15,7 @@ void register_init_params_classes(jnivm::ENV* env);
 /// type it cannot name — passing a JNIEnv* and casting it to jnivm::ENV* is a
 /// silent type confusion that surfaces as a null function pointer several calls
 /// later.
-namespace cordial { jnivm::ENV* process_env(); }
+namespace vanta { jnivm::ENV* process_env(); }
 
 #include <cstddef>
 #include <cstdio>
@@ -35,13 +35,13 @@ std::unique_ptr<jnivm::VM> g_vm;
 ///
 /// Roblox spawns worker threads during `JNI_OnLoad` and they call straight back
 /// into JNI. libjnivm reports misuse by throwing, and an exception escaping a
-/// thread Cordial did not start cannot be caught anywhere — the default is
+/// thread Vanta did not start cannot be caught anywhere — the default is
 /// `std::terminate` and a core dump carrying no information about which thread,
 /// which call, or why.
 /// Write the observed Java surface out, if a VM exists and a path was given.
 void dump_classes_now() {
 #ifdef JNI_DEBUG
-    const char* path = getenv("CORDIAL_JNI_DUMP");
+    const char* path = getenv("VANTA_JNI_DUMP");
     if (path && g_vm) {
         try {
             g_vm->GenerateClassDump(path);
@@ -123,16 +123,16 @@ extern "C" {
 
 /// Create the process's JavaVM. Returns the `JavaVM*` Roblox expects in
 /// `JNI_OnLoad`, or null if one already exists.
-void* cordial_jni_create_vm() {
+void* vanta_jni_create_vm() {
     if (g_vm) {
         return nullptr;
     }
     std::set_terminate(report_terminate);
     g_vm = std::make_unique<jnivm::VM>();
-    // Cordial's Java side, before Roblox can ask for any of it.
-    cordial_register_android_classes(g_vm->GetEnv().get());
-    cordial::register_game_activity_classes(g_vm->GetEnv().get());
-    cordial::register_init_params_classes(g_vm->GetEnv().get());
+    // Vanta's Java side, before Roblox can ask for any of it.
+    vanta_register_android_classes(g_vm->GetEnv().get());
+    vanta::register_game_activity_classes(g_vm->GetEnv().get());
+    vanta::register_init_params_classes(g_vm->GetEnv().get());
     g_real_vm = g_vm->GetJavaVM();
     g_real_iface = g_real_vm->functions;
 
@@ -145,7 +145,7 @@ void* cordial_jni_create_vm() {
     g_traced_iface.DetachCurrentThread = traced_detach;
     g_traced_iface.GetEnv = traced_get_env;
     g_traced_vm.functions = &g_traced_iface;
-    g_trace_invoke = getenv("CORDIAL_JNI_TRACE") != nullptr;
+    g_trace_invoke = getenv("VANTA_JNI_TRACE") != nullptr;
 
     JavaVM* vm = &g_traced_vm;
     // libjnivm recovers its VM from JavaVM::functions->reserved0. If that is not
@@ -158,13 +158,13 @@ void* cordial_jni_create_vm() {
 }
 
 /// The current thread's `JNIEnv*`.
-void* cordial_jni_env() {
+void* vanta_jni_env() {
     return g_vm ? g_vm->GetJNIEnv() : nullptr;
 }
 
 /// Write C++ stubs for every Java class and method the native code has reached
 /// for so far. This is the Phase 2 backlog, observed rather than guessed.
-int cordial_jni_dump_classes(const char* path) {
+int vanta_jni_dump_classes(const char* path) {
 #ifdef JNI_DEBUG
     if (!g_vm) {
         return -1;
@@ -178,10 +178,10 @@ int cordial_jni_dump_classes(const char* path) {
 }
 
 /// The calling thread's JNIEnv, attaching the thread if it has none -- the
-/// same route `cordial::process_env` takes, for the same reason. The arm64
-/// guest's JNI stubs (crates/cordial-runtime/src/guest_jni.rs) hand every
+/// same route `vanta::process_env` takes, for the same reason. The arm64
+/// guest's JNI stubs (crates/vanta-runtime/src/guest_jni.rs) hand every
 /// call to libjnivm with this env in place of the guest's own.
-void* cordial_jni_thread_env() {
+void* vanta_jni_thread_env() {
     if (!g_real_vm) {
         return nullptr;
     }
@@ -195,13 +195,13 @@ void* cordial_jni_thread_env() {
 /// A jmethodID's JNI descriptor. libjnivm's method IDs are its `Method`
 /// objects (`(jmethodID)this` throughout method.cpp), and the descriptor is
 /// the only thing that says what a variadic Call*Method's arguments are.
-const char* cordial_jni_method_signature(void* method) {
+const char* vanta_jni_method_signature(void* method) {
     return method ? static_cast<jnivm::Method*>(method)->signature.c_str() : nullptr;
 }
 
 /// A jmethodID's name, beside its descriptor, for the guest's call log: the
 /// descriptor alone cannot say which Java method a Play press reached.
-const char* cordial_jni_method_name(void* method) {
+const char* vanta_jni_method_name(void* method) {
     return method ? static_cast<jnivm::Method*>(method)->name.c_str() : nullptr;
 }
 
@@ -213,7 +213,7 @@ const char* cordial_jni_method_name(void* method) {
 /// about what went wrong. Catching here turns that into a message.
 ///
 /// Returns the JNI version on success, or one of the negative codes below.
-int cordial_jni_call_onload(void* fn, char* err, size_t err_len) {
+int vanta_jni_call_onload(void* fn, char* err, size_t err_len) {
     using OnLoad = jint (*)(JavaVM*, void*);
     if (!fn || !g_vm) {
         return -1;
@@ -231,7 +231,7 @@ int cordial_jni_call_onload(void* fn, char* err, size_t err_len) {
 
 } // extern "C"
 
-namespace cordial {
+namespace vanta {
 jnivm::ENV* process_env() {
     if (!g_vm || !g_real_vm) {
         return nullptr;
@@ -253,4 +253,4 @@ jnivm::ENV* process_env() {
     }
     return jnivm::ENV::FromJNIEnv(env);
 }
-} // namespace cordial
+} // namespace vanta

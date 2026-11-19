@@ -80,8 +80,8 @@ textboxes i cant see text i typed"*) and #1026 are open and unfixed. It is not
 a bug nobody has got round to; there is no surface in that architecture on
 which the fix could be written without adding one.
 
-**This is the architecture Cordial had until `fd0f0c6`** -- protocol-level
-text-input against a hand-rolled Wayland client, no widget. Cordial's
+**This is the architecture Vanta had until `fd0f0c6`** -- protocol-level
+text-input against a hand-rolled Wayland client, no widget. Vanta's
 `gtk::Text` is a divergence from Sober rather than a copy of it, and it is what
 makes typed text visible. There was an idea earlier in the project of adopting
 "Sober's exact typing mechanism"; that is moot, because the part that would
@@ -92,7 +92,7 @@ have been worth copying does not exist.
 **A negative result from a nested compositor is worthless until you check the
 compositor advertised the global.**
 
-The first trace was taken under `cage`, which Cordial's `--headless` uses.
+The first trace was taken under `cage`, which Vanta's `--headless` uses.
 Sober's bind list came back with no text-input in it and looked like a clean
 negative. It was an artefact: **cage does not advertise
 `zwp_text_input_manager_v3` at all**, only `zwp_virtual_keyboard_manager_v1`,

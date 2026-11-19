@@ -34,7 +34,7 @@ Deno.test("every form gets a button, and Discord's five-to-a-row limit is respec
   const ids = rows.flatMap((r) => r.components).map((c) => c.custom_id).filter(Boolean);
   assertEquals(ids.length, forms.length);
   for (const form of forms) {
-    assert(ids.includes(`cordial-issue-open:${form.slug}`), `no button for ${form.slug}`);
+    assert(ids.includes(`vanta-issue-open:${form.slug}`), `no button for ${form.slug}`);
   }
 });
 
@@ -50,7 +50,7 @@ Deno.test("the copy leads with the barrier it removes, and names the diagnostics
   const words = inside().filter((c) => c.type === 10).map((c) => c.content ?? "").join("\n");
   assertStringIncludes(words, "do not need a GitHub account");
   // A required Diagnostics box met cold is where a report gets abandoned.
-  assertStringIncludes(words, "cordial --diagnostics");
+  assertStringIncludes(words, "vanta --diagnostics");
 });
 
 Deno.test("the pitch and the how-to are separated rather than one wall", () => {

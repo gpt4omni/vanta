@@ -66,12 +66,12 @@
 #include <memory>
 #include <string>
 
-#ifdef CORDIAL_HAVE_PULSE
+#ifdef VANTA_HAVE_PULSE
 
 #include <dlfcn.h>
 #include <pulse/pulseaudio.h>
 
-namespace cordial::audio {
+namespace vanta::audio {
 namespace {
 
 /// Everything this file calls in `libpulse`, resolved once.
@@ -117,7 +117,7 @@ const Pulse* pulse() {
         void* lib = ::dlopen("libpulse.so.0", RTLD_LAZY | RTLD_LOCAL);
         if (!lib) {
             std::fprintf(stderr,
-                "I/Cordial-Pulse           libpulse.so.0 is not on this machine; the PulseAudio "
+                "I/Vanta-Pulse           libpulse.so.0 is not on this machine; the PulseAudio "
                 "backend is unavailable.\n");
             return nullptr;
         }
@@ -127,7 +127,7 @@ const Pulse* pulse() {
             void* sym = ::dlsym(lib, name);
             if (!sym) {
                 std::fprintf(stderr,
-                    "E/Cordial-Pulse           libpulse.so.0 has no %s; refusing to use a "
+                    "E/Vanta-Pulse           libpulse.so.0 has no %s; refusing to use a "
                     "half-resolved backend.\n", name);
                 ok = false;
                 return;
@@ -304,7 +304,7 @@ bool PulseStream::open(uint32_t, bool, const char* node_description,
     loop_ = pa->mainloop_new();
     if (!loop_) return false;
     context_ = pa->context_new(pa->mainloop_get_api(loop_),
-                               node_description ? node_description : "Cordial");
+                               node_description ? node_description : "Vanta");
     if (!context_) { close(); return false; }
 
     pa->context_set_state_callback(context_, &PulseStream::on_context_state, this);
@@ -325,7 +325,7 @@ bool PulseStream::open(uint32_t, bool, const char* node_description,
         if (st == PA_CONTEXT_FAILED || st == PA_CONTEXT_TERMINATED) {
             pa->mainloop_unlock(loop_);
             std::fprintf(stderr,
-                "I/Cordial-Pulse           no PulseAudio server answered; this backend is "
+                "I/Vanta-Pulse           no PulseAudio server answered; this backend is "
                 "unavailable for this run.\n");
             close();
             return false;
@@ -340,7 +340,7 @@ bool PulseStream::open(uint32_t, bool, const char* node_description,
 
     // `nullptr` for the sink means "follow the server's default", and — like
     // PipeWire's empty target — it keeps following it when the default changes.
-    // That property is the reason `CORDIAL_AUDIO_SINK` means what it does, and
+    // That property is the reason `VANTA_AUDIO_SINK` means what it does, and
     // it is the one property ADR-023 records as surviving into this backend and
     // no further: ALSA resolves `default` once and never moves a live stream.
     const char* sink = (target_node_name && target_node_name[0]) ? target_node_name : nullptr;
@@ -372,7 +372,7 @@ bool PulseStream::open(uint32_t, bool, const char* node_description,
     pa->mainloop_unlock(loop_);
 
     std::fprintf(stderr,
-        "I/Cordial-Pulse           opened %u Hz, %u channel(s), PCM_FLOAT, %u frames per burst, "
+        "I/Vanta-Pulse           opened %u Hz, %u channel(s), PCM_FLOAT, %u frames per burst, "
         "on %s.\n", rate_, channels_, burst_.load(std::memory_order_relaxed),
         sink ? sink : "the server's default sink");
     return true;
@@ -416,7 +416,7 @@ bool pulse_available() {
         pa_threaded_mainloop* loop = pa->mainloop_new();
         if (!loop) return false;
         bool ready = false;
-        pa_context* ctx = pa->context_new(pa->mainloop_get_api(loop), "Cordial (probe)");
+        pa_context* ctx = pa->context_new(pa->mainloop_get_api(loop), "Vanta (probe)");
         if (ctx) {
             struct Probe { pa_threaded_mainloop* loop; } probe{loop};
             pa->context_set_state_callback(ctx, [] (pa_context*, void* p) {
@@ -445,11 +445,11 @@ bool pulse_available() {
 
 std::unique_ptr<OutputStream> make_pulse_stream() { return std::make_unique<PulseStream>(); }
 
-} // namespace cordial::audio
+} // namespace vanta::audio
 
-#else // !CORDIAL_HAVE_PULSE
+#else // !VANTA_HAVE_PULSE
 
-namespace cordial::audio {
+namespace vanta::audio {
 
 // Built without pulseaudio-libs-devel. Honest rather than absent: the selector
 // asks `pulse_available()` and gets a truthful no, so a run that asked for this
@@ -457,6 +457,6 @@ namespace cordial::audio {
 bool pulse_available() { return false; }
 std::unique_ptr<OutputStream> make_pulse_stream() { return nullptr; }
 
-} // namespace cordial::audio
+} // namespace vanta::audio
 
-#endif // CORDIAL_HAVE_PULSE
+#endif // VANTA_HAVE_PULSE

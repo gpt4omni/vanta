@@ -4,7 +4,7 @@
  #endif
  }
  
-+int g_cordial_guest_machine = 0;
++int g_vanta_guest_machine = 0;
 +
  /**
    TECHNICAL NOTE ON ELF LOADING.
@@ -15,7 +15,7 @@
  
 -  if (header_.e_machine != GetTargetElfMachine()) {
 +  if (header_.e_machine != GetTargetElfMachine() &&
-+      (g_cordial_guest_machine == 0 || header_.e_machine != g_cordial_guest_machine)) {
++      (g_vanta_guest_machine == 0 || header_.e_machine != g_vanta_guest_machine)) {
      DL_ERR("\"%s\" is for %s (%d) instead of %s (%d)",
             name_.c_str(),
             EM_to_string(header_.e_machine), header_.e_machine,
@@ -23,7 +23,7 @@
        return false;
      }
      int prot = PFLAGS_TO_PROT(phdr->p_flags);
-+    // Cordial, patches/0006: guest text is only ever read, by the
++    // Vanta, patches/0006: guest text is only ever read, by the
 +    // translator, so it is not mapped executable. A stray host jump into it
 +    // then faults at once instead of running arm64 bytes as x86.
 +    if (guest_machine() != 0) {
@@ -46,7 +46,7 @@
    const char* get_string(ElfW(Word) index) const;
    bool is_mapped_by_caller() const { return mapped_by_caller_; }
    ElfW(Addr) entry_point() const { return header_.e_entry + load_bias_; }
-+  // Cordial, patches/0006: the object's e_machine if it is not the host's.
++  // Vanta, patches/0006: the object's e_machine if it is not the host's.
 +  uint16_t guest_machine() const;
  
   private:
@@ -66,7 +66,7 @@
    const ElfW(Sym)* cache_sym = nullptr;
    soinfo* cache_si = nullptr;
  
-+  // Cordial, patches/0006: a guest object's relocations counted by their own
++  // Vanta, patches/0006: a guest object's relocations counted by their own
 +  // type, before translation (see `guest_reloc_types`).
 +  size_t guest_counts[5] = {};
 +
@@ -77,7 +77,7 @@
    return process_relocation_impl<RelocMode::General>(relocator, reloc);
  }
  
-+// Cordial, patches/0006: the relocation types a guest object may carry, and
++// Vanta, patches/0006: the relocation types a guest object may carry, and
 +// the host's generic type each one means. Only the four that write a 64-bit
 +// address (plus NONE) are accepted. They are the same operation on either
 +// instruction set, which is why the host's own code path can apply them once
@@ -150,13 +150,13 @@
  
 -bool soinfo::relocate(const SymbolLookupList& lookup_list) {
 +bool soinfo::relocate(const SymbolLookupList& lookup_list_all) {
-+  // Cordial, patches/0006: once guest objects exist, each object binds only
++  // Vanta, patches/0006: once guest objects exist, each object binds only
 +  // to definitions of its own instruction set. A guest import that found a
 +  // host function would be the guest jumping into x86 code; one that finds
 +  // nothing fails by name instead. With no guest machine set this is the
 +  // original list, untouched.
 +  std::unique_ptr<SymbolLookupList> same_isa;
-+  if (g_cordial_guest_machine != 0) {
++  if (g_vanta_guest_machine != 0) {
 +    same_isa = std::make_unique<SymbolLookupList>(lookup_list_all, is_guest());
 +  }
 +  const SymbolLookupList& lookup_list = same_isa ? *same_isa : lookup_list_all;
@@ -217,7 +217,7 @@
    // 4. The debug .so depends on libc, so CallConstructors is
    //    called again with the libc soinfo. If it doesn't trigger the early-
    //    out above, the libc constructor will be called again (recursively!).
-+  // Cordial, patches/0006: a guest object's constructors are guest code, and
++  // Vanta, patches/0006: a guest object's constructors are guest code, and
 +  // calling one from here would jump the host CPU into another instruction
 +  // set. They are left pending, `constructors_called` stays false, and the
 +  // translator runs them itself (mcpelauncher_guest_ctors).
@@ -238,7 +238,7 @@
   public:
    explicit SymbolLookupList(soinfo* si);
    SymbolLookupList(const soinfo_list_t& global_group, const soinfo_list_t& local_group);
-+  // Cordial, patches/0006: `from`, keeping only guest libraries or only host
++  // Vanta, patches/0006: `from`, keeping only guest libraries or only host
 +  // ones, in the same order.
 +  SymbolLookupList(const SymbolLookupList& from, bool guest);
    void set_dt_symbolic_lib(soinfo* symbolic_lib);
@@ -249,7 +249,7 @@
    };
    std::unordered_map<std::string, std::shared_ptr<HookEntry>> symbols;
 +
-+  // Cordial, patches/0006: the ELF machine of an object built for another
++  // Vanta, patches/0006: the ELF machine of an object built for another
 +  // instruction set and loaded here to be run by a translator (the Quest
 +  // build's arm64 libroblox.so inside an x86-64 process), or 0 for an object
 +  // the host CPU runs. A virtual library is marked the same way when the
@@ -261,9 +261,9 @@
 +  bool is_guest() const { return guest_machine_ != 0; }
  };
  
-+// Cordial, patches/0006: the foreign ELF machine the loader accepts besides
++// Vanta, patches/0006: the foreign ELF machine the loader accepts besides
 +// the host's own, or 0 (the default) to accept only the host's.
-+extern int g_cordial_guest_machine;
++extern int g_vanta_guest_machine;
 +
  // This function is used by dlvsym() to calculate hash of sym_ver
  uint32_t calculate_elf_hash(const char* name);
@@ -283,11 +283,11 @@
    TypeBasedAllocator<LoadTask>::purge();
  }
 +
-+// Cordial, patches/0006: linking objects built for another instruction set.
++// Vanta, patches/0006: linking objects built for another instruction set.
 +// See `soinfo::guest_machine_`. Inert until something calls the first of
 +// these with a non-zero machine.
 +extern "C" void mcpelauncher_set_guest_machine(int machine) {
-+  g_cordial_guest_machine = machine;
++  g_vanta_guest_machine = machine;
 +}
 +
 +// Marks a library registered through `linker::load_library` as holding guest

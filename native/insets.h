@@ -13,7 +13,7 @@
 /// has to be visible where the hook is written.
 ///
 /// Four fields. Zero on every one is the correct answer and, unusually here,
-/// not a placeholder: Cordial's window has no status bar, no navigation bar,
+/// not a placeholder: Vanta's window has no status bar, no navigation bar,
 /// no display cutout and no gesture areas, so there is genuinely nothing for
 /// the engine to inset its layout by. A phone's values invented here would
 /// push Roblox's UI inward from edges that do not exist.
@@ -25,7 +25,7 @@
 
 #include <memory>
 
-namespace cordial {
+namespace vanta {
 
 class Insets : public jnivm::Object {
 public:
@@ -69,13 +69,13 @@ public:
     static void Register(jnivm::ENV* env) {
         Declare(env);
         auto c = env->GetClass("androidx/core/graphics/Insets");
-#define CORDIAL_INSETS_FIELD(name) c->HookInstance(env, #name, &Insets::name)
-        CORDIAL_INSETS_FIELD(left);
-        CORDIAL_INSETS_FIELD(top);
-        CORDIAL_INSETS_FIELD(right);
-        CORDIAL_INSETS_FIELD(bottom);
-#undef CORDIAL_INSETS_FIELD
+#define VANTA_INSETS_FIELD(name) c->HookInstance(env, #name, &Insets::name)
+        VANTA_INSETS_FIELD(left);
+        VANTA_INSETS_FIELD(top);
+        VANTA_INSETS_FIELD(right);
+        VANTA_INSETS_FIELD(bottom);
+#undef VANTA_INSETS_FIELD
     }
 };
 
-} // namespace cordial
+} // namespace vanta

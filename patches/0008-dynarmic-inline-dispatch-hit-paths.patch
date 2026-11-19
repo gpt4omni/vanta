@@ -56,7 +56,7 @@ index cec78138..3ba92b24 100644
      }
  }
  
-+// Cordial (patches/0008): the hit paths of the two handlers are emitted at
++// Vanta (patches/0008): the hit paths of the two handlers are emitted at
 +// each site rather than jumped to. Every guest return and indirect branch
 +// otherwise ends in the same host indirect jump, one for all returns and one
 +// for all indirect branches, and the host's predictor has only its global
@@ -113,7 +113,7 @@ index ed493155..f553c86d 100644
  
      const void* terminal_handler_pop_rsb_hint;
      const void* terminal_handler_fast_dispatch_hint = nullptr;
-+    // Cordial (patches/0008): entry points into the shared handlers' miss
++    // Vanta (patches/0008): entry points into the shared handlers' miss
 +    // paths, for the hit paths EmitTerminalImpl now emits inline.
 +    const void* terminal_handler_rsb_miss = nullptr;
 +    const void* terminal_handler_fast_dispatch_miss = nullptr;
@@ -130,7 +130,7 @@ index 0929e81e..f8ed734c 100644
      u8 exclusive_state = 0;
  
 -    static constexpr size_t RSBSize = 8;  // MUST be a power of 2.
-+    // Cordial (patches/0008): 32 rather than 8. A C++ engine's call depth
++    // Vanta (patches/0008): 32 rather than 8. A C++ engine's call depth
 +    // between returns routinely exceeds eight, and every return past the
 +    // ring's depth missed into the fast-dispatch hash.
 +    static constexpr size_t RSBSize = 32;  // MUST be a power of 2.

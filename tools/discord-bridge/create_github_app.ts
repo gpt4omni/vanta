@@ -26,8 +26,8 @@ const PORT = 8479;
 const REDIRECT = `http://localhost:${PORT}/callback`;
 const HERE = new URL(".", import.meta.url).pathname;
 
-const owner = Deno.env.get("GITHUB_OWNER") ?? "luohoa97";
-const repo = Deno.env.get("GITHUB_REPO") ?? "cordial";
+const owner = Deno.env.get("GITHUB_OWNER") ?? "gpt4omni";
+const repo = Deno.env.get("GITHUB_REPO") ?? "vanta";
 
 /**
  * `active: false` on the webhook, deliberately.
@@ -38,7 +38,7 @@ const repo = Deno.env.get("GITHUB_REPO") ?? "cordial";
  * webhook on later is one field in the App's settings and no rotation.
  */
 const manifest = {
-  name: `Cordial Issues (${owner})`,
+  name: `Vanta Issues (${owner})`,
   url: `https://github.com/${owner}/${repo}`,
   hook_attributes: { url: "https://example.invalid/github", active: false },
   redirect_url: REDIRECT,
@@ -49,7 +49,7 @@ const manifest = {
   default_permissions: { issues: "write", metadata: "read" },
   default_events: ["issue_comment"],
   description:
-    "Files Cordial issues from Discord, so people without a GitHub account can report properly.",
+    "Files Vanta issues from Discord, so people without a GitHub account can report properly.",
 };
 
 const state = crypto.randomUUID();
@@ -59,7 +59,7 @@ function landing(): Response {
   // cannot carry a body. Nothing here is secret; the approval happens on
   // GitHub's own page.
   return new Response(
-    `<!doctype html><meta charset="utf-8"><title>Create the Cordial Issues GitHub App</title>
+    `<!doctype html><meta charset="utf-8"><title>Create the Vanta Issues GitHub App</title>
 <body style="font:16px/1.5 system-ui;max-width:34rem;margin:4rem auto;padding:0 1rem">
 <h1>Creating the GitHub App…</h1>
 <p>GitHub will show you exactly what it is about to create. Approve it there.</p>
@@ -78,7 +78,7 @@ document.getElementById("f").submit();
 async function convert(code: string): Promise<Response> {
   const response = await fetch(
     `https://api.github.com/app-manifests/${code}/conversions`,
-    { method: "POST", headers: { accept: "application/vnd.github+json", "user-agent": "cordial" } },
+    { method: "POST", headers: { accept: "application/vnd.github+json", "user-agent": "vanta" } },
   );
   if (!response.ok) {
     return new Response(`GitHub answered ${response.status}: ${await response.text()}`, {

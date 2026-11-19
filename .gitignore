@@ -64,4 +64,4 @@ tools/discord-bridge/node_modules/
 /rescued/
 
 # Written by flatpak.yml for build.rs; never committed.
-/.cordial-official-build
+/.vanta-official-build

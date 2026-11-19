@@ -24,7 +24,7 @@ import { fieldToComponent } from "./issue_forms.ts";
 import { heading, isEditable, type ParsedBody } from "./issue_body.ts";
 
 /** `custom_id` of the title box. No template field can share it. */
-export const TITLE_ID = "cordial-title";
+export const TITLE_ID = "vanta-title";
 
 /** Title, labels, and these. */
 export const FIRST_PART_FIELDS = 3;

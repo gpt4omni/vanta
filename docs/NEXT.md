@@ -5,7 +5,7 @@ it stopped being true.** It is corrected here on 2026-08-26 rather than quietly
 edited, because "the sentence outlived the fix" is a failure this file warns
 about further down and had itself committed at the top.
 
-Cordial signs in — the Quick Sign-in code flow and typed credentials both,
+Vanta signs in — the Quick Sign-in code flow and typed credentials both,
 the second verified by composited screenshot on 2026-08-25 — reaches the Home
 page as a signed-in user, plays, takes mouse and keyboard, opens the
 in-experience web view with its JS bridge round-tripping, and puts sound out
@@ -22,22 +22,22 @@ This file is the handover. It says what is blocking, how to work on it, and —
 the part worth reading even if you are in a hurry — **what has already been
 ruled out**.
 
-## #92: two startup regimes, a stall that is Cordial's own sleep, and the freeze's window, 2026-10-16
+## #92: two startup regimes, a stall that is Vanta's own sleep, and the freeze's window, 2026-10-16
 
-Fourteen signed-in launches of `CordialTest` (Roblox 2.742.0.1059, nested headless
+Fourteen signed-in launches of `VantaTest` (Roblox 2.742.0.1059, nested headless
 sway, 150 s or more apart, every one with `cachedUserId` set, `Home` reached and no
 `DID_LOG_OUT`), run in place on the Flatpak profile data. Raw logs and backtraces:
-`~/.cache/cordial-handoff/signed-2026-10-16/`.
+`~/.cache/vanta-handoff/signed-2026-10-16/`.
 
 **Which regime a launch is in depends on the engine's flag cache, and this
 confounded the first four launches.** With no usable `flag_cache.dat` in
-`<profile>/data/cache/cache/` the engine answers Cordial's bootstrap with
+`<profile>/data/cache/cache/` the engine answers Vanta's bootstrap with
 `onFlagsFailed` twice, waits in state 11 for the post-settings call, fetches the flags
 from the CDN when that call arrives (`getFlags: flag cache miss`), and only then runs
 `startLuaApp_` and the teardown whose wait is the classic freeze. With a valid cache
 it answers `onFlagsLoaded` straight away, never logs `getFlags`, and starts its own
 Lua app at the first `onStart` (`initEngine_` in the same millisecond, state 7), so
-the post that Cordial makes 250 ms later is logged `ignoring call in state:7`. Every
+the post that Vanta makes 250 ms later is logged `ignoring call in state:7`. Every
 launch writes the cache about a second in, so back-to-back launches are mostly in the
 second regime and a launch after six hours or after a client that never wrote it is in
 the first. The 2026-10-04 logs are all first-regime, so this is new on 2.742 or was
@@ -46,19 +46,19 @@ previous run had written the file; the delayed-post arms I interleaved landed on
 same parity, which made "delayed post" look like a cause of the stall below that
 it is only the occasion of.
 
-**The stall at four presents is Cordial's own sleep.** In the second regime,
-`CORDIAL_LATE_POST_MS=1200` and a post held until Home (+80 ms) left the client
+**The stall at four presents is Vanta's own sleep.** In the second regime,
+`VANTA_LATE_POST_MS=1200` and a post held until Home (+80 ms) left the client
 presenting exactly four frames and nothing after, 3 launches of 3, and so did one
 first-regime launch whose post was held 80 ms: 4 of 4 launches with the pump thread
 asleep for 330 ms or more, against 0 of 6 at the unmodified 250 ms (two first-regime,
-four second-regime) that stalled this way. `cordial_backtrace` on two of them
+four second-regime) that stalled this way. `vanta_backtrace` on two of them
 (`L02.bt1.txt`, `L11.bt1.txt`) shows the engine's render thread in
 `vkAcquireNextImageKHR` -> `wsi_wl_swapchain_acquire_next_image_explicit` ->
 `wsi_drm_wait_for_explicit_sync_release` -> `drmSyncobjTimelineWait`: four swapchain
 images presented, none ever released by the compositor. The late post in `load.rs`
 sleeps on the thread that goes on to pump the looper and the window's GTK main loop,
 so for those 330 ms and more nothing ran it. **Control: the same delay with the post
-made from a thread of its own (`CORDIAL_POST_ASYNC=1 CORDIAL_LATE_POST_MS=1200`, same
+made from a thread of its own (`VANTA_POST_ASYNC=1 VANTA_LATE_POST_MS=1200`, same
 regime) presented 75, 83, 91 at 14, 22, 30 s.** One launch each, so this is a
 demonstration that the thread decides it, not a rate. Whether the default 250 ms
 sleep ever stalls a slower machine is not measured; 0 of 6 here. `INFERRED`: the
@@ -75,17 +75,17 @@ two healthy first-regime launches that followed the first step came before the p
 bind lands 2-9 ms after `getFlags: success` in 16 of 19 frozen and 1 of 19 healthy.
 So: the first render step landing between the post and the end of the teardown is the
 freeze. Held out of that window both ways: a post held until Home + 80 ms from its own
-thread (`CORDIAL_POST_ASYNC=1 CORDIAL_POST_AFTER_HOME_MS=80`, first regime) logged
+thread (`VANTA_POST_ASYNC=1 VANTA_POST_AFTER_HOME_MS=80`, first regime) logged
 step 0.570, post 0.690, healthy; a post 20 ms after the handoff
-(`CORDIAL_POST_ASYNC=1 CORDIAL_LATE_POST_MS=20`, first regime) finished its teardown at
+(`VANTA_POST_ASYNC=1 VANTA_LATE_POST_MS=20`, first regime) finished its teardown at
 0.47 s, before Home (0.81) and the step (0.74), healthy, and did not crash, which the
-comment on `CORDIAL_LATE_POST_MS` says a zero delay does.
+comment on `VANTA_LATE_POST_MS` says a zero delay does.
 
 **Counts, first regime only, since only it can freeze:** default 1 frozen of 3 (launches
 1, 3, 5); post made from its own thread, held or early, 0 of 2. Second regime: default
 0 of 4, the held-on-the-pump-thread launches excluded as stalled above. A rate cannot be read
 from this and nothing here claims one. Both knobs are off by default and
-`CORDIAL_POST_AFTER_HOME_MS` does nothing in the second regime (it logs
+`VANTA_POST_AFTER_HOME_MS` does nothing in the second regime (it logs
 `post not held`), because there the post is ignored.
 
 **What was not done:** no launch at the 250 ms default with the post made from its own
@@ -102,10 +102,10 @@ describes only the first regime.
 
 ### Round 2, cache-miss only, 2026-10-16: 16 launches, no freeze in either arm
 
-Sixteen signed-in `CordialTest` launches (150 s or more apart, flag cache set aside
+Sixteen signed-in `VantaTest` launches (150 s or more apart, flag cache set aside
 before each, every one `cachedUserId` set, `Home` reached, no `DID_LOG_OUT`, a Home
 screenshot at the end of each), alternating the post made from its own thread
-(`CORDIAL_POST_ASYNC=1`, the 250 ms default timing, 8 launches, the arm round 1 never
+(`VANTA_POST_ASYNC=1`, the 250 ms default timing, 8 launches, the arm round 1 never
 ran) with the default (8). **Frozen: 0 of 8 and 0 of 8, and all sixteen presented 85 to
 129 frames at 14 s and kept going.** So the default-flip rule (own-thread 0, default 2
 or more) was not met and the default stays as it is.
@@ -124,28 +124,28 @@ that releases on the engine's `Home` announcement without the extra margin, from
 thread) so the window opens in every launch, then compare the default placement with a
 post held until the step has run.
 
-`CORDIAL_POST_ASYNC` was read with `var_os(..).is_some()`, so `CORDIAL_POST_ASYNC=0` turned
+`VANTA_POST_ASYNC` was read with `var_os(..).is_some()`, so `VANTA_POST_ASYNC=0` turned
 it on; fixed on 2026-10-16 (it is a switch now).
 
 ### Round 3, 2026-10-16: the window opened, and the gate is the default
 
-Sixteen more signed-in `CordialTest` launches (flag cache set aside before each, 155 s
+Sixteen more signed-in `VantaTest` launches (flag cache set aside before each, 155 s
 apart, all `cachedUserId` set, `Home` reached, no `DID_LOG_OUT`, `post gate` lines and
-engine logs in `~/.cache/cordial-handoff/signed-2026-10-16-round3/`). The decision is
+engine logs in `~/.cache/vanta-handoff/signed-2026-10-16-round3/`). The decision is
 [ADR-065](adr/ADR-065-the-late-post-waits-for-the-first-render-step.md).
 
 **What the gate is.** The post is made from a thread of its own, after the usual 250 ms,
 and waits until the engine's own log shows `stepDataModelJob: No DM yet` (the render job's
 first step), then 10 ms more, then posts; 3 s and it posts anyway. The marker is read
 from `appData/logs/*_Player_*.log`, because FLog lines never pass through liblog: of 395
-lines of Cordial's stderr in a signed-in launch none was a render step. Only on the
-cache-miss path (`onFlagsFailed` seen); `CORDIAL_POST_GATE=0` turns it off.
+lines of Vanta's stderr in a signed-in launch none was a render step. Only on the
+cache-miss path (`onFlagsFailed` seen); `VANTA_POST_GATE=0` turns it off.
 
 **Making the window open took three tries.** Gate off, own thread, post held to Home
-(`CORDIAL_POST_AFTER_HOME_MS=0`): the 250 ms sleep before the hold had already passed
+(`VANTA_POST_AFTER_HOME_MS=0`): the 250 ms sleep before the hold had already passed
 Home in 4 of 5, so the post landed at Home + 42 to 50 ms, after the step at Home + 28:
 the safe order, not the window (X01 was the exception: slow start, Home at 1.03 s,
-post at Home + 22, step 6 ms after it, **frozen**). Adding `CORDIAL_LATE_POST_MS=20`
+post at Home + 22, step 6 ms after it, **frozen**). Adding `VANTA_LATE_POST_MS=20`
 put the post at Home + 0.2 ms, 27 to 30 ms before the step (X04, X05): healthy. At
 Home + 15 ms, 13 ms before the step, the same geometry as round 1's frozen launch
 (X06, X07): healthy. **The same Home + 15 ms under `taskset -c 0,1` with
@@ -190,14 +190,14 @@ involved; unexplained.
 
 ### Round 4, 2026-10-16: the gate holds under load, 0 of 10 against 3 of 3
 
-Sixteen more signed-in `CordialTest` launches (Roblox 2.742.0.1059, nested headless sway,
+Sixteen more signed-in `VantaTest` launches (Roblox 2.742.0.1059, nested headless sway,
 build 7531f17 with the gate on by default, flag cache set aside before each, 155 s or
 more apart, every one `cachedUserId` set, `Home` reached, no `DID_LOG_OUT`, a Home
 screenshot after each healthy one). **Every launch ran under round 3's load**: client
 and `stress-ng --cpu 2 --timeout 25s` both on `taskset -c 0,1`. Gate-off arms used round
-3's forcing knobs (`CORDIAL_POST_ASYNC=1 CORDIAL_LATE_POST_MS=20
-CORDIAL_POST_AFTER_HOME_MS=15`); the gate-on arm used the same knobs plus the gate.
-Logs and scripts: `~/.cache/cordial-handoff/signed-2026-10-16-round4/`.
+3's forcing knobs (`VANTA_POST_ASYNC=1 VANTA_LATE_POST_MS=20
+VANTA_POST_AFTER_HOME_MS=15`); the gate-on arm used the same knobs plus the gate.
+Logs and scripts: `~/.cache/vanta-handoff/signed-2026-10-16-round4/`.
 
 | Arm | Post vs step | Launches | Frozen |
 |---|---|---|---|
@@ -237,10 +237,10 @@ second machine, or an unloaded launch at the default timing with the gate off (r
 
 `tools/text-input-e2e.py --visibility MODES` types twelve characters into a
 synthetic box (`fakefocus`) and photographs the *compositor's* output with
-`grim`, because `cordial_textbox` reports what the field holds and
-`cordial_screenshot` cannot see a GTK widget. It asserts the typed text changed
+`grim`, because `vanta_textbox` reports what the field holds and
+`vanta_screenshot` cannot see a GTK widget. It asserts the typed text changed
 pixels where the editor is and that the ink is the box's own #d5d5dd. Nested
-sway 1.11, signed out, 1280x800, Cordial 0.29.0, windowed, fullscreen, tiled
+sway 1.11, signed out, 1280x800, Vanta 0.29.0, windowed, fullscreen, tiled
 after fullscreen and floating, every case single-line and multi-line.
 
 **Found: the multi-line editor ignored the engine's text colour.** A
@@ -256,7 +256,7 @@ geometry. **Not shown**: that the in-game chat box reports
 `multiline=1`; no real chat spec has been captured here, and a single-line box
 was never affected.
 
-**Controls that fail, as they should.** `CORDIAL_VISIBILITY_ANCHOR=off` fails
+**Controls that fail, as they should.** `VANTA_VISIBILITY_ANCHOR=off` fails
 all 8 fullscreen and tiled-after-fullscreen assertions (ADR-056, the Sober
 #1026 shape). No Vulkan with `GSK_RENDERER=ngl` (GTK's GL renderer beside the
 engine's GLES, ADR-047) fails every case; with no Vulkan and nothing set, GTK is
@@ -275,7 +275,7 @@ made override-redirect, laid over the focused box and given X keyboard focus.
 `tools/text-input-e2e.py --x11` runs 66 assertions against it on a private X
 server, typing with XTest on that server only and photographing it with
 ImageMagick (or grim, for Xwayland), signed out, 1280x800, GLES
-(`CORDIAL_NO_VULKAN=1`; the Vulkan client has crashed on Xvfb's software GL and
+(`VANTA_NO_VULKAN=1`; the Vulkan client has crashed on Xvfb's software GL and
 was not used). Each run starts with the real sign-in fields (clicked, typed with
 dummy strings, never submitted) and then a synthetic box (`fakefocus`).
 
@@ -287,11 +287,11 @@ dummy strings, never submitted) and then a synthetic box (`fakefocus`).
 | icewm | no | 66 of 66 |
 | sway's own Xwayland | yes | 66 of 66 |
 
-Control, same session shape, `CORDIAL_X11_EDITOR=off`: 7 of 22 assertions fail
+Control, same session shape, `VANTA_X11_EDITOR=off`: 7 of 22 assertions fail
 and they are exactly the ones about the editor -- the typed characters are not
 visible (0 changed pixels where openbox's run changed 812), select-all and
 non-ASCII text are not handled, and a multi-line Return is not a newline. The
-readback (`cordial_textbox` says the field holds twelve characters) passes in
+readback (`vanta_textbox` says the field holds twelve characters) passes in
 both arms, which is the point: it is what "sent but not drawn" looked like.
 
 **What this found that the code did not say.**
@@ -367,11 +367,11 @@ Vulkan interposer. Forty retries ten milliseconds apart (400 ms) still got
 `SURFACE_LOST` and the forced-draw run still crashed. Whatever makes the first
 query fail is not gone after 400 ms. The engine creates its Vulkan device twice
 per launch, and the first query comes before "surface handed to the engine" in
-Cordial's own log (INFERRED that this ordering is why it fails). Nothing was
+Vanta's own log (INFERRED that this ordering is why it fails). Nothing was
 committed for it.
 
 **Not established:** that this is what the original 2/11 was. Those runs were
-on X11 (`CORDIAL_X11=1`) on a machine with dmabuf, so some other first Vulkan
+on X11 (`VANTA_X11=1`) on a machine with dmabuf, so some other first Vulkan
 call may have failed there; the crash site is the same. Not established either
 that any user outside a software-rendered compositor can meet it. And the two
 Vulkan results (`SURFACE_LOST` on dmabuf-less compositors, the recorder's null
@@ -383,7 +383,7 @@ three dex files of 2.742.0.1059, and a gdb log of every `FindClass` and
 logs `Failed to find class 'DeviceUtils'` three times. It is not an unanswered
 Android expectation; see the comment on `DeviceUtils` in `native/init_params.cpp`.
 
-## #63: why the surface is lost, and what Cordial does about it, 2026-10-15
+## #63: why the surface is lost, and what Vanta does about it, 2026-10-15
 
 Corrections to the section above, from reading Mesa's WSI and a bare Vulkan
 probe with no Roblox in the process. The query does not fail "first" and the
@@ -393,17 +393,17 @@ Wayland compositor with no `zwp_linux_dmabuf_v1`, because Mesa binds `wl_shm`
 only for software devices (`wsi_common_wayland.c`, `registry_handle_global`
 and the `!wl_dmabuf && !wl_shm` test in `wsi_wl_display_init`). The engine
 fails on both of its two device creations per launch (2 `VULKAN ERROR` lines
-in every engine log, not 1). Cordial now withholds Vulkan there; see
+in every engine log, not 1). Vanta now withholds Vulkan there; see
 [ADR-061](adr/ADR-061-vulkan-is-withheld-where-the-compositor-has-no-dmabuf.md).
 
-Measured on the 2.738 engine, unsigned, nested headless sway, `cordial-run`
+Measured on the 2.738 engine, unsigned, nested headless sway, `vanta-run`
 from a clean tree, 10 launches an arm:
 
 | arm | compositor | `VULKAN ERROR ... -1000000000` per launch | SIGSEGV |
 |---|---|---|---|
 | before | sway pixman | 2 (1 where it crashed) | 3 of 10, then 0 of 10; 1 of 4 in a screenshot run |
 | after | sway pixman | 0 | 0 of 10 |
-| after, `CORDIAL_FORCE_VULKAN_WITHOUT_DMABUF=1` | sway pixman | 2 | 0 of 10 |
+| after, `VANTA_FORCE_VULKAN_WITHOUT_DMABUF=1` | sway pixman | 2 | 0 of 10 |
 | after | sway gles2 | 0 | 0 of 10 |
 
 The three crashes in the first run were all `libroblox.so+0x29b4349`, fault
@@ -472,7 +472,7 @@ changes; unmatched releases and duplicate presses are discarded.
 claim that Hyprland delivers the relevant events in one batch, or that the
 reported game symptom is fixed. If confirmation arrives in a later batch, the
 buttons can still be released. Repeat in an experience with
-`CORDIAL_TRACE_MOUSE=1`, holding fire while toggling shift lock and aiming,
+`VANTA_TRACE_MOUSE=1`, holding fire while toggling shift lock and aiming,
 then losing and regaining window focus. Compare against the build before this
 change; record `nativePassMouseButton` and lock transitions alongside the
 visible behaviour. The MCP click verb bypasses these Wayland handlers and
@@ -482,15 +482,15 @@ The button-routing regression test passes; restoring the old ownership gate
 makes it fail on the secondary-button release after focus changes. This
 control checks routing, not compositor event ordering or engine behaviour.
 
-## Cordial picks GTK's cairo renderer itself when Vulkan is not working, 2026-10-01
+## Vanta picks GTK's cairo renderer itself when Vulkan is not working, 2026-10-01
 
-The remaining half of #53. `cordial_shell::gtk_renderer` decides from the Vulkan
-probe, started in `cordial-run`'s `main` and collected in `wayland::open` before
+The remaining half of #53. `vanta_shell::gtk_renderer` decides from the Vulkan
+probe, started in `vanta-run`'s `main` and collected in `wayland::open` before
 GTK realises the window, so a healthy machine waits 0-10 ms (the probe is about
 60 ms and runs while the engine loads). No loader, `vkCreateInstance` failing, no
 devices or only a CPU renderer sets `GSK_RENDERER=cairo`; a user's own value is
 never touched or probed; a probe that hangs or crashes changes nothing.
-`CORDIAL_GRAPHICS=gles` with working Vulkan is deliberately **not** a trigger:
+`VANTA_GRAPHICS=gles` with working Vulkan is deliberately **not** a trigger:
 GTK stayed on Vulkan and presented. On the #53 reproduction (nested KWin, no
 Vulkan, `fakefocus` x3) the user-set `ngl` control lowered 0 of 3 and the
 automatic choice 3 of 3 under presented frames. **Not observed**: the editor
@@ -515,8 +515,8 @@ evidence of a commit; it fired on a frame with no attach behind it.
 
 ## Open: two frozen specimens at last, one with the condition-variable wrapper removed; the network is not what they wait on, 2026-09-30
 
-Build `Cordial 0.20.1 (bb5620b54-dirty)` (the dirt is the `third_party/mcpelauncher-linker`
-submodule marker), signed-in `CordialTest` on a nested headless sway, three
+Build `Vanta 0.20.1 (bb5620b54-dirty)` (the dirt is the `third_party/mcpelauncher-linker`
+submodule marker), signed-in `VantaTest` on a nested headless sway, three
 launches from 11:04 before the round was stopped early (a third of the 16 budgeted).
 `tools/freeze-capture.py` ran against both frozen clients before anything else
 attached, again five minutes later, and both stayed frozen throughout.
@@ -524,7 +524,7 @@ attached, again five minutes later, and both stayed frozen throughout.
 | run | arm | client | verdict | presents at 1/3/5/7/9/11 s |
 |---|---|---|---|---|
 | r01 | control | free | healthy, Home | 0 / 2 / 67 / 78 |
-| r02 | `CORDIAL_COND_PASSTHROUGH=1` | free | **frozen** | 0 / 2 / 2 / 2 / 2 / 2 |
+| r02 | `VANTA_COND_PASSTHROUGH=1` | free | **frozen** | 0 / 2 / 2 / 2 / 2 / 2 |
 | r03 | control | core 0 + one busy loop | **frozen** | 0 / 1 / 1 / 1 / 1 / 1 |
 
 **The wrapper is not necessary.** r02 froze with `pthread_cond_*` handed straight
@@ -544,7 +544,7 @@ r03 (C) tid 352125  futex 0x7fc5ae9fa50c  op=0x89 val=0x3  timeout NULL  raw sys
 ```
 
 Both addresses are in the anonymous rw region shared with the `RBX Worker` parkers
-(the same 128-byte-stride array), neither inside a Cordial cond backing (in r03,
+(the same 128-byte-stride array), neither inside a Vanta cond backing (in r03,
 where 90 wrappers exist, `wrappers.txt` says so by name). The word and
 the value did not change across the five minutes in either. So this is `0x89`, not
 the `0x189` a healthy gdb-launched run showed (a glibc cond wait), and it is the
@@ -552,7 +552,7 @@ same park an idle worker sits in: **INFERRED** that this thread may be idle rath
 waiting *for* anything, i.e. that the missing thing is a task or continuation nobody
 posted, not a wake nobody sent.
 
-**No lost wakeup in the Cordial wrappers.** In r03, 90 wrappers, none duplicated, and
+**No lost wakeup in the Vanta wrappers.** In r03, 90 wrappers, none duplicated, and
 conds with waiters (4 in the first capture; 6, 29 and 1 in the second) all with
 `g_signals = 0` -- an idle pool. The
 tool's old tag ("waiters/signals non-zero") fired on those and on three conds in the healthy
@@ -579,7 +579,7 @@ demonstrably exercised after the freeze started.
 
 **Where the chain ends.** One `Main`-named engine thread parked in the engine's own
 futex park since 1.4 s, every worker idle in the same park, the HTTP thread
-serving requests, the AGDK thread spinning as documented. Nothing Cordial answers is
+serving requests, the AGDK thread spinning as documented. Nothing Vanta answers is
 implicated by this evidence, so no fix is made: a toggle would be a guess. Not
 done, and not authorised this round: the `shutdown(fd)` poke (moot now -- the socket
 it was meant for is the benign websocket) and anything that calls into the process.
@@ -593,11 +593,11 @@ all-cache.
 by request), so there is no per-arm rate: control 1 frozen of 2, passthrough 1 of 1.
 `devctl.txt` in r02's capture says connection refused, because `freeze-capture.py` reads
 `XDG_DATA_HOME` and the harness had not exported it; r03 onwards has it. The captures are
-in `~/.cache/cordial-handoff/freeze-round7/`.
+in `~/.cache/vanta-handoff/freeze-round7/`.
 
-## Open: eight launches, no frozen specimen; the engine's condition variables were Cordial's all along, and two "frozen" signatures are also healthy, 2026-09-29 (late)
+## Open: eight launches, no frozen specimen; the engine's condition variables were Vanta's all along, and two "frozen" signatures are also healthy, 2026-09-29 (late)
 
-Eight signed-in `CordialTest` launches, 21:01-21:29 local, nested headless sway,
+Eight signed-in `VantaTest` launches, 21:01-21:29 local, nested headless sway,
 client pinned to core 0 with one or two busy loops on the same core (the
 amplification the 2026-09-28 entries used), each at least 150 s after the
 last, `tools/freeze-capture.py` run against every one after a 30-100 s hold.
@@ -610,7 +610,7 @@ was built to.
 | run | env | presents at 20/26/32 s |
 |---|---|---|
 | C1 | control, 1 busy loop | 79 / 85 / 91 |
-| T1 | `CORDIAL_COND_PASSTHROUGH=1`, 1 loop | 102 / 108 / 114 |
+| T1 | `VANTA_COND_PASSTHROUGH=1`, 1 loop | 102 / 108 / 114 |
 | C2, T2 | control, passthrough; 2 loops | 91 / 97 / 103, both |
 | C3, C4 | control, 2 loops | 88 / 94 / 100, 90 / 96 / 102 |
 | C5, C6 | control, 2 loops | 103 / 110 / 116, 100 / 106 / 112 |
@@ -618,9 +618,9 @@ was built to.
 Two runs is not an A/B for the passthrough switch and nothing here claims it is.
 That makes 26 signed-in launches today, counting the 18 before this session.
 
-**What Cordial owns on the HTTP path.** The earlier entries treated everything
+**What Vanta owns on the HTTP path.** The earlier entries treated everything
 but `getaddrinfo` as the host's libc. Read from the override tables and the
-engine's import list (`readelf --dyn-syms`), the Cordial-answered pieces are:
+engine's import list (`readelf --dyn-syms`), the Vanta-answered pieces are:
 
 - **`pthread_cond_*` (all six the engine imports).** `bionic/pthread.rs` puts a
   128-byte heap glibc condition variable behind every engine `pthread_cond_t`
@@ -628,7 +628,7 @@ engine's import list (`readelf --dyn-syms`), the Cordial-answered pieces are:
   and `RBX Worker` wait passes through it. **The 2026-09-29 "waker" -- an
   `HttpClient` thread's `pthread_cond_broadcast` at `libroblox.so+0x241a6d8` --
   is this wrapper tail-calling glibc** (a `jmp` in the built binary, which is why
-  the frame above glibc's was libroblox), so it was Cordial's code on that path
+  the frame above glibc's was libroblox), so it was Vanta's code on that path
   and not "the host's libcurl/TCP stack". `sem_*` likewise (`sem_t` is 16 bytes in
   bionic and 32 in glibc). `pthread_mutex_*` and `pthread_attr_*` are not
   wrapped on x86_64.
@@ -643,13 +643,13 @@ engine's import list (`readelf --dyn-syms`), the Cordial-answered pieces are:
   `load.rs::enter_run_dir`.
 - **Cookies**: the engine calls `OnSetCookieHandler::onSetCookie` (jnivm, then a
   mutex and an atomic in `cookies.rs`) from its HTTP thread; the restore
-  (`nativeSetMultipleCookies`) and the first jar read-back run on Cordial's main
+  (`nativeSetMultipleCookies`) and the first jar read-back run on Vanta's main
   thread, the read-back at the first pump iteration of every run.
 - **Small ones**: `__system_property_get`, `sysconf`, `__errno`, the FORTIFY
   forwards (`__poll_chk` and friends), signal-mask translation, the
   `vasprintf`/`getcwd(NULL)` refusals. No `[alloc]` refusal fired in eight
   runs, and the only stubs called were the two ZSTD ones.
-- **Not Cordial's**: `socket`, `connect`, `poll`, `epoll_*`, `select`,
+- **Not Vanta's**: `socket`, `connect`, `poll`, `epoll_*`, `select`,
   `eventfd`, `fcntl`, `ioctl`, `getsockopt`, `send*`/`recv*` go to glibc.
   `__FD_SET_chk`/`__FD_CLR_chk`/`__FD_ISSET_chk` are stubs returning 0 and were
   not called in any of the eight runs.
@@ -709,12 +709,12 @@ line and no thread ever ends the wait.
 2026-09-28 reading of the `syscall()` futex wait as a generic pool primitive
 stands, but the finalize thread in a *healthy* gdb-launched run (`rootcause4/F1`)
 was seen in a glibc condition wait (`op 0x189`, an address in a
-glibc thread arena, i.e. one of Cordial's backing objects), while in both frozen
+glibc thread arena, i.e. one of Vanta's backing objects), while in both frozen
 specimens it is in the engine's own `syscall(SYS_futex)` park (`op 0x89`, a
 128-byte-stride array). Those are different waits, and no run has yet shown
 which one precedes which.
 
-**Cookie read-back timing, checked and dropped.** The first read-back on Cordial's
+**Cookie read-back timing, checked and dropped.** The first read-back on Vanta's
 main thread lands in the same 40 ms as the engine's `sync cookies from engine`
 line, and in one frozen run (`ctrl7`) inside it. Across the runs with both
 timestamps it overlaps in 1 of 3 frozen and 1 of 17 healthy (`T2`), and `ctrl2`
@@ -722,7 +722,7 @@ and `B` froze with the engine's line 230-430 ms *after* the read-back. It is
 neither required nor sufficient. It was not tested with a switch, and there is
 not one.
 
-**Not done, and how to finish it.** `CORDIAL_COND_PASSTHROUGH=1` (x86_64,
+**Not done, and how to finish it.** `VANTA_COND_PASSTHROUGH=1` (x86_64,
 `--host-libc`) removes the condition-variable wrapper for a same-binary A/B; a
 freeze *with* it on would settle that the wrapper is not necessary, and only a
 freeze will. `tools/freeze-capture.py PID OUTDIR` is written and has been run on
@@ -732,9 +732,9 @@ repository, is `shutdown(fd, SHUT_RDWR)` from gdb on the socket the `HttpClient`
 poll names: if startup resumes, the finalize thread was waiting on that
 transfer. Spend a launch on it only with a specimen already captured.
 
-## Open: the double Lua-app cycle is not a Cordial-side call, and a stale comment said otherwise for a month, 2026-09-29
+## Open: the double Lua-app cycle is not a Vanta-side call, and a stale comment said otherwise for a month, 2026-09-29
 
-Tasked with H1 ("does Cordial order or answer something differently from real
+Tasked with H1 ("does Vanta order or answer something differently from real
 Android, causing a second Lua-app cycle that real Android doesn't take"), this
 round checked the claim mechanically rather than re-guessing it, on existing
 captures where possible so no launch budget was spent proving it.
@@ -751,19 +751,19 @@ reaches the code in question at all. Whoever next wants the real-Android side
 of this comparison needs a **signed-in** waydroid capture, which does not
 exist yet.
 
-**Cordial issues `nativeAppBridgeStartLuaAppDM` exactly once per default
-launch, confirmed from `crates/cordial-runtime/src/bin/load.rs` and from a
+**Vanta issues `nativeAppBridgeStartLuaAppDM` exactly once per default
+launch, confirmed from `crates/vanta-runtime/src/bin/load.rs` and from a
 live log** (`$S/rootcause4/F1/stdout.log`, a healthy run,
-`CORDIAL_STARTUP_RETRY` unset): the string `Lua app DataModel started`
+`VANTA_STARTUP_RETRY` unset): the string `Lua app DataModel started`
 appears once. The engine's own log for that same run nonetheless shows the
 `gameLoadedCallback`/`APP_READY PlatformAccountRouter/Startup/Home/
 RootSwitchNavigator` sequence **twice**, with `DID_LOG_IN` only after the
 second pass — exactly the "0-old" 2026-08-24 finding two thousand lines below,
-reconfirmed on today's binary. `looper::STARTUP_RECOVERY`, the only Cordial
+reconfirmed on today's binary. `looper::STARTUP_RECOVERY`, the only Vanta
 code that would re-issue the call, is gated behind `startup_retry_enabled()`
-(`CORDIAL_STARTUP_RETRY`, off by default and "must stay off" per its own
+(`VANTA_STARTUP_RETRY`, off by default and "must stay off" per its own
 comment) and never fires in these runs. **This settles the strongest form of
-H1: the second cycle is not caused by Cordial calling into the engine twice.**
+H1: the second cycle is not caused by Vanta calling into the engine twice.**
 It leaves open the softer form — an ordering or answer difference that
 changes whether the engine's *own* internal retry succeeds — which is the
 open question the rest of this file already tracks and this round did not
@@ -777,21 +777,21 @@ sequential retries) in `sigsetjmp`/`siglongjmp` recovery tied to a
 `g_stage6_empty_gl_helper_returns` counter, and a large SIGSEGV-handler-based
 patch mechanism for a "Stage6 GL" null-deref loop nearby. That mechanism is
 about GLES/EGL scratch-queue null derefs during rendering setup, a different
-subsystem from Cordial's Vulkan path and from the `UgcExperienceController`/
+subsystem from Vanta's Vulkan path and from the `UgcExperienceController`/
 finalize wait this file's other entries have localised — so it is **not** the
 same bug, and should not be cited as one. What it does show is that a second,
 independent from-scratch Android-native-loader project needed heavyweight
 crash recovery around this same native call regardless of *which* position it
 called it from, which is mild supporting evidence that the engine's own
 bootstrap machinery is fragile off real Android generally, not that a
-particular Cordial ordering is the lever. No ordering guidance was found to
+particular Vanta ordering is the lever. No ordering guidance was found to
 adapt from mocktail's cookie/identity restore path either — it stores cookies
 in a plain file (`auth_runtime_composition.cc`) rather than facing the
-keyring-timing questions Cordial's own cookie restore comments already
-resolved (see `crates/cordial-runtime/src/bin/load.rs`'s `CORDIAL_COOKIE_PROBE`
+keyring-timing questions Vanta's own cookie restore comments already
+resolved (see `crates/vanta-runtime/src/bin/load.rs`'s `VANTA_COOKIE_PROBE`
 comment).
 
-**A stale comment was found and fixed.** The `CORDIAL_BRIDGE_DELAY_MS` comment
+**A stale comment was found and fixed.** The `VANTA_BRIDGE_DELAY_MS` comment
 in `load.rs` (added around the 2026-08-24/25 timing investigation) stated as
 established fact that "a run that freezes reaches every startup milestone
 earlier than one that does not" and that load reduced the freeze rate. Both
@@ -809,7 +809,7 @@ lies costs more than no comment, and it costs more the longer it survives
 being asked about.**
 
 **H2 (the CLOSE-WAIT socket ownership question) got no signal this round.**
-Eight signed-in `CordialTest` launches, spaced >=90s apart, all confirmed
+Eight signed-in `VantaTest` launches, spaced >=90s apart, all confirmed
 signed in (`cachedUserId:11400949329` restored, no `DID_LOG_OUT`, presents
 growing on a `devctl info` pair taken 6s apart) and all reached
 `HOME_PAGE_INTERACTIVE` — 0/8 frozen, an all-healthy burst of the kind this
@@ -822,21 +822,21 @@ below left it. A capture-ready harness for it
 presents flat and `sync cookies from engine` already logged) exists for next
 time but was never exercised against a frozen specimen.
 
-## Open: programmatic `CaptureFocus` is not a Cordial-side click gate; the specimen game does not use `TextBox`, 2026-09-28
+## Open: programmatic `CaptureFocus` is not a Vanta-side click gate; the specimen game does not use `TextBox`, 2026-09-28
 
-A report that `TextBox:CaptureFocus()` does nothing on Cordial — a game that
+A report that `TextBox:CaptureFocus()` does nothing on Vanta — a game that
 focuses its own box gets no editor, so typing is silent, while clicking the
 same box works — was investigated for a click-dependent condition in
 `android_classes.cpp`, `android/input.rs`, `android/wayland.rs` and
-`cordial_shell::host_window`. **None was found.** `cordial_textbox_focused`
+`vanta_shell::host_window`. **None was found.** `vanta_textbox_focused`
 (the function both `showKeyboard`'s hook and devctl's `fakefocus` call) sets
 `g_textbox_handle`/`g_textbox_generation` unconditionally; `sync_text_overlay`,
 `sync_ime_focus` and `resolve_textbox_geometry` all key off
 `textbox_generation()`/`focused_textbox()`, with no read of pointer state
 anywhere in the chain. `fakefocus` proves this directly: it calls
-`cordial_textbox_test_focus` → `cordial_textbox_focused`, the exact entry
+`vanta_textbox_test_focus` → `vanta_textbox_focused`, the exact entry
 point `showKeyboard` uses, with no click involved, and on a live signed-in
-CordialTest run (2026-09-28) it drew a correctly-placed, typeable editor
+VantaTest run (2026-09-28) it drew a correctly-placed, typeable editor
 (`devctl textbox` reported `placed=engine`, `settext` landed and read back).
 mocktail's `RobloxTextEditor::BeginFocusSession` takes whatever
 `gameActivity_showKeyboard` hands it the same way, with no gate.
@@ -844,7 +844,7 @@ mocktail's `RobloxTextEditor::BeginFocusSession` takes whatever
 Type Race (placeId 7232779505), picked as an obvious CaptureFocus specimen,
 turned out not to be one: across a full ready-up-to-round-end cycle, `devctl
 textbox` never reported a focus and no `textbox focused` line appeared in the
-`CORDIAL_TRACE_TEXT=1` log, yet `pass_key_event` traces show injected evdev
+`VANTA_TRACE_TEXT=1` log, yet `pass_key_event` traces show injected evdev
 keys reaching the engine and, after some latency, the on-screen character
 counter did advance. That is the shape of `UserInputService.InputBegan`
 reading keys directly, not a focused `TextBox` — this game answers a
@@ -853,13 +853,13 @@ does not focus if forced" (Word Bomb, Spelling Bee), is the on-point upstream
 report for a game that *does* use a forced-focus TextBox: engine-side
 connect/disconnect race, closed `COMPLETED` but with no confirmation the fix
 reached this APK's build. If it reproduces here, ADR-001/ADR-003 rule out a
-Cordial-side correction (the race is the engine's own), and the finding would
+Vanta-side correction (the race is the engine's own), and the finding would
 be "faithfully reproduced," not a platform bug.
 
 **Not fixed, because no cause was found to fix.** Whoever picks this up next
 should find a game confirmed to call `CaptureFocus()` on a real `TextBox`
 (not `InputBegan`) and watch `showKeyboard`/`hideKeyboard` under
-`CORDIAL_TRACE_TEXT=1` — a `showKeyboard` that never arrives points at a
+`VANTA_TRACE_TEXT=1` — a `showKeyboard` that never arrives points at a
 platform gap here; a `showKeyboard` immediately followed by `hideKeyboard`
 for the same handle matches Sober #723 and is upstream.
 
@@ -880,7 +880,7 @@ Told that nested sway does not engage GTK fullscreen but nested weston does,
 a `weston -B headless --renderer=gl -S <name> --fake-seat` instance was built
 to re-run the multi-line editor's fullscreen checks away from the
 maintainer's own session (`wayland-0`, in active use). `devctl fullscreen`
-against a CordialTest client on that display reported the command accepted
+against a VantaTest client on that display reported the command accepted
 (`info`'s `accepted` counter incremented) but the canvas extent, read back
 from `devctl info`, never changed from the windowed `960x754`, and no new
 `vkCreateSwapchainKHR` line appeared in the client log — `window.fullscreen()`
@@ -891,13 +891,13 @@ was called (`host_window::HostWindow::set_fullscreen`) but weston's
 protocol"`, expected — weston is not wlroots) failed to capture the
 compositor's own composited frame either, leaving no way to see the GTK
 chrome and confirm or refute the grey-screen bug from that side; only
-`cordial_screenshot` (the engine's own swapchain) was available, which cannot
+`vanta_screenshot` (the engine's own swapchain) was available, which cannot
 see the GTK overlay at all. **Real-GNOME-session verification of the
 fullscreen grey bug and the windowed/fullscreen editor-sizing checks is still
 outstanding** — this session's launch budget (5, spent partly on two repeats
 of the existing startup freeze) did not stretch to diagnosing the headless
 weston setup further. What *did* verify live, via `devctl fakefocus 1 ...`
-and `settext` on a signed-in CordialTest client (not a real game's box):
+and `settext` on a signed-in VantaTest client (not a real game's box):
 `multiline=1` in the spec draws the `gtk::TextView` overlay, and multi-line
 text (three lines, a wrapped line) is visible and correctly placed while
 "typing" via `settext` — `grim` on the *sway* nested compositor (which does
@@ -927,15 +927,15 @@ Measured: signed-out throwaway profile, `AndroidApp` 10/10 blank,
 `GoogleAndroidApp` 10/10 Landing, delivery mechanism (`--client-settings`
 versus the normal cache) isolated and shown not to matter — content is what
 matters. Timestamps ruled out a race between delivery and the engine's own
-live re-fetch. Signed in on `CordialTest`, 3/3 reached real Home in a single
+live re-fetch. Signed in on `VantaTest`, 3/3 reached real Home in a single
 cycle (screenshot-verified: username, friends list, recommended games) —
 Sober-shaped, no placeholder-swap needed at all when the document handed
 over is the right one.
 
 **Fix**: `client_settings.rs` fetches `GoogleAndroidApp` by default now.
-`CORDIAL_ENGINE_SETTINGS=0` reverts to the old `AndroidApp` endpoint, kept
+`VANTA_ENGINE_SETTINGS=0` reverts to the old `AndroidApp` endpoint, kept
 because a future rollout could reverse which one works and nothing here can
-tell that from either document's shape alone. Cordial's own flag overrides
+tell that from either document's shape alone. Vanta's own flag overrides
 (`apply_overrides`) still apply on top either way — reconfirmed live with
 the existing `DFFlagRbxTransportUseRtcioRna` control.
 
@@ -943,13 +943,13 @@ the existing `DFFlagRbxTransportUseRtcioRna` control.
 that recurs; whether the classic two-cycle placeholder-swap freeze (the
 `FROZEN` bucket lower in this section, unrelated to this blank-screen
 symptom) is affected one way or the other by fetching the engine's own
-document instead of Cordial's — not measured, only the blank/Landing split
+document instead of Vanta's — not measured, only the blank/Landing split
 was.
 
 ## Open: the missing-AGDK-command theory is refuted live, and the wait is confirmed to be inside the engine, 2026-09-28
 
 Reproduced on `8c85be7` + this session's own `devctl redraw` addition, `just
-build toolbox`, signed-in `CordialTest`, nested headless sway, `taskset -c 0`
+build toolbox`, signed-in `VantaTest`, nested headless sway, `taskset -c 0`
 on the client process (no separate CPU hog): one clean capture of the
 documented signature, unchanged from 2026-08-26 — `loopers` on the frozen
 client read `tid=<engine> fds=1 [31:1:-] polls=1115187357 events=9`, i.e. the
@@ -957,13 +957,13 @@ AGDK `native_app_glue` thread spinning on `ALooper_pollOnce(timeout=0)`
 against its own command pipe (`ident=1` is `LOOPER_ID_MAIN`), nine events
 delivered, `presents` fixed at 1. `gdb thread apply all bt`, twice 90s apart,
 both show the spinning thread in `looper::looper_poll_once` at 98-100% of a
-core (`crates/cordial-runtime/src/android/looper.rs:1794`), matching the
+core (`crates/vanta-runtime/src/android/looper.rs:1794`), matching the
 2026-08-26 capture exactly.
 
 **The "one missing command" theory (the `redraw` script action added in
 09d315b, never run before this session) is refuted as a recovery mechanism,
 by direct live test.** A `redraw` verb was added to `devctl` (`Cmd::Redraw` in
-`crates/cordial-runtime/src/devctl.rs`, tested by
+`crates/vanta-runtime/src/devctl.rs`, tested by
 `devctl::tests::redraw_verb_queues_exactly_one_redraw_command`) specifically
 so the same `onSurfaceRedrawNeededNative` call the script action fires blind
 at a fixed time could instead be fired at an already-wedged client, with no
@@ -983,14 +983,14 @@ narrower, separate claim — see below.
 
 **The keyring/secrets-block theory (`freeze-root.md`, flagged there as
 "unverified by this session") does not hold either, on this capture.** The
-full 69-thread backtrace shows `cordial-secrets` (`crates/cordial-shell/src/
+full 69-thread backtrace shows `vanta-secrets` (`crates/vanta-shell/src/
 secrets/keyring.rs:155`) parked in `Receiver::recv` on its own `mpmc` job
 channel — a worker idly waiting for the *next* request, indistinguishable
 from a healthy idle pool, not a thread stuck mid-transaction. No thread in
 the census (workers, `HttpClient`, `HttpThreadPool`, `RBX Worker A`-`P`,
 `gmain`, `pool-spawner`, asset cache threads) shows anything but an ordinary
 blocking wait on its own condvar/fd. There is no visible lock-ordering cycle
-anywhere Cordial's own code or the OS can see.
+anywhere Vanta's own code or the OS can see.
 
 **Where the wait actually is, confirmed rather than inferred this time**: the
 engine's own player log. Healthy and frozen runs are identical through
@@ -998,7 +998,7 @@ engine's own player log. Healthy and frozen runs are identical through
 `UgcExperienceController: finalize: Did not finalize due to state.` (same
 millisecond in both). A healthy run then logs
 `UgcExperienceController::~UgcExperienceController()` about 48ms later — with
-nothing from Cordial's own side logged in between that could have caused it —
+nothing from Vanta's own side logged in between that could have caused it —
 followed by a second `vkCreateSwapchainKHR` at a new size, `sync cookies from
 engine`, `DID_LOG_IN`. A frozen run never logs the destructor. Both reach
 `sync cookies from engine` (1.185s healthy, 1.338s frozen — comparable), and
@@ -1026,19 +1026,19 @@ above, there is no remaining mechanistic reason to expect this would help;
 it was tried anyway because it was cheap and the timing-sensitivity note in
 09d315b's commit message had not been tested.
 
-`crates/cordial-runtime/src/devctl.rs`'s `redraw` verb is kept regardless of
+`crates/vanta-runtime/src/devctl.rs`'s `redraw` verb is kept regardless of
 this result — it is a real diagnostic capability (ADR-019), independent of
 whether this particular hypothesis panned out.
 
 ## Open: the spinning AGDK thread is not the wait; found and named the thread that is, 2026-09-28 (later)
 
-No `perf` binary exists on this host or in the `cordial` toolbox
+No `perf` binary exists on this host or in the `vanta` toolbox
 (`perf_event_paranoid=2` either way), so this used repeated/targeted `gdb`
 attaches and direct `/proc/<pid>/task/<tid>/{wchan,syscall}` reads instead.
 
-**The spinning AGDK thread's own behaviour is fully explained by Cordial's own
+**The spinning AGDK thread's own behaviour is fully explained by Vanta's own
 `BACKOFF_AFTER_PRESENTS` gate and is not itself informative.**
-`crates/cordial-runtime/src/android/looper.rs:1775-1784`: once
+`crates/vanta-runtime/src/android/looper.rs:1775-1784`: once
 `glcount::QUEUE_PRESENT >= 120` (a constant, `BACKOFF_AFTER_PRESENTS`) *and*
 the poll has come back empty enough times in a row, the zero-timeout poll
 takes a `nanosleep` branch instead of `epoll_wait` — this is the documented
@@ -1051,7 +1051,7 @@ is stuck at 1 and never reaches 120, the same thread is permanently in the
 different about *that thread*, but because the gate it reads
 (`QUEUE_PRESENT >= 120`) can never pass while presents are stuck. This closes
 off "the spinning thread is waiting for something" as a lead on its own
-terms: it is a downstream reflection of the stall, reading a Cordial-side
+terms: it is a downstream reflection of the stall, reading a Vanta-side
 counter, not a cause.
 
 **Found and named the actual blocked thread, by correlating the engine's own
@@ -1082,8 +1082,8 @@ ctrl7 (LWP 1427306): syscall 202 0x7fb9a4b2244c 0x89 0x3 0x0 0x0 0xffffffff 0x7f
 `timeout=NULL`; `val3(bitset)=0xffffffff` — the standard shape of an
 unconditional condition-variable wait, called through a bare `syscall()`
 (gdb frame #0, not glibc's `__syscall_cancel_arch` path), meaning this is the
-engine's own bundled wait primitive, not anything routed through Cordial's
-host-libc pthread shim (`crates/cordial-runtime/src/bionic/pthread.rs` has no
+engine's own bundled wait primitive, not anything routed through Vanta's
+host-libc pthread shim (`crates/vanta-runtime/src/bionic/pthread.rs` has no
 raw `futex`/`syscall(` call anywhere in it — checked directly, this is not a
 shim bug). **On `ctrl7`, the identical syscall record — same address, same
 `val`, same `val3` — was read twice, 89 seconds apart, with nothing in
@@ -1098,7 +1098,7 @@ disassembling the engine, which AGENTS.md forbids.
 startup.` / `Restoring rendering frequency to normal.` pair
 (`docs/traces/waydroid-roblox-startup.log.gz:1085,1304`; this pair exists on
 real Android too and is unrelated to any freeze there, since real Android and
-Sober essentially never hit `Forcing finalize` at all). **Healthy Cordial
+Sober essentially never hit `Forcing finalize` at all). **Healthy Vanta
 runs log this pair twice** (once per init cycle, matching the two-cycle
 startup); **frozen runs log it exactly once** and never again. This is
 consistent with, not independent of, the destructor-never-fires finding
@@ -1117,7 +1117,7 @@ case with no retry modelled.
 **Where this leaves it**: the wait is confirmed real (not a busy spin dressed
 up as one), confirmed stable across 89+ seconds with zero spurious wake, and
 confirmed to be the engine's own internal wait primitive rather than
-anything in Cordial's pthread shim. What it is waiting for, and who holds the
+anything in Vanta's pthread shim. What it is waiting for, and who holds the
 other end, is not observable without either disassembling `libroblox.so`
 (ruled out) or a source-level comparison this session did not have — the
 Java/C++ classes involved (`SingleSurfaceApp`, `UgcExperienceController`) are
@@ -1156,18 +1156,18 @@ documents for this engine's frames. **The wait is issued from
 `libroblox.so+0x29c9687`, full stop** -- not a separate `libc++_shared.so`
 (there is none; `/proc/<pid>/maps` lists exactly one Roblox-side object,
 the single 108MB `libroblox.so`, confirming the engine statically links its
-own C++ runtime), and not any Cordial binary.
+own C++ runtime), and not any Vanta binary.
 
-**Confirmed against `build.rs`, as asked: cordial-linker-sys compiles none of
+**Confirmed against `build.rs`, as asked: vanta-linker-sys compiles none of
 bionic's futex users.** `third_party/mcpelauncher-linker/CMakeLists.txt`'s
 `linker` target source list is `bionic/linker/*.cpp` plus a handful of the
 port's own `core/base`/`core/liblog` helpers, `bionic_call_ifunc_resolver.cpp`,
 `async_safe_log.cpp`, and `bionic/libdl/libdl.cpp` -- no
 `pthread_cond.cpp`/`pthread_mutex.cpp`/`pthread_once.cpp`/`semaphore.cpp`, and
-no `__cxa_guard` anywhere in it. Cordial's own
-`crates/cordial-runtime/src/bionic/pthread.rs` has no raw `futex`/`syscall(`
+no `__cxa_guard` anywhere in it. Vanta's own
+`crates/vanta-runtime/src/bionic/pthread.rs` has no raw `futex`/`syscall(`
 call either (checked directly, not inferred). This wait is not something
-Cordial builds, forwards, or could have a shim bug in.
+Vanta builds, forwards, or could have a shim bug in.
 
 **`strace -f -tt -e trace=futex` was tried first, as suggested, and rejected
 on measurement, not guess.** Wrapping the launch stalled the whole client at
@@ -1211,13 +1211,13 @@ reached only for lack of remaining launches.
 
 **Where the chain ends, with the evidence for it**: the wait is real, stable
 (unchanged over 89+ seconds, `docs/NEXT.md`'s previous entry), issued from
-inside `libroblox.so` through a generic thread-pool primitive that Cordial
+inside `libroblox.so` through a generic thread-pool primitive that Vanta
 neither implements nor can be missing a call for (confirmed against
 `build.rs`/`CMakeLists.txt` and `bionic/pthread.rs` directly), and every
-other Cordial-observable subsystem checked across three separate frozen
+other Vanta-observable subsystem checked across three separate frozen
 captures this task (secrets/keyring, HTTP, the AGDK looper, JNI-registered
 natives) stays idle and unimplicated. **This ends inside the engine, with no
-Cordial-visible dependency identified** — which is the answer the coordinator
+Vanta-visible dependency identified** — which is the answer the coordinator
 asked for in that case, not a stopping point chosen for convenience.
 
 ## Open: named the waker -- an HttpClient thread's `pthread_cond_broadcast` -- and found a second, simpler freeze shape, 2026-09-29
@@ -1298,11 +1298,11 @@ unprocessed `CLOSE-WAIT` sockets, which is evidence of an actual stuck
 network completion, not an artefact of the debugger. **This still ends
 inside the engine and the host's own libcurl/TCP stack** (`--host-libc`
 means these calls resolve to the host's real networking libraries, which
-Cordial does not implement or intercept) **as far as this round's launch
+Vanta does not implement or intercept) **as far as this round's launch
 budget allowed tracing it.** No fix is proposed: nothing pulled on this
-thread is Cordial's to fix yet. The concrete next step is to find which
+thread is Vanta's to fix yet. The concrete next step is to find which
 thread owns the three `CLOSE-WAIT` sockets' epoll registration on a fresh
-frozen capture, and to check whether Cordial's own path to the host's
+frozen capture, and to check whether Vanta's own path to the host's
 resolver/TLS stack (rather than the generic host-libc forwarding this
 project already relies on) has any observable difference between the
 socket's two endpoints and a healthy run's equivalent connection.
@@ -1310,7 +1310,7 @@ socket's two endpoints and a healthy run's equivalent connection.
 ## Open: the startup freeze has a second failure on the other side of it, 2026-09-17
 
 Four things were measured on `4c9d1b5`, built with `just build toolbox`, all on
-the signed-in `CordialTest` profile with one client on the machine at a time.
+the signed-in `VantaTest` profile with one client on the machine at a time.
 The survey is `tools/startup-freeze-survey.sh`; the copies that ran, the logs,
 the screenshots and the scorer are under the session scratchpad at
 `agdk-combo/` (`classify.py`, `flatness.py`, `divergence.md`).
@@ -1323,8 +1323,8 @@ in 7/10 frozen in nested sway and 4/10 on the host GNOME session, signed out
 **mocktail's default AGDK combination removes the freeze and replaces it with a
 blank window.** mocktail keeps `initializeNativeCode` and skips both the AGDK
 surface natives and the lifecycle natives; its two gates default to 0
-(`legacy_runtime.cc:2873`). Cordial can be put in that state today with
-`CORDIAL_SKIP_AGDK_SURFACE=1 CORDIAL_SKIP_AGDK_LIFECYCLE=1`. Fifteen runs an
+(`legacy_runtime.cc:2873`). Vanta can be put in that state today with
+`VANTA_SKIP_AGDK_SURFACE=1 VANTA_SKIP_AGDK_LIFECYCLE=1`. Fifteen runs an
 arm, interleaved:
 
 ```text
@@ -1389,7 +1389,7 @@ in the Home trace.
 **Ruled out, and not to be re-run:** every single-group AGDK skip (state-only,
 focus-only, lifecycle-only, surface-only) is blank; the blocking-acknowledgement
 account is refuted at 0/15 against 0/15 (`native/game_activity.cpp`);
-`CORDIAL_SKIP_AGDK=1` dies on `Can't initialize the TaskScheduler before flags
+`VANTA_SKIP_AGDK=1` dies on `Can't initialize the TaskScheduler before flags
 have been loaded`, and that path never calls `nativeInitClientSettings`,
 `nativePostClientSettingsLoadedInitialization3` or
 `nativeInitializeNativeFlags` at all, so the crash is that gap rather than a
@@ -1400,7 +1400,7 @@ conflict between skipping AGDK and loading flags.
 Prevention stays out of reach; recovery has a real but unproven candidate.
 Full data and method: `$S/freeze-recovery.md`.
 
-**`CORDIAL_STARTUP_RETRY=1` re-confirmed harmful, n=10 pairs against a fresh
+**`VANTA_STARTUP_RETRY=1` re-confirmed harmful, n=10 pairs against a fresh
 `d61375b`+`just build toolbox` binary.** This switch already carried a
 "must stay off" warning from a single anecdotal run on 2026-08-25
 (`b4368c1`); this session re-ran it properly. It fired 5 times across 10
@@ -1415,11 +1415,11 @@ touch the initial freeze, only make it worse once it has happened. Left off.
 by measurement.** A concurrent session's Sober comparison
 (`$S/sober-comparison.md`) found Sober's engine never once logs `Forcing
 finalize experience coordinator` in 17 signed-in launches (0/17), where every
-signed-in Cordial run — good and frozen alike — logs it exactly once; the
-hypothesis was that Cordial's flags/settings handshake only lands ahead of
+signed-in Vanta run — good and frozen alike — logs it exactly once; the
+hypothesis was that Vanta's flags/settings handshake only lands ahead of
 the app bridge when it wins a race against the engine's own asynchronous
 `bootstrapTheApp` (measured elsewhere at 0/75 winning it), and that losing
-that race is what puts a run on the retry-dependent path. `CORDIAL_SYNC_BOOTSTRAP=1`
+that race is what puts a run on the retry-dependent path. `VANTA_SYNC_BOOTSTRAP=1`
 (`load.rs`, right before `initializeNativeCode`) tests this directly: it calls
 the existing, already-idempotent `run_bootstrap()` synchronously, so the
 handshake is complete before the engine's own bootstrap thread is even
@@ -1432,24 +1432,24 @@ present-count rule mis-scored one of those three as HEALTHY — `p10=1,p25=0`
 slipped past `p10==p25`, another instance of the known false-negative). n=4
 is not enough to rule the ordering fix out at a rate below its natural
 variance, but it directly contradicts "a run that never asks for the retry
-can never be stranded": Cordial's healthy runs already ask for the retry
+can never be stranded": Vanta's healthy runs already ask for the retry
 every time, ordering fixed or not, and recover from it or don't for reasons
 this change does not touch. **Left off, not pursued further with the time
 available**; the real difference between Sober's clean single-pass finalize
-and Cordial's is still open.
+and Vanta's is still open.
 
-**`CORDIAL_STARTUP_SELFRELAUNCH=1`, a genuinely different kind of recovery,
+**`VANTA_STARTUP_SELFRELAUNCH=1`, a genuinely different kind of recovery,
 mechanism verified, outcome unproven.** Rather than asking the wedged engine
-to do anything (`CORDIAL_STARTUP_RETRY`'s mistake), this exits the whole
+to do anything (`VANTA_STARTUP_RETRY`'s mistake), this exits the whole
 process and starts a fresh one, reusing the exact lock-handoff
 (`Claim::hand_to`/`claim_for_instance`) already built for the shell-to-client
 handoff — a client handing its own profile lock to its own successor rather
-than a shell handing it to a client. Capped at one hop via `CORDIAL_RELAUNCHED`.
+than a shell handing it to a client. Capped at one hop via `VANTA_RELAUNCHED`.
 Verified working exactly as designed every time it fired: clean exit, new
 PID, lock adopted by the child (confirmed by the child completing cookie
 restore etc, which only happens once the lock is held), zero interference on
 a healthy run (the gate never opens above `RECOVERY_MAX_PRESENTS`). n=20
-pairs, signed-in `CordialTest`: control 6/20 FROZEN, selfrelaunch 3/20 FROZEN
+pairs, signed-in `VantaTest`: control 6/20 FROZEN, selfrelaunch 3/20 FROZEN
 — **but the relaunch only fired 3 times, and all 3 of those fired instances
 still ended FROZEN**, because the freshly-relaunched attempt froze again too.
 Zero observed recoveries. The arm's lower overall FROZEN count is explained
@@ -1473,7 +1473,7 @@ cheap next arm.
 The previous entry here described two independent defects and a next step of
 "check WebKitGTK builds on Ubuntu 24.04 and stop if it fails". Both defects
 are now fixed and all four measurements the previous entry asked for have
-been taken, against `Cordial-0.13.2-47-g6ff10ca-x86_64.AppImage` (86MB).
+been taken, against `Vanta-0.13.2-47-g6ff10ca-x86_64.AppImage` (86MB).
 
 **WebKitGTK builds on Ubuntu 24.04.** `libwebkitgtk-6.0-dev` 2.52.6 is on
 `noble-updates/universe`; the workspace, including the `webview` feature,
@@ -1486,7 +1486,7 @@ down from `v4_20` to `v4_12` first to make any Ubuntu base usable at all.
 excludelist -- had no actual fix in `build-appimage.sh` before this pass**,
 only a measurement against the Fedora build recorded in this file's previous
 version. Building on Ubuntu without one produced an AppImage that failed
-outright on plain `ubuntu:24.04`: `cordial-shell: error while loading shared
+outright on plain `ubuntu:24.04`: `vanta-shell: error while loading shared
 libraries: libharfbuzz.so.0: cannot open shared object file`, because
 linuxdeploy printed `Skipping deployment of blacklisted library
 .../libharfbuzz.so.0` while bundling it -- an assumption true of a stock
@@ -1503,8 +1503,8 @@ zero.
 
 **The first version of that fix would have shipped a worse bug than the one
 it closed.** It filled the closure for `libc.so.6` and `ld-linux-x86-64.so.2`
-too -- both are genuinely `DT_NEEDED` by `cordial-shell`/`cordial-run` and
-were genuinely missing from the AppDir. But `cordial-shell` carries `RUNPATH
+too -- both are genuinely `DT_NEEDED` by `vanta-shell`/`vanta-run` and
+were genuinely missing from the AppDir. But `vanta-shell` carries `RUNPATH
 $ORIGIN/../lib` (`readelf -d`, checked before shipping), so a bundled
 `libc.so.6` in `usr/lib` would be found by the dynamic linker ahead of the
 host's, while the *interpreter* stays the host's regardless -- fixed at link
@@ -1526,7 +1526,7 @@ the glibc-symbol floor below already relies on regardless.
    before the closure fix added thirteen), every one `within GLIBC_2.39`,
    `check-glibc-floor.sh` exit 0.
 2. `ubuntu:24.04` (glibc 2.39, exactly the floor): `--appimage-extract-and-run
-   --diagnostics` printed `Cordial   0.13.2 (6ff10ca)`, exit 0.
+   --diagnostics` printed `Vanta   0.13.2 (6ff10ca)`, exit 0.
 3. `fedora:44` (glibc 2.43): same banner, exit 0.
 4. `debian:12-slim` (glibc 2.36, below the floor), the control: refused to
    start -- `version 'GLIBC_2.39' not found` against `libc.so.6`, repeated per
@@ -1534,7 +1534,7 @@ the glibc-symbol floor below already relies on regardless.
    floor claim predicts, not a confusing one.
 
 **A bundled-loader prototype worked earlier and was abandoned**, for a
-different reason than the near-miss above. It printed `Cordial 0.13.2
+different reason than the near-miss above. It printed `Vanta 0.13.2
 (323afa2)` on `debian:12-slim` (glibc 2.36). It is still the wrong answer
 because WebKitGTK execs its helper processes (`WebKitWebProcess`,
 `WebKitNetworkProcess`, `WebKitGPUProcess`) by absolute path, each carrying
@@ -1567,28 +1567,28 @@ there because there is no FHS -- no `/lib64/ld-linux-x86-64.so.2` for the
 interpreter to land on -- regardless of how new the host glibc is. The fix is
 the user's: `programs.appimage.enable = true` with binfmt. That belongs in the
 install documentation and is not written down yet. `flake.nix` builds
-Cordial for them (built and `--help` run on 2026-10-01, never launched into a
+Vanta for them (built and `--help` run on 2026-10-01, never launched into a
 game; see CONTRIBUTING.md), and it needs
-`nix run "github:luohoa97/cordial?submodules=1"`.
+`nix run "github:gpt4omni/vanta?submodules=1"`.
 
 ## Open: the gamepad-ordinal probe ran; the pre-login shell is not a readout of `gamepadType`, 2026-08-30
 
 `android/gamepad.rs`'s module comment proposes settling `RBX::GamepadType`'s
-ordinals by announcing `CORDIAL_GAMEPAD_PROBE=1 CORDIAL_GAMEPAD_TYPE=N` and
+ordinals by announcing `VANTA_GAMEPAD_PROBE=1 VANTA_GAMEPAD_TYPE=N` and
 reading the button glyphs the engine draws. That probe was run — no code
 changed, since it was already wired — and it does not settle the ordinals,
 because **the screens reachable pre-login draw no per-type glyphs at all.**
 
-**What was run.** `CORDIAL_GAMEPAD=1 CORDIAL_GAMEPAD_PROBE=1
-CORDIAL_GAMEPAD_TYPE=N` against the existing `target/release/cordial-run`
+**What was run.** `VANTA_GAMEPAD=1 VANTA_GAMEPAD_PROBE=1
+VANTA_GAMEPAD_TYPE=N` against the existing `target/release/vanta-run`
 (commit `382fe7f`, whose `gamepad.rs`/`input.rs`/`game_activity.cpp` are
 byte-identical to `origin/main` `b26bc31` — diffed before relying on it, since
 no build was done for this pass under a tight memory/disk budget: `free -h`
 showed 22Gi/22Gi swap in use and `/var/home` had 5.1G free). Own profile at
-`XDG_DATA_HOME=~/.cache/cordial-agent-gamepad`, screenshotted with
-`cordial-mcp`'s `screenshot`/`info`/`click` commands over its `devctl.sock`
+`XDG_DATA_HOME=~/.cache/vanta-agent-gamepad`, screenshotted with
+`vanta-mcp`'s `screenshot`/`info`/`click` commands over its `devctl.sock`
 directly (no MCP client was wired up for this session, so the wire protocol in
-`tools/cordial-mcp.py`'s `Cordial.send` was reimplemented in nine lines rather
+`tools/vanta-mcp.py`'s `Vanta.send` was reimplemented in nine lines rather
 than routed through the MCP stdio loop).
 
 **N swept: 0, 1, 2, 99.** All four reach `Landing` normally — same layout, same
@@ -1618,8 +1618,8 @@ unrelated question: "Everything above stops at the landing page. A signed-out
 client never enters an experience." Getting past it needs either signed-in
 credentials — which nobody running this pass has, and which AGENTS.md's
 tooling policy forbids typing in on a user's behalf regardless — or the user's
-own `CordialTest` profile, which is exactly the one this pass was told not to
-touch (`~/.local/share/cordial/profiles/CordialTest`, its own `devctl.sock`
+own `VantaTest` profile, which is exactly the one this pass was told not to
+touch (`~/.local/share/vanta/profiles/VantaTest`, its own `devctl.sock`
 already on disk from a previous session).
 
 **So the ordinal is still unknown, and the next attempt should not repeat this
@@ -1639,13 +1639,13 @@ box height still sized for the pre-fix text, would read exactly like this.
 
 **It does not.** Measured against a running client (`--profile agent-centring`,
 fresh and signed out, under sway with `tools/build-wl-holders.sh` devices held
-open, `CORDIAL_DEV_CONTROL=1 CORDIAL_TRACE_TEXT=1`), across every TextBox
+open, `VANTA_DEV_CONTROL=1 VANTA_TRACE_TEXT=1`), across every TextBox
 reachable without signing in -- the Sign In username and password fields, the
 Account Recovery username/email and phone fields, and the Get One-Time Code
 email field, five distinct specs across two font sizes (16 and 17) and both a
 plain and a masked field:
 
-- **Rectangle.** `cordial_textbox`'s `x y w h` matched the engine's own
+- **Rectangle.** `vanta_textbox`'s `x y w h` matched the engine's own
   `text editor placed from engine ...` trace line exactly, to the float, on
   every one of eight samples. `x=470 y=295.00003 w=340 h=22` on the username
   field, `x=470 y=361.00003 w=304 h=22` on the password field, `x=29 y=87.5
@@ -1657,7 +1657,7 @@ plain and a masked field:
   candidate this bug's phrasing suggests ("the box isn't where it should be").
   It is not: horizontal, vertical and size are all exact.
 - **Text position within the rectangle**, measured the only way that can see
-  it -- a `grim` screenshot of the composited window (never `cordial_screenshot`,
+  it -- a `grim` screenshot of the composited window (never `vanta_screenshot`,
   which reads the engine's own swapchain and cannot see the GTK layer at all),
   cropped to the box and read pixel-by-pixel for ink rows and columns. On the
   username field the engine's own unfocused rendering of "testuser" centres at
@@ -1688,9 +1688,9 @@ plain and a masked field:
 **Not reached, and why.** The most likely place for a non-default alignment is
 the chat box (`/`) or a restyled TextBox inside an experience, neither of which
 exists at the signed-out Landing page. Reaching either needs a signed-in
-profile. `CordialTest` -- the profile AGENTS.md designates for exactly this --
-was held by a live client the entire session (`pidof cordial-run` returned it
-throughout, `ps` showed it launched from `cordial-shell`, i.e. a human's own
+profile. `VantaTest` -- the profile AGENTS.md designates for exactly this --
+was held by a live client the entire session (`pidof vanta-run` returned it
+throughout, `ps` showed it launched from `vanta-shell`, i.e. a human's own
 session rather than a leftover agent specimen), and no other profile on this
 machine is this agent's to sign into. So the investigation stopped there:
 refuted on every surface reached, unconfirmed on the one surface most likely to
@@ -1701,7 +1701,7 @@ password field's caret centred about 1.5px low of the box's logical centre,
 and its caret was visibly shorter than the plain username field's for the
 identical font, size and box height -- both true, both under 2px, and both
 almost certainly GTK's own invisible-char glyph having different line metrics
-in Builder Sans than a Latin letter does, rather than anything Cordial computes.
+in Builder Sans than a Latin letter does, rather than anything Vanta computes.
 Not the reported bug, not investigated further.
 
 ## Fixed (X axis), UNVERIFIED end to end (Y axis), 2026-08-30
@@ -1719,7 +1719,7 @@ mocktail's. Applied to this struct's slots it settles all of `i6`=`xAlignment`,
 `i7`=`yAlignment`, `i9`=`font` (confirming `font_slot`'s existing default
 rather than merely excusing it), `i10`=`textInputType`, `i11`=`returnKeyType`.
 `i6`/`i7` are renamed to `x_alignment`/`y_alignment` in `RawTextBoxInfo` and
-`CordialTextBoxInfo`; `i9`/`i10`/`i11` are left numbered to keep this change to
+`VantaTextBoxInfo`; `i9`/`i10`/`i11` are left numbered to keep this change to
 the slots the fix needed -- see `native/android_classes.cpp`'s updated comment
 for the reasoning kept in one place.
 
@@ -1750,14 +1750,14 @@ vertical_placement_centre_is_untouched_top_and_bottom_anchor` and
 `..._clamps_a_natural_height_taller_than_the_box`) and no live measurement at
 all. The next session that can reach a joined experience or a restyled TextBox
 should focus one with a non-default alignment, read `xAlign`/`yAlign` off
-`cordial_textbox`, and take a `grim` composited screenshot the same way this
+`vanta_textbox`, and take a `grim` composited screenshot the same way this
 entry did, before trusting the vertical half of this fix.
 
 **Measured:** `cargo build --release` and `cargo test --workspace` both clean
 on this change, including three new tests and the renamed fields in
-`editor_font.rs`'s and `cordial-linker-sys`'s existing slot tests, which still
-pass under the new names -- 156/156 in `cordial-runtime`, 332/332 in
-`cordial-shell`, 0 failures workspace-wide, run twice (once at `-j4`, once at
+`editor_font.rs`'s and `vanta-linker-sys`'s existing slot tests, which still
+pass under the new names -- 156/156 in `vanta-runtime`, 332/332 in
+`vanta-shell`, 0 failures workspace-wide, run twice (once at `-j4`, once at
 `-j2` after a memory advisory) with the same result both times.
 
 ## The X-axis ordinals above were themselves backwards, corrected 2026-09-26
@@ -1793,7 +1793,7 @@ evidence about which ordinal the arm should name -- only Roblox's own
 documentation is.
 
 **Still not measured against a live `Right`- or `Center`-styled box.** Five
-launch attempts against the signed-in `CordialTest` profile in a nested,
+launch attempts against the signed-in `VantaTest` profile in a nested,
 headless sway (the setup `tools/text-input-e2e.py` and the multiline entry
 above both use successfully) all hit the pre-existing signed-in startup
 freeze instead of reaching a joinable state: `presents` stuck at 0 or 1 while
@@ -1811,7 +1811,7 @@ the rectangle.
 
 ## Open: a camera sensitivity driven negative and persisted, 2026-08-30
 
-Reported on Discord: *"my camera on cordial lwk just fried itself and went to a
+Reported on Discord: *"my camera on vanta lwk just fried itself and went to a
 sensetivity of like -4 or something tried restarting the game and its just
 cursed"*, plus *"wasnt able to resize the window in that state"*.
 
@@ -1821,10 +1821,10 @@ is Roblox's own, in
 `<Item class="UserGameSettings">`: `MouseSensitivity`,
 `MouseSensitivityFirstPerson`, `MouseSensitivityThirdPerson` and
 `GamepadCameraSensitivity`, all `1` on a healthy profile. Confirmed identical
-across five profiles on this host, host and Flatpak roots alike. Close Cordial
+across five profiles on this host, host and Flatpak roots alike. Close Vanta
 so the lock releases, set them back to 1 or delete the file.
 
-**Cordial does not write it.** Grepped `crates/` for `GlobalBasicSettings`,
+**Vanta does not write it.** Grepped `crates/` for `GlobalBasicSettings`,
 `MouseSensitivity` and `UserGameSettings`: one hit, in `load.rs:2505-2521`,
 handing the engine a directory path. The engine writes the file itself. So the
 persistence in symptom 2 is fully explained by symptom 1 -- something drove
@@ -1835,7 +1835,7 @@ Roblox's own slider past its range and the engine saved it.
 `WHEEL_AXIS_STEP = 10.0`, and that constant's own comment is marked `INFERRED`:
 "10.0 is what mutter and Weston both use ... a compositor that disagrees makes
 every notch scroll by the wrong amount but still in the right direction."
-`CORDIAL_WHEEL_SCALE` (`input.rs:1897`) multiplies on top.
+`VANTA_WHEEL_SCALE` (`input.rs:1897`) multiplies on top.
 
 Sober #105 corroborates the premise from outside this project: scrolling far too
 fast on KDE Plasma/Wayland, with a maintainer replying that a compositor sending
@@ -1846,7 +1846,7 @@ carries the value from 1.0 through zero into strongly negative -- matching both
 the magnitude and the sign.
 
 **That is a fit, not a measurement.** The control is still open and is cheap:
-drive a known number of notches at the slider with `CORDIAL_WHEEL_SCALE=1` and
+drive a known number of notches at the slider with `VANTA_WHEEL_SCALE=1` and
 again altered, and compare how far the value moves per notch. If one notch moves
 it more than one step, the bug is measured. Nobody has done it -- the run was
 declined on the day for memory pressure and to avoid killing a live client.
@@ -1947,11 +1947,11 @@ instance of the same class was found and fixed alongside them.
   see ADR-021.
 - **Denials, made visible.** `Broker::denials()` is still the record, but
   nothing outside one plugin's own serving thread could ever read it -- a new
-  `cordial_plugins::denials` module persists a denial to
+  `vanta_plugins::denials` module persists a denial to
   `plugin-denials.json` per profile the first time it happens, cleared the
   moment the matching capability is granted (`grants::set`'s callers now also
   call `denials::clear`, wired in `settings.rs`). A capability switch that has
-  a live denial on record says so in its own subtitle -- "Cordial has refused
+  a live denial on record says so in its own subtitle -- "Vanta has refused
   this at least once because it was not granted" -- which is a stronger claim
   than the existing "Not allowed" line, because it means the plugin actually
   asked and was actually refused, not merely that nobody has granted it yet.
@@ -1963,7 +1963,7 @@ instance of the same class was found and fixed alongside them.
   by design.** `start_all` read the grants file exactly once, before any
   plugin thread existed, and never again -- so a capability turned on in
   Settings had no effect on an already-running plugin until the next launch.
-  Measured on a live Flatpak instance: `cordial-shell` started at 14:19:12,
+  Measured on a live Flatpak instance: `vanta-shell` started at 14:19:12,
   every capability `discord-presence` asked for was granted through Settings,
   and `plugin-grants.json` was written at 14:20:51 -- ninety seconds into a
   run whose broker still held the empty set it read before the file existed.
@@ -1989,7 +1989,7 @@ same `grants::load` call, is tested directly.
 **The Discord Presence plugin does not appear as a built-in under `just dev --in
 toolbox`.** Reported from use, not yet diagnosed. Built-in plugins are not
 embedded in the binary -- there is no `include_dir!` or `include_str!` anywhere
-in `cordial-plugins` -- so they are read from a directory on disk, and a
+in `vanta-plugins` -- so they are read from a directory on disk, and a
 development build that has not had `plugins/` installed beside it will list
 none. Every shipping package installs them, so this is a developer-environment
 trap rather than a user-facing bug, which is exactly why it will keep being
@@ -1997,7 +1997,7 @@ rediscovered.
 
 **The plain host build has no web view at all, and it fails silently in the
 shape this file keeps warning about.** `just client` and `just dev` on the bare
-host build without `--features cordial-shell/webview,cordial-runtime/webview`,
+host build without `--features vanta-shell/webview,vanta-runtime/webview`,
 so `dialog_in_front`, `webview_dialog_opened`/`closed` and the `sync_pointer_lock`
 gate are dead code in that binary: every `openWindow` falls through to the
 external browser. The client says so at startup -- `webview: built without the
@@ -2006,7 +2006,7 @@ and `--in distrobox` builds, and every shipping package, link it. An agent
 testing the dialog gate on a host build would be measuring nothing and would
 have no way to tell.
 
-**A third instrument that does less than its name says: `cordial_text` cannot
+**A third instrument that does less than its name says: `vanta_text` cannot
 type punctuation.** `devctl`'s `text` verb drives `script_type`, whose
 `ascii_to_evdev` (`input.rs:2512`) maps `a-z`, `1-9`, `0` and space and returns
 `None` for everything else. Every other character is skipped in silence -- no
@@ -2017,10 +2017,10 @@ verifying the `/` fix, which caught it in its own harness before drawing a
 conclusion from it. Use a real virtual keyboard for anything outside that table.
 
 **And the development MCP cannot test that gate either, even on the right
-build.** `cordial_click`/`cordial_move` go through `devctl.rs` to
+build.** `vanta_click`/`vanta_move` go through `devctl.rs` to
 `android::input::script_move`/`script_button`, which call `pass_mouse_move`/
 `pass_mouse_button` directly. The `dialog_in_front()` check and the
-`CORDIAL_TRACE_MOUSE=1` "click withheld" line live only inside the real
+`VANTA_TRACE_MOUSE=1` "click withheld" line live only inside the real
 `wl_pointer` listener callbacks, which fire exclusively from genuine compositor
 seat events. A devctl click therefore always reaches the engine whether or not a
 dialog is up, and observing that demonstrates nothing about the bug. Testing it
@@ -2031,7 +2031,7 @@ error as measuring a frame rate with present counts.
 ## Open: the corners bleed through, and it is the opaque region again, 2026-08-28
 
 Reported with a screenshot: at the four corners of the window, **the desktop
-behind Cordial is visible** -- the actual terminal underneath, not a white or
+behind Vanta is visible** -- the actual terminal underneath, not a white or
 grey fill -- against a sharp-cornered Roblox rectangle inside a rounded window.
 Described first as "white stuff bleeding out, like forming a sharp corner, like
 it fades in and out like roblox is getting layered as we go".
@@ -2045,16 +2045,16 @@ lowered canvas on a different compositor, where a falsely-opaque region left the
 subsurface uncomposited and the window was "a flat sheet of Adwaita grey" while
 the engine presented at sixty frames a second.
 
-`refresh_opaque_region` (`crates/cordial-shell/src/host_window.rs:970-1013`) is
-the one place Cordial tells the compositor which toplevel pixels are solid. In
+`refresh_opaque_region` (`crates/vanta-shell/src/host_window.rs:970-1013`) is
+the one place Vanta tells the compositor which toplevel pixels are solid. In
 the ordinary state it is exactly two calls: `create_rectangle` over the window's
 bounds, then `subtract_rectangle` of the canvas cutout. **Nothing anywhere in
 this tree computes, reads or references a corner radius** -- the only
-`border-radius` in the file is 8px on `.cordial-text-fallback`, an unrelated
+`border-radius` in the file is 8px on `.vanta-text-fallback`, an unrelated
 chrome bubble for text entry. So libadwaita clips the toplevel to a rounded
-rect, those corner pixels genuinely carry alpha < 1, and Cordial declares them
+rect, those corner pixels genuinely carry alpha < 1, and Vanta declares them
 opaque anyway. A compositor that trusts the hint stops repainting what is behind
-them, and what stays there is whatever was on screen before Cordial mapped --
+them, and what stays there is whatever was on screen before Vanta mapped --
 which is why it is the terminal, and why it fades as damage tracking catches up.
 
 The rectangle is now correctly *sized* and its corners are still lying.
@@ -2068,13 +2068,13 @@ opaque area than is true. The second is duller and safer: an under-declared
 opaque region costs a little compositing work and can never produce a stale
 pixel, which is the direction this bug wants erring in.
 
-The radius itself is the theme's, not Cordial's, so it has to be read rather
+The radius itself is the theme's, not Vanta's, so it has to be read rather
 than hardcoded -- and it is zero when the window is maximised or tiled, which is
 worth handling because that is how a lot of people run this.
 
 **Not attempted here**, deliberately: the change is easy to get subtly wrong,
 and the only instrument that can see it is a photograph of the window.
-`cordial_screenshot` reads the engine's own swapchain and therefore cannot see
+`vanta_screenshot` reads the engine's own swapchain and therefore cannot see
 the GTK surface or anything behind the window at all -- it would show a perfect
 frame while the corners were still wrong.
 
@@ -2082,13 +2082,13 @@ frame while the corners were still wrong.
 corner/transparency terms and the only one with matching content, #1460
 "transparent/glitched window", is a broken D-Bus session under a custom window
 manager. That is expected -- Sober does not put the engine in a subsurface
-inside a libadwaita toplevel, so this whole class of bug is Cordial's own
+inside a libadwaita toplevel, so this whole class of bug is Vanta's own
 (ADR-011).
 
 **One thing ruled out on the way.** The first guess here was that
-`.cordial-engine-host drawingarea { background-color: transparent; }` was making
+`.vanta-engine-host drawingarea { background-color: transparent; }` was making
 the window see-through. It is not: the toplevel is deliberately kept opaque and
-only becomes transparent under the `.cordial-canvas-below` class, while the
+only becomes transparent under the `.vanta-canvas-below` class, while the
 engine is lowered behind a dialog. The comment above that CSS says so and is
 correct. Changing it would have been a fix to something that was not broken.
 
@@ -2118,13 +2118,13 @@ so this is a decision about throughput and not about capability. And it
 **refuses `HEAD` with 405**, so anything that wants the length before
 transferring has to use a one-byte ranged `GET`.
 
-**Cordial's own downloader is already the fastest thing measured**: 220.1 MiB
+**Vanta's own downloader is already the fastest thing measured**: 220.1 MiB
 in 13 s = **16.93 MiB/s**, and 18.00 MiB/s on a second download in the same
 session, taken from its own `Progress::Fetching` stream. The whole APK arrives
 in about thirteen seconds. `ureq` called directly on the same URL managed 15.16
 MiB/s and `curl` 11.1--12.4 on HTTP/1.1 and 7.0--8.1 forced to HTTP/2.
 
-**Do not read that table as "Cordial beats curl".** Only the 1/4/8 comparison
+**Do not read that table as "Vanta beats curl".** Only the 1/4/8 comparison
 was interleaved within a single run; the client-to-client numbers were taken
 minutes apart on a VPN whose throughput visibly drifted across the session, and
 the ordering between them is not something these measurements establish. What
@@ -2132,7 +2132,7 @@ they do establish is that the existing single stream is not leaving bandwidth
 on the table, which is the question that decides the feature.
 
 **One retraction, because the mistake is the reusable part.** An earlier reading
-here said Cordial's downloader managed 2.35 MiB/s against curl's 10 -- a 4x gap
+here said Vanta's downloader managed 2.35 MiB/s against curl's 10 -- a 4x gap
 that would have been the real finding. It was an artefact of the instrument.
 `examples/fetch_probe.rs` fetches once per provider in its loop and then a
 second time through `provider::obtain`, so the progress stream contains two
@@ -2168,21 +2168,21 @@ unlocked cursor accelerating when the system has acceleration off, and
 *fullscreen changing it*), #55 ("cursor sensitivity scales with window size",
 answered by Sober as an artifact of enabling SDL relative mode whenever the
 window was fullscreened), #2072 and #1441 (HiDPI and fractional display scale).
-Every one of those is a scale factor. **Cordial applies no scale factor to
-pointer coordinates anywhere.** Grepping both `crates/cordial-runtime/src` and
-`crates/cordial-shell/src` for `buffer_scale`, `fractional_scale`,
+Every one of those is a scale factor. **Vanta applies no scale factor to
+pointer coordinates anywhere.** Grepping both `crates/vanta-runtime/src` and
+`crates/vanta-shell/src` for `buffer_scale`, `fractional_scale`,
 `device_pixel_ratio`, `scale_factor`, `hidpi` and `dpi_scale` returns exactly one
-hit, and it is the help text for `CORDIAL_DPI_SCALE` in `load.rs`. The canvas
+hit, and it is the help text for `VANTA_DPI_SCALE` in `load.rs`. The canvas
 size and the pointer coordinates delivered against it are both GTK surface-local
 logical units; `wl_pointer.motion`'s `wl_fixed_t` is decoded with
 `fixed_to_f32(v) = v / 256.0`, which is the fixed-point inverse and not a scale,
 and `dispatch_pointer_motion` passes the pair to the engine untouched. Sober's
-bugs were in machinery Cordial does not have.
+bugs were in machinery Vanta does not have.
 
 **What the code does, read out of it:**
 
 - **Cursor unlocked over the canvas.** The compositor has already run the
-  position through the desktop's pointer profile before Cordial sees it, and
+  position through the desktop's pointer profile before Vanta sees it, and
   `pass_mouse_move` derives its delta by subtracting the previous absolute
   position. So on this reading the desktop's acceleration reaches the engine
   here and the `PointerAcceleration` setting is never consulted --
@@ -2193,29 +2193,29 @@ bugs were in machinery Cordial does not have.
   **This is exactly the state the report says is broken**, so treat the
   paragraph above as what the code is arranged to do rather than as what
   happens. `shell_config.rs:300-306` goes further and says the desktop's setting
-  applies to the unlocked cursor "whether Cordial likes it or not"; the report
+  applies to the unlocked cursor "whether Vanta likes it or not"; the report
   contradicts it, and a comment that confident about a behaviour nobody has
   measured is the shape this file exists to warn about. Nothing here has been
   observed in that state.
 - **Locked.** `relative_pointer_motion` picks the unaccelerated pair unless
-  `CORDIAL_POINTER_ACCEL=always`. Raw is the shipped default and is deliberate.
+  `VANTA_POINTER_ACCEL=always`. Raw is the shipped default and is deliberate.
   Settings offers "Only the cursor" and "Cursor and camera" for it.
 - **The setting only reaches a client the shell launched.** `launch.rs:397` is
-  the one place `CORDIAL_POINTER_ACCEL` is set, and `just dev`, `just client`
-  and a hand-run `cordial-run` set none of it. **Anybody testing this from a
+  the one place `VANTA_POINTER_ACCEL` is set, and `just dev`, `just client`
+  and a hand-run `vanta-run` set none of it. **Anybody testing this from a
   terminal is always testing the default**, whatever Settings says, and that is
   worth knowing before concluding the switch does nothing.
 
 **The open question, half of it now measured.**
 `engine_wants_pointer_lock()` polls `nativeGetMainWindowIsMouseLockedCenter`, and
 `input.rs` said the direction of that call had never been confirmed: a getter
-Cordial had never called, where a dead one and an idle one look identical.
+Vanta had never called, where a dead one and an idle one look identical.
 
-Two 30-second runs on 2026-08-28 with `CORDIAL_TRACE_MOUSE=1`, on the home page,
+Two 30-second runs on 2026-08-28 with `VANTA_TRACE_MOUSE=1`, on the home page,
 gave the same two lines both times:
 
     input: nativeGetMainWindowIsMouseLockedCenter resolved
-    [cordial] nativeGetMainWindowIsMouseLockedCenter() -> false
+    [vanta] nativeGetMainWindowIsMouseLockedCenter() -> false
 
 **So the getter is alive**: it resolves, it is called on every pump, it answers,
 and it does not throw. The dead-symbol branch is closed and the comment in
@@ -2231,7 +2231,7 @@ In the order they are worth eliminating, with what separates them:
    or sticks while the user is on the home page routes all motion through
    `relative_pointer_motion`, which takes the *unaccelerated* pair under this
    very setting. That would present precisely as "no acceleration in the Roblox
-   UI". `CORDIAL_TRACE_MOUSE=1` prints every transition, so one traced session
+   UI". `VANTA_TRACE_MOUSE=1` prints every transition, so one traced session
    in the UI separates this from everything below -- and the two runs already
    done show `-> false` on the home page with nobody touching the mouse, which
    is suggestive and not conclusive, because neither run moved a pointer.
@@ -2241,7 +2241,7 @@ In the order they are worth eliminating, with what separates them:
    `dx`/`dy` rather than the first two. Those deltas are differences of
    already-accelerated absolutes, so acceleration should survive them -- unless
    the engine applies a gain of its own, in which case what the user is watching
-   is Roblox's cursor and not the compositor's, and Cordial's coordinates are
+   is Roblox's cursor and not the compositor's, and Vanta's coordinates are
    innocent. Distinguished by whether the compositor's own cursor is visible and
    moving normally over the same window at the same time.
 3. **Stale `DisplayMetrics`, as a gain on anything the engine derives from
@@ -2249,23 +2249,23 @@ In the order they are worth eliminating, with what separates them:
    `DisplayMetrics` exactly once, from inside `initializeNativeCode`, and gets
    `1280x720 density=1.000 densityDpi=160` -- and `load.rs:2329` calls
    `set_display_size` only *after* `initializeNativeCode` has returned
-   (load.rs:2301), so Cordial's correction can never reach that one read, at any
+   (load.rs:2301), so Vanta's correction can never reach that one read, at any
    resolution, windowed or fullscreen. The comment at that call site already says
    the framework layer "reported the compiled 1280x720 whatever the window was
    doing". **Whether any pointer arithmetic in the engine is derived from it is
    unestablished** -- nothing in `native/` ties mouse deltas to `DisplayMetrics`
    or to `PlatformParams.dpiScale` -- so this is a structural candidate and not a
    diagnosis.
-4. **The compositor is not accelerating this window.** Cordial's own motion path
+4. **The compositor is not accelerating this window.** Vanta's own motion path
    performs no arithmetic at all, so if acceleration is genuinely absent from the
    coordinates that arrive, the cause is upstream of anything in this repository.
-   Separated by comparing the cursor's speed over the Cordial window against the
+   Separated by comparing the cursor's speed over the Vanta window against the
    same movement over any other window in the same session.
 
 **There is no way to observe which of these is happening**, and that is its own
 defect: `pointer_acceleration()`'s answer is never printed, so neither a user nor
 a developer can tell whether the setting took effect. One line under
-`CORDIAL_TRACE_MOUSE=1` naming the pair in use would fix it, and this project has
+`VANTA_TRACE_MOUSE=1` naming the pair in use would fix it, and this project has
 lost enough time to instruments that measure nothing. Proposed, not written.
 
 The older framing, kept because it still applies to the camera half:
@@ -2279,10 +2279,10 @@ The older framing, kept because it still applies to the camera half:
   movement goes through the raw relative path** and acceleration is stripped
   from a cursor the user thinks is free.
 
-**The measurement still owed.** A client run with `CORDIAL_TRACE_MOUSE=1`
+**The measurement still owed.** A client run with `VANTA_TRACE_MOUSE=1`
 entering first person and then leaving it, watching for a `-> true`. The two
 runs above establish only that the getter answers at all. The control is
-the same run with `CORDIAL_NO_POINTER_LOCK=1`, which deliberately still polls
+the same run with `VANTA_NO_POINTER_LOCK=1`, which deliberately still polls
 and still traces so the control answers "what would it have done" rather than
 only "it did nothing" -- `sync_pointer_lock` asks the engine before the gate for
 exactly that reason. Everything above except the two quoted runs is source
@@ -2290,7 +2290,7 @@ reading and a Sober corpus search, and is labelled where it is an inference.
 
 **One more gap, found while reading and not yet costed.** `sync_pointer_lock`
 has no check of TextBox focus anywhere. If the engine's own request for a locked
-pointer does not clear when a chat box takes focus, nothing in Cordial notices,
+pointer does not clear when a chat box takes focus, nothing in Vanta notices,
 and the cursor stays captured while the user types. That is the second half of
 the maintainer's sentence and it has no code behind it either way.
 
@@ -2320,7 +2320,7 @@ fallback, never both.
 `zwp_relative_pointer_v1.relative_motion` protocol text does not say a
 `relative_motion` event for a given physical sample is written to the wire
 before, after, or interleaved with the matching `wl_pointer.motion` -- there is
-no framing available to settle it either, since Cordial binds `wl_pointer` at
+no framing available to settle it either, since Vanta binds `wl_pointer` at
 version 1 and `wl_pointer.frame` is never sent (see `PointerListener`'s own
 comment on that). So the design does not lean on an order: a relative sample
 that arrives first sits in the accumulator until the absolute report drains it;
@@ -2342,12 +2342,12 @@ in principle; a `Never` variant is still not offered, for the reason given
 where that comment now stands.
 
 **Not fixed in the same change, because the file was out of bounds**:
-`crates/cordial-shell/src/settings.rs` around line 640 gives the identical
+`crates/vanta-shell/src/settings.rs` around line 640 gives the identical
 now-superseded reasoning ("there is no unaccelerated absolute to fall back to")
 in the comment above the Settings row itself, and needs the same correction
 `shell_config.rs` got here. Left for whoever is editing that file next.
 
-**Tested**: `crates/cordial-runtime/src/android/input.rs` gained
+**Tested**: `crates/vanta-runtime/src/android/input.rs` gained
 `unaccelerated_diff_is_only_a_fallback_for_a_relative_sample`, which checks
 `resolve_mouse_delta`'s precedence with no global state at all -- the same
 shape `vulkan.rs`'s `resolve_present_mode` test uses, for the same reason --
@@ -2420,7 +2420,7 @@ answered by a comment the same change had added. What changed as a result:
   the pointer is locked" -- true when the unlocked case returned before
   reaching it, false now that unlocked motion reaches this function too
   (`pointer_acceleration` just is not called from that branch). And the locked
-  branch's comment on `CORDIAL_POINTER_ACCEL` said the unlocked cursor "has no
+  branch's comment on `VANTA_POINTER_ACCEL` said the unlocked cursor "has no
   equivalent switch because it has no honest \"off\"" -- which `shell_config.rs`'s
   own `PointerAcceleration` doc already contradicted: the unaccelerated pair is
   sitting right there in the same event, and a `NeverCursor` variant would be
@@ -2439,9 +2439,9 @@ answered by a comment the same change had added. What changed as a result:
   pull request exists. The real output is below.
 
 ```
-     Running unittests src/lib.rs (target/release/deps/cordial_linker_sys-d3d7578fc0a74ce5)
+     Running unittests src/lib.rs (target/release/deps/vanta_linker_sys-d3d7578fc0a74ce5)
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
-     Running unittests src/lib.rs (target/release/deps/cordial_plugins-8efeb9a8f0fbdf7f)
+     Running unittests src/lib.rs (target/release/deps/vanta_plugins-8efeb9a8f0fbdf7f)
 test result: ok. 220 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.05s
      Running tests/discord_presence_plugin.rs (target/release/deps/discord_presence_plugin-d9293d643fdccd73)
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
@@ -2457,9 +2457,9 @@ test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
      Running tests/settings_roundtrip.rs (target/release/deps/settings_roundtrip-656bccef8478b430)
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
-     Running unittests src/lib.rs (target/release/deps/cordial_runtime-c46babe52385b404)
+     Running unittests src/lib.rs (target/release/deps/vanta_runtime-c46babe52385b404)
 test result: ok. 311 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.50s
-     Running unittests src/bin/load.rs (target/release/deps/cordial_run-df3337dc06fabae5)
+     Running unittests src/bin/load.rs (target/release/deps/vanta_run-df3337dc06fabae5)
 test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
      Running tests/apk_read_cost.rs (target/release/deps/apk_read_cost-124096876b108917)
 test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
@@ -2467,40 +2467,40 @@ test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; fini
 test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
      Running tests/profile_configuration.rs (target/release/deps/profile_configuration-8b46ce4abfcbd812)
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
-     Running unittests src/lib.rs (target/release/deps/cordial_shell-c3156df5d9254881)
+     Running unittests src/lib.rs (target/release/deps/vanta_shell-c3156df5d9254881)
 test result: ok. 75 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.39s
-     Running unittests src/main.rs (target/release/deps/cordial_shell-eff526c383cb69da)
+     Running unittests src/main.rs (target/release/deps/vanta_shell-eff526c383cb69da)
 test result: ok. 136 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.12s
-     Running unittests src/lib.rs (target/release/deps/cordial_update-efc58d59d56c2db1)
+     Running unittests src/lib.rs (target/release/deps/vanta_update-efc58d59d56c2db1)
 test result: ok. 136 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.65s
-   Doc-tests cordial_linker_sys / cordial_plugins / cordial_runtime / cordial_shell / cordial_update
+   Doc-tests vanta_linker_sys / vanta_plugins / vanta_runtime / vanta_shell / vanta_update
    -- all "test result: ok", 0 passed or 1 ignored placeholder each, 0 failed
 ```
 
 902 passed, 0 failed, 10 ignored, across every unit-test binary, integration-test binary and
-doc-test crate in the workspace -- `cordial_runtime`'s 311 includes both new tests named above.
+doc-test crate in the workspace -- `vanta_runtime`'s 311 includes both new tests named above.
 `cargo build --release` was also run on its own first and finished clean (`Finished \`release\`
 profile [optimized + debuginfo] target(s)`); its only warnings were pre-existing dead-code ones in
-`cordial-shell`, unrelated to this change and not touched here since that crate is out of bounds
+`vanta-shell`, unrelated to this change and not touched here since that crate is out of bounds
 for this pass.
 
 **One thing observed while capturing this that is not this change's to fix.** The `cargo test`
 process itself did not exit even once every crate had reported "ok" -- something under
-`cordial_plugins`'s test suite starts a sandboxed `bwrap`/`deno` process (consistent with
+`vanta_plugins`'s test suite starts a sandboxed `bwrap`/`deno` process (consistent with
 ADR-003's plugin isolation) that inherited this shell's stdout/stderr and was still running,
 holding the pipe open, well after every test result had printed. Not chased further: it is in
-`cordial-plugins`, outside this pass's boundary, and the actual pass/fail result above was already
+`vanta-plugins`, outside this pass's boundary, and the actual pass/fail result above was already
 complete and readable in the file `tee` wrote before that process needed to exit.
 
 ## The plugin surface has two hosts, and the tests are on the wrong one, 2026-08-28
 
-**Anything you verify against `crates/cordial-plugins/src/host.rs` says nothing
+**Anything you verify against `crates/vanta-plugins/src/host.rs` says nothing
 about what a user gets.** That file holds `Session`, `Plugin` and `Pump` -- a
 complete plugin host with a bounded per-plugin queue, drop counting, core-event
 publication and a shutdown flush. `Session::new` is called in exactly two
 places, both of them tests in that crate: `tests/events_integration.rs:28` and
-`tests/discord_presence_plugin.rs:84`. The host `cordial-run` runs is
-`crates/cordial-runtime/src/plugin_host.rs`, and it is a different dispatcher.
+`tests/discord_presence_plugin.rs:84`. The host `vanta-run` runs is
+`crates/vanta-runtime/src/plugin_host.rs`, and it is a different dispatcher.
 
 This was found by a documentation pass that read every handler rather than
 trusting the nearest comment, and it had already cost something. Two of the
@@ -2509,9 +2509,9 @@ three shipped plugins did nothing:
 - **`fps-flex` called two methods that do not exist in that shape**:
   `settings.read` (a capability name; the method is `settings.get`) and
   `flags.set` with `{key, value}` where the handler requires `{values: {...}}`.
-  Both refused, neither status checked, `CordialPresentMode` never written on
+  Both refused, neither status checked, `VantaPresentMode` never written on
   any machine. Fixed in `45f90de`, with
-  `crates/cordial-plugins/tests/plugin_call_shapes.rs` as the guard: it reads
+  `crates/vanta-plugins/tests/plugin_call_shapes.rs` as the guard: it reads
   the shipped plugins as text and fails all four of its checks on the version
   that shipped.
 - **`discord-presence` is correct and now receives three of the five core
@@ -2521,14 +2521,14 @@ three shipped plugins did nothing:
   `plugin_host::publish_core` is a second producer, reachable from the client,
   and `load.rs` publishes `client.launch`, `engine.version` and
   `client.shutdown` -- all three observed arriving at the plugin in a real
-  `cordial-run`, with a control run that withheld `lifecycle.read` and received
+  `vanta-run`, with a control run that withheld `lifecycle.read` and received
   none of them. What survives is narrower and still worth knowing:
   `client.ready` and `window.resized` are in `core_events::ALL` and published
   by nothing, so the plugin's `READY` branch is unreachable and its presence
   reads "Starting up" for the whole session.
 
 The general lesson is the one AGENTS.md already records about
-`CORDIAL_AUDIO_HOST=oss`, which was measured by calling the selector directly
+`VANTA_AUDIO_HOST=oss`, which was measured by calling the selector directly
 and was false in the client because three gates meant the selector never ran.
 **A green test suite is evidence about whatever it called.** Before believing a
 plugin-surface claim, check which host the test drove -- and prefer a client run
@@ -2536,11 +2536,11 @@ with the plugin enabled, which is the only instrument that answers the question
 a user is asking.
 
 What is worth doing about the structural half: either the runtime host should
-use cordial-plugins' pieces rather than reimplementing them, or the pieces it
+use vanta-plugins' pieces rather than reimplementing them, or the pieces it
 does not use should go. Two dispatchers that answer the same method names
 differently will drift again, and the drift is invisible from either side.
 **Half of that happened on 2026-08-28**: the core bus in the runtime host reuses
-`cordial-plugins`' `Pump` rather than growing a second one, so the queue, the
+`vanta-plugins`' `Pump` rather than growing a second one, so the queue, the
 drop counting and the flush are one implementation with tests on both sides of
 it. `Session` and its `handle` are still the dispatcher nobody runs.
 
@@ -2565,14 +2565,14 @@ Three sources of geometry, in this order, in `sync_text_overlay`:
    **A zero height is the trap:** on the pump tick right after focus it answers
    `x=596 y=10 w=42 h=0`, a sliver of the header bar caught mid-animation, with
    non-zero x, y and width to make it look like an answer.
-3. **A placed bar Cordial positions itself.** Now a safety net nothing lands
+3. **A placed bar Vanta positions itself.** Now a safety net nothing lands
    in, and untested as of this date. Kept deliberately; see the comment.
 
 ### Two claims this falsified, both of which had been written down
 
 - *"On the sign-in page neither fires."* False since the `<init>` hook was
   corrected to the dex's fifteen-argument signature. The spec was always being
-  constructed; Cordial was not capturing it, so `spec_known` was false and the
+  constructed; Vanta was not capturing it, so `spec_known` was false and the
   page looked as though it volunteered nothing. The sentence outlived the fix.
 - *"`nativeGetTextBoxInfo` ... returns null there, measured over three runs"*,
   read as a general claim about the call. It was measured on the sign-in page
@@ -2580,34 +2580,34 @@ Three sources of geometry, in this order, in `sync_text_overlay`:
   now answers first there, so the getter is never reached. History, not a
   current reading.
 
-Both are corrected in `crates/cordial-runtime/src/android/wayland.rs`.
+Both are corrected in `crates/vanta-runtime/src/android/wayland.rs`.
 
 ### Building this
 
 Needs the host toolchain, not the container:
 `PATH=/home/linuxbrew/.linuxbrew/bin:$PATH cargo build --release`. `target/`'s
 CMake cache is configured against that clang, and touching `native/` inside
-`distrobox enter cordial` forces a reconfigure that then fails to find its
+`distrobox enter vanta` forces a reconfigure that then fails to find its
 archiver. `tools/text-entry-check.sh` still launches the client inside the
 container, because `cage` is only there.
 
 ### The editor is a real GTK field, as of `fd0f0c6`
 
 `gtk::Text` -- the bare editable widget from inside a `GtkEntry` -- placed on
-the focused box and owning the text. Cordial's buffer is now a mirror of it,
-which is what the `CORDIAL_NO_TEXT_BUFFER` comment in `wayland.rs` has been
+the focused box and owning the text. Vanta's buffer is now a mirror of it,
+which is what the `VANTA_NO_TEXT_BUFFER` comment in `wayland.rs` has been
 asking for since it was written.
 
 Three things were reconciled to get there, and the module doc in `wayland.rs`
 predicted all three:
 
-- **Two `wl_keyboard` objects.** Cordial binds its own alongside GDK's, so both
+- **Two `wl_keyboard` objects.** Vanta binds its own alongside GDK's, so both
   see every key. `dispatch_key` now returns before touching the buffer while a
   box has focus -- after `pass_key_event`, so text keys are still kept out of
   the game exactly as before.
 - **Two `zwp_text_input_v3` objects.** GTK's wins: the widget holds the text,
   the caret rectangle and the surrounding context, which is all an input method
-  is given. Cordial's is no longer enabled, and deliberately not destroyed, so
+  is given. Vanta's is no longer enabled, and deliberately not destroyed, so
   whether two on one seat is tolerated stays answerable by running.
 - **The input region.** The punch that lets clicks reach the engine subtracts
   the canvas, and the editor is inside the canvas, so it was subtracting the
@@ -2616,7 +2616,7 @@ predicted all three:
 **What is measured:** real keys through a nested compositor's virtual keyboard
 land in the widget and nowhere else -- four `wlrctl` calls produced
 `hellohixrivals`, in order, each character once. Use `wlrctl`, not
-`cordial_text`: the MCP drives Cordial's own entry points and exercises only
+`vanta_text`: the MCP drives Vanta's own entry points and exercises only
 the path that *seeds* the widget, so it will report success whatever GTK does.
 
 Sober, for comparison, does none of this: it has no widget toolkit but does
@@ -2640,7 +2640,7 @@ failure:
 
 - **`sway`, not `cage`.** This is the correction to the paragraph that used to
   stand here. It said the double-insert guard was `INFERRED` because cage's
-  headless seat advertises no keyboard, so Cordial never binds its own
+  headless seat advertises no keyboard, so Vanta never binds its own
   `wl_keyboard` and its key path never runs -- true, and the reason every
   earlier reading was taken with half the code under test switched off.
 - **A virtual keyboard held open from before the client starts**
@@ -2652,15 +2652,15 @@ failure:
   different reason: it creates its device and exits in the same breath, which
   is a race it sometimes wins.
 - **The `textbox` verb on the development control socket**, and
-  `cordial_textbox` in the MCP. There was no readback of typed text at all
+  `vanta_textbox` in the MCP. There was no readback of typed text at all
   before: the editor's change signal prints nothing, the `text ->` trace prints
-  a byte count, and `cordial_screenshot` photographs the engine's swapchain,
+  a byte count, and `vanta_screenshot` photographs the engine's swapchain,
   which cannot see a GTK widget. It reports the editor's *actual* rectangle and
   which source placed it, not the engine's volunteered spec -- those differ, and
   the difference is the case worth testing.
 
 **So the double-insert guard is measured, not inferred: five keys produce five
-characters.** With the seat carrying a keyboard for the whole run, both Cordial's
+characters.** With the seat carrying a keyboard for the whole run, both Vanta's
 `wl_keyboard` and GDK's see every key, and exactly one insertion happens.
 
 **And one real defect fell out of the first full run.** Clicking the home search
@@ -2705,7 +2705,7 @@ chat entry more than one line tall) had its newlines flattened and its box
 handed a widget that could only ever draw one of them. `HostWindow` now also
 carries `editor_multiline`, a `gtk::TextView` in a `gtk::ScrolledWindow`, and
 `set_text_overlay` picks between the two per-box on `TextOverlay::multiline`,
-in `crates/cordial-shell/src/host_window.rs`. Font family/weight/style/size go
+in `crates/vanta-shell/src/host_window.rs`. Font family/weight/style/size go
 through one mutable `GtkTextTag` reapplied across the buffer on every change,
 because `gtk::TextView` has no per-widget attribute list the way `gtk::Text`
 does; horizontal alignment maps onto `set_justification`; the box's own
@@ -2732,13 +2732,13 @@ closing "newlines into the single-line widget on Wayland are untested".
 in the time available -- Circuit Maker 2's assembler needs a place picked and
 blueprints pasted, which a prior session already tried and could not do
 quickly, and this one did not spend the budget re-trying it. Instead:
-`cordial_linker_sys::game_activity::test_focus_textbox`, the same round trip
+`vanta_linker_sys::game_activity::test_focus_textbox`, the same round trip
 `textbox_info_arrives_slot_for_slot` already used inside that crate to prove
 the fifteen-slot FFI layout, is now reachable from devctl as `fakefocus
 <0|1> <x> <y> <w> <h> [text]` (and `fakeblur`), added for exactly this gap.
 **Every reading taken through it is SYNTHETIC**: it proves the GTK side does
 what a `multiline=1` spec says, and it proves nothing about what spec shape a
-real multi-line box actually sends. With that seam, on `cordial-agent-
+real multi-line box actually sends. With that seam, on `vanta-agent-
 multiline`, `sway`, `--game-activity`, a synthetic 400x200 `multiline=1` box:
 
 - `settext` with `"first line\nsecond line\nthird line"` (33 chars, 2
@@ -2768,7 +2768,7 @@ multiline`, `sway`, `--game-activity`, a synthetic 400x200 `multiline=1` box:
   `gtk::TextView`'s newline binding, and the widget's change signal reported
   `"ok\n"` back over the engine's clear.
 - **RETRACTED again, 2026-10-04: the first fix for that (swallow Return in the
-  multi-line editor, send the engine the raw key, `CORDIAL_EDITOR_GTK_ENTER`)
+  multi-line editor, send the engine the raw key, `VANTA_EDITOR_GTK_ENTER`)
   was the wrong owner.** It decided in the host that no multi-line box keeps
   its newline, which is the engine's call per box, and it left single-line
   boxes with a key Android never sends them. What replaced it is Android's
@@ -2782,7 +2782,7 @@ multiline`, `sway`, `--game-activity`, a synthetic 400x200 `multiline=1` box:
     dex prototype `(J)V`, `tools/dex_method.py` on classes2.dex), and the raw
     key is withheld. If a build does not export the native, the raw key is left
     alone, because it is then the only way Enter can arrive.
-  - Cordial neither blurs a box nor clears the editor on Enter. Focus and
+  - Vanta neither blurs a box nor clears the editor on Enter. Focus and
     clearing are the engine's, through `hideKeyboard` and the text callback.
   - Measured, nested sway, signed out. Synthetic boxes, `tools/text-input-e2e.py
     --only-engine-text`: 40 assertions pass; the same 40 against the old routing
@@ -2798,19 +2798,19 @@ multiline`, `sway`, `--game-activity`, a synthetic 400x200 `multiline=1` box:
   - `INFERRED`: what a real multi-line box (a chat box) does with the newline,
     and what a single-line box that is not the sign-in form does after
     ReturnPressed. No capture holds either; a signed-in run is the check, with
-    `CORDIAL_TRACE_TEXT=1` and `CORDIAL_TRACE_KEYS=1` (look for `return pressed`
+    `VANTA_TRACE_TEXT=1` and `VANTA_TRACE_KEYS=1` (look for `return pressed`
     and `withheld`, then whether `textbox blurred` follows and whether
     `engine text arrived` carries the clear). mocktail's `FinishLocked`
     (Apache-2.0, `src/runtime/roblox_text_editor.cc`) additionally drives
     `nativePassText(handle, text, finished=true)` and closes its own editor
     unless `manualFocusRelease` is set, and says that mirrors `RbxKeyboard`'s
-    action listener. **Cordial now does the same** (`input::return_pressed`,
+    action listener. **Vanta now does the same** (`input::return_pressed`,
     after the return call, for a real box whose `manualFocusRelease` is 0;
-    `CORDIAL_RETURN_PASSTEXT=0` is the control): a game's phone chat box
+    `VANTA_RETURN_PASSTEXT=0` is the control): a game's phone chat box
     stopped sending on Enter after this commit, which the sign-in fields
     (`manualFocusRelease=1`) could not show. `INFERRED` that it restores the
     send -- no signed-in run has held it; look for the
-    `nativePassText(.., finished=true)` line under `CORDIAL_TRACE_TEXT=1`.
+    `nativePassText(.., finished=true)` line under `VANTA_TRACE_TEXT=1`.
   - Escape and an outside click still need no code here: both reach the engine
     as ordinary input and it decides whether the box blurs.
     `returnKeyType`/`manualFocusRelease` (slots 11/12) are read only to be
@@ -2842,7 +2842,7 @@ tail is the throttle -- 1.0 a second, exactly, which is what this file's own
 warning about present counts has said since 2026-08-02 -- and note that **the
 medians are identical**. An average would have shown almost no difference
 between a healthy client and a client presenting one frame a second, which is
-why `cordial_fps` dividing presents by wall time cannot answer this question and
+why `vanta_fps` dividing presents by wall time cannot answer this question and
 the percentiles can.
 
 **Every `p99` near 1000ms recorded during the startup-freeze surveys is that
@@ -2884,7 +2884,7 @@ an `i6` of 0 would resolve to no font file. And 3, 4 and 5 are `SourceSans`,
 unstyled TextLabel -- so Roblox's own Android mapping does not cover Roblox's
 own default font, even though `SourceSansPro-Regular.ttf` ships in the same
 archive. That is the strongest available evidence that a fallback is mandatory
-rather than a nicety. **Superseded:** Cordial now answers 3, 4 and 5 with the
+rather than a nicety. **Superseded:** Vanta now answers 3, 4 and 5 with the
 Source Sans Pro Regular, Bold and Light files (`SOURCE_SANS_FALLBACKS` in
 `editor_font.rs`). The earlier refusal to write the ids down left a box set to
 `SourceSans` drawing in Builder Sans while `SourceSansItalic` beside it drew in
@@ -2909,7 +2909,7 @@ takes.
 
 ### What is shipped
 
-`crates/cordial-runtime/src/android/editor_font.rs` builds an id-to-face table
+`crates/vanta-runtime/src/android/editor_font.rs` builds an id-to-face table
 on first use. Measured on this host, 46 distinct files:
 `FcConfigAppFontAddFile` accepted **46 of 46 in 48.8 ms** and `FcFreeTypeQuery`
 read family, weight and slant from all 46 in **10.7 ms** -- so the mechanism
@@ -2932,7 +2932,7 @@ themselves -- cannot cross a Java `int` at all.
 
 ### What is left: which slot, and one capture
 
-`CORDIAL_TEXTBOX_FONT_SLOT=<6|7|9|10|11>` selects the slot at run time and
+`VANTA_TEXTBOX_FONT_SLOT=<6|7|9|10|11>` selects the slot at run time and
 defaults to 9; `=none` turns per-box fonts off for a control in the same
 session. The default is `INFERRED` and weakly: it rests on one capture of two
 Login-screen boxes in which slot 9 read 46 on both and never varied, and 46 is
@@ -2943,12 +2943,12 @@ is 0. Only `textColor` is genuinely pinned, by a packed ARGB value nothing else
 could plausibly be.
 
 **The experiment is one capture and it needs a person, not a change.** Focus a
-TextBox in a game that restyled its font and read `cordial_textbox`, which now
+TextBox in a game that restyled its font and read `vanta_textbox`, which now
 reports `i6 i7 i9 i10 i11 fontSlot fontId family` in its reply; or run under
-`CORDIAL_TRACE_TEXT=1`, where the `text editor placed from` line carries the
+`VANTA_TRACE_TEXT=1`, where the `text editor placed from` line carries the
 same five ints and the family beside them. Whichever int moves *and* changes
 the visible glyphs is the field. The control is a second box on the same screen
-at the default font, or the same box with `CORDIAL_TEXTBOX_FONT_SLOT=none`.
+at the default font, or the same box with `VANTA_TEXTBOX_FONT_SLOT=none`.
 
 Take it in a game using a **marketplace** font rather than merely a restyled
 one, because that settles a second question at no extra cost. If one int reads
@@ -2985,7 +2985,7 @@ implements something. Two independent agents reached that boundary on
 
 Every row of the mapping carries a third field, `fromRbxFontRatio`, a fraction
 below or equal to one that varies by font. It plainly exists to reconcile
-Roblox's text sizing with Android's per font. Nothing in Cordial consumes it,
+Roblox's text sizing with Android's per font. Nothing in Vanta consumes it,
 and applying it naively would shrink today's editor by 21% -- the symptom that
 motivated `editor_font.rs` was shape and weight, never size, so the size the
 editor draws at is a working observation and a multiplier that contradicts it
@@ -3016,7 +3016,7 @@ What is established:
 What has been ruled out, each by measurement:
 
 1. **GTK painting an opaque background.** Forcing the toplevel *and every
-   descendant* transparent (`.cordial-canvas-below *`) changed nothing.
+   descendant* transparent (`.vanta-canvas-below *`) changed nothing.
 2. **The CSS class not being applied.** Instrumented: `engine-host=true
    canvas-below=true mapped=true surface=true`, identical on the page that
    works and the one that does not.
@@ -3052,18 +3052,18 @@ not fire on this machine's two available compositors, so it could be measured
 but not triggered here.
 
 Given that, the change made is a **mitigation of the named mechanism, not a
-confirmed fix**: `CORDIAL_REPAINT_EXTENDED_WAIT`, off by default, makes
+confirmed fix**: `VANTA_REPAINT_EXTENDED_WAIT`, off by default, makes
 `repaint_now` keep waiting on the same frame-clock signal past the existing
 40ms deadline, up to a 200ms backstop, before falling through to today's
 "proceed anyway" behaviour. With the switch unset, `repaint_now` is
 byte-for-byte the pre-existing function -- same deadline, same log line, same
 timing -- which is the control this change is measured against.
-`crates/cordial-shell/src/host_window.rs::repaint_wait_outcome` is the pure
+`crates/vanta-shell/src/host_window.rs::repaint_wait_outcome` is the pure
 decision logic pulled out of the wait loop, with seven `#[test]`s in the same
 file covering a paint landing between the two deadlines (caught only when the
 switch is on), a paint that never lands (gives up at the backstop, not
 before), and a second, test-only switch below. A second env var,
-`CORDIAL_REPAINT_FORCE_MISS`, collapses the fast deadline to zero on demand so
+`VANTA_REPAINT_FORCE_MISS`, collapses the fast deadline to zero on demand so
 the race can be *triggered* rather than waited for, because 0/23 means it
 never fires naturally on this machine's compositors -- force-miss alone
 should reproduce the pre-mitigation worst case every time, and force-miss with
@@ -3071,22 +3071,22 @@ the extended wait also on should catch the same forced miss instead.
 
 **Run on 2026-09-23: compiles and passes, but FORCE_MISS does not reproduce
 the grey/black screen -- treat the patch as unproven hardening, not a fix.**
-`cargo test -p cordial-shell` is clean (180 passed, 0 failed, 17 pre-existing
+`cargo test -p vanta-shell` is clean (180 passed, 0 failed, 17 pre-existing
 GTK/Wayland-display tests ignored; all seven `repaint_wait_outcome` tests pass
 by name). Live measurement needed one correction first: the initial pass used
-`devctl screenshot` (`cordial_screenshot`) to check for the grey/black canvas,
-which reads Cordial's own Vulkan swapchain directly and is -- by the same
+`devctl screenshot` (`vanta_screenshot`) to check for the grey/black canvas,
+which reads Vanta's own Vulkan swapchain directly and is -- by the same
 design this file's own "text isn't centred" entry above already states --
 structurally blind to a compositor-stacking bug: the engine goes on rendering
 a good frame into its swapchain regardless of what the compositor puts on top
 of it. That first pass's "still renders, 0/10" was retracted as measured with
 the wrong instrument, not reported as a result. Redone with `grim` against the
-actual composited output (nested sway inside the `cordial` toolbox container,
+actual composited output (nested sway inside the `vanta` toolbox container,
 the same pattern `tools/text-input-e2e.py` uses), sanity-checked first against
 a known-flat state (1 distinct colour on an empty compositor vs 89,407 on real
 rendering, so the instrument can see the discriminator this needs).
 
-With that instrument: **Arm A** (`CORDIAL_REPAINT_FORCE_MISS=1`, extended wait
+With that instrument: **Arm A** (`VANTA_REPAINT_FORCE_MISS=1`, extended wait
 off), 10/10 cycles in a joined experience (Brookhaven, chat box via
 `KEY_SLASH`) logged a confirmed `GaveUp` (a forced zero-wait restack, waited
 4.5-14.2µs every time) and every composited screenshot showed full rendering
@@ -3094,7 +3094,7 @@ off), 10/10 cycles in a joined experience (Brookhaven, chat box via
 for this bug is a handful of colours, not tens of thousands). **Arm B**
 (FORCE_MISS plus the extended wait) logged `PaintedExtended` directly on all
 10/10 cycles (718µs-7.16ms, well inside the 200ms backstop), same full
-rendering throughout. Repeated in `CORDIAL_FULLSCREEN=1` (Sober #1026's own
+rendering throughout. Repeated in `VANTA_FULLSCREEN=1` (Sober #1026's own
 correlate): 5/5 natural cycles with the switch off and 5/5 with it on, zero
 `GaveUp` either way, same as the pre-existing 0/23 windowed history. **Plain
 verdict: forcing the exact repaint-race mechanism, confirmed on every single
@@ -3129,11 +3129,11 @@ in every case, first and second alike -- `resolve_textbox_geometry`'s
 fallback path (a real suspect, since it draws a crude synthesised bar when
 nothing else has answered) is ruled out by this: the value comes from the
 same source both times, so the bug is in what the engine reports on a fresh
-process's first read, not in which Cordial code path runs.
+process's first read, not in which Vanta code path runs.
 
 **Two live leads, neither confirmed.** The raw engine log for these same
 three launches (`glViewTextBoxFocused`/`glViewTextBoxFocusLost` lines,
-`$SCRATCHPAD/cordial-logs/stage6_launch{1,2,3}.stdout`) shows the *first*
+`$SCRATCHPAD/vanta-logs/stage6_launch{1,2,3}.stdout`) shows the *first*
 click producing **two** `glViewTextBoxFocused() connect` events roughly
 140ms apart with no focus-lost between them, before the deliberate blur --
 consistent with focus handing off between two distinct native TextBox
@@ -3154,18 +3154,18 @@ or its polling without knowing whether this is "the same box settling" or
 "two different boxes" would be exactly the guess this file's rules exist to
 prevent -- a debounce-on-first-reading fix is right for the former and
 merely delays showing a wrong-but-stable value for the latter. **Next step**:
-relaunch with `CORDIAL_TRACE_TEXT=1`, poll `textbox` every ~100ms through the
+relaunch with `VANTA_TRACE_TEXT=1`, poll `textbox` every ~100ms through the
 whole first focus without stopping early, and correlate each reading's `gen=`
 field against the `glViewTextBoxFocused`/`FocusLost` timestamps to see
 whether the two connects carry different generations (two boxes) or the same
 one with changing geometry (one box, animating). Raw data:
-`$SCRATCHPAD/cordial-logs/stage6_results.json`,
+`$SCRATCHPAD/vanta-logs/stage6_results.json`,
 `$SCRATCHPAD/textbox.md`'s Stage 6 section.
 
 **2026-09-24: the exact next step above was run, on a different box, and came
 back clean -- the bug is not "any fresh process's first TextBox focus."**
 Nested sway (`GDK_BACKEND=wayland`, held keyboard/pointer devices, matching
-`tools/text-input-e2e.py`'s own setup), `CORDIAL_TRACE_TEXT=1`, polling
+`tools/text-input-e2e.py`'s own setup), `VANTA_TRACE_TEXT=1`, polling
 `textbox` continuously through the whole first focus rather than stopping at
 the first non-empty reading. On the sign-in form's username field -- reached
 signed-out, on a throwaway profile that had never focused any TextBox before
@@ -3184,7 +3184,7 @@ a-modal field. The Create Account form's Birthday field looked like a
 candidate (a bar with a calendar icon, plausibly opening a picker) and was
 tried; it never calls `showKeyboard` at all (`focus` stayed `none` the whole
 poll window), so whatever widget draws it is not a `TextBox` and it answers
-nothing about this bug. Reaching Home needs a signed-in profile, `CordialTest`
+nothing about this bug. Reaching Home needs a signed-in profile, `VantaTest`
 was off limits for this session (in use elsewhere), and no other profile on
 this machine was this session's to sign into -- the same shape of stop
 `docs/NEXT.md`'s 2026-08-30 "text isn't centred" entry above already
@@ -3192,24 +3192,24 @@ recorded once. **Not fixed, for the same reason as before: the evidence
 needed to choose between "one box settling" and "two boxes" still points at
 Home specifically, and this session could not reach Home.** Whoever can
 should repeat exactly this test (continuous `textbox` polling,
-`CORDIAL_TRACE_TEXT=1`, watch `glViewTextBoxFocused`/`handle=` at each of the
+`VANTA_TRACE_TEXT=1`, watch `glViewTextBoxFocused`/`handle=` at each of the
 two connects) on the Home search bar, which is the one place the double
 connect has actually been observed.
 
 Two small, independent, verified fixes came out of this session's setup work
 and are committed alongside the real one below: `tools/text-input-e2e.py`
-hardcoded `target/release/cordial-run` with no override, which does not exist
-on a host that builds in the toolbox container (`CORDIAL_E2E_BINARY` now
-overrides it, same pattern as `CORDIAL_APK`/`CORDIAL_LIB_DIR`); and it
-hardcoded `~/.local/share/cordial` for the devctl socket, ignoring
+hardcoded `target/release/vanta-run` with no override, which does not exist
+on a host that builds in the toolbox container (`VANTA_E2E_BINARY` now
+overrides it, same pattern as `VANTA_APK`/`VANTA_LIB_DIR`); and it
+hardcoded `~/.local/share/vanta` for the devctl socket, ignoring
 `XDG_DATA_HOME` entirely, so a throwaway-profile run -- exactly what
 AGENTS.md tells an agent to use -- connected to nothing
 (`ConnectionRefusedError`) while the client's real socket sat under the
 redirected directory. Both are now respected.
 
-### 2026-09-24: CordialTest, cleared for at most 3 launches, gave the answer
+### 2026-09-24: VantaTest, cleared for at most 3 launches, gave the answer
 
-`CordialTest` became available (the freeze investigation using it finished)
+`VantaTest` became available (the freeze investigation using it finished)
 for a strictly capped session: 3 launches, no more, given the account's use
 that day. Launch 1 (of 3) reached Home and got the reading the whole
 investigation had been missing.
@@ -3235,7 +3235,7 @@ textbox_geometry`'s own doc comment already named the zero-spec half of this
 ("the real numbers arrive about a second afterwards"); what was missing was
 that the *nonzero* answers arriving in that second are not stable either.
 
-**The fix**, `crates/cordial-runtime/src/android/wayland.rs`,
+**The fix**, `crates/vanta-runtime/src/android/wayland.rs`,
 `polled_textbox_info`: a rectangle from `nativeGetTextBoxInfo` is no longer
 committed to `usable` -- the value the editor is actually drawn from -- on
 the ask that produces it. It is held as a new `pending` field and only
@@ -3262,11 +3262,11 @@ Second focus: `x=332 y=10 w=592 h=36` immediately, unchanged from before this
 fix (the modal is already expanded by then, so there is nothing to confirm).
 A `grim` capture of the composited window taken after the first focus
 settled shows the GTK caret sitting inside the search box exactly where the
-box is drawn (`$SCRATCHPAD/cordial-logs/verify3_first_grim.png`).
+box is drawn (`$SCRATCHPAD/vanta-logs/verify3_first_grim.png`).
 
-`cargo build --release` (toolbox) and `cargo test -p cordial-runtime --lib`
+`cargo build --release` (toolbox) and `cargo test -p vanta-runtime --lib`
 (388 passed, 0 failed) are both clean against this change. `tools/text-
-input-e2e.py`'s full run was not repeated on `CordialTest` -- the 3-launch
+input-e2e.py`'s full run was not repeated on `VantaTest` -- the 3-launch
 budget was spent on the diagnostic, one wasted to the startup freeze, and the
 fix verification, in that order, with nothing left for a fourth launch.
 That suite's own assertions (typing, the double-insert guard, suppression
@@ -3294,7 +3294,7 @@ Roblox narrates itself to:
 <files>/appData/logs/<version>_<timestamp>_Player_*.log
 ```
 
-By default `~/.local/share/cordial/instances/default/data/files/appData/logs/`.
+By default `~/.local/share/vanta/instances/default/data/files/appData/logs/`.
 It names subsystems, stages, file paths and exceptions in Roblox's own words. It
 is the best diagnostic in the project and it answers most questions. Two comments
 in this repository once claimed FLog was unrouted; both were wrong, and nobody
@@ -3306,10 +3306,10 @@ had looked in `appData/`.
 
 ## 0. SOLVED: typed text renders, in the box, 2026-08-25
 
-**The engine sends geometry every time. Cordial could not receive it, because
+**The engine sends geometry every time. Vanta could not receive it, because
 the `<init>` hook was one argument short.**
 
-`CORDIAL_JNI_TRACE=1 cargo build` prints the descriptor the engine looks up:
+`VANTA_JNI_TRACE=1 cargo build` prints the descriptor the engine looks up:
 
     Found symbol, Class=`...NativeTextBoxInfo`, StaticMethod=`<init>`,
       Signature=`(FFFFFZIIIIIIZZZ)L...NativeTextBoxInfo;`
@@ -3335,8 +3335,8 @@ Placement is correct when a spec arrives.
 The engine calls `glViewTextBoxFocused`, **stops painting the box's contents**,
 and calls `showKeyboard` with a `NativeTextBoxInfo`. Android answers with a real
 `EditText` styled from those numbers, and *that widget* draws the characters --
-Gboard does not, no IME does. Cordial is the platform, so the editor is
-Cordial's obligation rather than a workaround. Sober #99 has a maintainer
+Gboard does not, no IME does. Vanta is the platform, so the editor is
+Vanta's obligation rather than a workaround. Sober #99 has a maintainer
 confirming the same TextBox working on the Android client and not on Sober;
 Sober #987 is the same symptom, open since 2025-06-14.
 
@@ -3352,13 +3352,13 @@ Both call sites now treat non-positive width or height as no usable geometry.
 A focused box eats its own keys. `pass_key_event` was forwarding every character
 to the engine's general key handler as well, so "w" in a chat box walked the
 character. Measured: 12 suppressed / 0 forwarded by default, 0 / 12 with
-`CORDIAL_KEYS_TO_GAME_WHILE_TYPING=1`. Escape, Tab, Enter, arrows, function keys
+`VANTA_KEYS_TO_GAME_WHILE_TYPING=1`. Escape, Tab, Enter, arrows, function keys
 and modifiers still reach the game.
 
 ### How to check it without a person
 
 `tools/text-entry-check.sh [profile] [text]`. It polls for readiness rather than
-sleeping, retries the click, captures with `grim` -- `cordial_screenshot` reads
+sleeping, retries the click, captures with `grim` -- `vanta_screenshot` reads
 the engine's swapchain and cannot see a GTK editor at all -- and asserts each
 step separately so a failure names the step. It warns rather than passes when
 the geometry is zeroed, which is how the 0x0 bug was found on its first run.
@@ -3371,12 +3371,12 @@ places a real `EditText` from it, because the engine does not paint a focused
 box's contents itself. For every box reachable from the app shell the engine
 passes **null**:
 
-    [cordial] showKeyboard: info=NULL spec_known=n/a
-    [cordial] textbox spec unavailable
+    [vanta] showKeyboard: info=NULL spec_known=n/a
+    [vanta] textbox spec unavailable
 
 `nativeGetTextBoxInfo` is the same fact from the other side: exported, callable,
 returns null, three runs. So there is no geometry to be had from any engine call
-known here, and `android_classes.cpp`'s claim that Cordial "dropped" the spec
+known here, and `android_classes.cpp`'s claim that Vanta "dropped" the spec
 was wrong. Nothing is dropped; nothing arrives.
 
 That settles the shape of the answer. **The overlay is not a workaround, it is
@@ -3395,8 +3395,8 @@ Two smaller things found on the way. The `<init>` hook for `NativeTextBoxInfo`
 had the wrong signature -- `--dump-classes` shows libjnivm expects a
 `shared_ptr<java::lang::Class>` before the five floats and ours lacked it, so it
 could never have matched; corrected, and marked `INFERRED` because with a null
-`info` it cannot be observed firing. And **`CORDIAL_SCRIPT` does nothing without
-`CORDIAL_INSTR=1`**: four runs were read as "the click missed the button" before
+`info` it cannot be observed firing. And **`VANTA_SCRIPT` does nothing without
+`VANTA_INSTR=1`**: four runs were read as "the click missed the button" before
 that was noticed, and only a control with the change reverted -- which behaved
 identically -- kept it from being blamed on the change under test.
 
@@ -3405,7 +3405,7 @@ identically -- kept it from being blamed on the change under test.
 A user's Flatpak run, reported from Discord, froze in a shape the sections
 below do not describe, and two details in it are new. No backtrace: the process
 was gone by the time the log reached us, which is the one thing to fix about
-how these arrive -- `cordial_backtrace` on a live frozen client settles more in
+how these arrive -- `vanta_backtrace` on a live frozen client settles more in
 thirty seconds than a log does in a day.
 
 It did not fail to start. It reached `HOME_PAGE_INTERACTIVE` at 11:58:37.035,
@@ -3437,7 +3437,7 @@ and presents stop roughly 27 seconds later. Nothing here has looked at
 never polls for patches freezes at the same rate, which is a control somebody
 can actually run.
 
-**Cordial could not name a refresh rate.** First line of the run:
+**Vanta could not name a refresh rate.** First line of the run:
 
     refresh: 2 outputs differ and nothing here knows which the window is on;
     not naming a current rate
@@ -3472,13 +3472,13 @@ these runs and have never been true of a measured one.
 ## 0-gdb. The frozen thread is parked on an empty pipe, holds no lock, and two
 ## things this file says about it are wrong, 2026-09-01
 
-Three frozen clients caught and photographed under gdb on `CordialTest`
+Three frozen clients caught and photographed under gdb on `VantaTest`
 (roughly three freezes in eleven launches). §0 below ends by asking for exactly
 this -- "look for what the engine's app thread holds while it sits in
 `ALooper_pollOnce`" -- and the answer is **nothing**.
 
 **It is parked, not spinning, and that is measurable rather than inferred.**
-`cordial_loopers` twice, ten seconds apart, on a frozen client:
+`vanta_loopers` twice, ten seconds apart, on a frozen client:
 
 ```
 engine thread  polls 7,083,545 -> 7,083,744   199 in 10s = 20/s
@@ -3499,20 +3499,20 @@ it is never created.
 
 ```
 #3  epoll_wait () from /lib64/libc.so.6
-#4  cordial_runtime::android::looper::looper_poll_once (timeout_millis=-1, ...)
+#4  vanta_runtime::android::looper::looper_poll_once (timeout_millis=-1, ...)
 #5  0x00007f273f30152b in ?? ()          <- libroblox, stripped
 ```
 
 §0 dismisses the lost-wakeup theory on the grounds that "both threads in a
 frozen client are polling with a timeout -- the pump at 50 ms, the engine's own
 thread at 0". The engine's own thread is asking to block forever; the 50 ms it
-actually gets is Cordial's ceiling, not the engine's request. The reason given
+actually gets is Vanta's ceiling, not the engine's request. The reason given
 for ruling the theory out is therefore not a fact about this bug.
 
 **No thread is blocked on a lock. Not one.** 73 threads in the capture, every
 frame 0 in `syscall` or `__syscall_cancel_arch` -- futex waits and `epoll_wait`
 -- and **zero** in `pthread_mutex_lock` or `lll_lock_wait`. So "this is a lock
-and not a lost message", which §0 concludes from the `CORDIAL_STARTUP_RETRY`
+and not a lost message", which §0 concludes from the `VANTA_STARTUP_RETRY`
 call blocking, is not what a frozen client looks like. `looper.rs`'s own note
 above `BLOCK_CEILING_MS` already said the same thing from an earlier capture --
 "nothing else in either process was holding a lock" -- and the two documents
@@ -3530,7 +3530,7 @@ fd 31 -> pipe:[92904651]   fd 32 -> pipe:[92904651]   engine's looper, ident=1, 
 The engine's app thread holds the read end of `92904651` and waits. Nothing
 ever writes fd 32, and `wakes=0` says `ALooper_wake` has never been called on
 that looper either -- so neither of the two ways it can return is ever taken.
-**Cordial does not create these pipes**: `pipe(`/`pipe2(` appear nowhere in
+**Vanta does not create these pipes**: `pipe(`/`pipe2(` appear nowhere in
 `native/` or `src/android/`, so the engine made both ends and is failing to
 post to its own queue.
 
@@ -3559,7 +3559,7 @@ have fired.
 **It stalls at `StartupController stage = 2`, immediately after `sync cookies
 from engine`.** That much is exactly right and has now been measured at n=25.
 The rest of this sentence used to read "and on a signed-in profile it does this
-every time", from three consecutive launches on `CordialTest`; **it is not every
+every time", from three consecutive launches on `VantaTest`; **it is not every
 time.** On `default`, signed in, twenty-five launches with no input driven:
 **nine frozen, sixteen healthy -- 36%, Wilson 95% CI 20-56%.** Three-run
 agreement at a 36% base rate happens about one time in twenty, which is roughly
@@ -3579,9 +3579,9 @@ the stall watchdog's `after N frames` is worth reading rather than skimming.
 A healthy run continues from there into `CorePackages...ReactFiberCommitWork`,
 registers its navigation routes, and reaches `APP_READY Landing`.
 
-**Read `appData/logs/*_Player_*.log`. It is the engine's own narration, Cordial
+**Read `appData/logs/*_Player_*.log`. It is the engine's own narration, Vanta
 writes one per run, and nothing in this repository had ever looked at it** --
-two days of theories argued from Cordial's stdout while this sat on disk beside
+two days of theories argued from Vanta's stdout while this sat on disk beside
 it. Sober's equivalent carries 9722 `FLog::` lines. It is the same class of
 evidence as `docs/traces/`, and unlike a trace it is per-run and already there.
 
@@ -3607,7 +3607,7 @@ Each of these looked right on three to six runs and died on the next test:
   startup` is the first line a healthy run logs past the stall, which makes a
   frame-callback the engine never receives an obvious suspect --
   `AChoreographer_postFrameCallback` is how an Android app asks for the next
-  vsync, and Cordial implements none of it. **The engine does not import it.**
+  vsync, and Vanta implements none of it. **The engine does not import it.**
   `readelf --dyn-syms` on `libroblox.so` matches `choreograph` zero times, in
   any case. `symtab.rs` lists an `AChoreographer` prefix that nothing has ever
   asked for.
@@ -3621,12 +3621,12 @@ Each of these looked right on three to six runs and died on the next test:
   suspicion was reasonable and the next person will have it too.
 - **A lost looper wakeup -- and the experiment that replaced it with something
   better, 2026-08-25.** A healthy run starts the Lua app twice and a frozen one
-  once, so `CORDIAL_STARTUP_RETRY=1` was written to ask the platform's own entry
+  once, so `VANTA_STARTUP_RETRY=1` was written to ask the platform's own entry
   point, `nativeAppBridgeStartLuaAppDM`, for the second start when the engine
   stops during startup. **The call never returns.** The announcement flushes and
   no completion line ever follows it, and the pump thread joins the engine in
   being stuck, so the window stops responding at all -- strictly worse than the
-  freeze. It is left in the tree, off, in the way `CORDIAL_LOOPER_BLOCK` is.
+  freeze. It is left in the tree, off, in the way `VANTA_LOOPER_BLOCK` is.
   **That failure is worth more than the fix would have been: a call that blocks
   means the wedged thread is still holding something the app bridge needs, so
   this is a lock and not a lost message.** Look for what the engine's app thread
@@ -3635,7 +3635,7 @@ Each of these looked right on three to six runs and died on the next test:
   wake strands a thread in a *blocking* `ALooper_pollOnce`, and both threads in
   a frozen client are polling with a timeout -- the pump at 50 ms, the engine's
   own thread at 0. `BLOCK_CEILING_MS` already caps an infinite block for
-  exactly this reason (`CORDIAL_LOOPER_BLOCK=1` is its control). The work item
+  exactly this reason (`VANTA_LOOPER_BLOCK=1` is its control). The work item
   is not being delivered late; it is never being created.
 
 ### The marker that separates them, 2026-08-25
@@ -3643,7 +3643,7 @@ Each of these looked right on three to six runs and died on the next test:
 **`~UgcExperienceController()` is in all eight surviving healthy engine logs and
 none of the six surviving frozen ones.** (The engine prunes its own log
 directory, so eleven of the twenty-five were already gone when they were read;
-Cordial's stdout survives for all of them.) That is the sharpest discriminator this bug has had, and
+Vanta's stdout survives for all of them.) That is the sharpest discriminator this bug has had, and
 it is one line rather than a rate.
 
 Both kinds of run log `Forcing finalize experience coordinator with state 1` and
@@ -3655,11 +3655,11 @@ through `Register rendering frequency during startup`, `setStage:
 frozen run the destructor never runs, `startLuaApp_` is never reached, and the
 log simply stops. Frozen logs are 279-293 lines; healthy ones 607-620.
 
-Cordial's own stdout separates them just as cleanly and is not pruned: **`[stub]
+Vanta's own stdout separates them just as cleanly and is not pruned: **`[stub]
 ZSTD_trace_compress_begin` appears in all sixteen healthy runs and none of the
 nine frozen ones**, along with `DID_LOG_IN`, `HOME_PAGE_INTERACTIVE`,
 `LUA_HOME_PAGE_LOADED` and the two `DataModelPatchConfigurer` downloads. Nothing
-appears in a frozen run that does not appear in a healthy one, except Cordial's
+appears in a frozen run that does not appear in a healthy one, except Vanta's
 own stall warning. **There is no failed call, no unresolved symbol and no error
 anywhere in a frozen run** -- the difference is entirely what is missing.
 
@@ -3673,7 +3673,7 @@ due to state`, and there the two part: a healthy run sets the running status bac
 to **false**, destructs the coordinator, and calls
 `initializeLuaAppWithLoggedInUser` a *second* time; a frozen run does none of it.
 
-The same fact is visible in Cordial's own stdout, which -- unlike the engine's
+The same fact is visible in Vanta's own stdout, which -- unlike the engine's
 log -- is never pruned: **`app ready: PlatformAccountRouter` appears twice in
 all sixteen healthy runs and once in all nine frozen ones.** The shell mounts
 its router once per Lua app start. That is the cheapest frozen-run detector
@@ -3690,14 +3690,14 @@ problem: no thread is inside a Vulkan call, and the engine's own thread sits in
 `ALooper_pollOnce` at about 1% of a core, which is a wait rather than a spin.
 
 `http://10.110.101.222:5052` -- a LAN websocket that times out after 60 s -- was
-recorded here as appearing "in every `CordialTest` log and no healthy one", and
+recorded here as appearing "in every `VantaTest` log and no healthy one", and
 suspected for being a private address. **It appears in none of the fifty logs
 from the survey above**, stdout or engine, frozen or healthy, and `default`
 freezes at 36% without it. Whatever it is, the freeze does not need it.
 
 `INFERRED`, but it probably has a name: every run above logs `[FLog::
 TestServiceLog] [onServiceProvider] DebugUTPLauncherWebSocketUri='' wsOptIn=0`
-at the same point. On `default` that setting is empty. A `CordialTest` whose
+at the same point. On `default` that setting is empty. A `VantaTest` whose
 account or flag cache carries a non-empty `DebugUTPLauncherWebSocketUri` would
 produce exactly the reported symptom -- a LAN websocket nobody configured,
 attempted once, timing out. Not a mystery, and not a cause: the runs that freeze
@@ -3737,7 +3737,7 @@ Twenty-four more launches, eleven frozen and thirteen healthy, with the same
 measurement:
 
     nativeAppBridgeStartLuaAppDM, engine clock   frozen 0.483   healthy 0.482
-    the same event, Cordial's own clock          frozen 0.692   healthy 0.692
+    the same event, Vanta's own clock          frozen 0.692   healthy 0.692
 
 Identical. And the offset between the two clocks is the same in both groups
 (+0.214s against +0.210s), so it is not a clock artefact either -- the two
@@ -3766,13 +3766,13 @@ any run-level offset. **Nothing separates them.** No line reaches |AUC-0.5| >
 0.35; the best is 0.78 on the second swapchain recreate, whose ranges overlap
 completely.
 
-`CORDIAL_BRIDGE_DELAY_MS` remains, off, as the knob that would have tested the
+`VANTA_BRIDGE_DELAY_MS` remains, off, as the knob that would have tested the
 retracted theory. It is harmless and it is the cheapest way to hold the bridge
 back if a future timing idea needs testing.
 
 ### Where the two actually part company, in one clock
 
-Cordial's stdout is timestamped by `tools/startup-freeze-survey.sh`, which puts
+Vanta's stdout is timestamped by `tools/startup-freeze-survey.sh`, which puts
 every line of a launch on one clock. Across twenty-four runs, **frozen and
 healthy are identical to within three milliseconds** all the way through:
 
@@ -3789,14 +3789,14 @@ and then, **in healthy runs only**:
     2.895  LUA_HOME_PAGE_LOADED
 
 A frozen run reports the new surface extent like every other run and the engine
-never acts on it. Nothing Cordial does differs, at any point, by more than three
+never acts on it. Nothing Vanta does differs, at any point, by more than three
 milliseconds -- so **whatever decides this is inside the engine, between the
 resize being reported and the swapchain being rebuilt**, and no amount of
-further staring at Cordial's own log will find it. The next instrument has to
+further staring at Vanta's own log will find it. The next instrument has to
 see into that gap: the engine's own log is the only thing that does, and it
 stops one line after `sync cookies from engine`.
 
-Two corrections to how that has been put here before. Cordial's stdout is
+Two corrections to how that has been put here before. Vanta's stdout is
 **identical up to the divergence**, not identical outright -- a healthy run goes
 on to log `DID_LOG_IN`, the home page loading, both `DataModelPatchConfigurer`
 downloads and a second swapchain, and a frozen run logs the stall warning
@@ -3858,7 +3858,7 @@ lldb unwound this one properly (109 frames past `#0`), unlike the
 ### What to do next
 
 Find out what the second `PlatformAccountRouter` pass is waiting on. It is a
-platform answer the shell needs and sometimes does not get, and Cordial is what
+platform answer the shell needs and sometimes does not get, and Vanta is what
 answers those. The `--dump-classes` surface and jnivm's unresolved-call register
 are the places to look for a call that goes unanswered on a frozen run and is
 answered on a healthy one -- **diff those two the same way the logs were
@@ -3874,9 +3874,9 @@ so far has been read off three to six runs and three of them were wrong.
 wrong is the point.** Two further runs, made while building the fix it
 recommended, killed it:
 
-    CORDIAL_SCRIPT=1:focus-off    focus -> false at t=3.9s,
+    VANTA_SCRIPT=1:focus-off    focus -> false at t=3.9s,
                                   then presents/s 59.2, 60.0, 57.0, 60.0 ... to the end
-    CORDIAL_SCRIPT=25:focus-off   no focus report at all -- the script never reached 25s
+    VANTA_SCRIPT=25:focus-off   no focus report at all -- the script never reached 25s
                                   presents/s 0.0 from t=1.0s, "presented nothing after 1 frames"
 
 So reporting focus loss does **not** stop the engine rendering: a client told it
@@ -3915,8 +3915,8 @@ clean headless runs were a small sample of an intermittent bug.
 **An engine told it lost focus stops presenting entirely, and resumes only when
 told focus came back.** Reproduced on demand, headless, with a control, twice:
 
-    CORDIAL_SCRIPT=3:focus-off              presents/s 0.0  freeze warning   (2/2)
-    CORDIAL_SCRIPT=3:focus-off,8:focus-on   presents/s 1.0  none             (2/2)
+    VANTA_SCRIPT=3:focus-off              presents/s 0.0  freeze warning   (2/2)
+    VANTA_SCRIPT=3:focus-off,8:focus-on   presents/s 1.0  none             (2/2)
     no script                               presents/s 1.0  none
 
 1.0/s is the documented idle throttle and is healthy; 0.0 is the freeze. So a
@@ -3941,12 +3941,12 @@ the report never fires. That asymmetry was visible for two days and read as luck
 > answer is to stop reporting focus loss *while the game is still loading*
 > rather than to stop reporting it at all.
 
-What is **not** yet established is why Cordial reports the loss without the
+What is **not** yet established is why Vanta reports the loss without the
 matching gain on a real desktop. `backend_focused` returns `None` for "not
 known" and leaves the last reported state alone, so a `false` published early --
 before the compositor's first `wl_keyboard.enter`, or across a transition where
 `wayland::focused()` goes unknown -- would never be corrected. That is the next
-thing to measure, not to assume: run with `CORDIAL_INSTR=1` and read the
+thing to measure, not to assume: run with `VANTA_INSTR=1` and read the
 `focus -> ` transitions against the freeze.
 
 Quick confirmation available to anyone holding a frozen window: alt-tab away and
@@ -3963,7 +3963,7 @@ Two clients were caught frozen at once, which is the first time there has been a
 live specimen. What that settled, all read from the running processes:
 
     presents, read twice 8 s apart through devctl
-      profile CordialTest   2198 -> 2198
+      profile VantaTest   2198 -> 2198
       profile evr_l            1 -> 1
 
 So it strikes after half a minute of healthy rendering and also on the very
@@ -3976,7 +3976,7 @@ times a second throughout. Nothing held a contended lock. Quoting the CPU beside
 the stack is what separates that from a blocked pump, and it is why AGENTS.md
 insists on it.
 
-**It is not Wayland.** `CORDIAL_X11=1` reproduces it identically, watchdog line
+**It is not Wayland.** `VANTA_X11=1` reproduces it identically, watchdog line
 and all, which exonerates the compositor and the subsurface path.
 
 **No wake was sitting unconsumed.** Every `eventfd-count` in
@@ -3986,14 +3986,14 @@ before the sleep", which is what `looper::BLOCK_EXPIRED` now exists to count.
 
 ### Retracted the same day: the present mode is not the cause
 
-One run with `CORDIAL_PRESENT_MODE=off` printed no freeze warning and one run
+One run with `VANTA_PRESENT_MODE=off` printed no freeze warning and one run
 with the MAILBOX default froze, on both backends. **That was written up as a
 lead, acted on, and was wrong.** The default was flipped to forward the engine's
 own FIFO and then reverted within the hour, because the control said the
 opposite:
 
     new default (FIFO)      froze YES, YES, no   (and one segfault)
-    CORDIAL_PRESENT_MODE=mailbox   froze  no, no
+    VANTA_PRESENT_MODE=mailbox   froze  no, no
 
 MAILBOX is not implicated and `1d(ii)`'s frame-rate measurement stands
 untouched. Worse, every one of those trials ran with a benchmark agent working
@@ -4008,13 +4008,13 @@ contention is a cause or a coincidence.
 `187f7fa` bounds an infinite `ALooper_pollOnce` at 50 ms so a lost wakeup costs
 one frame rather than the window. **It was verified not to fix this freeze** --
 a client built with it still printed `presented nothing for 5s after 1 frames`.
-It is worth having anyway and `CORDIAL_LOOPER_BLOCK=1` is the control, but do
+It is worth having anyway and `VANTA_LOOPER_BLOCK=1` is the control, but do
 not credit it if the freeze goes quiet for some other reason.
 
 ### A client can sit in `teardown` indefinitely
 
 A leftover client ignored SIGTERM and stayed in `looper::teardown` ->
-`cordial_game_activity_lifecycle` for twenty minutes before needing SIGKILL.
+`vanta_game_activity_lifecycle` for twenty minutes before needing SIGKILL.
 `teardown_returns_within_its_grace_period_with_no_native_handle` covers only the
 case where the natives never resolve; with a real handle the loop is evidently
 not bounded. Untriaged, separate from the freeze.
@@ -4036,7 +4036,7 @@ readable as *design* -- `sync` then `pass_text(finished=false)` per keystroke,
 `return_pressed` then `pass_text(finished=true)` at Enter -- but it is the
 design of a client that demonstrably does not get text on screen. The one thing
 worth keeping is the **name** of `nativePassText`'s boolean, `finished`, which
-`input.rs` records as "not declared anywhere Cordial can read".
+`input.rs` records as "not declared anywhere Vanta can read".
 
 §1's conclusion is untouched, because it never depended on mocktail: the engine
 does not paint a focused box's own text, established from the dex superclass
@@ -4070,29 +4070,29 @@ A long session with one theme: **every number trusted without a control turned
 out to be wrong, and every control caught it.** Four mechanisms and two of this
 project's own instruments died here. Read this before re-opening any of it.
 
-### Cordial does not have a CPU problem. Sober has the same one
+### Vanta does not have a CPU problem. Sober has the same one
 
-`088e69c` ("Sober and mocktail idle at 8%; Cordial burns a core") compared an
-**idle** Sober against a **rendering** Cordial. In the same state there is no
+`088e69c` ("Sober and mocktail idle at 8%; Vanta burns a core") compared an
+**idle** Sober against a **rendering** Vanta. In the same state there is no
 difference. Per-thread from `/proc/<pid>/task/*/stat`:
 
-    Cordial, signed out      111%   99.7% in one thread named "Main"
-    Cordial, signed in       117%   99.2% in one thread named "Main"
+    Vanta, signed out      111%   99.7% in one thread named "Main"
+    Vanta, signed in       117%   99.2% in one thread named "Main"
     Sober                    120%   99.5% in one thread named "Main"
     Sober, two more samples   193%, 197%   99.5%, 99.3%, same tid throughout
 
 Sober's total was higher in every sample. `lldb` names the thread:
 `ALooper_pollOnce(timeout_millis=0, out_events/out_data non-null)` at
 `looper.rs:1159`, under three unsymbolised libroblox frames and `__clone3` --
-a thread **Roblox** created, not Cordial's pump, which passes a 50 ms timeout
+a thread **Roblox** created, not Vanta's pump, which passes a 50 ms timeout
 and three nulls. That is Google's own `native-activity` idiom, where a zero
 timeout while animating means drain-then-draw, and it costs nothing on a phone
 because presentation paces the loop.
 
 Dead, all measured rather than argued: the present-mode substitution
-(`CORDIAL_PRESENT_MODE=fifo` gives 110.2%, with the frame rate correctly
+(`VANTA_PRESENT_MODE=fifo` gives 110.2%, with the frame rate correctly
 following the output to 50 Hz -- so presentation *is* pacing the outer loop);
-the display-connection registration (removing it entirely, so Cordial registers
+the display-connection registration (removing it entirely, so Vanta registers
 nothing as mocktail does, gives 111.3% at 60 fps); all eight TaskScheduler flags
 (108.9-112.2% against a 111.4% control); and making the syscall cheaper --
 coalescing sixteen zero-timeout polls per real `epoll_wait` moved CPU not at all
@@ -4109,7 +4109,7 @@ idea was to keep the engine's hot thread on a P-core and push background threads
 off it. The engine has already done it: every thread in the process carries an
 affinity mask of `fff` -- CPUs 0-11, which on this machine is exactly the six
 hyperthreaded P-cores, with the four E-cores excluded. The busiest thread sits on
-cpu 7, one of the four 4900 MHz top-bin cores. **Cordial sets no affinity
+cpu 7, one of the four 4900 MHz top-bin cores. **Vanta sets no affinity
 anywhere** (`sched_setaffinity` appears nowhere in the tree) and an ordinary
 shell on the same machine gets `ffff`, so the mask is Roblox's own choice --
 which is what a client written for Android big.LITTLE would do.
@@ -4135,7 +4135,7 @@ presence of an override. `FIntTaskSchedulerTargetFps` -- same name, durable
 prefix -- does nothing, which shows the engine matches the whole name so a
 misspelling fails detectably.
 
-Consequences: overrides written to `CORDIAL_FLAGS` reach the engine and are acted
+Consequences: overrides written to `VANTA_FLAGS` reach the engine and are acted
 on; a `DFInt` override survives the settings reloader §47 describes; and every
 earlier null result is now a real statement about its flag rather than an
 uninterpretable one. See `flag-init.md` §49.
@@ -4149,7 +4149,7 @@ uninterpretable one. See `flag-init.md` §49.
   87 KB removed.
 - **Present counts without input are the idle throttle**, pinned at exactly
   1.0/s. A wedged client leaves the counter *fixed*; a throttled one ticks at
-  1.0/s and wakes on input. `cordial_info` twice, a few seconds apart, is the
+  1.0/s and wakes on input. `vanta_info` twice, a few seconds apart, is the
   test.
 - **Zero CPU does not disprove a deadlock.** A futex-blocked thread burns
   nothing. Quote the process CPU beside every backtrace.
@@ -4165,14 +4165,14 @@ uninterpretable one. See `flag-init.md` §49.
 attributed to the looper, and the looper had nothing to do with it.** Kept
 rather than deleted, because the observations in it are all correct and it is a
 good record of how a well-instrumented investigation can point steadily at the
-wrong component: every fact here about Cordial being healthy was true, and it
-was true because Cordial *was* healthy.
+wrong component: every fact here about Vanta being healthy was true, and it
+was true because Vanta *was* healthy.
 
-The cause was an AB-BA deadlock between Cordial's own audio teardown and
+The cause was an AB-BA deadlock between Vanta's own audio teardown and
 PipeWire's thread loop, caught live with gdb on a client the user reported
 frozen after leaving a game:
 
-    Thread 53 " RBX Worker B"        Thread 16 "cordial-pipewire"
+    Thread 53 " RBX Worker B"        Thread 16 "vanta-pipewire"
       AudioDevice::close               loop_iterate -> Impl::process
         holds lock_                      holds PipeWire's loop lock
       PlaybackStream::set_active       AudioDevice::drained
@@ -4205,14 +4205,14 @@ Three things worth carrying forward:
   re-measured.
 * **lldb could not unwind this stack and gdb could.** The return address landed
   on `__syscall_cancel_arch_end+0`, a zero-size label with no unwind plan, and
-  lldb stopped at frame #0. `cordial_backtrace` now detects that and retries
+  lldb stopped at frame #0. `vanta_backtrace` now detects that and retries
   with gdb (`bc04085`). lldb is not broken in general -- it out-unwinds gdb on
   an ordinary address -- but a one-frame stack is not an answer and must not be
   reported as one.
 
 ### How it was characterised while still unfixed
 
-Cordial is healthy throughout: 74 million polls, the pump ticking at its normal
+Vanta is healthy throughout: 74 million polls, the pump ticking at its normal
 20 Hz cadence, main thread in `epoll_wait` inside `looper::pump`. The engine
 stops presenting -- 42 frames in one case, 92 in another -- with **zero** Vulkan
 errors, no thread blocked in the driver, and every thread idle.
@@ -4237,7 +4237,7 @@ branch is `INFERRED` -- no wedge occurred while it was compiled in.
 ### WASD is dead after joining through the Play button, and fine via deep link
 
 **The variable is the join path, not the focus change.** Measured 2026-08-22
-with Cordial's own `devctl` socket driving `pass_key_event`, scored by RMSE
+with Vanta's own `devctl` socket driving `pass_key_event`, scored by RMSE
 between swapchain screenshots before and after a key hold. Calibrated first: in
 a healthy session a 2 s hold scores ~0.34 against an idle control of ~0.06, and
 the character is visibly in a different room.
@@ -4261,13 +4261,13 @@ survive contact.
 
 Everything below was closed with a control, same binary:
 
-* **Focus reporting.** `CORDIAL_SCRIPT=12:focus-off,50:focus-on` spanning the
+* **Focus reporting.** `VANTA_SCRIPT=12:focus-off,50:focus-on` spanning the
   whole load drives real `onWindowFocusChangedNative` both ways. Movement fine
   (0.305), presents held 60/s so the throttle was not involved either. Agrees
-  with `CORDIAL_REPORT_FOCUS=0` from the opposite direction.
+  with `VANTA_REPORT_FOCUS=0` from the opposite direction.
 * **A genuine focus change**, a GTK window mapped for 35 s mid-load producing a
   real `wl_keyboard.leave`. Movement fine (0.337).
-* **No mouse event during the load.** `CORDIAL_TRACE_MOUSE=1` counted exactly
+* **No mouse event during the load.** `VANTA_TRACE_MOUSE=1` counted exactly
   one `nativePassMouseMove` per deep-link run — the `pointer_enter` hover — and
   movement worked. The `POINTER_ON_CANVAS` hypothesis is dead.
 * **Clicks during the load.** Six, spread across a deep-link join. Fine (0.178).
@@ -4275,11 +4275,11 @@ Everything below was closed with a control, same binary:
 Two things that were believed and are not true. **The orientation lock is a
 constant, not a lead**: `orientation 2 (locked: no→yes)` fires at t≈2 s in every
 run including the healthy ones, and is not at spawn. **Pointer tracing already
-existed** — `CORDIAL_TRACE_MOUSE=1`, `input::trace_mouse` — and was written up
+existed** — `VANTA_TRACE_MOUSE=1`, `input::trace_mouse` — and was written up
 here as missing.
 
 Where to go next, in order: read `focused_textbox()` in the dead state (already
-printed in the `CORDIAL_TRACE_TEXT` key line, but note `devctl key` calls
+printed in the `VANTA_TRACE_TEXT` key line, but note `devctl key` calls
 `pass_key_event` directly and bypasses `dispatch_key`, so it needs a real
 keypress or the field added to that trace); instrument the divergence between
 `deeplink.rs`'s `Linking.detectURL` publish and the app shell's own join; and
@@ -4333,7 +4333,7 @@ logged at the moment a run heals itself.
 
 Still not done: the Sober comparison **through Sober's own Play button**. Every
 Sober control so far has been a deep-link join, which is the half that works in
-Cordial too, so none of them has tested this.
+Vanta too, so none of them has tested this.
 
 **Practical caution for whoever measures this next.** 3440×1359 uncompressed
 PNGs are 14 MB each and the scratchpad is tmpfs; a few hundred filled 6 GB of
@@ -4366,7 +4366,7 @@ verified by screenshot.
 else about sign-in is now reachable, so this is the single remaining step.
 
 The cause is almost certainly the same shape as the input bug it came out of.
-Roblox reads text through its own on-screen-keyboard contract, and Cordial
+Roblox reads text through its own on-screen-keyboard contract, and Vanta
 implements none of the reverse half:
 
 ```text
@@ -4396,7 +4396,7 @@ narrower than "nothing answers".
 being discarded and text was then sent with handle 0, which the engine drops in
 silence. Captured now, along with the box's current contents. `nativePassText`,
 `syncTextboxTextAndCursorPosition2` and `updateKeyboardSize` are all driven and
-all return without error, and `CORDIAL_TRACE_TEXT=1` shows focus detected and
+all return without error, and `VANTA_TRACE_TEXT=1` shows focus detected and
 text accumulating correctly. **It still does not appear in the field.**
 
 **`updateKeyboardSize(visible=true)` destroys focus. This is the important one.**
@@ -4411,7 +4411,7 @@ textbox focused handle=139759059370112
 ```
 
 Focus bounces continuously while that call is driven. With
-`CORDIAL_NO_KEYBOARD_REPORT=1` it is stable — one `focused`, no blur, confirmed
+`VANTA_NO_KEYBOARD_REPORT=1` it is stable — one `focused`, no blur, confirmed
 by control in the same session.
 
 That also explains the field appearing to clear on every keystroke:
@@ -4428,20 +4428,20 @@ moment, not removal.
 
 **Ruled out as the cause of the bounce:** duplicate pointer delivery. Both AGDK's
 `onTouchEventNative` and `NativeInputInterface` receive every click, so one press
-does arrive twice — but disabling AGDK's copy (`CORDIAL_NO_AGDK_TOUCH=1`) leaves
+does arrive twice — but disabling AGDK's copy (`VANTA_NO_AGDK_TOUCH=1`) leaves
 the bounce exactly as it was.
 
 ### Where this is going
 
 Synthesising an input method by hand is the wrong shape and is being abandoned.
-Cordial becomes a **bridge**: the platform's own input method on one side,
+Vanta becomes a **bridge**: the platform's own input method on one side,
 Android's contract on the other. On Wayland that is `zwp_text_input_v3`, which
 the compositor routes to whatever the user actually runs — ibus, fcitx,
 squeekboard on a phone — so composition, dead keys and CJK candidate windows stop
-being Cordial's to reimplement badly.
+being Vanta's to reimplement badly.
 
 The Android half does not go away: the engine only speaks `showKeyboard` and
-friends, because it is the Android build. What goes away is Cordial inventing the
+friends, because it is the Android build. What goes away is Vanta inventing the
 editing state in the middle. See
 [ADR-011](adr/ADR-011-wayland-and-libadwaita.md).
 
@@ -4463,7 +4463,7 @@ Implemented in `native/game_activity.cpp`:
   constructed once and handed to the engine via
   `GameActivity.setInputConnectionNative` — driven directly from
   `load.rs` right after the surface is handed over, the same way
-  `cordial_game_activity_init` drives `initializeNativeCode` directly instead
+  `vanta_game_activity_init` drives `initializeNativeCode` directly instead
   of waiting for a Java caller that does not exist. Signatures are from the
   shipping APK's dex (`tools/dex_method.py`), not guessed:
   `setState(Lcom/google/androidgamesdk/gametextinput/State;)V`,
@@ -4472,7 +4472,7 @@ Implemented in `native/game_activity.cpp`:
   previously unresolved, now real no-op hooks; resolving is the point, per
   `NativeTextBoxInfo`'s own comment on the pending-exception hazard an
   unresolved call carries.
-- `android::input::reseed_if_needed` (`crates/cordial-runtime/src/android/
+- `android::input::reseed_if_needed` (`crates/vanta-runtime/src/android/
   input.rs`) now prefers `InputConnection.setState`'s text and caret over
   `showKeyboard`'s one-shot byte-array snapshot, once at least one `setState`
   has actually arrived — `setState` is refreshed rather than captured once at
@@ -4482,14 +4482,14 @@ Implemented in `native/game_activity.cpp`:
 **Deliberately not done, and why:** reseeding *live*, on every
 `ime_state_generation()` change rather than only at the existing
 focus-change boundary. `setState` is also how the engine would echo back
-whatever Cordial itself just pushed via `pass_text`/`sync_textbox`; treating
+whatever Vanta itself just pushed via `pass_text`/`sync_textbox`; treating
 every echo as a fresh overwrite mid-keystroke is the same shape of feedback
 loop that produced the focus-bounce bug two sections up, and confirming a
 live-overwrite version does not reintroduce it needs the interactive test
 this change has not yet had (see below).
 
 **Verified:** `setInputConnectionNative` registers cleanly
-(`CORDIAL_ANDROID_TRACE=1` shows `InputConnection registered with the
+(`VANTA_ANDROID_TRACE=1` shows `InputConnection registered with the
 engine`) and a full run reaches `APP_READY (Landing)` with no
 `Constructed Unresolved symbol` for `InputConnection` or either `GameActivity`
 method, on Wayland. **Not yet verified:** that `setState` actually arrives
@@ -4508,7 +4508,7 @@ failing to receive the text and there is no message that makes it render.
 **The symptom.** Typing into a focused box shows nothing and draws no caret. On
 blur the full, correct string appears at once.
 
-**What that rules in.** Cordial sends *nothing* at blur — `nativePassText` is off
+**What that rules in.** Vanta sends *nothing* at blur — `nativePassText` is off
 by default and `hideKeyboard` only marks the box blurred. So the correct string
 that appears on blur can only have arrived through the per-keystroke
 `syncTextboxTextAndCursorPosition2` calls. The engine held it the whole time and
@@ -4538,27 +4538,27 @@ IME. And the engine pushes text *out* during editing —
 `onLuaTextBoxChangedCallback(String)` and the no-argument
 `onLuaTextBoxPropertyChangedCallback()`, whose only sensible response is to
 re-read that geometry. A "properties changed" callback is only needed if Java is
-displaying the box. **Both were unimplemented in Cordial** when this was written
+displaying the box. **Both were unimplemented in Vanta** when this was written
 (`docs/analysis/unresolved-java.md` §2c); the property callback now bumps a
 counter the pump re-reads geometry on, and the text callback now carries the
 engine's text to the editor (`input::apply_engine_text`, 2026-10-04).
 
 So the shadow buffer was never the problem, and deleting it was never going to
-help: **the missing piece is a widget, not a message.** Cordial has to draw the
+help: **the missing piece is a widget, not a message.** Vanta has to draw the
 editing text itself, positioned and styled from those 14 fields, which
 `NativeTextBoxInfo::init` (`native/android_classes.cpp:220`) currently accepts
 and discards.
 
 **There is already an instrument for this and nobody was reading it.**
 `FLog::NativeInput` and `FLog::DataModelBindings` are on by default and narrate
-the path in Cordial's own engine log, no `flags.json` needed:
+the path in Vanta's own engine log, no `flags.json` needed:
 
 ```text
 onTextBoxFocused: 0x7f366c4d0080
 handleTextBoxFocused_AndroidLayer_:
 ```
 
-in `~/.local/share/cordial/instances/default/data/files/appData/logs/*_Player_*.log`.
+in `~/.local/share/vanta/instances/default/data/files/appData/logs/*_Player_*.log`.
 Note the engine's own name for it: `_AndroidLayer_`.
 
 ### Confirmed 2026-08-03: a focused box does not draw its own text, and the keyboard report is not what decides it
@@ -4568,20 +4568,20 @@ backend with `--profile agent-text`, build `0.3.0-21-gf70ee23-dirty`. It is no
 longer "not yet confirmed".
 
 **How it was driven, because that was the blocker for four separate
-investigations.** `CORDIAL_SCRIPT` now takes `click:640x308` and `type:abc`
-alongside `fullscreen`/`motion-on` — a click and a keystroke through Cordial's
+investigations.** `VANTA_SCRIPT` now takes `click:640x308` and `type:abc`
+alongside `fullscreen`/`motion-on` — a click and a keystroke through Vanta's
 own input path (`input::script_click`/`script_type`), calling the same natives
 with the same arguments `window.rs`'s and `wayland.rs`'s own
 `dispatch_button`/`dispatch_key` call. Nothing goes near a compositor, so the
 rule that forbids `XTestFake*`/`ydotool`/`wlr-virtual-keyboard` is untouched:
-Cordial *is* the client and there was never anything to inject into. Every
+Vanta *is* the client and there was never anything to inject into. Every
 sentence in this file that ends "that needs a keystroke, which no Wayland-safe
 automation here can supply" is now wrong. The whole login-form sequence is one
 launch:
 
 ```bash
-CORDIAL_TRACE_TEXT=1 CORDIAL_INSTR=1 \
-CORDIAL_SCRIPT=25:click:640x382,32:click:640x308,34:type:abc,40:click:640x374,48:click:640x308 \
+VANTA_TRACE_TEXT=1 VANTA_INSTR=1 \
+VANTA_SCRIPT=25:click:640x382,32:click:640x308,34:type:abc,40:click:640x374,48:click:640x308 \
   just client --x11 --run 70
 ```
 
@@ -4612,7 +4612,7 @@ already held `xyz` and typing `d` gives `xyzd` on the next blur, so nothing is
 being lost — only withheld from the screen while the box has focus.
 
 **The `updateKeyboardSize` theory below is disproved, in the same session, with
-the control it asked for.** The run above with `CORDIAL_KEYBOARD_REPORT=1` —
+the control it asked for.** The run above with `VANTA_KEYBOARD_REPORT=1` —
 which now sends the corrected `visible=false, x=0, y=720, w=1280, h=0` baseline
 at every focus change, the shape the real-Android capture shows — is
 pixel-identical at every one of those four moments. The engine was told, truthfully
@@ -4621,7 +4621,7 @@ had focus and text was arriving, and it still drew nothing.
 
 Two things worth keeping from that run: the corrected report **does not bounce
 focus** (the `visible=true` with zero height that did is long gone), and it
-changes nothing else either, so `CORDIAL_KEYBOARD_REPORT` stays off by default
+changes nothing else either, so `VANTA_KEYBOARD_REPORT` stays off by default
 for want of a reason rather than for fear of it.
 
 **Where that leaves the Sober counter-evidence below: unverified, and nobody
@@ -4637,8 +4637,8 @@ Sober answers, and this section is wrong. Until then the measurement above
 stands and the second-hand claim does not.
 
 **What the overlay needs, and it is less than it sounds.** `showKeyboard` already
-hands over the box in window pixels, and Cordial already parses it —
-`CORDIAL_TRACE_TEXT=1` prints, for the username field of a 1280x720 login form:
+hands over the box in window pixels, and Vanta already parses it —
+`VANTA_TRACE_TEXT=1` prints, for the username field of a 1280x720 login form:
 
 ```text
 textbox spec from showKeyboard x=470 y=297 w=340 h=22 fontSize=16 textColor=0xffd5d7dd
@@ -4673,20 +4673,20 @@ The mechanism that suggested, and it is the one the measurement above kills: on
 Android, touching a field does not raise the soft keyboard when a hardware
 keyboard is attached, and with no soft keyboard up the engine would draw its own
 text and its own caret. What tells it which case it is in is `updateKeyboardSize`
-— which Cordial had never once reported correctly *while someone typed*. It has
+— which Vanta had never once reported correctly *while someone typed*. It has
 now, and the screen did not change.
 
-### Ctrl+V is bound, and `CORDIAL_TRACE_TEXT` no longer prints what you typed
+### Ctrl+V is bound, and `VANTA_TRACE_TEXT` no longer prints what you typed
 
 Two changes on the same path, 2026-08-03.
 
-**`CORDIAL_TRACE_TEXT=1` used to put the focused field's contents on the
+**`VANTA_TRACE_TEXT=1` used to put the focused field's contents on the
 terminal** — once per keystroke from `pass_text`, and again per key from each
 backend's own trace line. The field anyone debugging this reaches for is
 Roblox's password box. It now prints a byte and character count and the caret,
 which answers every question the switch exists for, since the bug is that
 characters do not *paint* rather than that the wrong ones arrive.
-`CORDIAL_TRACE_TEXT_SHOW_PASSWORDS=1` prints the text, and is named so that
+`VANTA_TRACE_TEXT_SHOW_PASSWORDS=1` prints the text, and is named so that
 nobody turns it on without deciding to. Verified in a live run: a paste of the
 developer's own clipboard through the focused box logged
 `text -> <26 bytes, 26 chars> caret=26` and nothing else.
@@ -4696,7 +4696,7 @@ developer's own clipboard through the focused box logged
 no engine call to hunt for: on Android the `EditText` over the GL surface
 handles the paste itself and the engine only ever sees text arrive through
 `gametextinput`, so a paste is an insert on the same path a keystroke takes.
-Cordial is that editor. `input::is_paste_shortcut` is unit-tested (Ctrl+Shift+V
+Vanta is that editor. `input::is_paste_shortcut` is unit-tested (Ctrl+Shift+V
 is deliberately *not* paste — it means "without formatting" everywhere else),
 and `paste_into_engine` was measured by the work that added it. **`INFERRED`:**
 the two centimetres of wiring between them have never been crossed by a real
@@ -4747,11 +4747,11 @@ say what rectangle the engine gets when an IME is actually up.
 
 ## 1a. The Wayland backend was blank — two independent bugs, both fixed
 
-`CORDIAL_WAYLAND=1` produced a window present in the dock and alt-tab, titled
+`VANTA_WAYLAND=1` produced a window present in the dock and alt-tab, titled
 correctly, completely blank on screen, for the entire time this project has
 had a Wayland backend. Two unrelated bugs, both real, both now fixed in
-`crates/cordial-runtime/src/android/vulkan.rs` and
-`crates/cordial-runtime/src/android/wayland.rs`. Neither was found by reading
+`crates/vanta-runtime/src/android/vulkan.rs` and
+`crates/vanta-runtime/src/android/wayland.rs`. Neither was found by reading
 FLog — see the note in §2a above about why FLog is not useful for this
 question — both were found by instrumenting the actual Vulkan/Wayland calls
 and comparing X11 (works) against Wayland (did not) with real numbers.
@@ -4855,7 +4855,7 @@ after `WINDOW` exists" pattern for `xdg_surface` — see bug 2.
 Landed 2026-08-02. The engine's `wl_surface` was its own `xdg_toplevel`, which
 is why there was no titlebar: the canvas *was* the window. It is now a
 `wl_subsurface` of a GTK4/libadwaita toplevel built by
-`cordial_shell::host_window` — the same definition the shell binary uses — and
+`vanta_shell::host_window` — the same definition the shell binary uses — and
 positioned over that window's content area.
 
 **Verified by running:** three consecutive 25-second launches reach
@@ -4863,7 +4863,7 @@ positioned over that window's content area.
 a screenshot shows the libadwaita header bar above Roblox's landing page, which
 the same session's pre-change binary does not have. `WAYLAND_DEBUG=1` shows
 `wl_subcompositor.get_subsurface`, `wl_subsurface.set_desync`,
-`set_position(25, 71)` and `xdg_toplevel.set_app_id("Cordial")` on the wire —
+`set_position(25, 71)` and `xdg_toplevel.set_app_id("Vanta")` on the wire —
 the app_id had previously only ever been checked by a unit test against the
 desktop entry, never observed.
 
@@ -4877,33 +4877,33 @@ allocation changes, `sync_canvas_geometry` moves and resizes the subsurface,
 `surface_resized` reaches the engine, and the engine rebuilds the swapchain
 itself — with a
 different trigger. **Not Mesa**, as this sentence said until 2026-08-25: nothing
-in Cordial creates or destroys a swapchain. The engine polls
-`vkGetPhysicalDeviceSurfaceCapabilitiesKHR`, Cordial substitutes the extent
+in Vanta creates or destroys a swapchain. The engine polls
+`vkGetPhysicalDeviceSurfaceCapabilitiesKHR`, Vanta substitutes the extent
 `apply_resize` has just published for Mesa's `0xFFFFFFFF` sentinel, and the
 engine calls `vkCreateSwapchainKHR` on its own. The distinction matters because
 "the swapchain was recreated" reads like something done *to* the engine, and a
-whole afternoon went on looking for the object Cordial had pulled out from under
+whole afternoon went on looking for the object Vanta had pulled out from under
 it. There is no such object. Dragging the window edge by hand is still untested,
 because there is no Wayland-safe way to do it from automation.
 
 **Experiment 1 below is answered — no, it does not — and it did not need a
-human after all.** `CORDIAL_SCRIPT` clicks and types now, through Cordial's own
+human after all.** `VANTA_SCRIPT` clicks and types now, through Vanta's own
 input path and nowhere near a compositor; §1's 2026-08-03 correction has the
 measurement and the command. What is left here needs a click only in the sense
 that somebody has to be watching a Wayland session while it happens.
 
 ```bash
 # 1. ANSWERED, 2026-08-03: no. See §1. Kept for the shape of the command.
-#    Add CORDIAL_SCRIPT=…click:…,…type:… and it runs itself.
-CORDIAL_KEYBOARD_REPORT=1 CORDIAL_TRACE_TEXT=1 CORDIAL_WAYLAND=1 \
-  ./target/release/cordial-run --lib-dir <lib> --apk <apk> \
+#    Add VANTA_SCRIPT=…click:…,…type:… and it runs itself.
+VANTA_KEYBOARD_REPORT=1 VANTA_TRACE_TEXT=1 VANTA_WAYLAND=1 \
+  ./target/release/vanta-run --lib-dir <lib> --apk <apk> \
   --host-libc --game-activity --run 120
 
 # 2. Does the zwp_text_input_v3 "has no event 8" freeze still happen, and on
 #    which object? Click into a field; WAYLAND_DEBUG prints every event with
 #    its object id, so the id that receives opcode 8 can be matched against
 #    what created it earlier in the same log.
-WAYLAND_DEBUG=1 CORDIAL_WAYLAND=1 ./target/release/cordial-run ... 2>&1 \
+WAYLAND_DEBUG=1 VANTA_WAYLAND=1 ./target/release/vanta-run ... 2>&1 \
   | tee ~/.cache/ti.log; grep -n "text_input\|no event" ~/.cache/ti.log
 ```
 
@@ -4912,7 +4912,7 @@ WAYLAND_DEBUG=1 CORDIAL_WAYLAND=1 ./target/release/cordial-run ... 2>&1 \
 2**, which this file's own `bind` had always asked for while the hand-written
 table beside it described version 1. The table is fixed. The experiment is
 still worth running once as confirmation, because nobody has yet seen mutter
-send opcode 6, 7 or 8 to Cordial — but it is no longer the only way to
+send opcode 6, 7 or 8 to Vanta — but it is no longer the only way to
 diagnose it.
 
 **Three things worth knowing before touching this code.**
@@ -4927,13 +4927,13 @@ their intersection was empty. It fails silently — `gtk_init_check` returns fal
 and prints nothing. This session's GNOME desktop exports `GDK_BACKEND=x11`, so
 this is not a hypothetical.
 
-Cordial's `wl_pointer` is now a second pointer object on the same seat as GDK's,
+Vanta's `wl_pointer` is now a second pointer object on the same seat as GDK's,
 so it sees enters and clicks aimed at the header bar. `POINTER_ON_CANVAS` filters
 them; without it the engine reacts to a click on the close button and the cursor
 vanishes over the titlebar.
 
 **`wl_keyboard` focus is unchanged in effect and stricter in code.** The fix that
-stopped Cordial seeing keystrokes typed into other windows — `KEYBOARD_FOCUSED`,
+stopped Vanta seeing keystrokes typed into other windows — `KEYBOARD_FOCUSED`,
 set on `enter` and cleared on `leave`, checked before any key is processed —
 still gates every key. `keyboard_enter` now additionally requires the entered
 surface to be *this window's* toplevel rather than any surface of the client,
@@ -5006,10 +5006,10 @@ Five earlier logged-out runs (two at 120s and 180s before any change, three at
 180s after) reached `APP_READY (Landing)` with no protocol error, which is
 consistent with roughly one in eight rather than with "does not happen".
 
-### The timer is Mesa's, on Cordial's own canvas. It is not GTK's, and `queue_commit` is not a commit
+### The timer is Mesa's, on Vanta's own canvas. It is not GTK's, and `queue_commit` is not a commit
 
 **Correction, and this paragraph replaces the one it grew out of.** What used to
-stand here read the error as "Cordial commits the *parent* toplevel itself
+stand here read the error as "Vanta commits the *parent* toplevel itself
 (`host.queue_commit`), and GTK also drives that same surface through its frame
 clock. Two clients of one surface." It also called `wp_commit_timing_v1` "GTK's
 frame-timing protocol, on a surface GTK owns". **Every clause of that is wrong.**
@@ -5039,7 +5039,7 @@ on #105 is Mesa's, one per present.
 
 `HostWindow::queue_commit` is `gtk_widget_queue_draw`. It does not emit
 `wl_surface.commit` and never did — it asks GTK to repaint, and GTK's own commit
-is what latches `set_position`. Cordial sends no request whatever on GTK's
+is what latches `set_position`. Vanta sends no request whatever on GTK's
 surface. Counted over a 45-second run: `wl_subsurface.set_position` fired **0**
 times and `queue_commit` **0** times after startup, because `sync_canvas_geometry`
 acts only when the content rectangle moves and on an untouched window it never
@@ -5066,7 +5066,7 @@ after the previous one against an otherwise steady 20 ms cadence, and
 threads inside one swapchain's present path is what that looks like, and a second
 `set_timestamp` before the intervening commit is what the compositor refused.
 
-**Not established: whether Cordial provokes it.** The one thing Cordial does that
+**Not established: whether Vanta provokes it.** The one thing Vanta does that
 an ordinary Vulkan client does not is hand Mesa a `wl_display` that GDK also owns
 — and there are *two* Vulkan swapchains on that connection, because GTK renders
 through Mesa's WSI too and took commit timers on `wl_surface#47` earlier in the
@@ -5103,10 +5103,10 @@ output was one `Gdk-Message` line, byte-for-byte the shape of the report above.
 With `G_MESSAGES_DEBUG=all`, the same run also printed
 
 ```text
-(Cordial:96812): Gdk-DEBUG: wl_registry#107: error 0: global wl_compositor (999999) is unavailable
+(Vanta:96812): Gdk-DEBUG: wl_registry#107: error 0: global wl_compositor (999999) is unavailable
 ```
 
-`cordial_shell::host_window::unmute_waylands_own_errors` now installs a
+`vanta_shell::host_window::unmute_waylands_own_errors` now installs a
 `Gdk`-domain handler that re-emits those lines as `[wayland] ...` regardless of
 `G_MESSAGES_DEBUG`, filtered so the ~122 portal-settings debug lines GDK also
 emits per launch stay out of the way. Verified with the deliberate error, three
@@ -5159,7 +5159,7 @@ its version from `TEXT_INPUT_MANAGER_INTERFACE.version` so the request and the
 table cannot drift apart again. Two unit tests pin it.
 
 **Still unverified:** that mutter ever actually sends opcode 6, 7 or 8 to
-Cordial. Those need an input method composing into a focused field, which needs
+Vanta. Those need an input method composing into a focused field, which needs
 a click. What *is* established is that the object is live all session — the
 trace shows `zwp_text_input_v3#71.enter(wl_surface#47)` arriving as soon as the
 toplevel takes keyboard focus, with no `enable` sent and no field clicked — so
@@ -5207,7 +5207,7 @@ spread across sixteen 25-second baseline runs is the burst ending a second or
 two earlier or later.
 
 **The cause is that nothing is happening.** Deliver pointer motion through
-Cordial's own input path — `input::deliver_touch` plus `input::pass_mouse_move`,
+Vanta's own input path — `input::deliver_touch` plus `input::pass_mouse_move`,
 which "Debugging facts that cost real time" below already permits because no
 compositor is involved — and the rate holds at 50-60 per second for a whole
 240-second run with no collapse at all. Turn the motion off mid-run and it drops
@@ -5255,7 +5255,7 @@ resolution. A total over a fixed window with an idle app shell answers a
 different question than the one being asked.
 
 **Unexplained and left alone:** `ALooper_pollOnce` is called about **9.5 million
-times per second**, constantly, on both backends. Cordial's own pump loop
+times per second**, constantly, on both backends. Vanta's own pump loop
 accounts for 20-60 of those per second, counted separately in the same runs, so
 the rest is an engine thread spinning. It costs a core and it was not
 investigated.
@@ -5266,7 +5266,7 @@ investigated.
 difference; it lives in `vulkan.rs`, which this work did not touch". It does, and
 this is that work.
 
-**Cordial never requested a present mode at all.** Nothing in the tree mentioned
+**Vanta never requested a present mode at all.** Nothing in the tree mentioned
 one, so `VkSwapchainCreateInfoKHR::presentMode` was whatever the engine put
 there, and the engine puts `VK_PRESENT_MODE_FIFO_KHR` — the only mode the
 specification guarantees exists, and a vsync lock.
@@ -5324,7 +5324,7 @@ the substitution itself. That is the argument for asking rather than assuming:
 a client that had been written to force IMMEDIATE would have had to fall back on
 this very common Intel/Mesa configuration.
 
-`CORDIAL_PRESENT_MODE=off` is the documented control and stays supported.
+`VANTA_PRESENT_MODE=off` is the documented control and stays supported.
 `auto` (the default) prefers MAILBOX only — not IMMEDIATE, which also uncaps the
 rate but tears.
 
@@ -5338,10 +5338,10 @@ tree. Without it, keep a real pointer moving over the canvas for the whole run,
 which drives the same path:
 
 ```bash
-XDG_DATA_HOME=~/.cache/cordial-perf CORDIAL_COUNT_GL=1 \
-  CORDIAL_PRESENT_MODE=off  just client --run 120     # control
-XDG_DATA_HOME=~/.cache/cordial-perf CORDIAL_COUNT_GL=1 \
-  CORDIAL_PRESENT_MODE=auto just client --run 120     # MAILBOX
+XDG_DATA_HOME=~/.cache/vanta-perf VANTA_COUNT_GL=1 \
+  VANTA_PRESENT_MODE=off  just client --run 120     # control
+XDG_DATA_HOME=~/.cache/vanta-perf VANTA_COUNT_GL=1 \
+  VANTA_PRESENT_MODE=auto just client --run 120     # MAILBOX
 ```
 
 `vkQueuePresentKHR` in the report at the end, divided by 120, is the rate — but
@@ -5356,12 +5356,12 @@ Two smaller pieces landed with the present mode.
 is linked and `gamemoderun` is not involved. `RegisterGame(i pid)` on
 `com.feralinteractive.GameMode` before the engine loads,
 `UnregisterGame` before `_exit`. On by default, which is what Sober does;
-`CORDIAL_GAMEMODE=0` is the off switch and the control. All three paths were run
+`VANTA_GAMEMODE=0` is the off switch and the control. All three paths were run
 on this machine and printed:
 
 ```text
 [gamemode] registered pid 605422: performance governor, raised priority, ...
-[gamemode] off (CORDIAL_GAMEMODE=0)
+[gamemode] off (VANTA_GAMEMODE=0)
 [gamemode] not available, continuing without it: no session bus
 ```
 
@@ -5406,7 +5406,7 @@ it does not apply here, and recording that is half the value of this file:
 ## 1e. Fullscreen moves the canvas through two wrong (position, size) pairings
 
 Driven in-process with `gtk_window_fullscreen` from a scripted timer — allowed,
-and not input injection — twice per direction in one 240-second run. What Cordial
+and not input injection — twice per direction in one 240-second run. What Vanta
 actually sends, logged at the call:
 
 ```text
@@ -5420,7 +5420,7 @@ script: windowed
 ```
 
 `sync_canvas_geometry` reads one `content_rect()` and applies its position and
-its size together, so these are not Cordial tearing them apart — GTK reports the
+its size together, so these are not Vanta tearing them apart — GTK reports the
 rectangle in that order as the transition settles, and each intermediate is
 faithfully forwarded. Exactly **one** `surface_resized` per transition, so there
 is no swapchain-rebuild storm; the cost is that the canvas is visibly out of
@@ -5472,7 +5472,7 @@ which is exactly the reported symptom.
 and the mirror image on the way back, `1280x721` in all four places. The
 per-second geometry line moves in the same tick — `rect=Some((0, 46, 1920,
 1154)) placed=(0, 46)` — so the content rectangle, the position, the engine's
-`surface_resized`, the extent Cordial reports to Vulkan and the extent the
+`surface_resized`, the extent Vanta reports to Vulkan and the extent the
 swapchain is built at are five numbers that all agree, in both directions,
 twice per run, in two runs.
 
@@ -5485,7 +5485,7 @@ does redraw at the new size without a mouse; it simply redraws once a second.
 driver never sent one.** `vk_queue_present_khr` forwards the return value
 untouched and now also reports any non-success code, at the first of each and
 then at each power of ten. Across both runs and every transition: not one line.
-So "the engine ignored a suboptimal swapchain" and "Cordial ate the error" are
+So "the engine ignored a suboptimal swapchain" and "Vanta ate the error" are
 both off the table — there was no error to ignore or eat.
 
 **Superseded for RADV, 2026-10-01 (PR #72).** That reading was taken on Intel
@@ -5512,7 +5512,7 @@ not where the bug is.
 **Reproducing all of the above:**
 
 ```bash
-CORDIAL_INSTR=1 CORDIAL_SCRIPT=20:motion-on,35:motion-off,40:fullscreen,\
+VANTA_INSTR=1 VANTA_SCRIPT=20:motion-on,35:motion-off,40:fullscreen,\
 60:motion-on,75:motion-off,80:windowed,100:fullscreen,130:windowed \
   just client --run 150
 ```
@@ -5532,7 +5532,7 @@ Main[546315]: segfault at 44 ip 0x7fc8cc90c4c1 ... +0x13a4c1
 
 Deterministic, and inside a library about the size of a Mesa driver rather than
 inside the 115 MB engine. **`INFERRED`:** that this is the resize rather than
-fullscreen as such — nothing has ever resized an X11 Cordial window from
+fullscreen as such — nothing has ever resized an X11 Vanta window from
 automation either, so "X11 cannot survive a swapchain rebuild at a new size" and
 "X11 cannot survive fullscreen" are not yet distinguishable. Wayland does the
 same transition eight times without complaint.
@@ -5555,11 +5555,11 @@ way. The engine already repaints on `surface_resized` by itself. The call was
 removed again rather than left in looking like a fix; `sync_canvas_geometry`
 carries a comment saying so, so that the next person reaches for something else.
 
-**How both of the above were driven, since it needs no human.** `CORDIAL_INSTR=1`
-plus `CORDIAL_SCRIPT=20:motion-on,70:fullscreen,100:windowed,130:motion-off,
+**How both of the above were driven, since it needs no human.** `VANTA_INSTR=1`
+plus `VANTA_SCRIPT=20:motion-on,70:fullscreen,100:windowed,130:motion-off,
 160:fullscreen,190:windowed,220:motion-on` runs the whole timeline from
 `looper::pump` in one launch — `gtk_window_fullscreen` for the transitions and
-Cordial's own `input::deliver_touch`/`pass_mouse_move` for the pointer, so no
+Vanta's own `input::deliver_touch`/`pass_mouse_move` for the pointer, so no
 compositor is involved and nothing can reach the developer's session. One launch
 covers both fullscreen directions twice, with and without input, and prints
 presents, looper polls, pump iterations and the content rectangle every second.
@@ -5606,7 +5606,7 @@ default                          nativeIsLuaLoginEnabled() -> true
 FIntLuaAppLoginMethod=0          nativeIsLuaLoginEnabled() -> false
 ```
 
-`CORDIAL_SIGNIN_PROBE=1` asks the engine directly.
+`VANTA_SIGNIN_PROBE=1` asks the engine directly.
 
 **Captcha is still narrowed rather than settled** — there is a `CaptchaNative`
 screen name, but also `Turnstile` and `CaptchaV2` strings suggesting
@@ -5615,19 +5615,19 @@ login form itself does not need one.
 
 One correction that came out of it: the `The requested Ids are invalid`
 thumbnail failure is what the **real, logged-out Android client** also produces.
-It is not a Cordial defect and it is not evidence of anything.
+It is not a Vanta defect and it is not evidence of anything.
 
-## 2a. `CORDIAL_COUNT_GL=1`: not broken, just answering "is GLES running?" — and the
+## 2a. `VANTA_COUNT_GL=1`: not broken, just answering "is GLES running?" — and the
 answer to that is always no
 
 **Correction to what this section used to say.** It reported zero for
 `eglCreateWindowSurface`, `eglSwapBuffers` and `glClear` on *both* backends and
 concluded the instrument was broken. It is not. `vkQueuePresentKHR` on the
 *same* counter reads real numbers on both backends now (668 on X11, 663 on
-Wayland, for comparable runs) — checked directly with `CORDIAL_ANDROID_TRACE=1
-CORDIAL_COUNT_GL=1`. The EGL counters read zero because **the engine renders
+Wayland, for comparable runs) — checked directly with `VANTA_ANDROID_TRACE=1
+VANTA_COUNT_GL=1`. The EGL counters read zero because **the engine renders
 through Vulkan on both backends in this build, not GLES**, confirmed the same
-way: `CORDIAL_ANDROID_TRACE=1` alone shows `vkCreateInstance`/
+way: `VANTA_ANDROID_TRACE=1` alone shows `vkCreateInstance`/
 `vkCreateAndroidSurfaceKHR -> vkCreate{Xlib,Wayland}SurfaceKHR` on every launch,
 X11 or Wayland, with no `eglCreateWindowSurface` ever appearing in the same
 trace. A GLES counter reading zero is not a broken instrument here, it is a
@@ -5644,11 +5644,11 @@ backend's own list lets the counting wrapper silently replace `window.rs`/
 `glcount::overrides()` directly rather than running anything: it registers
 `eglMakeCurrent`, `glClear`, `glDrawElements`, `glDrawArrays`,
 `glCompileShader`, `glTexImage2D` and `eglSwapBuffers` (or `swap_buffers_timed`
-under `CORDIAL_SWAP_TIMES=1`) — no `eglCreateWindowSurface` entry at all, so
+under `VANTA_SWAP_TIMES=1`) — no `eglCreateWindowSurface` entry at all, so
 there is no key for it to collide with in the `BTreeMap` `symtab::build`
 collects overrides into. It cannot be replacing something it never names.
 
-**Still true and still the right instinct:** do not use `CORDIAL_COUNT_GL=1`'s
+**Still true and still the right instinct:** do not use `VANTA_COUNT_GL=1`'s
 *EGL* counters to decide whether a backend renders, because on a Vulkan build
 they will read zero regardless. `vkQueuePresentKHR` under the same flag is
 reliable and is what actually answered "does Wayland ever present a frame" —
@@ -5672,20 +5672,20 @@ bug in it.
 > `/usr/lib64/pkgconfig`, so `pkg_check_modules(PIPEWIRE ...)` reported
 > libpipewire-0.3 missing on a host with pipewire-devel 1.6.8 installed.
 > `CMakeCache.txt` recorded `PIPEWIRE_FOUND:INTERNAL=` and
-> `cordial_liblog.dir/flags.make` recorded an empty `CXX_DEFINES`: every
+> `vanta_liblog.dir/flags.make` recorded an empty `CXX_DEFINES`: every
 > release build had compiled the `#else` branch of `pipewire_backend.cpp`, and
 > `slCreateEngine` had been reporting `SL_RESULT_FEATURE_UNSUPPORTED` for a
-> reason that had nothing to do with audio. `cordial_pipewire_backend_test` had
+> reason that had nothing to do with audio. `vanta_pipewire_backend_test` had
 > never run either, for the same reason. `native/CMakeLists.txt` now falls back
 > to `find_path` for the headers — the only thing that is wanted, since the
 > library is dlopen'd — and the build reports
-> `-DCORDIAL_HAVE_PIPEWIRE=1`.
+> `-DVANTA_HAVE_PIPEWIRE=1`.
 >
 > **The conclusion below still holds after that fix, and was re-measured.**
 > Three 30-second runs to the Landing screen with the backend genuinely
 > compiled in produced no `slCreateEngine` call at all (the backend prints
 > `PipeWire session confirmed reachable` on its first use; it never appeared),
-> [that line is now `PipeWire session reachable` and tagged `Cordial-Audio`,
+> [that line is now `PipeWire session reachable` and tagged `Vanta-Audio`,
 > because the session is shared and the old wording claimed OpenSL ES would be
 > used on runs that had selected AAudio; the conclusion is unaffected, since
 > what was observed was its complete absence],
@@ -5696,10 +5696,10 @@ bug in it.
 **Roblox makes exactly one `dlopen` in a 75-second run to the Landing screen:**
 
 ```text
-[cordial] dlopen(libroblox.so) -> ok in 21896us
+[vanta] dlopen(libroblox.so) -> ok in 21896us
 ```
 
-That is Cordial's own load. `CORDIAL_TRACE_DLOPEN=1` reports every request and
+That is Vanta's own load. `VANTA_TRACE_DLOPEN=1` reports every request and
 how long it took. Nothing else is asked for — no audio backend, and no
 `libvulkan.so` either, which is the control: with no `flags.json` the engine
 picks GLES, so the absence of a Vulkan request confirms the trace catches real
@@ -5714,7 +5714,7 @@ calls rather than missing them.
 | `libaaudio.so` | not in `DT_NEEDED`, and **zero** `AAudio*` undefined symbols |
 
 So AAudio is reachable only through `dlopen`, and that `dlopen` never happens.
-FMOD's backend selection has not run. Cordial providing a `libaaudio.so`, or not
+FMOD's backend selection has not run. Vanta providing a `libaaudio.so`, or not
 providing one, cannot currently make any difference — there is nothing to fall
 back *from*.
 
@@ -5738,15 +5738,15 @@ and exactly what voice chat will need implemented later.
 
 ## 2c. Deep links reach the engine. Whether they join needs an account
 
-`cordial-run --join-url <url>` takes a `roblox-player://` or `roblox://` link
+`vanta-run --join-url <url>` takes a `roblox-player://` or `roblox://` link
 from a browser click and hands it to the engine.
 [`docs/analysis/deep-links.md`](analysis/deep-links.md) is the investigation and
-`crates/cordial-runtime/src/deeplink.rs` is the code.
+`crates/vanta-runtime/src/deeplink.rs` is the code.
 
 **The engine asks nobody for a URL.** No `Intent`, no `Uri`, no `getIntent` —
 checked in a full launch and in the Waydroid capture, where every `Intent` line
 belongs to Google Play services rather than to Roblox's process. The URL is
-delivered *to* the engine, which makes this Cordial's statement to make rather
+delivered *to* the engine, which makes this Vanta's statement to make rather
 than a question to answer.
 
 **What works, measured twice with a control.** Publishing on the engine's own
@@ -5762,9 +5762,9 @@ makes the app shell answer, by the first `APP_READY`, with
 Game.launch  {"placeId":1818,"referralPage":"DeepLink","joinAttemptId":"fe7bec78-…"}
 ```
 
-`placeId` and `referralPage` are the engine's words — Cordial passes the URL
+`placeId` and `referralPage` are the engine's words — Vanta passes the URL
 through as one opaque string and never parses it. `isColdStartDeeplinkToGame()`
-goes false -> true across the same delivery. `CORDIAL_DEEPLINK_NO_PUBLISH=1` is
+goes false -> true across the same delivery. `VANTA_DEEPLINK_NO_PUBLISH=1` is
 the control: identical launch, publish suppressed, neither observable moves.
 
 **One of the two things below is now done. See §2d for the full result.**
@@ -5780,11 +5780,11 @@ requested, not just the place, on 8/8 signed-in attempts.
 The engine's own pattern, the client setting `FStringGameLaunchLinkURL`, matches
 `roblox://` and `robloxmobile://` and no other scheme — measured, not read off
 the regex alone. That is the scheme roblox.com's desktop play button emits and
-the handler Cordial took from Sober, so Cordial now takes the desktop format
+the handler Vanta took from Sober, so Vanta now takes the desktop format
 (`roblox-player:1+launchmode:play+gameinfo:<ticket>+placelauncherurl:…`) apart,
 carries the `placeId` out of the decoded launcher URL into
 `roblox://experiences/start?placeId=<id>`, and publishes that. Measured twice
-with `CORDIAL_DEEPLINK_NO_TRANSLATE=1` as the control twice: with the rewrite the
+with `VANTA_DEEPLINK_NO_TRANSLATE=1` as the control twice: with the rewrite the
 app shell answers `Game.launch` naming the place, without it nothing does
 (`docs/analysis/deep-links.md` §6.1).
 
@@ -5799,7 +5799,7 @@ payload arriving through the page's own hybrid layer carries the whole query
 already, not just a place, so the place-only concern this refusal exists for
 does not apply there — see `deeplink.rs`'s own `SERVER_SELECTING` doc.
 
-`CORDIAL_DEEPLINK_PROBE=1` prints the linking protocol's own message and field
+`VANTA_DEEPLINK_PROBE=1` prints the linking protocol's own message and field
 names, read out of the running engine — that is how they were established, and
 it is the cheap way to check whether a Roblox update renamed any of them.
 
@@ -5816,18 +5816,18 @@ listener underneath it, which is the whole of why Join did nothing. See
 `docs/analysis/app-bridge.md` for the contract recorded in full, and why
 `StartGameParams` was not needed.
 
-**The fix, on by default.** `crates/cordial-shell/src/webview.rs` wraps
+**The fix, on by default.** `crates/vanta-shell/src/webview.rs` wraps
 `launchGame` in place once the page defines it, runs the page's own original
 implementation unchanged (its callback, its analytics, its own promise
 resolution), and additionally posts the same JSON payload through
 `executeRoblox`, the bridge this file already owns end-to-end.
-`crates/cordial-runtime/src/webview.rs` recognises the payload by its
+`crates/vanta-runtime/src/webview.rs` recognises the payload by its
 `requestType` and hands it to `deeplink::publish_hybrid_game_launch`, which
 extends the already-measured `Linking.detectURL` publish (§2c) with
 `gameInstanceId`, `joinAttemptId`, `joinAttemptOrigin` and `browserTrackerId`
 alongside `placeId`. `requestType` and `isPlayTogetherGame` are dropped: no
 field in the engine's link grammar or in `StartGameParams` answers to either.
-`CORDIAL_WEBVIEW_DISABLE_HYBRID_LAUNCH=1` turns the whole thing back off.
+`VANTA_WEBVIEW_DISABLE_HYBRID_LAUNCH=1` turns the whole thing back off.
 
 **Verified 8/8 total**, across two rounds and two public games (Neighbors,
 Brookhaven), each time landing in the *exact* `instanceId` requested per the
@@ -5844,8 +5844,8 @@ test account without a purchase or a subscription, both out of scope here.
 
 ## 3. Plugins: running, but with three methods
 
-`crates/cordial-plugins` has capabilities, a broker, manifests, user grants and a
-Deno host. `crates/cordial-runtime/src/plugin_host.rs` joins it to the client:
+`crates/vanta-plugins` has capabilities, a broker, manifests, user grants and a
+Deno host. `crates/vanta-runtime/src/plugin_host.rs` joins it to the client:
 plugins are discovered, started after bring-up, and served from the real flag
 resolver. Verified in a live launch — the example plugin in
 [`plugins/flag-inspector`](../plugins/flag-inspector) reads a flag the user
@@ -5855,7 +5855,7 @@ actually set and is refused a capability it did not request.
 `notify.send`, `url.open`, and the three `events.*` methods (ADR-006) are now
 real, effect-performing brokers — Discord IPC framing, the freedesktop
 notification and OpenURI portals, and an event registry with ownership rules
-— all implemented and tested in `crates/cordial-plugins` (see `presence.rs`,
+— all implemented and tested in `crates/vanta-plugins` (see `presence.rs`,
 `notify.rs`, `urlopen.rs`, `events.rs`, and `host.rs`'s `Session`, which is the
 single dispatcher that authorises and performs all of them). `lifecycle.read`
 now has something to push, too: `Session::push_lifecycle` delivers `launch`,
@@ -5866,14 +5866,14 @@ Discord client (none is available where this was built); see the plugin's own
 source comment.
 
 **What is still missing is the join, not the brokers.** `serve()`'s `dispatch`
-in `crates/cordial-runtime/src/plugin_host.rs` is a separate, older function
+in `crates/vanta-runtime/src/plugin_host.rs` is a separate, older function
 that predates `Session` and still only answers `flags.list`, `flags.get` and
 `log.write`, falling through to `error: not implemented yet` for everything
 else — including the four methods above, which now have real implementations
 sitting unused one crate away. `plugin_host.rs` was out of scope for the work
 that added them (other agents were active there), so the live client still
 cannot broker Discord presence, notifications, URL-opening or plugin events
-until `dispatch` is replaced with (or delegates to) `cordial_plugins::host::
+until `dispatch` is replaced with (or delegates to) `vanta_plugins::host::
 Session::handle`, and `push_lifecycle` is called from wherever the client's
 own launch/ready/shutdown transitions are detected. That wiring, plus
 `flags.write` and `flags.write.dynamic`, is what remains.
@@ -5897,7 +5897,7 @@ inference that the engine "was built with TalkBack support compiled in" came
 from the dex *referencing* those classes, and a referenced class is not a used
 class. Full working in the header comment of `native/accessibility.cpp`.
 
-Consequence worth carrying: any development or automation surface for Cordial
+Consequence worth carrying: any development or automation surface for Vanta
 has to work in coordinates and pixels. There is no semantic element tree to
 read, and getting one would mean engine introspection, which ADR-001/ADR-003
 place permanently out of scope.
@@ -5908,13 +5908,13 @@ New in this change: `native/accessibility.cpp` hooks
 `android.view.accessibility.{AccessibilityManager,AccessibilityNodeInfo,
 AccessibilityEvent}` the same way every other class in `android_classes.cpp`
 answers a platform service, mirrors whatever the engine populates into a
-small registry, and `crates/cordial-runtime/src/android/accessibility.rs`
+small registry, and `crates/vanta-runtime/src/android/accessibility.rs`
 republishes that registry as a real `org.a11y.atspi.*` application on the
 accessibility bus — Linux's TalkBack equivalent, which is what Orca and other
 screen readers actually read.
 
 **This was written and tested with no Roblox APK available in the
-environment.** `crates/cordial-runtime/src/bin/load.rs --apk` needs one the
+environment.** `crates/vanta-runtime/src/bin/load.rs --apk` needs one the
 user supplies, and none was reachable — a Waydroid instance was present but
 came back from a freeze/thaw cycle with a broken guest network (`adb`: `no
 route to host`, persisting past several retries and a `waydroid show-full-ui`
@@ -5923,7 +5923,7 @@ not the point of this change). That has two consequences, and they should
 not be conflated:
 
 **Verified live, with evidence, no Roblox involved:** the AT-SPI-facing half
-of the bridge. `crates/cordial-runtime/examples/accessibility_probe.rs`
+of the bridge. `crates/vanta-runtime/examples/accessibility_probe.rs`
 seeds three synthetic nodes (a button, a checkbox, a label — clearly labelled
 as fixtures, never Roblox data) straight into the same C++ registry
 `AccessibilityNodeInfo`'s real hooks write to, then starts the bridge for
@@ -5944,7 +5944,7 @@ correctly (`push button` for the seeded button, `[1124075776, 0]` for its
 state word — hand-verified against `ATSPI_ROLE_PUSH_BUTTON`/the
 `AtspiStateType` ordinals in `/usr/include/at-spi-2.0/atspi/atspi-constants.h`,
 bit-for-bit), and — after fixing a real bug found this way, not guessed —
-`org.a11y.atspi.Registry`'s own tree lists Cordial as an embedded
+`org.a11y.atspi.Registry`'s own tree lists Vanta as an embedded
 application, meaning `busctl --user tree org.a11y.atspi.Registry`-style
 discovery works, not only a direct connection to a known bus name.
 
@@ -5970,21 +5970,21 @@ structural question this leaves open — real Android's accessibility tree is
 *pull* (`AccessibilityNodeProvider`, Java/Kotlin app code the platform calls
 into on demand), not *push*, and per this project's own established finding
 on `MainGameActivity.bootstrapTheApp()`, Java/Kotlin application logic
-cannot execute under Cordial at all. If Roblox's Android build implements
+cannot execute under Vanta at all. If Roblox's Android build implements
 accessibility that way, no amount of hooking `AccessibilityNodeInfo` reaches
 it, for the same structural reason hooking getters alone never reached
 FastFlags bootstrap. What *is* plausible, and is what this file is written
 to catch if true, is the engine building nodes directly over JNI the way it
 does everything else in `android_classes.cpp` (a native-to-Java push, no app
-subclass involved) — but only a live run with `CORDIAL_ACCESSIBILITY=1
-CORDIAL_JNI_TRACE=1` (or `--dump-classes`) against a real APK, past sign-in,
+subclass involved) — but only a live run with `VANTA_ACCESSIBILITY=1
+VANTA_JNI_TRACE=1` (or `--dump-classes`) against a real APK, past sign-in,
 with a genuine assistive technology attached, distinguishes the two. **Do
-this before claiming Cordial makes Roblox screen-reader-usable** — everything
+this before claiming Vanta makes Roblox screen-reader-usable** — everything
 in this section is "the pipe works", not "there is water in it".
 
 **Also not done, on purpose:** forwarding
 `AccessibilityManager.sendAccessibilityEvent` as a real AT-SPI signal — it is
-captured (see `cordial_accessibility_next_event`) and currently only logged
+captured (see `vanta_accessibility_next_event`) and currently only logged
 to stderr by the poll loop, because getting `org.a11y.atspi.Event.Object`'s
 own signal shapes right needs the same live-verification treatment `Embed`
 just got, and this change was long enough already. `Action::DoAction` also
@@ -6047,7 +6047,7 @@ Worth stating because the opposite was a live theory: only the D key appears to
 work in an experience, and evdev `KEY_D` and `AKEYCODE_D` are both 32 — they
 collide at exactly one letter, so a raw evdev code reaching something that
 wanted an Android one would look precisely like that. It is not happening at
-this layer. Measured, with `CORDIAL_ANDROID_TRACE=1` on two consecutive runs:
+this layer. Measured, with `VANTA_ANDROID_TRACE=1` on two consecutive runs:
 
 ```text
 [android] onKeyDownNative(code=31) -> true      <- C, evdev KEY_C is 46
@@ -6060,7 +6060,7 @@ So the AGDK native is in the natives table, it returns `true`, the codes are
 `AKEYCODE_*`, and `NativeGLInterface.nativePassKeyEvent` resolves and returns
 cleanly on the same keystroke. Whatever makes only D work in an experience is
 downstream of both, or is not about keycodes at all. `nativePassKeyEvent` is now
-traced under `CORDIAL_ANDROID_TRACE=1`, which it never was before — every
+traced under `VANTA_ANDROID_TRACE=1`, which it never was before — every
 keyboard investigation until now read only the AGDK half.
 
 The reason none of this was visible before: `deliver_key`/`deliver_touch`
@@ -6087,7 +6087,7 @@ compositor's output scale times 1.5, feeding both `DisplayMetrics` and
 `PlatformParams.dpiScale` from one number) was measured by the owner in normal
 use as having "absolutely destroyed the DPI on roblox and it still didnt fix the
 resizing issue" — worse in the everyday case and no better in the case it was
-for. `CORDIAL_DPI_SCALE` remains what it was, an override that changes
+for. `VANTA_DPI_SCALE` remains what it was, an override that changes
 `PlatformParams.dpiScale` only.
 
 **The engine reads its density exactly once, and a resize does not make it read
@@ -6173,13 +6173,13 @@ It is left in place because removing it changes what runs at every
 
 > **2026-08-21:** still true, and §0b now says what the engine is doing with it —
 > one thread on `ALooper_pollOnce(0, ...)`, which Sober also has. The attribution
-> below stands; the conclusion once drawn from it, that Cordial is unusually
+> below stands; the conclusion once drawn from it, that Vanta is unusually
 > expensive, does not.
 
 
 A 30s run spends about as long in the kernel as in userland (17.3s user, 16.8s
 system) and racks up roughly 49,000 voluntary context switches. That looked like
-Cordial's pump loop thrashing. It is not.
+Vanta's pump loop thrashing. It is not.
 
 Measured across four full 30s runs against the real APK on Wayland, sampling
 every thread's `wchan` and its own `voluntary_ctxt_switches` counter from
@@ -6189,14 +6189,14 @@ every thread's `wchan` and its own `voluntary_ctxt_switches` counter from
 |---|---|---|
 | `HttpClient` (engine's network thread) | ~57% | `poll_schedule_timeout` — a scheduled timer, not socket I/O, cycling ~900/s while otherwise idle |
 | `RBX Worker A`–`P` (engine task pool, one per core) | ~36% | `futex_do_wait` |
-| Cordial's own thread running `pump()` | ~4% | `ep_poll` — the single deliberate 50 ms-bounded `epoll_wait` |
+| Vanta's own thread running `pump()` | ~4% | `ep_poll` — the single deliberate 50 ms-bounded `epoll_wait` |
 | other engine threads named `Main` | ~3% | |
 
-So **~93% is inside `libroblox.so`**, which is not Cordial's to fix under
+So **~93% is inside `libroblox.so`**, which is not Vanta's to fix under
 [ADR-001](adr/ADR-001-in-process-hooking.md). The per-iteration non-blocking
 `poll(fds, 1, 0)` on the Wayland fd and `wl_display_flush()` contribute no
 blocking `wchan` at all — they show up in the thread's running samples, not its
-sleeping ones. Cordial names no thread `Main`; those four are the engine's.
+sleeping ones. Vanta names no thread `Main`; those four are the engine's.
 
 **Disproved: `FIntTaskSchedulerAutoThreadLimit` is not a lever here.** Set to 1
 and to 2 (against an unset default matching core count), verified reaching the
@@ -6215,12 +6215,12 @@ read fault counts taken on a thrashing machine as a property of the client.
 
 ## Debugging facts that cost real time
 
-- **Reach for `tools/cordial-mcp.py` first.** `just dev --play` starts a client
+- **Reach for `tools/vanta-mcp.py` first.** `just dev --play` starts a client
   and `just mcp` attaches; it screenshots out of the swapchain (unaffected by
   occlusion, and the only thing on this host that can photograph a Wayland
   window -- five other routes were tried and every one was refused), drives
-  Cordial's own input, and attaches lldb with the process CPU quoted beside the
-  stacks. `cordial_info` twice is the wedged-or-throttled test. Written up in
+  Vanta's own input, and attaches lldb with the process CPU quoted beside the
+  stacks. `vanta_info` twice is the wedged-or-throttled test. Written up in
   [ADR-019](adr/ADR-019-development-control-surface.md).
 - **lldb is installed through Homebrew, not `dnf` or a container.** This host is
   immutable ostree, so `dnf` needs `rpm-ostree` and a reboot; a containerised
@@ -6230,26 +6230,26 @@ read fault counts taken on a thrashing machine as a property of the client.
   repairs that. `yama/ptrace_scope` is already 0 here, so that is not it either.
   `brew install llvm` needs neither root nor a reboot.
 - **lldb breakpoints inside `libroblox.so` do not work and fail silently.**
-  Cordial `mmap`s it outside the system linker, so lldb never lists the image and
+  Vanta `mmap`s it outside the system linker, so lldb never lists the image and
   every breakpoint stays unresolved with hit count 0. Use `memory write` of
   `0xCC`, then rewind `$pc` and restore the byte on trap. Crash-stop backtraces
-  and breakpoints in Cordial's own code work normally.
+  and breakpoints in Vanta's own code work normally.
 - **Read syscall arguments from `/proc/<pid>/task/<tid>/syscall`** while lldb has
   the process stopped, not from registers. Number plus all six arguments, no
   guesswork about the libc wrapper's register shuffling. That is how the futex
   was identified without disassembling anything.
 - **There are three threads named `Main`.** Use `thread backtrace all`.
-- **`CORDIAL_TRACE_PATHS=1` is safe** and logs every path-taking libc call with a
-  thread id. **`CORDIAL_TRACE=1` is not** — it wraps variadic functions with
+- **`VANTA_TRACE_PATHS=1` is safe** and logs every path-taking libc call with a
+  thread id. **`VANTA_TRACE=1` is not** — it wraps variadic functions with
   fixed-arity declarations and aborts the engine.
-- **`CORDIAL_SKIP_AGDK=1` skips the flag and app-bridge calls entirely.** Several
+- **`VANTA_SKIP_AGDK=1` skips the flag and app-bridge calls entirely.** Several
   historical results were measured on a path that never ran the code under test.
 - With ASLR disabled `libroblox` loads at `0x7fffefec0000`.
 - lldb is at `/home/linuxbrew/.linuxbrew/bin/lldb`. No gdb, no strace.
 - **Never inject input with `XTestFake*`** — it takes over the real cursor on the
   machine you are using.
 - **The `XSendEvent` advice that used to sit here is dead.** It said to target the
-  window by `WM_CLASS` `cordial`. Since [ADR-011](adr/ADR-011-wayland-and-libadwaita.md)
+  window by `WM_CLASS` `vanta`. Since [ADR-011](adr/ADR-011-wayland-and-libadwaita.md)
   there is no X11 window to target, and an agent following it lost most of a
   session discovering that — Sober is native Wayland too, and forcing
   `XDG_SESSION_TYPE=x11` only makes SDL fail outright because the X11 socket is
@@ -6257,13 +6257,13 @@ read fault counts taken on a thrashing machine as a property of the client.
   window-targeted input injection at all**, by design: `wlr-virtual-keyboard` and
   the `RemoteDesktop` portal both inject at the compositor and land on whatever
   has focus, which is the category the rule above forbids.
-  - **For Cordial's own window, do not synthesise at the protocol level.** Cordial
+  - **For Vanta's own window, do not synthesise at the protocol level.** Vanta
     *is* the Wayland client, so call the path directly — `input::pass_key_event`
     and `input::pass_text` are `pub`, and `wayland.rs`'s `dispatch_key` exercises
     the keysym translation above them. No compositor is involved and nothing can
     reach the developer's session.
     - **There is now a seam for exactly this and it needs no code:**
-      `CORDIAL_INSTR=1 CORDIAL_SCRIPT=32:click:640x308,34:type:abc` clicks and
+      `VANTA_INSTR=1 VANTA_SCRIPT=32:click:640x308,34:type:abc` clicks and
       types on a timeline, through `input::script_click`/`script_type`, which
       call the same natives with the same arguments as a real click and a real
       keystroke. It answered the text-drawing question in §1 that four earlier
@@ -6273,7 +6273,7 @@ read fault counts taken on a thrashing machine as a property of the client.
       the developer's session while its window is up, so anything they type
       lands in the field under test. One run here picked up a stray `5` that was
       not in the script and it is visible in the screenshot — read the
-      `CORDIAL_TRACE_TEXT` log, not only the pixels.
+      `VANTA_TRACE_TEXT` log, not only the pixels.
   - **For another application, nest a compositor.** Run it under a headless
     `cage`/`weston` on its own `WAYLAND_DISPLAY`; a virtual-keyboard client bound
     to *that* compositor is global only within a compositor containing one
@@ -6297,12 +6297,12 @@ read fault counts taken on a thrashing machine as a property of the client.
   rate — §1d has the curve. Sample per second, and say whether input was being
   delivered.
 - **Prefer one long run to many short ones.** A launch puts a window on the
-  owner's desktop. `CORDIAL_SCRIPT` (§1e) exists so that one `--run 240` can
+  owner's desktop. `VANTA_SCRIPT` (§1e) exists so that one `--run 240` can
   carry a whole matrix of conditions with its own controls inside it.
 
 ## A limit on the capture, stated honestly
 
-Cordial runs natively on the host; the capture came from Waydroid. It is
+Vanta runs natively on the host; the capture came from Waydroid. It is
 trustworthy for **call order, names and contract** — which is what it was taken
 for — and **not** for timing or render behaviour. Roblox under Waydroid burns CPU
 with little GPU utilisation. Do not read its rendering path as a model of a
@@ -6335,14 +6335,14 @@ for it.
 Attempted 2026-08-02. **No call sequence was captured** — the blocker was input
 delivery, not the debugger. Recorded so nobody repeats the dead ends.
 
-- **Sober loads `libroblox.so` the same "outside the system linker" way Cordial
+- **Sober loads `libroblox.so` the same "outside the system linker" way Vanta
   does.** No mapping in any process of its tree is named `libroblox`; the image
   lives in an unnamed `memfd`, and it is mapped **thirteen times** at different
   bases within one process, each an identically sized `r-xp`/`rw-p` pair. Why
   thirteen is not established and was not pursued — that is engine internals.
 - **`LD_PRELOAD` interposition cannot work on these natives, in Sober or here.**
-  Cordial's own `crates/cordial-linker-sys/src/lib.rs` resolves them through
-  `cordial_linker_dlsym` — its *own* linker, off the ELF symbol table — and calls
+  Vanta's own `crates/vanta-linker-sys/src/lib.rs` resolves them through
+  `vanta_linker_dlsym` — its *own* linker, off the ELF symbol table — and calls
   a raw pointer. The system dynamic linker is never asked to resolve
   `Java_com_roblox_engine_jni_NativeGLInterface_*`, so a shim shadowing that name
   is never consulted. The `memfd`/no-named-mapping result says Sober's loader
@@ -6365,11 +6365,11 @@ delivery, not the debugger. Recorded so nobody repeats the dead ends.
 - **The remaining blocker was a keystroke**, and per the input rule above that
   meant either a human typing while breakpoints are already planted, or a nested
   headless compositor. `ptrace_scope` is 0, so attaching works; that step was
-  simply never reached. For *Cordial* that blocker is gone (`CORDIAL_SCRIPT`'s
+  simply never reached. For *Vanta* that blocker is gone (`VANTA_SCRIPT`'s
   `click:`/`type:`), but Sober is somebody else's window and the seam does not
   reach it, so this paragraph still stands for Sober.
 - **A cheaper question first, and it needs no debugger.** Sober's engine writes
-  the same `appData/logs/*_Player_*.log` Cordial's does, and the engine narrates
+  the same `appData/logs/*_Player_*.log` Vanta's does, and the engine narrates
   `handleTextBoxFocused_AndroidLayer_` there at `FLog::NativeInput`. Focus a box
   in Sober, type, and grep. If Sober's engine hands the box to the same Android
   layer and still shows the text, §1's diagnosis is wrong; if it never reaches
@@ -6389,7 +6389,7 @@ that presented as something else entirely.
 | Every hostname failed to resolve | `struct addrinfo` has `ai_canonname`/`ai_addr` transposed between bionic and glibc, and the `AI_*` constants differ — bionic's `AI_DEFAULT` sets a bit glibc rejects with `EAI_BADFLAGS` |
 | Every HTTPS request failed | Engine builds `./exe/cacert.pem` from a root it was never given; it now has its own run directory with the APK's CA bundle linked in |
 | SIGSEGV on `HttpClient`, one launch in three | `realpath(path, NULL)` allocates with the host allocator; Roblox statically links mimalloc and freed a pointer its arena table never registered |
-| `eglCreateWindowSurface` returned `EGL_BAD_ALLOC` | The engine was handed Cordial's `ANativeWindow*`; host EGL on X11 wants an XID |
+| `eglCreateWindowSurface` returned `EGL_BAD_ALLOC` | The engine was handed Vanta's `ANativeWindow*`; host EGL on X11 wants an XID |
 | Vulkan refused to initialise | Roblox needs `VK_KHR_android_surface`, which desktop Mesa never exposes. Translated to `VK_KHR_xlib_surface` behind one interposed `vkGetInstanceProcAddr` |
 | Engine reported "Android API 15" and refused Vulkan | `DeviceParams.osVersion` is read as an API *level*. Neither the system property nor `android_get_device_api_level()` fed it |
 | Paths resolved against the working directory | `NativeSettingsInterface`'s directory setters were never called |

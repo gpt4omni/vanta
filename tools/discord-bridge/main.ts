@@ -110,7 +110,7 @@ export async function build(source: Env) {
    * cancelled**, so the fire-and-forget below -- which is correct under Deno,
    * where the process simply keeps going -- silently dropped every deferred
    * action. The first real bug report filed through the deployed bridge sat on
-   * "Cordial Issues is thinking" for ever and no issue was created, because
+   * "Vanta Issues is thinking" for ever and no issue was created, because
    * `fileIssue` was killed before its first request went out.
    *
    * A Worker's `ctx.waitUntil` is the contract for exactly this: keep the

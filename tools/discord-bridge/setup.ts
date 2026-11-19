@@ -37,11 +37,11 @@ const ENV_PATH = `${HERE}.env`;
 /**
  * The Rich Presence application, which this must never be pointed at.
  *
- * `plugins/discord-presence/main.ts` publishes every user's "Playing Cordial"
+ * `plugins/discord-presence/main.ts` publishes every user's "Playing Vanta"
  * under this id. Setup rewrites the application's **description** and sets its
  * interactions endpoint, and the description is what shows in the app's About
  * Me -- so running against that one edits, in public, the identity every
- * Cordial user's presence is published under.
+ * Vanta user's presence is published under.
  *
  * **This used to say the icon was the danger, and that was wrong.** The bot's
  * face is the bot *user's* avatar and the Rich Presence artwork is the
@@ -87,8 +87,8 @@ const SETTINGS: Setting[] = [
     prompt: "Channel id for the form message",
     hint: "May be the same channel",
   },
-  { name: "GITHUB_OWNER", prompt: "GitHub owner", hint: "e.g. luohoa97" },
-  { name: "GITHUB_REPO", prompt: "GitHub repository", hint: "e.g. cordial" },
+  { name: "GITHUB_OWNER", prompt: "GitHub owner", hint: "e.g. gpt4omni" },
+  { name: "GITHUB_REPO", prompt: "GitHub repository", hint: "e.g. vanta" },
   {
     name: "GITHUB_APP_ID",
     prompt: "GitHub App id",
@@ -207,7 +207,7 @@ async function validate(values: Record<string, string>): Promise<string[]> {
 
   if (values.DISCORD_APPLICATION_ID === RICH_PRESENCE_APPLICATION_ID) {
     problems.push(
-      "DISCORD_APPLICATION_ID is Cordial's Rich Presence application. Give the " +
+      "DISCORD_APPLICATION_ID is Vanta's Rich Presence application. Give the " +
         "bridge its own: setup rewrites the application description, which is " +
         "public, and one application carrying both means a problem with the bot " +
         "is a problem with every user's presence.",
@@ -221,7 +221,7 @@ async function validate(values: Record<string, string>): Promise<string[]> {
     // It passes every shape check and then rejects every request Discord
     // signs, and the only symptom is Discord refusing the interactions
     // endpoint with "could not be verified" -- which reads as the endpoint
-    // being unreachable. That happened here: the key belonged to Cordial's
+    // being unreachable. That happened here: the key belonged to Vanta's
     // Rich Presence application, whose page sits one click away in the same
     // portal.
     //
@@ -255,7 +255,7 @@ async function validate(values: Record<string, string>): Promise<string[]> {
 
   const repo = await fetch(
     `https://api.github.com/repos/${values.GITHUB_OWNER}/${values.GITHUB_REPO}`,
-    { headers: { "user-agent": "cordial-issue-bridge" } },
+    { headers: { "user-agent": "vanta-issue-bridge" } },
   );
   if (!repo.ok) {
     problems.push(`GITHUB_OWNER/GITHUB_REPO: GitHub answered ${repo.status}`);
@@ -283,7 +283,7 @@ async function validate(values: Record<string, string>): Promise<string[]> {
  * Give the bot its face.
  *
  * **The bot's avatar and the application's icon are different pictures**, and
- * mixing them up is how this script nearly overwrote Cordial's Rich Presence
+ * mixing them up is how this script nearly overwrote Vanta's Rich Presence
  * artwork. `PATCH /users/@me` with a bot token edits the bot *user*, which is
  * what appears beside its messages and in the member list. The application's
  * `icon` is Rich Presence artwork and the app directory listing, and is
@@ -326,7 +326,7 @@ async function configureApplication(values: Record<string, string>, publicUrl: s
       "content-type": "application/json",
     },
     body: JSON.stringify({
-      description: "Files Cordial issues from Discord. You do not need a GitHub account.",
+      description: "Files Vanta issues from Discord. You do not need a GitHub account.",
       interactions_endpoint_url: `${publicUrl.replace(/\/$/, "")}/interactions`,
     }),
   });
@@ -366,7 +366,7 @@ if (import.meta.main) {
     Deno.exit(1);
   }
 
-  console.log(`\x1b[1mCordial issue bridge — setup\x1b[0m
+  console.log(`\x1b[1mVanta issue bridge — setup\x1b[0m
 
 Before this is useful you need, in the Discord developer portal:
   1. an application (New Application)

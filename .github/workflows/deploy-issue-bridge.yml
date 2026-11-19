@@ -72,7 +72,7 @@ jobs:
         working-directory: tools/discord-bridge
         env:
           # A scoped API token, not the OAuth login a person uses. It needs
-          # only "Workers Scripts: Edit" on the Cordial account -- it does not
+          # only "Workers Scripts: Edit" on the Vanta account -- it does not
           # read or write the secrets, which are set once out of band and
           # survive a deploy untouched.
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -84,7 +84,7 @@ jobs:
       - name: Does the deployed bridge answer?
         run: |
           for i in $(seq 1 10); do
-            body=$(curl -fsS -m 15 https://cordial-issues.cordial-7d5.workers.dev/health) && {
+            body=$(curl -fsS -m 15 https://vanta-issues.vanta-7d5.workers.dev/health) && {
               echo "$body"
               echo "$body" | grep -q '"ok":true' && exit 0
               echo "health answered but not ok" >&2; exit 1

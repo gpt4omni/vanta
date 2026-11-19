@@ -129,7 +129,7 @@ async function graphqlRequest<T>(
       headers: {
         Authorization: `Bearer ${token}`,
         "Content-Type": "application/json",
-        "User-Agent": "cordial-sober-corpus-fetcher",
+        "User-Agent": "vanta-sober-corpus-fetcher",
       },
       body: JSON.stringify({ query, variables }),
     });

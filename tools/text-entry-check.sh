@@ -11,9 +11,9 @@
 #   * fixed `sleep`s race the app shell. Four runs were read as "the click
 #     missed the button" when the page simply had not rendered yet. This polls
 #     the log for readiness instead.
-#   * `CORDIAL_SCRIPT` parses and never fires unless `CORDIAL_INSTR=1` is also
+#   * `VANTA_SCRIPT` parses and never fires unless `VANTA_INSTR=1` is also
 #     set. That cost four more runs.
-#   * `cordial_screenshot` reads the engine's own swapchain and cannot see a GTK
+#   * `vanta_screenshot` reads the engine's own swapchain and cannot see a GTK
 #     editor at all, so it reports success whatever happens. `grim` against the
 #     nested compositor is the only capture that proves anything here.
 #   * a client left over from a previous run holds the profile lock, and the
@@ -39,17 +39,17 @@
 
 set -uo pipefail
 
-PROFILE="${1:-CordialTest}"
+PROFILE="${1:-VantaTest}"
 TYPED="${2:-rivals}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-OUT="${CORDIAL_CHECK_OUT:-/tmp/cordial-text-entry-check}"
+OUT="${VANTA_CHECK_OUT:-/tmp/vanta-text-entry-check}"
 mkdir -p "$OUT"
 LOG="$OUT/client.log"
 SHOT="$OUT/typed.png"
-BIN="$ROOT/target/release/cordial-run"
+BIN="$ROOT/target/release/vanta-run"
 
-APK="${CORDIAL_APK:-$HOME/.var/app/org.vinegarhq.Sober/data/sober/packages/x86_64/com.roblox.client/base.apk}"
-LIB="${CORDIAL_LIB_DIR:-$HOME/.cache/cordial/lib/x86_64}"
+APK="${VANTA_APK:-$HOME/.var/app/org.vinegarhq.Sober/data/sober/packages/x86_64/com.roblox.client/base.apk}"
+LIB="${VANTA_LIB_DIR:-$HOME/.cache/vanta/lib/x86_64}"
 
 fail() { echo "FAIL: $*"; exit 1; }
 note() { echo "  $*"; }
@@ -58,9 +58,9 @@ note() { echo "  $*"; }
 [ -f "$APK" ] || fail "no APK at $APK"
 
 # Never match our own command line; the engine renames its main thread to
-# `Main`, so `pgrep -x cordial-run` finds nothing either.
+# `Main`, so `pgrep -x vanta-run` finds nothing either.
 reap() {
-  for p in $(pidof cordial-run 2>/dev/null); do
+  for p in $(pidof vanta-run 2>/dev/null); do
     prof=$(tr '\0' '\n' < "/proc/$p/cmdline" 2>/dev/null | grep -A1 -x -- --profile | tail -1)
     [ "$prof" = "$PROFILE" ] && kill -9 "$p" 2>/dev/null
   done
@@ -71,10 +71,10 @@ echo "== text entry check: profile=$PROFILE typing=$TYPED"
 reap
 : > "$LOG"
 
-nohup distrobox enter cordial -- bash -lc "
+nohup distrobox enter vanta -- bash -lc "
   cd '$ROOT'
-  export CORDIAL_DEV_CONTROL=1 CORDIAL_TRACE_TEXT=1 CORDIAL_INSTR=1
-  ${CORDIAL_KEYS_TO_GAME_WHILE_TYPING:+export CORDIAL_KEYS_TO_GAME_WHILE_TYPING='$CORDIAL_KEYS_TO_GAME_WHILE_TYPING'}
+  export VANTA_DEV_CONTROL=1 VANTA_TRACE_TEXT=1 VANTA_INSTR=1
+  ${VANTA_KEYS_TO_GAME_WHILE_TYPING:+export VANTA_KEYS_TO_GAME_WHILE_TYPING='$VANTA_KEYS_TO_GAME_WHILE_TYPING'}
   '$BIN' --headless --lib-dir '$LIB' --apk '$APK' \
     --host-libc --game-activity --run 0 --profile '$PROFILE'
 " > "$LOG" 2>&1 &
@@ -90,21 +90,21 @@ note "step 1 ok: $(grep -oE 'app ready: [A-Za-z]+' "$LOG" | tail -1)"
 # to be a sleep, because nothing in the log marks "laid out".
 sleep 14
 
-SOCK="$HOME/.local/share/cordial/profiles/$PROFILE/devctl.sock"
+SOCK="$HOME/.local/share/vanta/profiles/$PROFILE/devctl.sock"
 mcp() {
   printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' "$1" \
-    | timeout 30 python3 "$ROOT/tools/cordial-mcp.py" --socket "$SOCK" 2>/dev/null | tail -1
+    | timeout 30 python3 "$ROOT/tools/vanta-mcp.py" --socket "$SOCK" 2>/dev/null | tail -1
 }
 
 # 2. click the search box, and keep trying. "Ready" is not "laid out", and a
 #    single click at a fixed coordinate is the step that flaked most often --
 #    every failure of it was misread as a broken fix at least once today.
 DISP=$(basename "$(ls -t "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"/wayland-* 2>/dev/null | grep -v lock | head -1)")
-shoot() { timeout 25 distrobox enter cordial -- bash -lc "export WAYLAND_DISPLAY=$DISP; grim '$1'" >/dev/null 2>&1; }
+shoot() { timeout 25 distrobox enter vanta -- bash -lc "export WAYLAND_DISPLAY=$DISP; grim '$1'" >/dev/null 2>&1; }
 shoot "$OUT/before-click.png"
 
 for attempt in 1 2 3 4 5; do
-  mcp '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"cordial_click","arguments":{"x":674,"y":28}}}' >/dev/null
+  mcp '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"vanta_click","arguments":{"x":674,"y":28}}}' >/dev/null
   sleep 4
   grep -q 'textbox focused' "$LOG" && break
   note "step 2: attempt $attempt found no focused TextBox, retrying"
@@ -146,12 +146,12 @@ awk "BEGIN{exit !($w > 0 && $h > 0)}" ||
   { reap; fail "the editor was placed 0-sized and is invisible (step 3)"; }
 
 # 4. type, per character, through the same path a keystroke takes
-mcp "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"cordial_text\",\"arguments\":{\"text\":\"$TYPED\"}}}" >/dev/null
+mcp "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"vanta_text\",\"arguments\":{\"text\":\"$TYPED\"}}}" >/dev/null
 sleep 5
-pidof cordial-run >/dev/null || fail "the client died while typing (step 4)"
+pidof vanta-run >/dev/null || fail "the client died while typing (step 4)"
 note "step 4 ok: client survived typing"
 
-# 5. photograph the composited result. Not cordial_screenshot: it reads the
+# 5. photograph the composited result. Not vanta_screenshot: it reads the
 #    engine's swapchain and cannot see a GTK editor.
 shoot "$SHOT"
 [ -s "$SHOT" ] || { reap; fail "no composited screenshot (step 5)"; }
@@ -160,10 +160,10 @@ note "step 5 ok: $SHOT ($(stat -c%s "$SHOT") bytes)"
 reap
 sup=$(grep -c 'pass_key_event suppressed' "$LOG")
 # Not `nativePassKeyEvent`: that line comes from `super::trace`, which is
-# CORDIAL_TRACE=1, and that aborts the engine -- so it never appears and counting
+# VANTA_TRACE=1, and that aborts the engine -- so it never appears and counting
 # it measures nothing. The trace_text line below is the one that actually fires.
 game=$(grep -cE 'pass_key_event down=' "$LOG")
 note "keys: $sup suppressed, $game reached the game's key handler"
-[ "${CORDIAL_KEYS_TO_GAME_WHILE_TYPING:-}" = "" ] && [ "$game" -gt 0 ] &&
+[ "${VANTA_KEYS_TO_GAME_WHILE_TYPING:-}" = "" ] && [ "$game" -gt 0 ] &&
   note "        WARNING: characters reached the game while a box had focus"
 echo "PASS -- look at $SHOT to judge placement; the steps above prove the path."

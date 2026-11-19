@@ -1,12 +1,12 @@
 // Bridging Roblox's Android accessibility surface to a Rust-side mirror that
-// `crates/cordial-runtime/src/android/accessibility.rs` turns into AT-SPI —
+// `crates/vanta-runtime/src/android/accessibility.rs` turns into AT-SPI —
 // Linux's screen-reader protocol, the OS-level equivalent of TalkBack.
 //
 // Same shape as every other class in this directory: Roblox's native engine
 // calls out to Java for a platform service, libjnivm hands it a stub by
 // default, and this file answers instead of leaving the call unresolved.
 // What is different here is *why* the surface exists in the first place —
-// nothing upstream of this file asked Cordial to build it; it exists because
+// nothing upstream of this file asked Vanta to build it; it exists because
 // `docs/analysis/framework-classes.txt` shows the shipping dex references
 // `android/view/accessibility/AccessibilityManager`,
 // `AccessibilityNodeInfo` (and its `AccessibilityAction`/`CollectionInfo`/
@@ -22,7 +22,7 @@
 // against this project's own established descriptor-matching lessons on the
 // JNI side — but whether Roblox's engine calls any of it beyond the
 // `isEnabled` gate is INFERRED, not observed, and is exactly what
-// `--dump-classes` / `CORDIAL_JNI_TRACE=1` against a real run would settle.
+// `--dump-classes` / `VANTA_JNI_TRACE=1` against a real run would settle.
 //
 // One structural finding worth recording here rather than only in NEXT.md:
 // real Android's accessibility tree is *pull*, not *push* — TalkBack asks an
@@ -30,7 +30,7 @@
 // receives a pre-built tree. A provider is Java/Kotlin code the *app*
 // subclasses, and per this project's own established finding on
 // `MainGameActivity.bootstrapTheApp()`, Java/Kotlin application logic cannot
-// execute under Cordial at all — there is no JVM. If Roblox's Android build
+// execute under Vanta at all — there is no JVM. If Roblox's Android build
 // implements its accessibility bridge that way (plausible: it is the
 // documented, idiomatic mechanism for a single-View/SurfaceView app), no
 // amount of hooking `AccessibilityNodeInfo` here reaches it, for the same
@@ -63,7 +63,7 @@
 //     boilerplate, not an implementation.
 //   - The dex contains no `com/roblox/**` `View` or `Surface` subclass, which
 //     is what a virtual-descendant provider would have to hang off.
-//   - A 40 s run with `CORDIAL_ACCESSIBILITY=1`, reaching the Home screen,
+//   - A 40 s run with `VANTA_ACCESSIBILITY=1`, reaching the Home screen,
 //     with the AT-SPI bridge genuinely attached (`connected to the AT-SPI bus
 //     as :1.2069`, so the `isEnabled` gate below answered true honestly) made
 //     **zero** calls into this file: no `obtain`, no `setBoundsInScreen`, no
@@ -74,7 +74,7 @@
 // than deleted for two reasons: it is a faithful implementation of the public
 // AOSP contract, so it costs nothing and answers correctly if a future Roblox
 // build ever does populate a tree; and the AT-SPI half in `accessibility.rs`
-// is independently useful for exposing *Cordial's own* interface, which is
+// is independently useful for exposing *Vanta's own* interface, which is
 // GTK and already has a real accessibility tree.
 //
 // What this closes: a semantic UI-element route for any test harness or
@@ -96,7 +96,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace cordial {
+namespace vanta {
 
 using jnivm::Class;
 using jnivm::ENV;
@@ -119,30 +119,30 @@ std::shared_ptr<String> S(const char* v) {
 // `AccessibilityManager.isEnabled()` is the single most load-bearing call in
 // this file: real Android apps skip building an accessibility tree entirely
 // when it answers false, on the (correct) assumption that nobody is listening
-// and the work would be wasted. Cordial has no system AccessibilityManagerService
+// and the work would be wasted. Vanta has no system AccessibilityManagerService
 // to poll for "is a real service running" — the nearest honest equivalent on
-// Linux is "did Cordial's own AT-SPI bridge manage to attach to the
+// Linux is "did Vanta's own AT-SPI bridge manage to attach to the
 // accessibility bus", which `accessibility.rs` decides once, early, off the
 // engine's hot path, and reports here through a plain atomic rather than
 // blocking a JNI call on a D-Bus round-trip.
 //
-// `CORDIAL_ACCESSIBILITY=0`/`=1` forces the answer either way, the same
-// override-by-environment-variable idiom `CORDIAL_DPI_SCALE` and
-// `CORDIAL_INPUT_TOUCH` already use elsewhere in this tree — useful for
+// `VANTA_ACCESSIBILITY=0`/`=1` forces the answer either way, the same
+// override-by-environment-variable idiom `VANTA_DPI_SCALE` and
+// `VANTA_INPUT_TOUCH` already use elsewhere in this tree — useful for
 // exercising the engine's accessible path without an AT-SPI client attached,
 // or for ruling the whole feature out as a variable while debugging something
 // unrelated.
 std::atomic<int> g_a11y_bridge_connected{0};
-} // namespace cordial
+} // namespace vanta
 
-extern "C" void cordial_accessibility_set_bridge_connected(int connected) {
-    cordial::g_a11y_bridge_connected.store(connected ? 1 : 0, std::memory_order_release);
+extern "C" void vanta_accessibility_set_bridge_connected(int connected) {
+    vanta::g_a11y_bridge_connected.store(connected ? 1 : 0, std::memory_order_release);
 }
 
-namespace cordial {
+namespace vanta {
 namespace {
 bool accessibility_enabled() {
-    if (const char* e = getenv("CORDIAL_ACCESSIBILITY")) {
+    if (const char* e = getenv("VANTA_ACCESSIBILITY")) {
         if (*e) {
             return *e != '0';
         }
@@ -160,7 +160,7 @@ bool accessibility_enabled() {
 // So this mirror does not attempt to reconstruct a hierarchy: it is a flat
 // registry of whatever nodes get built and populated, each independently
 // addressable. `accessibility.rs` exposes them as flat children of one
-// "Cordial" application object. That is a real limitation, not a placeholder
+// "Vanta" application object. That is a real limitation, not a placeholder
 // — recovering the actual parent/child structure needs to know how Roblox's
 // engine actually calls this surface, which is exactly the unresolved
 // question the file comment above describes.
@@ -233,7 +233,7 @@ constexpr size_t kMaxQueuedEvents = 256; // bounded: a stuck consumer must not l
 
 // ---------------------------------------------------------------- Rect
 //
-// `android.graphics.Rect`: four public fields, no behaviour Cordial needs.
+// `android.graphics.Rect`: four public fields, no behaviour Vanta needs.
 // Both directions of `AccessibilityNodeInfo.{set,get}BoundsInScreen` have the
 // *caller* (Roblox's native code) construct the `Rect` via JNI, so the
 // constructor has to resolve, not just field access — see
@@ -437,7 +437,7 @@ public:
     }
     // `packageName` is accepted and dropped: nothing on the AT-SPI side reads
     // it (there is no equivalent concept once the node is flattened into
-    // Cordial's own application), but the call still has to resolve rather
+    // Vanta's own application), but the call still has to resolve rather
     // than land on an unresolved-symbol stub.
     void setPackageNameCs(ENV*, std::shared_ptr<CharSequence>) {}
     void setPackageNameStr(ENV*, std::shared_ptr<String>) {}
@@ -621,7 +621,7 @@ public:
     // whatever `isEnabled()` returns.
     jboolean isTouchExplorationEnabled(ENV*) { return false; }
 
-    // Accepted and stored nowhere: Cordial's own answer to both of these
+    // Accepted and stored nowhere: Vanta's own answer to both of these
     // never changes mid-session (the AT-SPI bridge either connected at
     // startup or it did not), so there is nothing to notify a listener about
     // later. Resolving the call is the point — see the same reasoning on
@@ -669,18 +669,18 @@ void register_accessibility_classes(ENV* env) {
     AccessibilityManager::Register(env);
 }
 
-} // namespace cordial
+} // namespace vanta
 
 // -------------------------------------------------------------- Rust FFI
 //
-// Bounded, buffer-copy style throughout, matching `cordial_textbox_text`'s
+// Bounded, buffer-copy style throughout, matching `vanta_textbox_text`'s
 // convention elsewhere in this directory: fixed-size C structs and
 // length-prefixed string copies rather than anything that hands ownership of
 // a C++ container across the boundary.
 
 extern "C" {
 
-struct CordialA11yNode {
+struct VantaA11yNode {
     unsigned id;
     char class_name[128];
     char text[256];
@@ -697,7 +697,7 @@ struct CordialA11yNode {
     unsigned action_count;
 };
 
-static void fill_node(const cordial::NodeState& n, CordialA11yNode* out) {
+static void fill_node(const vanta::NodeState& n, VantaA11yNode* out) {
     out->id = n.id;
     std::snprintf(out->class_name, sizeof(out->class_name), "%s", n.class_name.c_str());
     std::snprintf(out->text, sizeof(out->text), "%s", n.text.c_str());
@@ -717,12 +717,12 @@ static void fill_node(const cordial::NodeState& n, CordialA11yNode* out) {
 
 /// Copy up to `max` live nodes into `out`. Returns the number written — not
 /// the total live count, which callers get from
-/// `cordial_accessibility_node_count` if they need to size the buffer first.
-size_t cordial_accessibility_snapshot(CordialA11yNode* out, size_t max) {
+/// `vanta_accessibility_node_count` if they need to size the buffer first.
+size_t vanta_accessibility_snapshot(VantaA11yNode* out, size_t max) {
     if (!out || max == 0) return 0;
-    std::lock_guard<std::mutex> lock(cordial::g_registry_mutex);
+    std::lock_guard<std::mutex> lock(vanta::g_registry_mutex);
     size_t n = 0;
-    for (const auto& kv : cordial::g_registry) {
+    for (const auto& kv : vanta::g_registry) {
         if (n >= max) break;
         fill_node(kv.second, &out[n]);
         ++n;
@@ -730,13 +730,13 @@ size_t cordial_accessibility_snapshot(CordialA11yNode* out, size_t max) {
     return n;
 }
 
-size_t cordial_accessibility_node_count() {
-    std::lock_guard<std::mutex> lock(cordial::g_registry_mutex);
-    return cordial::g_registry.size();
+size_t vanta_accessibility_node_count() {
+    std::lock_guard<std::mutex> lock(vanta::g_registry_mutex);
+    return vanta::g_registry.size();
 }
 
-unsigned cordial_accessibility_generation() {
-    return cordial::g_registry_generation.load(std::memory_order_acquire);
+unsigned vanta_accessibility_generation() {
+    return vanta::g_registry_generation.load(std::memory_order_acquire);
 }
 
 /// Dequeue one pending `sendAccessibilityEvent` call. Returns 1 with
@@ -754,13 +754,13 @@ unsigned cordial_accessibility_generation() {
 /// with `busctl`/`accerciser` without a Roblox APK, which this change was
 /// written without access to (see the file's header comment and the
 /// accompanying report). Returns the assigned node id.
-unsigned cordial_accessibility_test_seed_node(const char* class_name, const char* text,
+unsigned vanta_accessibility_test_seed_node(const char* class_name, const char* text,
                                               const char* content_description, int left, int top,
                                               int right, int bottom, unsigned state) {
-    unsigned id = cordial::g_next_id.fetch_add(1, std::memory_order_relaxed);
+    unsigned id = vanta::g_next_id.fetch_add(1, std::memory_order_relaxed);
     {
-        std::lock_guard<std::mutex> lock(cordial::g_registry_mutex);
-        auto& n = cordial::locked_node(id);
+        std::lock_guard<std::mutex> lock(vanta::g_registry_mutex);
+        auto& n = vanta::locked_node(id);
         n.id = id;
         n.class_name = class_name ? class_name : "";
         n.text = text ? text : "";
@@ -771,24 +771,24 @@ unsigned cordial_accessibility_test_seed_node(const char* class_name, const char
         n.bottom = bottom;
         n.state = state;
     }
-    cordial::g_registry_generation.fetch_add(1, std::memory_order_acq_rel);
+    vanta::g_registry_generation.fetch_add(1, std::memory_order_acq_rel);
     return id;
 }
 
 /// Drop every node, seeded or real. Test-only, same reasoning as
-/// `cordial_accessibility_test_seed_node`.
-void cordial_accessibility_test_clear() {
-    std::lock_guard<std::mutex> lock(cordial::g_registry_mutex);
-    cordial::g_registry.clear();
-    cordial::g_registry_generation.fetch_add(1, std::memory_order_acq_rel);
+/// `vanta_accessibility_test_seed_node`.
+void vanta_accessibility_test_clear() {
+    std::lock_guard<std::mutex> lock(vanta::g_registry_mutex);
+    vanta::g_registry.clear();
+    vanta::g_registry_generation.fetch_add(1, std::memory_order_acq_rel);
 }
 
-int cordial_accessibility_next_event(int* event_type, char* class_name_buf, int cn_len,
+int vanta_accessibility_next_event(int* event_type, char* class_name_buf, int cn_len,
                                      char* text_buf, int text_len) {
-    std::lock_guard<std::mutex> lock(cordial::g_event_mutex);
-    if (cordial::g_event_queue.empty()) return 0;
-    cordial::PendingEvent ev = cordial::g_event_queue.front();
-    cordial::g_event_queue.erase(cordial::g_event_queue.begin());
+    std::lock_guard<std::mutex> lock(vanta::g_event_mutex);
+    if (vanta::g_event_queue.empty()) return 0;
+    vanta::PendingEvent ev = vanta::g_event_queue.front();
+    vanta::g_event_queue.erase(vanta::g_event_queue.begin());
     if (event_type) *event_type = ev.event_type;
     if (class_name_buf && cn_len > 0) {
         std::snprintf(class_name_buf, static_cast<size_t>(cn_len), "%s", ev.class_name.c_str());

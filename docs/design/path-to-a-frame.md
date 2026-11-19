@@ -44,12 +44,12 @@ boolean onKeyUpNative(long handle, KeyEvent e)
 void    setInputConnectionNative(long handle, InputConnection ic)
 ```
 
-That is the entire window and input surface Cordial has to satisfy. It is small,
+That is the entire window and input surface Vanta has to satisfy. It is small,
 and it is now known exactly rather than approximately.
 
 ## 2. What has to exist before the first call
 
-`initializeNativeCode` takes four things Cordial does not have yet.
+`initializeNativeCode` takes four things Vanta does not have yet.
 
 | Argument | What it needs | Where |
 |---|---|---|
@@ -75,7 +75,7 @@ texture without it.
 ## 4. The surface
 
 `onSurfaceCreatedNative` takes a Java `Surface`, and the native side turns it into
-an `ANativeWindow` to render through. So Cordial needs:
+an `ANativeWindow` to render through. So Vanta needs:
 
 1. A host window — X11 or Wayland.
 2. An EGL surface on it, via Mesa. GLES2 + EGL is the mandatory path;
@@ -92,7 +92,7 @@ build, which was not investigated.
 
 ## 4a. The GL stack is confirmed working
 
-`cordial-run --gl-probe` brings up a GLES2 context through the symbol table
+`vanta-run --gl-probe` brings up a GLES2 context through the symbol table
 Roblox will be handed — not by calling `libEGL` directly — clears to a known
 colour and reads the pixel back:
 
@@ -114,7 +114,7 @@ surfaces are a path the engine itself takes.
 
 ## 4b. And into a real window
 
-`cordial-run --window 3` opens an X11 window, creates an EGL surface on it with
+`vanta-run --window 3` opens an X11 window, creates an EGL surface on it with
 `eglCreateWindowSurface`, and renders an animated clear at 60 fps with real
 buffer swaps. `ANativeWindow_*` is implemented over that window — nine of the ten
 entry points, all resolving to the window the engine will actually draw into.
@@ -153,7 +153,7 @@ connected to Roblox yet. The engine has not been asked to render anything —
 Steps 2 and 4 are each larger than everything the framework layer has needed so
 far. The asset manager is a real implementation of a documented API over a zip;
 the window and EGL work is where Android-on-desktop projects historically lose
-the most time, and Cordial has not started it.
+the most time, and Vanta has not started it.
 
 What has changed is that none of it is unknown any more. Every signature above
 came out of the APK, and the discovery loop

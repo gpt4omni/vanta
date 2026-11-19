@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""End-to-end test of Cordial's Roblox text editor, with real keys.
+"""End-to-end test of Vanta's Roblox text editor, with real keys.
 
 Why this exists rather than `tools/text-entry-check.sh`, which already tests
 typing: that script asserts on the *path* -- a spec arrived, the editor was
@@ -14,9 +14,9 @@ Three instruments here are different from that script's, and each replaces one
 that could not see a failure:
 
   * **sway, not cage.** cage advertises no `zwp_text_input_manager_v3` and its
-    seat never gains a keyboard. Cordial reads seat capabilities once, at
+    seat never gains a keyboard. Vanta reads seat capabilities once, at
     `open()`, so under cage it never binds its own `wl_keyboard` -- and the
-    guard that stops GDK and Cordial both inserting the same character never
+    guard that stops GDK and Vanta both inserting the same character never
     runs. `docs/NEXT.md` labelled that guard `INFERRED` for exactly this
     reason.
 
@@ -28,7 +28,7 @@ that could not see a failure:
   * **The `textbox` devctl verb**, which reports what the field actually
     contains. There was no readback at all before: the editor's change signal
     prints nothing, the `text ->` trace prints a byte count, and
-    `cordial_screenshot` photographs the engine's swapchain, which cannot see a
+    `vanta_screenshot` photographs the engine's swapchain, which cannot see a
     GTK widget.
 
 Input is driven inside a nested compositor on its own `WAYLAND_DISPLAY`, which
@@ -38,7 +38,7 @@ Usage:  tools/text-input-e2e.py [--profile NAME] [--keep]
         tools/text-input-e2e.py --visibility windowed,fullscreen,tiled-after,floating
                                 [--scale 1.5] [--gles] [--client-env ADW_DEBUG_COLOR_SCHEME=prefer-light]
 
-        tools/text-input-e2e.py --x11 [--wm openbox|xfwm4|xfwm4c|icewm] [--client-env CORDIAL_X11_EDITOR=off]
+        tools/text-input-e2e.py --x11 [--wm openbox|xfwm4|xfwm4c|icewm] [--client-env VANTA_X11_EDITOR=off]
 
 `--x11` runs the same questions against the X11 backend (ADR-062) on a private
 Xvfb with its own window manager, typing with XTest *inside that server only*
@@ -46,15 +46,15 @@ and photographing it with ImageMagick's `import`. It exists because the X11
 editor was, for a stretch of this project's history, specified in ADR-024 and
 absent: "typed text is sent and not drawn" was read from the code and never run,
 the one attempt to start Xwayland under the nested sway having failed. The
-control is `--client-env CORDIAL_X11_EDITOR=off`, which must fail every
+control is `--client-env VANTA_X11_EDITOR=off`, which must fail every
 visibility assertion and none of the readback ones.
 
 `--visibility` is the one case here that asks whether typed text can be *seen*:
 it photographs the compositor's output with grim (the only instrument that sees
 a GTK widget) and compares the editor's rectangle with and without the text.
-Its controls are `--client-env CORDIAL_VISIBILITY_ANCHOR=off` (fullscreen and
+Its controls are `--client-env VANTA_VISIBILITY_ANCHOR=off` (fullscreen and
 tiled-after must fail, ADR-056) and, with `--gles`, `VK_ICD_FILENAMES=/nonexistent
-GSK_RENDERER=ngl` (every case must fail, ADR-047). Set `CORDIAL_E2E_XDG_ROOT` to
+GSK_RENDERER=ngl` (every case must fail, ADR-047). Set `VANTA_E2E_XDG_ROOT` to
 give the client its own data, cache and config; redirecting XDG_* for the harness
 itself breaks `distrobox`.
 """
@@ -62,9 +62,9 @@ itself breaks `distrobox`.
 import argparse, json, os, re, shutil, socket, subprocess, sys, time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-HOLDERS = os.environ.get("CORDIAL_HOLDER_BIN", "/tmp/cordial-wl-holders")
-BOX = "cordial"                       # the distrobox with sway, grim and the holders
-OUT = os.environ.get("CORDIAL_E2E_OUT", "/tmp/cordial-text-e2e")
+HOLDERS = os.environ.get("VANTA_HOLDER_BIN", "/tmp/vanta-wl-holders")
+BOX = "vanta"                       # the distrobox with sway, grim and the holders
+OUT = os.environ.get("VANTA_E2E_OUT", "/tmp/vanta-text-e2e")
 
 
 def sh(argv, **kw):
@@ -211,7 +211,7 @@ def start_sway(width, height):
             os.unlink(f)
     with open(cfg, "w") as fh:
         fh.write(SWAY_CFG.format(w=width, h=height, stamp=stamp,
-                                 extra=os.environ.get("CORDIAL_E2E_SWAY_EXTRA", "")))
+                                 extra=os.environ.get("VANTA_E2E_SWAY_EXTRA", "")))
     # Detached from this process's stdout. Inheriting it means the compositor
     # holds the pipe open after the script exits, and anything reading the
     # script through a pipe -- `| tail`, a harness, an agent -- waits forever
@@ -268,7 +268,7 @@ def profile_holder(profile):
     killed this session's own process five times in one day. `pidof` matches
     the executable, which the engine's thread rename does not touch.
     """
-    out = sh(["pidof", "cordial-run"]).stdout.split()
+    out = sh(["pidof", "vanta-run"]).stdout.split()
     for pid in out:
         try:
             argv = open(f"/proc/{pid}/cmdline").read().split("\0")
@@ -294,7 +294,7 @@ def main():
                     help="run only the visibility cases, in each of these window modes "
                          "(comma list of windowed, fullscreen, tiled-after, floating): type into a "
                          "synthetic box and photograph the composited output, asserting the typed "
-                         "characters changed pixels where the editor is. cordial_textbox reports "
+                         "characters changed pixels where the editor is. vanta_textbox reports "
                          "what the field holds; this reports whether anyone could see it")
     ap.add_argument("--x11", action="store_true",
                     help="run the X11 backend's cases on a private Xvfb (see the module doc); "
@@ -310,7 +310,7 @@ def main():
     ap.add_argument("--cases", default=None, metavar="X1,X2,..",
                     help="with --x11: run only these sections (X1 is needed for nothing else)")
     ap.add_argument("--vulkan", action="store_true",
-                    help="with --x11: leave Vulkan on. By default CORDIAL_NO_VULKAN=1 is set, "
+                    help="with --x11: leave Vulkan on. By default VANTA_NO_VULKAN=1 is set, "
                          "because the Vulkan client has crashed on Xvfb (software GL); say which "
                          "was used when reporting")
     ap.add_argument("--gles", action="store_true",
@@ -327,17 +327,17 @@ def main():
 
     os.makedirs(OUT, exist_ok=True)
     log_path = os.path.join(OUT, "client.log")
-    # Overridable for the same reason CORDIAL_APK/CORDIAL_LIB_DIR already are:
+    # Overridable for the same reason VANTA_APK/VANTA_LIB_DIR already are:
     # AGENTS.md's build split means a host that builds in the toolbox
     # container has no `target/release` at all, and building bare cargo into
     # one to satisfy this default would be the two-CARGO_TARGET_DIRs mistake
     # that file warns about, not a fix.
-    binary = os.environ.get("CORDIAL_E2E_BINARY", os.path.join(ROOT, "target/release/cordial-run"))
+    binary = os.environ.get("VANTA_E2E_BINARY", os.path.join(ROOT, "target/release/vanta-run"))
     apk = os.environ.get(
-        "CORDIAL_APK",
+        "VANTA_APK",
         os.path.expanduser("~/.var/app/org.vinegarhq.Sober/data/sober/packages/"
                            "x86_64/com.roblox.client/base.apk"))
-    lib = os.environ.get("CORDIAL_LIB_DIR", os.path.expanduser("~/.cache/cordial/lib/x86_64"))
+    lib = os.environ.get("VANTA_LIB_DIR", os.path.expanduser("~/.cache/vanta/lib/x86_64"))
 
     for path, what in ((binary, "build -- cargo build --release first"), (apk, "APK"), (lib, "library directory")):
         if not os.path.exists(path):
@@ -354,13 +354,13 @@ def main():
     case = Case()
     try:
         if args.scale:
-            os.environ["CORDIAL_E2E_SWAY_EXTRA"] = (
-                os.environ.get("CORDIAL_E2E_SWAY_EXTRA", "") + f"\noutput HEADLESS-1 scale {args.scale}")
+            os.environ["VANTA_E2E_SWAY_EXTRA"] = (
+                os.environ.get("VANTA_E2E_SWAY_EXTRA", "") + f"\noutput HEADLESS-1 scale {args.scale}")
         sway, display = start_sway(args.width, args.height)
         print(f"== nested sway on {display}, {args.width}x{args.height}")
 
         # Both devices before the client, so the seat advertises a keyboard and
-        # a pointer at the moment Cordial reads its capabilities. This is the
+        # a pointer at the moment Vanta reads its capabilities. This is the
         # whole reason the double-insert guard has never been exercised.
         kbd = Holder(f"{HOLDERS}/wl-keyboard-holder", display)
         ptr = Holder(f"{HOLDERS}/wl-pointer-holder", display, [str(args.width), str(args.height)])
@@ -368,25 +368,25 @@ def main():
         print(f"== seat: {caps.strip()[:200]}")
         if '"capabilities":3' not in caps.replace(" ", ""):
             sys.exit("FAIL: the seat does not advertise both a keyboard and a pointer; "
-                     "every reading below would be taken with Cordial's key path switched off")
+                     "every reading below would be taken with Vanta's key path switched off")
 
         env = dict(os.environ)
         env.update(
             WAYLAND_DISPLAY=display,
             GDK_BACKEND="wayland",
-            CORDIAL_DEV_CONTROL="1",
-            CORDIAL_TRACE_TEXT="1",
+            VANTA_DEV_CONTROL="1",
+            VANTA_TRACE_TEXT="1",
             # The readback. Safe here and nowhere else: this harness types its
             # own known strings into a search box and never touches a sign-in
             # field. It also puts the clipboard in the log, so the log stays in
             # /tmp and is not something to paste into an issue.
-            CORDIAL_TRACE_TEXT_SHOW_PASSWORDS="1",
+            VANTA_TRACE_TEXT_SHOW_PASSWORDS="1",
         )
         # **Redirecting XDG_* for the whole script breaks `distrobox`**, which
         # finds its container store through XDG_DATA_HOME: sway never starts and
-        # nothing says why. CORDIAL_E2E_XDG_ROOT redirects the client alone
+        # nothing says why. VANTA_E2E_XDG_ROOT redirects the client alone
         # (all three variables, as AGENTS.md requires) and leaves the harness's.
-        xdg_root = os.environ.get("CORDIAL_E2E_XDG_ROOT")
+        xdg_root = os.environ.get("VANTA_E2E_XDG_ROOT")
         if xdg_root:
             env.update(XDG_DATA_HOME=f"{xdg_root}/data", XDG_CACHE_HOME=f"{xdg_root}/cache",
                        XDG_CONFIG_HOME=f"{xdg_root}/config")
@@ -430,7 +430,7 @@ def main():
         # against the real home directory while the client's actual socket
         # sat under the redirected one.
         data_home = env.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
-        dev = Devctl(os.path.join(data_home, "cordial", "profiles", args.profile, "devctl.sock"))
+        dev = Devctl(os.path.join(data_home, "vanta", "profiles", args.profile, "devctl.sock"))
         print(f"== {dev.send('info')}")
 
         # **Is this client actually running?** About a third of launches hit the
@@ -598,8 +598,8 @@ def run_enter_and_engine_text(case, dev, kbd, log_path):
     returns = lambda: dev.textbox()["returns"]
 
     def last_synced():
-        """The last text Cordial handed the engine, from the `text ->` trace line."""
-        got = re.findall(r'\[cordial\] text -> ("(?:[^"\\]|\\.)*") caret', log())
+        """The last text Vanta handed the engine, from the `text ->` trace line."""
+        got = re.findall(r'\[vanta\] text -> ("(?:[^"\\]|\\.)*") caret', log())
         return json.loads(got[-1]) if got else None
 
     print("\n-- 15. Enter in a multi-line editor (SYNTHETIC box): a newline in the text, no raw Return")
@@ -1080,11 +1080,11 @@ def run_cases(case, dev, kbd, ptr, log_path, args, display):
 
 # ----------------------------------------------------------------- visibility
 #
-# `cordial_textbox` reports what the GTK field *holds*. Whether anybody can see
+# `vanta_textbox` reports what the GTK field *holds*. Whether anybody can see
 # it is a different question, and the one #86 asks ("the text I type in chat
 # doesn't show up, but it's still there"): the field can hold every character
 # while the surface that would show them is never presented, is covered, or
-# draws them in the colour of what is behind them. `cordial_screenshot` reads
+# draws them in the colour of what is behind them. `vanta_screenshot` reads
 # the engine's swapchain and cannot see a GTK widget, so these cases photograph
 # the *compositor's* output with grim and compare the editor's rectangle with and
 # without the typed text.
@@ -1476,7 +1476,7 @@ exec sh -c 'printf %s "$WAYLAND_DISPLAY" > {stamp("wl.display")}; printf %s "$DI
         """Send one harmless key, once, before the first typing.
 
         Under Xwayland the first XTest key event after a window is first mapped
-        is lost: `xev`, which is not Cordial, loses the `h` of "hello" the same
+        is lost: `xev`, which is not Vanta, loses the `h` of "hello" the same
         way, on every new window. A lost first character here would be a
         failure of the instrument read as a failure of the editor. Real
         keyboard events do not come through XTest and were not measured.
@@ -1555,14 +1555,14 @@ def x11_box(dev, xs, multiline, x=None, y=None, w=None, h=None, text=""):
     """
     dev.send("fakeblur")
     time.sleep(0.8)
-    eng = xs.find(r"^Cordial [0-9]")
+    eng = xs.find(r"^Vanta [0-9]")
     ex, ey, ew, eh, _ = xs.info(eng)
     bw = w or min(400, int(ew * 0.5))
     bh = h or (120 if multiline else 40)
     bx = x if x is not None else int(ew * 0.15)
     by = y if y is not None else int(eh * 0.35)
     dev.send(f"fakefocus {1 if multiline else 0} {bx} {by} {bw} {bh}" + (f" {text}" if text else ""))
-    editor_off = os.environ.get("CORDIAL_X11_EDITOR_OFF_EXPECTED") == "1"
+    editor_off = os.environ.get("VANTA_X11_EDITOR_OFF_EXPECTED") == "1"
     box = wait_for(dev, lambda b: b["focus"] != "none" and (editor_off or (b["x"] != "none" and float(b["w"]) > 0)),
                    timeout=6.0)
     if editor_off and box["x"] == "none":
@@ -1571,10 +1571,10 @@ def x11_box(dev, xs, multiline, x=None, y=None, w=None, h=None, text=""):
         box = dict(box, x=str(bx), y=str(by), w=str(bw), h=str(bh), placed="engine")
     ed = None
     for _ in range(40):
-        ed = xs.find(r"^Cordial text editor$")
+        ed = xs.find(r"^Vanta text editor$")
         if ed:
             info = xs.info(ed)
-            if info and info[4] and xs.focus_name() == "Cordial text editor":
+            if info and info[4] and xs.focus_name() == "Vanta text editor":
                 break
         time.sleep(0.15)
     xs.prime()
@@ -1595,7 +1595,7 @@ def x11_visibility(case, label, dev, xs, multiline=False, editor_expected=True):
     info = xs.info(ed) if ed else None
     bx, by, bw, bh = (float(box[k]) for k in ("x", "y", "w", "h"))
     if info is None and not editor_expected:
-        # The control arm (CORDIAL_X11_EDITOR=off): no editor window exists, and
+        # The control arm (VANTA_X11_EDITOR=off): no editor window exists, and
         # the assertions below about where it is cannot be asked. What *can* be
         # asked is the thing the editor is for -- does the typed text reach the
         # screen -- and it must fail while the readback keeps passing.
@@ -1607,7 +1607,7 @@ def x11_visibility(case, label, dev, xs, multiline=False, editor_expected=True):
         # Exact, except under GDK_SCALE=N, where GDK keeps a window's position on
         # its own logical grid and rounds it down: (193, 273) became (192, 272)
         # at 2. Up to N-1 pixels is that rounding, and anything more is not.
-        tol = int(os.environ.get("CORDIAL_E2E_POS_TOL", "0"))
+        tol = int(os.environ.get("VANTA_E2E_POS_TOL", "0"))
         want_xy = (ex + round(bx), ey + round(by))
         got_xy = (info[0], info[1])
         near = all(0 <= w - g <= tol for g, w in zip(got_xy, want_xy))
@@ -1616,7 +1616,7 @@ def x11_visibility(case, label, dev, xs, multiline=False, editor_expected=True):
                    got_xy if not near else want_xy, want_xy)
         if not multiline:
             case.check(f"[{label}] and is the box's size", (info[2], info[3]), (round(bw), round(bh)))
-        case.check(f"[{label}] the editor holds the X keyboard focus", xs.focus_name(), "Cordial text editor")
+        case.check(f"[{label}] the editor holds the X keyboard focus", xs.focus_name(), "Vanta text editor")
     xs.cmd("key ctrl+a"); xs.cmd("key BackSpace")
     time.sleep(0.6)
     rect = (ex + bx - 4, ey + by - 4, bw + 8, bh + 8)
@@ -1650,7 +1650,7 @@ def x11_visibility(case, label, dev, xs, multiline=False, editor_expected=True):
 
 def run_x11(case, dev, xs, log_path, args):
     log = lambda: open(log_path, errors="replace").read()
-    editor_on = not any(kv.startswith("CORDIAL_X11_EDITOR=off") for kv in args.client_env)
+    editor_on = not any(kv.startswith("VANTA_X11_EDITOR=off") for kv in args.client_env)
     case.note("compositing on the private server", "yes" if (args.wm == "xfwm4c" or args.xwayland) else "no")
 
     def x1():
@@ -1658,7 +1658,7 @@ def run_x11(case, dev, xs, log_path, args):
         case.check("the log says the X11 text editor started",
                    "[android] X11 text editor: a GTK window" in log(), editor_on)
         case.check("the engine is on the X11 backend",
-                   "display backend: X11 (forced by CORDIAL_X11" in log(), True)
+                   "display backend: X11 (forced by VANTA_X11" in log(), True)
 
     def x2():
         print("\n-- X2. single-line: where it is, who holds the keyboard, whether it is visible")
@@ -1725,10 +1725,10 @@ def run_x11(case, dev, xs, log_path, args):
         x11_box(dev, xs, False)
         dev.send("fakeblur")
         time.sleep(1.5)
-        ed = xs.find(r"^Cordial text editor$")
+        ed = xs.find(r"^Vanta text editor$")
         info = xs.info(ed) if ed else None
         case.check("the editor window is unmapped once the box blurs", bool(info and info[4]), False)
-        case.check("X keyboard focus is back on the game window", xs.focus_name().startswith("Cordial 0"), True)
+        case.check("X keyboard focus is back on the game window", xs.focus_name().startswith("Vanta 0"), True)
         before = dev.textbox()["text"]
         xs.cmd("type zz")
         time.sleep(0.5)
@@ -1741,7 +1741,7 @@ def run_x11(case, dev, xs, log_path, args):
         if xs.xwayland:
             # sway places the window; an X client's own move is a request it may
             # ignore. Floating and then moved, which is what a user does.
-            xs.swaymsg('"[title=\\"^Cordial 0\\"] floating enable, resize set 1000 640, move position 180 90"')
+            xs.swaymsg('"[title=\\"^Vanta 0\\"] floating enable, resize set 1000 640, move position 180 90"')
         else:
             xs.sh(f"xdotool windowmove {eng} 180 90")
         time.sleep(2.5)
@@ -1766,7 +1766,7 @@ def run_x11(case, dev, xs, log_path, args):
         ei = xs.info(ed)
         case.check("the editor followed the window", (ei[0] - nx, ei[1] - ny), (want[0], want[1] + (1 if xs.xwayland else 0)))
         if xs.xwayland:
-            xs.swaymsg('"[title=\\"^Cordial 0\\"] resize set 900 600"')
+            xs.swaymsg('"[title=\\"^Vanta 0\\"] resize set 900 600"')
         else:
             xs.sh(f"xdotool windowsize {eng} 900 600")
         time.sleep(2.5)
@@ -1779,7 +1779,7 @@ def run_x11(case, dev, xs, log_path, args):
         s = wait_for(dev, lambda b: b["text"] == "moved")
         case.check("typing still lands in the field", s["text"], "moved")
         if xs.xwayland:
-            xs.swaymsg('"[title=\\"^Cordial 0\\"] resize set 1000 640"')
+            xs.swaymsg('"[title=\\"^Vanta 0\\"] resize set 1000 640"')
         else:
             xs.sh(f"xdotool windowsize {eng} {ew} {eh}; xdotool windowmove {eng} 0 0")
         time.sleep(2.0)
@@ -1789,7 +1789,7 @@ def run_x11(case, dev, xs, log_path, args):
         dev.send("fullscreen")
         time.sleep(4.0)
         x11_visibility(case, "fullscreen single-line", dev, xs, multiline=False, editor_expected=editor_on)
-        case.check("the editor is the topmost window", "Cordial text editor" in xs.topmost(), True)
+        case.check("the editor is the topmost window", "Vanta text editor" in xs.topmost(), True)
         case.note("topmost top-level window", xs.topmost())
         dev.send("windowed")
         time.sleep(3.0)
@@ -1823,13 +1823,13 @@ def run_x11(case, dev, xs, log_path, args):
         ei = xs.info(ed)
         case.check("the editor hides rather than float over the other application", bool(ei and ei[4]), False)
         if xs.xwayland:
-            xs.swaymsg('"[title=\\"^Cordial 0\\"] focus"')
+            xs.swaymsg('"[title=\\"^Vanta 0\\"] focus"')
         else:
             xs.sh(f"xdotool windowfocus {eng}")
         time.sleep(1.5)
         ei = xs.info(ed)
         case.check("it comes back when the game has focus again", bool(ei and ei[4]), True)
-        case.check("holding the keyboard", xs.focus_name(), "Cordial text editor")
+        case.check("holding the keyboard", xs.focus_name(), "Vanta text editor")
         xs.cmd("key ctrl+a"); xs.cmd("key BackSpace"); xs.cmd("type back")
         s = wait_for(dev, lambda b: b["text"] == "back")
         case.check("and typing works again", s["text"], "back")
@@ -1841,7 +1841,7 @@ def run_x11(case, dev, xs, log_path, args):
             case.note("X10", "skipped for the control arm: `textbox` reports where the editor is, and there is none")
             return
         dev.send("fakeblur"); time.sleep(0.8)
-        ex, ey, ew, eh, _ = xs.info(xs.find(r"^Cordial [0-9]"))
+        ex, ey, ew, eh, _ = xs.info(xs.find(r"^Vanta [0-9]"))
         case.note("engine window at the click", f"{ew}x{eh} at {ex},{ey}")
         xs.grab("x10-before-sign-in")
         dev.send(f"click {ew // 2} {int(eh * 0.51)}")           # the landing page's Sign In
@@ -1860,7 +1860,7 @@ def run_x11(case, dev, xs, log_path, args):
             time.sleep(1.2)
             box = dev.textbox()
             case.check(f"[{label}] placed from the engine's own spec", box.get("placed"), "engine")
-            case.check(f"[{label}] the editor holds the keyboard", xs.focus_name(), "Cordial text editor")
+            case.check(f"[{label}] the editor holds the keyboard", xs.focus_name(), "Vanta text editor")
             xs.prime()
             rect = (ex + float(box["x"]) - 4, ey + float(box["y"]) - 4, float(box["w"]) + 8, float(box["h"]) + 8)
             before = xs.grab(f"real-{label}-empty")
@@ -1890,45 +1890,45 @@ def run_x11(case, dev, xs, log_path, args):
 def main_x11(args):
     os.makedirs(OUT, exist_ok=True)
     log_path = os.path.join(OUT, "client.log")
-    binary = os.environ.get("CORDIAL_E2E_BINARY", os.path.join(ROOT, "target/release/cordial-run"))
+    binary = os.environ.get("VANTA_E2E_BINARY", os.path.join(ROOT, "target/release/vanta-run"))
     apk = os.environ.get(
-        "CORDIAL_APK",
+        "VANTA_APK",
         os.path.expanduser("~/.var/app/org.vinegarhq.Sober/data/sober/packages/"
                            "x86_64/com.roblox.client/base.apk"))
-    lib = os.environ.get("CORDIAL_LIB_DIR", os.path.expanduser("~/.cache/cordial/lib/x86_64"))
+    lib = os.environ.get("VANTA_LIB_DIR", os.path.expanduser("~/.cache/vanta/lib/x86_64"))
     for path, what in ((binary, "build"), (apk, "APK"), (lib, "library directory")):
         if not os.path.exists(path):
             sys.exit(f"FAIL: no {what} at {path}")
     held = profile_holder(args.profile)
     if held:
         sys.exit(f"FAIL: profile {args.profile!r} is already open in pid {held}. Pick another with --profile.")
-    xdg_root = os.environ.get("CORDIAL_E2E_XDG_ROOT")
+    xdg_root = os.environ.get("VANTA_E2E_XDG_ROOT")
     if not xdg_root:
-        sys.exit("FAIL: set CORDIAL_E2E_XDG_ROOT to a directory on disk: the client must not "
+        sys.exit("FAIL: set VANTA_E2E_XDG_ROOT to a directory on disk: the client must not "
                  "touch the real data, cache or config, and the shell's first-launch migration "
                  "moves a real build store into whatever XDG_CACHE_HOME it is given")
     case, xs, client = Case(), None, None
-    if any(kv.startswith("CORDIAL_X11_EDITOR=off") for kv in args.client_env):
-        os.environ["CORDIAL_X11_EDITOR_OFF_EXPECTED"] = "1"
+    if any(kv.startswith("VANTA_X11_EDITOR=off") for kv in args.client_env):
+        os.environ["VANTA_X11_EDITOR_OFF_EXPECTED"] = "1"
     for kv in args.client_env:
         if kv.startswith("GDK_SCALE=") and kv.partition("=")[2].isdigit():
-            os.environ["CORDIAL_E2E_POS_TOL"] = str(max(0, int(kv.partition("=")[2]) - 1))
+            os.environ["VANTA_E2E_POS_TOL"] = str(max(0, int(kv.partition("=")[2]) - 1))
     try:
         xs = XSession(args.wm, args.width, args.height, xwayland=args.xwayland)
         xs.bind_accents()
         env = dict(os.environ)
         for k in ("WAYLAND_DISPLAY", "XDG_SESSION_TYPE", "GDK_BACKEND"):
             env.pop(k, None)
-        env.update(DISPLAY=xs.display, CORDIAL_X11="1", CORDIAL_DEV_CONTROL="1", CORDIAL_TRACE_TEXT="1",
-                   CORDIAL_TRACE_TEXT_SHOW_PASSWORDS="1",
+        env.update(DISPLAY=xs.display, VANTA_X11="1", VANTA_DEV_CONTROL="1", VANTA_TRACE_TEXT="1",
+                   VANTA_TRACE_TEXT_SHOW_PASSWORDS="1",
                    XDG_DATA_HOME=f"{xdg_root}/data", XDG_CACHE_HOME=f"{xdg_root}/cache",
                    XDG_CONFIG_HOME=f"{xdg_root}/config")
         if not args.vulkan:
-            env["CORDIAL_NO_VULKAN"] = "1"
+            env["VANTA_NO_VULKAN"] = "1"
         for kv in args.client_env:
             k, _, v = kv.partition("=")
             env[k] = v
-        print(f"== engine graphics: {'Vulkan' if args.vulkan else 'GLES (CORDIAL_NO_VULKAN=1)'}", flush=True)
+        print(f"== engine graphics: {'Vulkan' if args.vulkan else 'GLES (VANTA_NO_VULKAN=1)'}", flush=True)
         log = open(log_path, "w")
         client = subprocess.Popen(
             [binary, "--lib-dir", lib, "--apk", apk, "--host-libc",
@@ -1948,7 +1948,7 @@ def main_x11(args):
             sys.exit(f"FAIL: the app shell never became ready; see {log_path}")
         print(f"== app ready: {ready}", flush=True)
         time.sleep(8)
-        dev = Devctl(os.path.join(xdg_root, "data", "cordial", "profiles", args.profile, "devctl.sock"))
+        dev = Devctl(os.path.join(xdg_root, "data", "vanta", "profiles", args.profile, "devctl.sock"))
         print(f"== {dev.send('info')}", flush=True)
         run_x11(case, dev, xs, log_path, args)
     finally:

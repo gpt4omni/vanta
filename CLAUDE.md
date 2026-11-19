@@ -79,11 +79,11 @@ Tell them the machine is shared with a human who may be playing. A subagent that
 kills a running client to free a profile lock has destroyed a live specimen of
 an intermittent bug.
 
-**Never match your own command line.** `pkill -f cordial-run` and
-`pgrep -f 'cordial.*profile'` both match the shell running them, and both have
+**Never match your own command line.** `pkill -f vanta-run` and
+`pgrep -f 'vanta.*profile'` both match the shell running them, and both have
 killed the session that issued them — five times in one day.
 
-**And `pgrep -x cordial-run` is not the fix, because it does not work.** The
+**And `pgrep -x vanta-run` is not the fix, because it does not work.** The
 engine renames the main thread, so `/proc/<pid>/comm` reads `Main` and an
 exact-name match finds nothing for a client that is in a game with audio
 playing. It handed a subagent a false "nothing is running" mid-session, on
@@ -91,7 +91,7 @@ playing. It handed a subagent a false "nothing is running" mid-session, on
 capture shows the same thing from the other side: `Thread 1 (LWP 1452113)
 "Main"`.
 
-Use `pidof cordial-run`, which matches the executable rather than the thread
+Use `pidof vanta-run`, which matches the executable rather than the thread
 name, or read it directly with
 `os.path.basename(os.readlink('/proc/<pid>/exe'))`.
 
@@ -108,7 +108,7 @@ This is written down because it was learned expensively on 2026-08-20, twice in
 one day:
 
 - `ForceNativeFlagsLoadedForTaskScheduler` was read as proof that mocktail
-  memory-patches the engine and is therefore no model for Cordial. It is gated
+  memory-patches the engine and is therefore no model for Vanta. It is gated
   to one legacy build and inert on ours. That mistake put an entire section into
   `flag-init.md` and three agent briefs before the gate was read.
 - The Join button was guessed at twice — first as a bare WebKit message handler
@@ -143,7 +143,7 @@ So: **propose a release when one is due, rather than waiting to be asked.**
 - **Minor** (`v0.8.0`) when a feature lands that somebody would notice —
   typing working, a new audio backend, the web view opening. Roughly weekly if
   the work is there.
-- **Major** for a change in what Cordial *is*, or one that breaks a user's
+- **Major** for a change in what Vanta *is*, or one that breaks a user's
   setup: a new backend becoming the default, a profile layout change, dropping a
   platform.
 

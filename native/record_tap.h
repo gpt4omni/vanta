@@ -1,6 +1,6 @@
-// A copy of what Cordial plays, for the recorder (ADR-059, issue #33).
+// A copy of what Vanta plays, for the recorder (ADR-059, issue #33).
 //
-// Cordial owns every byte of sound the engine makes: AAudio's pull callback and
+// Vanta owns every byte of sound the engine makes: AAudio's pull callback and
 // OpenSL ES' buffer queue both end in a buffer this process fills and hands to a
 // host backend. Recording "the game's sound" is therefore a matter of copying
 // those buffers, not of asking the sound server for a mix that has other
@@ -18,7 +18,7 @@
 // built into test executables that link none of the others. An inline variable
 // is still one object per program, and it asks nothing of any link line.
 //
-// The reader is the recorder's pump thread (`cordial_record_tap_read`, in
+// The reader is the recorder's pump thread (`vanta_record_tap_read`, in
 // `pipewire_backend.cpp` next to the other C entry points). It always asks for
 // 48000 Hz stereo float, so each source is converted on the way in (channels,
 // sample format) and on the way out (rate). Sources are summed: FMOD may hold
@@ -47,7 +47,7 @@
 #include <cstring>
 #include <memory>
 
-namespace cordial::audio::tap {
+namespace vanta::audio::tap {
 
 /// What the recorder is given: always this, whatever the engine plays.
 constexpr uint32_t kOutRate = 48000;
@@ -341,4 +341,4 @@ inline void read_mix(float* dst, uint32_t frames, uint64_t pos0) {
     }
 }
 
-} // namespace cordial::audio::tap
+} // namespace vanta::audio::tap

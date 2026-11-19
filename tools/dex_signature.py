@@ -4,7 +4,7 @@
 `tools/dex_method.py` prints a method's erased descriptor, which is what the
 method_ids table holds -- and for anything taking a collection that is not
 enough. `nativePostClientSettingsLoadedInitialization3(Ljava/util/List;)V` was
-recorded as unresolved for two sessions and treated as a place where Cordial had
+recorded as unresolved for two sessions and treated as a place where Vanta had
 to guess; the generic signature says
 
     (Ljava/util/List<Lcom/roblox/engine/jni/model/ApplicationExitInfoCpp;>;)V

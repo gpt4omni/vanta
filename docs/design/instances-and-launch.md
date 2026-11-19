@@ -15,7 +15,7 @@ Three behaviours, which turn out to be one mechanism:
 2. **The browser is the Roblox browser again.** `roblox://` links open in the web
    browser rather than being swallowed by the installed app.
 3. **Multiple instances, each with its own account** — using Roblox's own web
-   session handling rather than anything Cordial invents, and without disturbing
+   session handling rather than anything Vanta invents, and without disturbing
    the session of whichever account you actually care about.
 
 The third falls out of the first two almost for free. That is the interesting part.
@@ -33,10 +33,10 @@ anything stored in the app. Which means:
 - A browser profile, container tab, or private window holds its own
   `.ROBLOSECURITY` cookie, so it is its own account.
 - Each Play press produces a ticket scoped to that session.
-- If Cordial routes each incoming URI to a **new instance with its own data
+- If Vanta routes each incoming URI to a **new instance with its own data
   directory**, several accounts run at once and never share state.
 
-Multi-account is not a feature Cordial builds. It is what happens when instance
+Multi-account is not a feature Vanta builds. It is what happens when instance
 isolation already works and the launch path is honest about where the ticket
 came from.
 
@@ -73,7 +73,7 @@ backgrounded, not killed, and the app decides when to die. Desktop users expect
 the opposite, and expect it strongly enough that "X didn't close it" reads as a
 bug rather than a platform difference.
 
-Cordial gets to define that mapping because it implements the window and Activity
+Vanta gets to define that mapping because it implements the window and Activity
 layers. Window close destroys the Activity, the Activity's destruction ends the
 instance, and the instance's death is what closes the window for real. That
 sequence has to be honest in both directions — an instance that dies for any other
@@ -92,7 +92,7 @@ An instance is a Roblox process plus everything it is allowed to see:
 ```
 
 Separate data directory, separate namespace, separate lifetime. Refcounted, per
-§9b. The instance id is Cordial's, not Roblox's, and is never derived from the
+§9b. The instance id is Vanta's, not Roblox's, and is never derived from the
 account — a plugin that can see instance ids must not thereby learn which accounts
 are signed in.
 
@@ -106,7 +106,7 @@ that could make this materially harder.
 ## 5. `roblox://` handling is a core setting, not a plugin capability
 
 Registering as the system handler for a URI scheme is a change to the user's
-desktop, made outside Cordial's sandbox and persisting after Cordial exits. By
+desktop, made outside Vanta's sandbox and persisting after Vanta exits. By
 ADR-002's reasoning that puts it out of a plugin's reach: a capability that
 rewrites system associations is not meaningfully enforceable and not something a
 user can be expected to consent to inside a plugin install prompt.
@@ -115,17 +115,17 @@ So it is a core setting with three states:
 
 | Setting | `x-scheme-handler/roblox` | Effect |
 |---|---|---|
-| **Cordial handles links** | Cordial | Links launch an instance directly |
-| **Browser handles links** | left alone / restored | Links open on the web, as before Cordial |
-| **Ask** | Cordial | Core shows the chooser and the user picks |
+| **Vanta handles links** | Vanta | Links launch an instance directly |
+| **Browser handles links** | left alone / restored | Links open on the web, as before Vanta |
+| **Ask** | Vanta | Core shows the chooser and the user picks |
 
 "Browser handles links" is the state that makes §2 work: the website keeps the
-launch flow, and Cordial is the thing the ticket eventually reaches.
+launch flow, and Vanta is the thing the ticket eventually reaches.
 
 Two things to get right, both of which are easy to get wrong quietly:
 
 - **Restoring must actually restore.** Record what handled the scheme before
-  Cordial claimed it, and put that back — do not merely unset the association and
+  Vanta claimed it, and put that back — do not merely unset the association and
   leave the user with nothing.
 - **Never claim it silently at install.** A launcher that grabs a scheme handler
   without asking is indistinguishable from one that does it maliciously.
@@ -148,7 +148,7 @@ until you know the setting exists.
 
 ## 7. What this is not
 
-**Not an account manager.** Cordial stores no credentials, no cookies, and no
+**Not an account manager.** Vanta stores no credentials, no cookies, and no
 account list. It never sees a password, and the tickets it forwards are opaque to
 it. Everything account-shaped stays in the browser, where the user can already see
 and revoke it. Building an account manager would mean holding credentials for
@@ -159,7 +159,7 @@ the browser already provides.
 Roblox's own; per-instance data directories are ordinary sandboxing. The one
 honest caveat: a lot of simultaneous sessions from one machine can look automated
 to anti-abuse systems whether or not it is, and that risk lands on the user's
-accounts, not on Cordial. Worth saying once in the UI, without ceremony.
+accounts, not on Vanta. Worth saying once in the UI, without ceremony.
 
 ## 7a. Update from the sign-in investigation
 
@@ -181,8 +181,8 @@ something already measured rather than something still unverified.
 
 **Consequence for the account picker.** §7 refuses to be an account manager, and
 that still holds. A picker over *instances* — which the user names, and whose
-contents Cordial never inspects — gives the Chrome-profile experience without
-Cordial learning which account is which. The picker chooses a data directory, not
+contents Vanta never inspects — gives the Chrome-profile experience without
+Vanta learning which account is which. The picker chooses a data directory, not
 an identity.
 
 ## 8. Open questions

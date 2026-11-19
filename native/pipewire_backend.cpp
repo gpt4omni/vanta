@@ -1,11 +1,11 @@
-// PipeWire, reached without ever appearing in `libcordial_liblog.a`'s
+// PipeWire, reached without ever appearing in `libvanta_liblog.a`'s
 // `DT_NEEDED`.
 //
 // Two separate "optional" decisions are stacked here and it is worth being
 // precise about which is which:
 //
 // 1. **Compile time.** `CMakeLists.txt` looks for `libpipewire-0.3` and
-//    `spa-0.2` with `pkg_check_modules` and defines `CORDIAL_HAVE_PIPEWIRE`
+//    `spa-0.2` with `pkg_check_modules` and defines `VANTA_HAVE_PIPEWIRE`
 //    only if it finds them. If it does not — a machine with no
 //    `pipewire-devel` installed — this whole file compiles down to the
 //    fallback at the bottom, and the rest of the tree builds exactly as it
@@ -18,7 +18,7 @@
 //    time, `libpipewire-0.3.so` is never linked. Every function in it that
 //    this file calls is `dlsym`'d through `load_library()` below, and a
 //    missing library or a missing symbol degrades to "no audio" rather than
-//    a failure to start. This is what makes a Cordial binary built on a
+//    a failure to start. This is what makes a Vanta binary built on a
 //    PipeWire machine still run — audio-less — on one that has neither the
 //    daemon nor the library.
 //
@@ -41,7 +41,7 @@
 #include <string>
 #include <vector>
 
-#ifdef CORDIAL_HAVE_PIPEWIRE
+#ifdef VANTA_HAVE_PIPEWIRE
 
 #include <spa/param/audio/format-utils.h>
 #include <spa/param/props.h>
@@ -61,7 +61,7 @@
 #include <string>
 #include <vector>
 
-namespace cordial::audio {
+namespace vanta::audio {
 namespace {
 
 // ----------------------------------------------------------------- library
@@ -123,7 +123,7 @@ bool load_library() {
     if (!handle) handle = dlopen("libpipewire-0.3.so", RTLD_NOW | RTLD_GLOBAL);
     if (!handle) {
         std::fprintf(stderr,
-            "I/Cordial-Audio           libpipewire-0.3 not found (%s); PipeWire cannot be "
+            "I/Vanta-Audio           libpipewire-0.3 not found (%s); PipeWire cannot be "
             "used. Another backend is used if one answers; the `host backend:` line says "
             "which. Install PipeWire's client library to enable it.\n",
             dlerror());
@@ -163,7 +163,7 @@ bool load_library() {
         *e.slot = dlsym(handle, e.name);
         if (!*e.slot) {
             std::fprintf(stderr,
-                "E/Cordial-Audio           libpipewire-0.3 is missing '%s'; treating the "
+                "E/Vanta-Audio           libpipewire-0.3 is missing '%s'; treating the "
                 "whole library as unusable rather than calling through a null pointer. "
                 "No audio output.\n", e.name);
             dlclose(handle);
@@ -178,7 +178,7 @@ bool load_library() {
 
 /// One PipeWire connection for the whole process, matching how Roblox itself
 /// only ever creates one OpenSL engine. Never torn down: it lives exactly as
-/// long as `cordial_liblog`'s other process-lifetime state (bionic's TLS,
+/// long as `vanta_liblog`'s other process-lifetime state (bionic's TLS,
 /// the linker's loaded-library table) does.
 ///
 /// The core listener and its round-trip state are *members* rather than the
@@ -238,15 +238,15 @@ Session* connect_session(bool first_attempt) {
     static const bool initialised = [] { g_lib.init(nullptr, nullptr); return true; }();
     (void)initialised;
 
-    pw_thread_loop* loop = g_lib.thread_loop_new("cordial-pipewire", nullptr);
+    pw_thread_loop* loop = g_lib.thread_loop_new("vanta-pipewire", nullptr);
     if (!loop) {
         std::fprintf(stderr,
-            "E/Cordial-Audio           pw_thread_loop_new failed; no audio output.\n");
+            "E/Vanta-Audio           pw_thread_loop_new failed; no audio output.\n");
         return nullptr;
     }
     if (g_lib.thread_loop_start(loop) < 0) {
         std::fprintf(stderr,
-            "E/Cordial-Audio           pw_thread_loop_start failed; no audio output.\n");
+            "E/Vanta-Audio           pw_thread_loop_start failed; no audio output.\n");
         g_lib.thread_loop_destroy(loop);
         return nullptr;
     }
@@ -256,7 +256,7 @@ Session* connect_session(bool first_attempt) {
     pw_context* context = g_lib.context_new(g_lib.thread_loop_get_loop(loop), nullptr, 0);
     if (!context) {
         std::fprintf(stderr,
-            "E/Cordial-Audio           pw_context_new failed; no audio output.\n");
+            "E/Vanta-Audio           pw_context_new failed; no audio output.\n");
         g_lib.thread_loop_unlock(loop);
         g_lib.thread_loop_stop(loop);
         g_lib.thread_loop_destroy(loop);
@@ -269,13 +269,13 @@ Session* connect_session(bool first_attempt) {
         // asked when nobody named a backend, so on a PulseAudio-only machine
         // this is the expected answer, and it used to print "E/ ... no audio
         // output" two lines above a working "host backend: pulse" (#104). Whether
-        // there is audio is `cordial_audio_backend_announce`'s verdict, made
+        // there is audio is `vanta_audio_backend_announce`'s verdict, made
         // after every backend has been asked; this line only records that
         // PipeWire did not answer. Printed for the first attempt only, since a
         // later one is the same answer a few seconds on.
         if (first_attempt) {
             std::fprintf(stderr,
-                "I/Cordial-Audio           PipeWire: no session reachable (is a PipeWire "
+                "I/Vanta-Audio           PipeWire: no session reachable (is a PipeWire "
                 "daemon running, and is PIPEWIRE_RUNTIME_DIR/XDG_RUNTIME_DIR set?). It is "
                 "asked again the next time sound is wanted.\n");
         }
@@ -308,7 +308,7 @@ Session* connect_session(bool first_attempt) {
         e.error = [](void* data, uint32_t id, int, int res, const char* message) {
             auto* s = static_cast<Session*>(data);
             std::fprintf(stderr,
-                "E/Cordial-Audio           PipeWire core reported an error "
+                "E/Vanta-Audio           PipeWire core reported an error "
                 "(id=%u res=%d %s).\n", id, res, message ? message : "");
             s->sync_failed = true;
             g_lib.thread_loop_signal(s->loop, false);
@@ -324,7 +324,7 @@ Session* connect_session(bool first_attempt) {
     if (!reachable) {
         if (!session->sync_failed && first_attempt) {
             std::fprintf(stderr,
-                "W/Cordial-Audio           PipeWire did not answer within 3s; treating "
+                "W/Vanta-Audio           PipeWire did not answer within 3s; treating "
                 "the session as unreachable for now. It is asked again the next time "
                 "sound is wanted.\n");
         }
@@ -341,7 +341,7 @@ Session* connect_session(bool first_attempt) {
 
     // **What this line may say is what just happened, and no more.** It used to
     // finish "OpenSL ES audio players will play through it", tagged
-    // `Cordial-OpenSLES`, and both halves were wrong on most runs: this session
+    // `Vanta-OpenSLES`, and both halves were wrong on most runs: this session
     // is the one shared session, `pipewire_available()` is what
     // `supportsAAudio()` and the device enumeration in `audio_classes.cpp` both
     // ask, and either of those brings it up. So a run that had selected AAudio
@@ -350,10 +350,10 @@ Session* connect_session(bool first_attempt) {
     // reading that has to be believed before it can be checked.
     //
     // Nothing is lost by dropping the promise: which backend is in use is
-    // announced by `cordial_audio_backend_announce` on its own line, from the
+    // announced by `vanta_audio_backend_announce` on its own line, from the
     // place that actually decides it.
     std::fprintf(stderr,
-        "I/Cordial-Audio           PipeWire session reachable: the client library loaded "
+        "I/Vanta-Audio           PipeWire session reachable: the client library loaded "
         "and a core round trip completed. This one session is shared by every audio path "
         "that reaches PipeWire.\n");
     return session;
@@ -482,12 +482,12 @@ uint32_t fill_pcm(std::deque<PendingBuffer>& pending, uint8_t* dst, uint32_t wan
 
 namespace {
 
-/// `CORDIAL_TRACE_AUDIO=1` prints a running tally every second: buffers
+/// `VANTA_TRACE_AUDIO=1` prints a running tally every second: buffers
 /// enqueued, buffers drained, and how many frames were silence-padded for
 /// lack of a fed queue. Off by default — this is a diagnostic for chasing a
 /// stalled or underrunning stream, not routine output.
 bool trace_audio_enabled() {
-    static const bool enabled = std::getenv("CORDIAL_TRACE_AUDIO") != nullptr;
+    static const bool enabled = std::getenv("VANTA_TRACE_AUDIO") != nullptr;
     return enabled;
 }
 
@@ -513,7 +513,7 @@ struct PlaybackStream::Impl {
     tap::Fmt tap_fmt = tap::Fmt::None;
     uint32_t tap_channels = 0;
 
-    // CORDIAL_TRACE_AUDIO=1 bookkeeping only; untouched otherwise.
+    // VANTA_TRACE_AUDIO=1 bookkeeping only; untouched otherwise.
     uint64_t trace_process_cycles = 0;
     uint64_t trace_drains = 0;
     std::chrono::steady_clock::time_point trace_last_report{};
@@ -529,7 +529,7 @@ struct PlaybackStream::Impl {
         // not, by itself, evidence of anything wrong.
         if (state == PW_STREAM_STATE_ERROR) {
             std::fprintf(stderr,
-                "E/Cordial-OpenSLES         PipeWire stream entered the error state (%s).\n",
+                "E/Vanta-OpenSLES         PipeWire stream entered the error state (%s).\n",
                 error ? error : "no reason given");
         }
     }
@@ -591,7 +591,7 @@ struct PlaybackStream::Impl {
             if (now - trace_last_report >= std::chrono::seconds(1)) {
                 trace_last_report = now;
                 std::fprintf(stderr,
-                    "D/Cordial-OpenSLES         audio trace: %llu buffers enqueued, %llu process "
+                    "D/Vanta-OpenSLES         audio trace: %llu buffers enqueued, %llu process "
                     "cycles, %llu drained, %llu underrun frames padded with silence\n",
                     static_cast<unsigned long long>(enqueued_index),
                     static_cast<unsigned long long>(trace_process_cycles),
@@ -674,7 +674,7 @@ std::vector<DeviceInfo> enumerate_devices() {
     if (!registry) {
         g_lib.thread_loop_unlock(session->loop);
         std::fprintf(stderr,
-            "E/Cordial-OpenSLES         pw_core_get_registry failed; reporting no audio "
+            "E/Vanta-OpenSLES         pw_core_get_registry failed; reporting no audio "
             "devices rather than a guess at what is attached.\n");
         return {};
     }
@@ -702,7 +702,7 @@ std::vector<DeviceInfo> enumerate_devices() {
         // Audio/Duplex, Audio/Source/Virtual, Stream/Output/Audio and the rest
         // are deliberately not reported. A monitor or another application's
         // playback stream is not a device the user would recognise in a picker,
-        // and Roblox offering to record from Cordial's own output would be a
+        // and Roblox offering to record from Vanta's own output would be a
         // surprising thing to hand someone.
         if (!sink && !source) return;
 
@@ -764,7 +764,7 @@ std::vector<DeviceInfo> enumerate_devices() {
 
     if (!listed) {
         std::fprintf(stderr,
-            "E/Cordial-OpenSLES         PipeWire did not finish listing its devices; "
+            "E/Vanta-OpenSLES         PipeWire did not finish listing its devices; "
             "reporting the %zu found so far rather than a fabricated list.\n",
             scan.devices.size());
     }
@@ -822,7 +822,7 @@ std::string resolve_input_target(const std::string& requested) {
     std::string target = testing::choose_input_target(requested, sources, &fell_back);
     if (fell_back) {
         std::fprintf(stderr,
-            "W/Cordial-OpenSLES         input device '%s' is not in this PipeWire session "
+            "W/Vanta-OpenSLES         input device '%s' is not in this PipeWire session "
             "(%zu source(s) present); falling back to the system default microphone. The "
             "choice is kept, so replugging the device and starting voice chat again will "
             "use it.\n",
@@ -848,9 +848,9 @@ std::string resolve_output_target(const std::string& requested) {
         // nothing to link the stream to, and the game then plays perfectly
         // into nowhere. Falling back to the default is the recoverable
         // behaviour; saying nothing about it would make a user's unplugged
-        // headset indistinguishable from a Cordial bug.
+        // headset indistinguishable from a Vanta bug.
         std::fprintf(stderr,
-            "W/Cordial-OpenSLES         output device '%s' is not in this PipeWire session "
+            "W/Vanta-OpenSLES         output device '%s' is not in this PipeWire session "
             "(%zu sink(s) present); falling back to the system default so that audio still "
             "plays somewhere. The choice is kept, so replugging the device and relaunching "
             "will use it again.\n",
@@ -1030,7 +1030,7 @@ OutputSwitch retarget_streams_impl(const std::string& requested, bool capture) {
                                                     target.c_str());
             if (rc < 0) {
                 std::fprintf(stderr,
-                    "W/Cordial-Audio           could not move PipeWire node %u (%s).\n", node,
+                    "W/Vanta-Audio           could not move PipeWire node %u (%s).\n", node,
                     spa_strerror(rc));
                 if (result.note.empty()) {
                     result.note = "at least one stream could not be moved";
@@ -1048,7 +1048,7 @@ OutputSwitch retarget_streams_impl(const std::string& requested, bool capture) {
     g_lib.thread_loop_unlock(session->loop);
 
     std::fprintf(stderr,
-        "I/Cordial-Audio           %s %s -> %s: %zu %s stream(s) re-linked.\n",
+        "I/Vanta-Audio           %s %s -> %s: %zu %s stream(s) re-linked.\n",
         capture ? "input" : "output", capture ? "source" : "sink",
         to_default ? "the system default" : target.c_str(), result.moved, noun);
     return result;
@@ -1176,7 +1176,7 @@ struct CallbackStream::Impl {
         (void)data;
         if (state == PW_STREAM_STATE_ERROR) {
             std::fprintf(stderr,
-                "E/Cordial-AAudio          PipeWire stream entered the error state (%s).\n",
+                "E/Vanta-AAudio          PipeWire stream entered the error state (%s).\n",
                 error ? error : "no reason given");
         }
     }
@@ -1227,7 +1227,7 @@ bool CallbackStream::open(uint32_t sample_bits, bool is_float, const char* node_
     spa_audio_format wanted = SPA_AUDIO_FORMAT_F32_LE;
     if (sample_bits != 0 && !map_aaudio_format(sample_bits, is_float, wanted)) {
         std::fprintf(stderr,
-            "E/Cordial-AAudio          no PipeWire format for %u-bit %s samples; refusing to "
+            "E/Vanta-AAudio          no PipeWire format for %u-bit %s samples; refusing to "
             "open a stream rather than substituting a nearby one.\n",
             sample_bits, is_float ? "float" : "integer");
         return false;
@@ -1241,7 +1241,7 @@ bool CallbackStream::open(uint32_t sample_bits, bool is_float, const char* node_
 
     static std::atomic<uint32_t> next_id{0};
     char name[64];
-    std::snprintf(name, sizeof name, "cordial-aaudio-%u", next_id.fetch_add(1));
+    std::snprintf(name, sizeof name, "vanta-aaudio-%u", next_id.fetch_add(1));
 
     // Resolved before the loop is locked. `resolve_output_target` enumerates,
     // and enumeration takes the same thread-loop lock; doing it here rather
@@ -1260,21 +1260,21 @@ bool CallbackStream::open(uint32_t sample_bits, bool is_float, const char* node_
         target.empty()
             ? g_lib.properties_new(
                   PW_KEY_MEDIA_TYPE, "Audio", PW_KEY_MEDIA_CATEGORY, "Playback",
-                  PW_KEY_MEDIA_ROLE, "Game", PW_KEY_APP_NAME, "Cordial", PW_KEY_NODE_NAME, name,
+                  PW_KEY_MEDIA_ROLE, "Game", PW_KEY_APP_NAME, "Vanta", PW_KEY_NODE_NAME, name,
                   PW_KEY_NODE_DESCRIPTION,
-                  node_description ? node_description : "Cordial (Roblox via AAudio)", nullptr)
+                  node_description ? node_description : "Vanta (Roblox via AAudio)", nullptr)
             : g_lib.properties_new(
                   PW_KEY_MEDIA_TYPE, "Audio", PW_KEY_MEDIA_CATEGORY, "Playback",
-                  PW_KEY_MEDIA_ROLE, "Game", PW_KEY_APP_NAME, "Cordial", PW_KEY_NODE_NAME, name,
+                  PW_KEY_MEDIA_ROLE, "Game", PW_KEY_APP_NAME, "Vanta", PW_KEY_NODE_NAME, name,
                   PW_KEY_NODE_DESCRIPTION,
-                  node_description ? node_description : "Cordial (Roblox via AAudio)",
+                  node_description ? node_description : "Vanta (Roblox via AAudio)",
                   PW_KEY_TARGET_OBJECT, target.c_str(), nullptr);
 
     impl_->stream = g_lib.stream_new_simple(g_lib.thread_loop_get_loop(session->loop), name, props,
                                              &Impl::events(), impl_);
     if (!impl_->stream) {
         std::fprintf(stderr,
-            "E/Cordial-AAudio          pw_stream_new_simple failed; no audio.\n");
+            "E/Vanta-AAudio          pw_stream_new_simple failed; no audio.\n");
         g_lib.thread_loop_unlock(session->loop);
         return false;
     }
@@ -1307,7 +1307,7 @@ bool CallbackStream::open(uint32_t sample_bits, bool is_float, const char* node_
 
     if (rc < 0) {
         std::fprintf(stderr,
-            "E/Cordial-AAudio          pw_stream_connect failed (%s); no audio.\n",
+            "E/Vanta-AAudio          pw_stream_connect failed (%s); no audio.\n",
             spa_strerror(rc));
         g_lib.stream_destroy(impl_->stream);
         impl_->stream = nullptr;
@@ -1333,7 +1333,7 @@ bool CallbackStream::open(uint32_t sample_bits, bool is_float, const char* node_
                        impl_->burst.load(std::memory_order_relaxed) != 0;
     if (!ready) {
         std::fprintf(stderr,
-            "E/Cordial-AAudio          PipeWire did not negotiate a format and turn a cycle "
+            "E/Vanta-AAudio          PipeWire did not negotiate a format and turn a cycle "
             "within 3s (format %s, first cycle %s); refusing the stream rather than "
             "reporting a rate nobody agreed to.\n",
             impl_->negotiated.load(std::memory_order_acquire) ? "yes" : "no",
@@ -1433,7 +1433,7 @@ struct CaptureStream::Impl {
         if (state == PW_STREAM_STATE_ERROR) {
             static_cast<Impl*>(data)->failed.store(true, std::memory_order_release);
             std::fprintf(stderr,
-                "E/Cordial-OpenSLES         PipeWire capture stream entered the error state "
+                "E/Vanta-OpenSLES         PipeWire capture stream entered the error state "
                 "(%s); recording will deliver no samples.\n", error ? error : "no reason given");
         }
     }
@@ -1485,7 +1485,7 @@ bool CaptureStream::open(uint32_t rate_hz, uint32_t channels, const std::string&
     impl_->failed.store(false, std::memory_order_release);
     const std::string chosen_at_open = configured_input_device();
 
-    // Cordial has three independent owners of a `CaptureStream`:
+    // Vanta has three independent owners of a `CaptureStream`:
     // `AudioRecord` and `WebRtcAudioRecord` in `audio_classes.cpp`, and
     // `AudioRecorderObject` in `opensles.cpp`. Nothing about the engine's own
     // calling pattern rules out two of them recording at once -- Roblox could
@@ -1500,7 +1500,7 @@ bool CaptureStream::open(uint32_t rate_hz, uint32_t channels, const std::string&
     // place the answer can be enforced rather than merely hoped for.
     //
     // A hard refusal rather than a queue or a shared handle: this project has
-    // no observed case of Cordial genuinely needing two concurrent captures,
+    // no observed case of Vanta genuinely needing two concurrent captures,
     // real Android's own microphone is a scarcer resource than PipeWire lets
     // it look, and a caller told "no" gets exactly the same honest failure
     // path every other refusal in this file already produces -- see
@@ -1509,8 +1509,8 @@ bool CaptureStream::open(uint32_t rate_hz, uint32_t channels, const std::string&
     // quieter version of.
     if (g_open_capture_streams.load() != 0) {
         std::fprintf(stderr,
-            "E/Cordial-OpenSLES         refusing a second capture stream while %u is already "
-            "open; Cordial does not support two microphone paths recording at once.\n",
+            "E/Vanta-OpenSLES         refusing a second capture stream while %u is already "
+            "open; Vanta does not support two microphone paths recording at once.\n",
             g_open_capture_streams.load());
         return false;
     }
@@ -1519,7 +1519,7 @@ bool CaptureStream::open(uint32_t rate_hz, uint32_t channels, const std::string&
     if (!session) return false;
     if (channels == 0 || channels > SPA_AUDIO_MAX_CHANNELS || rate_hz == 0) {
         std::fprintf(stderr,
-            "E/Cordial-OpenSLES         refusing to open a capture stream at %u Hz / %u "
+            "E/Vanta-OpenSLES         refusing to open a capture stream at %u Hz / %u "
             "channels; nothing will be recorded.\n", rate_hz, channels);
         return false;
     }
@@ -1537,25 +1537,25 @@ bool CaptureStream::open(uint32_t rate_hz, uint32_t channels, const std::string&
 
     static std::atomic<uint32_t> next_id{0};
     char name[64];
-    std::snprintf(name, sizeof name, "cordial-audiorecord-%u", next_id.fetch_add(1));
+    std::snprintf(name, sizeof name, "vanta-audiorecord-%u", next_id.fetch_add(1));
 
     g_lib.thread_loop_lock(session->loop);
 
     // PW_KEY_MEDIA_ROLE "Communication" is not decoration: it is what tells
     // the session manager this is a voice stream, which is what makes the
-    // desktop's own microphone indicator light up and name Cordial. Being
+    // desktop's own microphone indicator light up and name Vanta. Being
     // conspicuous while recording is the other half of the promise not to
     // record when unasked.
     pw_properties* props =
         target_node_name.empty()
             ? g_lib.properties_new(PW_KEY_MEDIA_TYPE, "Audio", PW_KEY_MEDIA_CATEGORY, "Capture",
-                                   PW_KEY_MEDIA_ROLE, "Communication", PW_KEY_APP_NAME, "Cordial",
+                                   PW_KEY_MEDIA_ROLE, "Communication", PW_KEY_APP_NAME, "Vanta",
                                    PW_KEY_NODE_NAME, name, PW_KEY_NODE_DESCRIPTION,
-                                   "Cordial (Roblox voice chat)", nullptr)
+                                   "Vanta (Roblox voice chat)", nullptr)
             : g_lib.properties_new(PW_KEY_MEDIA_TYPE, "Audio", PW_KEY_MEDIA_CATEGORY, "Capture",
-                                   PW_KEY_MEDIA_ROLE, "Communication", PW_KEY_APP_NAME, "Cordial",
+                                   PW_KEY_MEDIA_ROLE, "Communication", PW_KEY_APP_NAME, "Vanta",
                                    PW_KEY_NODE_NAME, name, PW_KEY_NODE_DESCRIPTION,
-                                   "Cordial (Roblox voice chat)", PW_KEY_TARGET_OBJECT,
+                                   "Vanta (Roblox voice chat)", PW_KEY_TARGET_OBJECT,
                                    target_node_name.c_str(), nullptr);
 
     impl_->stream = g_lib.stream_new_simple(g_lib.thread_loop_get_loop(session->loop), name, props,
@@ -1563,7 +1563,7 @@ bool CaptureStream::open(uint32_t rate_hz, uint32_t channels, const std::string&
     if (!impl_->stream) {
         g_lib.thread_loop_unlock(session->loop);
         std::fprintf(stderr,
-            "E/Cordial-OpenSLES         pw_stream_new_simple failed for capture; nothing "
+            "E/Vanta-OpenSLES         pw_stream_new_simple failed for capture; nothing "
             "will be recorded.\n");
         return false;
     }
@@ -1602,7 +1602,7 @@ bool CaptureStream::open(uint32_t rate_hz, uint32_t channels, const std::string&
 
     if (rc < 0) {
         std::fprintf(stderr,
-            "E/Cordial-OpenSLES         pw_stream_connect failed for capture (%s); nothing "
+            "E/Vanta-OpenSLES         pw_stream_connect failed for capture (%s); nothing "
             "will be recorded.\n", spa_strerror(rc));
         g_lib.thread_loop_lock(session->loop);
         g_lib.stream_destroy(impl_->stream);
@@ -1615,7 +1615,7 @@ bool CaptureStream::open(uint32_t rate_hz, uint32_t channels, const std::string&
     // After the unlock, for the lock order the registry's comment sets out.
     register_live_capture(impl_->stream);
     std::fprintf(stderr,
-        "I/Cordial-OpenSLES         microphone opened: %u Hz, %u channel(s), source '%s'. "
+        "I/Vanta-OpenSLES         microphone opened: %u Hz, %u channel(s), source '%s'. "
         "%u capture stream(s) now open.\n",
         rate_hz, channels, target_node_name.empty() ? "(PipeWire default)" : target_node_name.c_str(),
         g_open_capture_streams.load());
@@ -1639,7 +1639,7 @@ void CaptureStream::close() {
         g_lib.thread_loop_lock(session->loop);
         // Destroyed, not deactivated. `pw_stream_set_active(false)` leaves the
         // node in the graph, which leaves the desktop's microphone indicator
-        // lit and leaves every other application seeing Cordial holding the
+        // lit and leaves every other application seeing Vanta holding the
         // capture device. Nothing short of destroying the stream makes a
         // stopped recording indistinguishable from one that never started.
         g_lib.stream_destroy(impl_->stream);
@@ -1652,7 +1652,7 @@ void CaptureStream::close() {
     }
     uint32_t remaining = g_open_capture_streams.fetch_sub(1) - 1;
     std::fprintf(stderr,
-        "I/Cordial-OpenSLES         microphone closed; %u capture stream(s) now open.\n",
+        "I/Vanta-OpenSLES         microphone closed; %u capture stream(s) now open.\n",
         remaining);
 }
 
@@ -1700,13 +1700,13 @@ bool PlaybackStream::open(uint32_t rate_hz, uint32_t channels, uint32_t bits_per
     spa_audio_format format;
     if (!map_format(bits_per_sample, container_bits, big_endian, format)) {
         std::fprintf(stderr,
-            "E/Cordial-OpenSLES         unsupported PCM layout: %u-bit samples in a "
+            "E/Vanta-OpenSLES         unsupported PCM layout: %u-bit samples in a "
             "%u-bit container; no audio for this player.\n", bits_per_sample, container_bits);
         return false;
     }
     if (channels == 0 || channels > SPA_AUDIO_MAX_CHANNELS) {
         std::fprintf(stderr,
-            "E/Cordial-OpenSLES         unsupported channel count %u; no audio for this "
+            "E/Vanta-OpenSLES         unsupported channel count %u; no audio for this "
             "player.\n", channels);
         return false;
     }
@@ -1722,7 +1722,7 @@ bool PlaybackStream::open(uint32_t rate_hz, uint32_t channels, uint32_t bits_per
 
     static std::atomic<uint32_t> next_id{0};
     char name[64];
-    std::snprintf(name, sizeof name, "cordial-audioplayer-%u", next_id.fetch_add(1));
+    std::snprintf(name, sizeof name, "vanta-audioplayer-%u", next_id.fetch_add(1));
 
     // Before the lock: see the same call in `CallbackStream::open`.
     const std::string target = resolve_output_target(target_node_name);
@@ -1732,13 +1732,13 @@ bool PlaybackStream::open(uint32_t rate_hz, uint32_t channels, uint32_t bits_per
     pw_properties* props =
         target.empty()
             ? g_lib.properties_new(PW_KEY_MEDIA_TYPE, "Audio", PW_KEY_MEDIA_CATEGORY, "Playback",
-                                   PW_KEY_MEDIA_ROLE, "Game", PW_KEY_APP_NAME, "Cordial",
+                                   PW_KEY_MEDIA_ROLE, "Game", PW_KEY_APP_NAME, "Vanta",
                                    PW_KEY_NODE_NAME, name, PW_KEY_NODE_DESCRIPTION,
-                                   "Cordial (Roblox via OpenSL ES)", nullptr)
+                                   "Vanta (Roblox via OpenSL ES)", nullptr)
             : g_lib.properties_new(PW_KEY_MEDIA_TYPE, "Audio", PW_KEY_MEDIA_CATEGORY, "Playback",
-                                   PW_KEY_MEDIA_ROLE, "Game", PW_KEY_APP_NAME, "Cordial",
+                                   PW_KEY_MEDIA_ROLE, "Game", PW_KEY_APP_NAME, "Vanta",
                                    PW_KEY_NODE_NAME, name, PW_KEY_NODE_DESCRIPTION,
-                                   "Cordial (Roblox via OpenSL ES)", PW_KEY_TARGET_OBJECT,
+                                   "Vanta (Roblox via OpenSL ES)", PW_KEY_TARGET_OBJECT,
                                    target.c_str(), nullptr);
 
     if (impl_->tap_fmt != tap::Fmt::None) impl_->tap_src = tap::attach(rate_hz);
@@ -1748,7 +1748,7 @@ bool PlaybackStream::open(uint32_t rate_hz, uint32_t channels, uint32_t bits_per
         tap::detach(impl_->tap_src);
         impl_->tap_src = nullptr;
         std::fprintf(stderr,
-            "E/Cordial-OpenSLES         pw_stream_new_simple failed; no audio for this "
+            "E/Vanta-OpenSLES         pw_stream_new_simple failed; no audio for this "
             "player.\n");
         g_lib.thread_loop_unlock(session->loop);
         return false;
@@ -1785,7 +1785,7 @@ bool PlaybackStream::open(uint32_t rate_hz, uint32_t channels, uint32_t bits_per
 
     if (rc < 0) {
         std::fprintf(stderr,
-            "E/Cordial-OpenSLES         pw_stream_connect failed (%s); no audio for this "
+            "E/Vanta-OpenSLES         pw_stream_connect failed (%s); no audio for this "
             "player.\n", spa_strerror(rc));
         g_lib.thread_loop_lock(session->loop);
         g_lib.stream_destroy(impl_->stream);
@@ -1886,9 +1886,9 @@ PlaybackStream::QueueState PlaybackStream::state() const {
     return {static_cast<uint32_t>(impl_->pending.size()), impl_->enqueued_index};
 }
 
-} // namespace cordial::audio
+} // namespace vanta::audio
 
-#else // !CORDIAL_HAVE_PIPEWIRE
+#else // !VANTA_HAVE_PIPEWIRE
 
 // No PipeWire headers at configure time (see CMakeLists.txt). Every entry
 // point degrades to "no audio", the same answer this backend gives for an
@@ -1898,12 +1898,12 @@ PlaybackStream::QueueState PlaybackStream::state() const {
 #include <cstdio>
 #include <cstdlib>
 
-namespace cordial::audio {
+namespace vanta::audio {
 
 bool pipewire_available() {
     static const bool warned = [] {
         std::fprintf(stderr,
-            "E/Cordial-Audio           built without pipewire-devel present at configure "
+            "E/Vanta-Audio           built without pipewire-devel present at configure "
             "time (see native/CMakeLists.txt); there is no audio at all, by either the "
             "OpenSL ES or the AAudio path -- both reach PipeWire through this. Install "
             "pipewire-devel and reconfigure to enable it.\n");
@@ -2012,9 +2012,9 @@ void PlaybackStream::set_volume_linear(float) {}
 void PlaybackStream::set_mute(bool) {}
 PlaybackStream::QueueState PlaybackStream::state() const { return {0, 0}; }
 
-} // namespace cordial::audio
+} // namespace vanta::audio
 
-#endif // CORDIAL_HAVE_PIPEWIRE
+#endif // VANTA_HAVE_PIPEWIRE
 
 // ------------------------------------------------------- the output device
 //
@@ -2022,7 +2022,7 @@ PlaybackStream::QueueState PlaybackStream::state() const { return {0, 0}; }
 // asked for" and two copies of a variable that can change at run time is how a
 // setting ends up meaning two things in one process.
 
-namespace cordial::audio {
+namespace vanta::audio {
 
 OutputSwitch retarget_live_streams(const std::string& requested);
 OutputSwitch retarget_live_capture(const std::string& requested);
@@ -2033,21 +2033,21 @@ std::mutex g_output_mutex;
 std::string g_output_device;
 bool g_output_seeded = false;
 
-/// Reads `CORDIAL_AUDIO_SINK` the first time anybody asks. Needs
+/// Reads `VANTA_AUDIO_SINK` the first time anybody asks. Needs
 /// `g_output_mutex`.
 void seed_output_device_locked() {
     if (g_output_seeded) return;
     g_output_seeded = true;
-    const char* v = std::getenv("CORDIAL_AUDIO_SINK");
+    const char* v = std::getenv("VANTA_AUDIO_SINK");
     // A variable set to the empty string is the same instruction as one that is
     // not set: follow the default. `launch.rs` omits it rather than sending an
-    // empty value, but a hand-run client with `CORDIAL_AUDIO_SINK=` in its
+    // empty value, but a hand-run client with `VANTA_AUDIO_SINK=` in its
     // environment must not end up asking for a sink literally called "".
     g_output_device = v ? v : "";
     if (!g_output_device.empty()) {
         std::fprintf(stderr,
-            "I/Cordial-OpenSLES         output device: playback will be aimed at PipeWire "
-            "sink '%s' (CORDIAL_AUDIO_SINK). Unset it to follow the system default.\n",
+            "I/Vanta-OpenSLES         output device: playback will be aimed at PipeWire "
+            "sink '%s' (VANTA_AUDIO_SINK). Unset it to follow the system default.\n",
             g_output_device.c_str());
     }
 }
@@ -2066,7 +2066,7 @@ OutputSwitch set_output_device(const std::string& name) {
         seed_output_device_locked();
         g_output_device = name;
     }
-    std::fprintf(stderr, "I/Cordial-Audio           output device set to %s.\n",
+    std::fprintf(stderr, "I/Vanta-Audio           output device set to %s.\n",
                  name.empty() ? "the system default" : ("'" + name + "'").c_str());
     OutputSwitch result = retarget_live_streams(name);
 
@@ -2076,7 +2076,7 @@ OutputSwitch set_output_device(const std::string& name) {
     const char* asked = host_backend_name();
     if (std::strcmp(asked, "alsa") == 0 || std::strcmp(asked, "oss") == 0 ||
         std::strcmp(asked, "pulse") == 0) {
-        result.note = std::string("CORDIAL_AUDIO_HOST=") + asked +
+        result.note = std::string("VANTA_AUDIO_HOST=") + asked +
                       " cannot move a stream that is already playing; the choice applies "
                       "to streams opened from now on";
     }
@@ -2097,19 +2097,19 @@ std::mutex g_input_mutex;
 std::string g_input_device;
 bool g_input_seeded = false;
 
-/// Reads `CORDIAL_AUDIO_SOURCE` the first time anybody asks. Needs
+/// Reads `VANTA_AUDIO_SOURCE` the first time anybody asks. Needs
 /// `g_input_mutex`. An empty value is the same as an unset one, as for the sink.
 void seed_input_device_locked() {
     if (g_input_seeded) return;
     g_input_seeded = true;
-    const char* v = std::getenv("CORDIAL_AUDIO_SOURCE");
+    const char* v = std::getenv("VANTA_AUDIO_SOURCE");
     g_input_device = v ? v : "";
     if (!g_input_device.empty()) {
         // Says what was asked for and not that a microphone was opened: nothing
         // is, until Roblox starts recording.
         std::fprintf(stderr,
-            "I/Cordial-OpenSLES         input device: recording will be aimed at PipeWire "
-            "source '%s' (CORDIAL_AUDIO_SOURCE). Unset it to follow the system default.\n",
+            "I/Vanta-OpenSLES         input device: recording will be aimed at PipeWire "
+            "source '%s' (VANTA_AUDIO_SOURCE). Unset it to follow the system default.\n",
             g_input_device.c_str());
     }
 }
@@ -2128,7 +2128,7 @@ OutputSwitch set_input_device(const std::string& name) {
         seed_input_device_locked();
         g_input_device = name;
     }
-    std::fprintf(stderr, "I/Cordial-Audio           input device set to %s.\n",
+    std::fprintf(stderr, "I/Vanta-Audio           input device set to %s.\n",
                  name.empty() ? "the system default" : ("'" + name + "'").c_str());
     OutputSwitch result = retarget_live_capture(name);
 
@@ -2138,7 +2138,7 @@ OutputSwitch set_input_device(const std::string& name) {
     return result;
 }
 
-} // namespace cordial::audio
+} // namespace vanta::audio
 
 // ---------------------------------------------------------------- the seam
 //
@@ -2147,21 +2147,21 @@ OutputSwitch set_input_device(const std::string& name) {
 // pipewire-devel gets a `CallbackStream` whose `open` fails honestly, which is
 // exactly what a host with no backend at all should hand back.
 
-namespace cordial::audio {
+namespace vanta::audio {
 
 const char* host_backend_name() {
-    // One reader, and it caches. `aaudio.cpp`'s own `CORDIAL_AUDIO` parser
+    // One reader, and it caches. `aaudio.cpp`'s own `VANTA_AUDIO` parser
     // documents the same rule for the same reason: two readers of one variable
     // is two places for a typo to mean different things.
     static const char* const name = [] () -> const char* {
-        const char* raw = std::getenv("CORDIAL_AUDIO_HOST");
+        const char* raw = std::getenv("VANTA_AUDIO_HOST");
         // **Unset means detect, not PipeWire.** It used to mean PipeWire, so a
         // machine without it was told "no audio" while ALSA and OSS sat
         // unexamined a few lines below -- reported by a user on 2026-08-27 who
         // reasonably concluded the variable did nothing. Nobody with a PipeWire
         // session sees a difference: detection asks for it first.
         if (!raw || raw[0] == '\0') return "auto";
-        // Lowercased before comparing. `CORDIAL_AUDIO_HOST=OSS` used to fall
+        // Lowercased before comparing. `VANTA_AUDIO_HOST=OSS` used to fall
         // through to the warning and silently become PipeWire, which is a sharp
         // edge on a variable somebody only ever types when audio is already
         // broken.
@@ -2181,7 +2181,7 @@ const char* host_backend_name() {
         // a run that asked for one should be told it did not get it rather
         // than left to infer it from silence.
         std::fprintf(stderr,
-            "W/Cordial-Audio           CORDIAL_AUDIO_HOST=%s is not a backend this build has "
+            "W/Vanta-Audio           VANTA_AUDIO_HOST=%s is not a backend this build has "
             "(pipewire, pulse, alsa, oss); using pipewire. See "
             "docs/adr/ADR-023-host-audio-backends.md.\n",
             value);
@@ -2342,15 +2342,15 @@ std::unique_ptr<OutputStream> make_host_output_stream() {
             if (auto stream = make_oss_stream()) return stream;
         }
         std::fprintf(stderr,
-            "W/Cordial-Audio           CORDIAL_AUDIO_HOST=oss, but /dev/dsp would not open "
-            "(set CORDIAL_AUDIO_DEVICE for another node); using pipewire.\n");
+            "W/Vanta-Audio           VANTA_AUDIO_HOST=oss, but /dev/dsp would not open "
+            "(set VANTA_AUDIO_DEVICE for another node); using pipewire.\n");
     }
     if (std::strcmp(effective_backend_name(), "alsa") == 0) {
         if (alsa_available()) {
             if (auto stream = make_alsa_stream()) return stream;
         }
         std::fprintf(stderr,
-            "W/Cordial-Audio           CORDIAL_AUDIO_HOST=alsa, but no ALSA device would "
+            "W/Vanta-Audio           VANTA_AUDIO_HOST=alsa, but no ALSA device would "
             "open; using pipewire.\n");
     }
     if (std::strcmp(effective_backend_name(), "pulse") == 0) {
@@ -2363,7 +2363,7 @@ std::unique_ptr<OutputStream> make_host_output_stream() {
             if (auto stream = make_pulse_stream()) return stream;
         }
         std::fprintf(stderr,
-            "W/Cordial-Audio           CORDIAL_AUDIO_HOST=pulse, but no PulseAudio server "
+            "W/Vanta-Audio           VANTA_AUDIO_HOST=pulse, but no PulseAudio server "
             "answered; using pipewire.\n");
     }
     return std::make_unique<CallbackStream>();
@@ -2371,7 +2371,7 @@ std::unique_ptr<OutputStream> make_host_output_stream() {
 
 } // namespace
 
-} // namespace cordial::audio
+} // namespace vanta::audio
 
 
 // The includes are repeated here rather than hoisted to the top of the file:
@@ -2394,23 +2394,23 @@ std::unique_ptr<OutputStream> make_host_output_stream() {
 
 extern "C" {
 
-size_t cordial_audio_sinks(CordialAudioSink** out) {
+size_t vanta_audio_sinks(VantaAudioSink** out) {
     if (!out) return 0;
     *out = nullptr;
 
-    std::vector<cordial::audio::DeviceInfo> devices = cordial::audio::enumerate_devices();
+    std::vector<vanta::audio::DeviceInfo> devices = vanta::audio::enumerate_devices();
 
     size_t count = 0;
-    for (const cordial::audio::DeviceInfo& d : devices) {
+    for (const vanta::audio::DeviceInfo& d : devices) {
         if (!d.is_source && !d.node_name.empty()) ++count;
     }
     if (count == 0) return 0;
 
-    auto* list = static_cast<CordialAudioSink*>(std::calloc(count, sizeof(CordialAudioSink)));
+    auto* list = static_cast<VantaAudioSink*>(std::calloc(count, sizeof(VantaAudioSink)));
     if (!list) return 0;
 
     size_t i = 0;
-    for (const cordial::audio::DeviceInfo& d : devices) {
+    for (const vanta::audio::DeviceInfo& d : devices) {
         if (d.is_source || d.node_name.empty()) continue;
         // `strdup` rather than handing out pointers into the vector, which
         // dies at the closing brace. Each string is freed individually below.
@@ -2429,27 +2429,27 @@ size_t cordial_audio_sinks(CordialAudioSink** out) {
     return count;
 }
 
-size_t cordial_audio_sources(CordialAudioSink** out) {
+size_t vanta_audio_sources(VantaAudioSink** out) {
     if (!out) return 0;
     *out = nullptr;
 
     // The same registry walk as the sinks, filtered the other way. Enumeration
     // only: nothing here constructs a `CaptureStream`, which is the rule at the
     // top of `audio_classes.cpp` and is pinned by the shell's own test of this
-    // call reading `cordial_audio_capture_streams` before and after.
-    std::vector<cordial::audio::DeviceInfo> devices = cordial::audio::enumerate_devices();
+    // call reading `vanta_audio_capture_streams` before and after.
+    std::vector<vanta::audio::DeviceInfo> devices = vanta::audio::enumerate_devices();
 
     size_t count = 0;
-    for (const cordial::audio::DeviceInfo& d : devices) {
+    for (const vanta::audio::DeviceInfo& d : devices) {
         if (d.is_source && !d.node_name.empty()) ++count;
     }
     if (count == 0) return 0;
 
-    auto* list = static_cast<CordialAudioSink*>(std::calloc(count, sizeof(CordialAudioSink)));
+    auto* list = static_cast<VantaAudioSink*>(std::calloc(count, sizeof(VantaAudioSink)));
     if (!list) return 0;
 
     size_t i = 0;
-    for (const cordial::audio::DeviceInfo& d : devices) {
+    for (const vanta::audio::DeviceInfo& d : devices) {
         if (!d.is_source || d.node_name.empty()) continue;
         list[i].node_name = ::strdup(d.node_name.c_str());
         list[i].description =
@@ -2461,39 +2461,39 @@ size_t cordial_audio_sources(CordialAudioSink** out) {
     return count;
 }
 
-unsigned cordial_audio_capture_streams(void) { return cordial::audio::active_capture_streams(); }
+unsigned vanta_audio_capture_streams(void) { return vanta::audio::active_capture_streams(); }
 
-size_t cordial_audio_set_input(const char* name, char* note, size_t note_len) {
-    const cordial::audio::OutputSwitch r =
-        cordial::audio::set_input_device(name ? std::string(name) : std::string());
+size_t vanta_audio_set_input(const char* name, char* note, size_t note_len) {
+    const vanta::audio::OutputSwitch r =
+        vanta::audio::set_input_device(name ? std::string(name) : std::string());
     if (note && note_len > 0) {
         std::snprintf(note, note_len, "%s", r.note.c_str());
     }
     return r.moved;
 }
 
-size_t cordial_audio_input(char* out, size_t out_len) {
-    const std::string now = cordial::audio::configured_input_device();
+size_t vanta_audio_input(char* out, size_t out_len) {
+    const std::string now = vanta::audio::configured_input_device();
     if (out && out_len > 0) std::snprintf(out, out_len, "%s", now.c_str());
     return now.size();
 }
 
-size_t cordial_audio_set_output(const char* name, char* note, size_t note_len) {
-    const cordial::audio::OutputSwitch r =
-        cordial::audio::set_output_device(name ? std::string(name) : std::string());
+size_t vanta_audio_set_output(const char* name, char* note, size_t note_len) {
+    const vanta::audio::OutputSwitch r =
+        vanta::audio::set_output_device(name ? std::string(name) : std::string());
     if (note && note_len > 0) {
         std::snprintf(note, note_len, "%s", r.note.c_str());
     }
     return r.moved;
 }
 
-size_t cordial_audio_output(char* out, size_t out_len) {
-    const std::string now = cordial::audio::configured_output_device();
+size_t vanta_audio_output(char* out, size_t out_len) {
+    const std::string now = vanta::audio::configured_output_device();
     if (out && out_len > 0) std::snprintf(out, out_len, "%s", now.c_str());
     return now.size();
 }
 
-void cordial_audio_sinks_free(CordialAudioSink* sinks, size_t count) {
+void vanta_audio_sinks_free(VantaAudioSink* sinks, size_t count) {
     if (!sinks) return;
     for (size_t i = 0; i < count; ++i) {
         std::free(const_cast<char*>(sinks[i].node_name));
@@ -2514,31 +2514,31 @@ extern "C" {
 
 /// Start (1) or stop (0) copying the engine's sound. Starting discards what the
 /// rings hold, so a recording does not begin with sound from before it.
-void cordial_record_tap_enable(int on) { cordial::audio::tap::enable(on != 0); }
+void vanta_record_tap_enable(int on) { vanta::audio::tap::enable(on != 0); }
 
 /// `frames` frames of 48 kHz stereo float, interleaved, of the recording's
-/// timeline from output position `pos` (frames since `cordial_record_tap_enable`
+/// timeline from output position `pos` (frames since `vanta_record_tap_enable`
 /// was called with 1): every open stream mixed, and silence where there is none.
 /// One reader at a time, asking for positions a little behind the wall clock.
-void cordial_record_tap_read(float* dst, size_t frames, uint64_t pos) {
+void vanta_record_tap_read(float* dst, size_t frames, uint64_t pos) {
     if (!dst) return;
-    cordial::audio::tap::read_mix(dst, static_cast<uint32_t>(frames), pos);
+    vanta::audio::tap::read_mix(dst, static_cast<uint32_t>(frames), pos);
 }
 
 /// Streams currently being copied, and frames refused by full rings since the
 /// process began. Both exist so a recording that came out silent can say whether
 /// the engine had a stream open at all.
-unsigned cordial_record_tap_streams(void) {
+unsigned vanta_record_tap_streams(void) {
     unsigned n = 0;
-    for (auto& s : cordial::audio::tap::state().sources) {
+    for (auto& s : vanta::audio::tap::state().sources) {
         if (s.live.load(std::memory_order_acquire)) ++n;
     }
     return n;
 }
 
-uint64_t cordial_record_tap_dropped(void) {
+uint64_t vanta_record_tap_dropped(void) {
     uint64_t n = 0;
-    for (auto& s : cordial::audio::tap::state().sources) n += s.dropped.load(std::memory_order_relaxed);
+    for (auto& s : vanta::audio::tap::state().sources) n += s.dropped.load(std::memory_order_relaxed);
     return n;
 }
 
@@ -2547,29 +2547,29 @@ uint64_t cordial_record_tap_dropped(void) {
 /// is how the recorder's pump, encoder and file are exercised with a sound whose
 /// samples are known, in a process where no engine is making any. Nothing in
 /// the engine's own path calls it. It claims one slot, once, and keeps it.
-void cordial_record_tap_inject(const float* stereo, size_t frames) {
-    static cordial::audio::tap::Source* src = cordial::audio::tap::attach(cordial::audio::tap::kOutRate);
-    cordial::audio::tap::push(src, stereo, static_cast<uint32_t>(frames), 2, cordial::audio::tap::Fmt::F32);
+void vanta_record_tap_inject(const float* stereo, size_t frames) {
+    static vanta::audio::tap::Source* src = vanta::audio::tap::attach(vanta::audio::tap::kOutRate);
+    vanta::audio::tap::push(src, stereo, static_cast<uint32_t>(frames), 2, vanta::audio::tap::Fmt::F32);
 }
 
-/// Play a quiet sine through Cordial's own output path for `seconds`: the
+/// Play a quiet sine through Vanta's own output path for `seconds`: the
 /// stream `make_output_stream` makes for AAudio, the tap and the host backend
 /// included. **A development aid** (`devctl tone`): it is how a recording's
 /// sound is checked in a client whose engine is silent, against a tone of known
 /// frequency and a different one from another program. The level is capped at
 /// 0.05 in here, not left to the caller. Returns 0 once the tone is playing.
-int cordial_audio_dev_tone(double hz, double amp, double seconds) {
+int vanta_audio_dev_tone(double hz, double amp, double seconds) {
     if (!(hz >= 20.0 && hz <= 20000.0) || !(amp > 0.0) || !(seconds > 0.0)) return -1;
     if (amp > 0.05) amp = 0.05;
     if (seconds > 30.0) seconds = 30.0;
     struct Tone {
-        std::unique_ptr<cordial::audio::OutputStream> stream;
+        std::unique_ptr<vanta::audio::OutputStream> stream;
         double phase = 0.0, step = 0.0;
         float amp = 0.0f;
         uint32_t channels = 2;
     };
     auto* tone = new Tone();
-    tone->stream = cordial::audio::make_output_stream();
+    tone->stream = vanta::audio::make_output_stream();
     tone->amp = static_cast<float>(amp);
     auto fill = [](void* dst, uint32_t frames, void* user) -> bool {
         auto* t = static_cast<Tone*>(user);
@@ -2583,7 +2583,7 @@ int cordial_audio_dev_tone(double hz, double amp, double seconds) {
     };
     // Float asked for; a backend that settles on anything else cannot be driven
     // by the loop above, and playing noise would be worse than saying so.
-    if (!tone->stream || !tone->stream->open(32, true, "Cordial dev tone", "", fill, tone) ||
+    if (!tone->stream || !tone->stream->open(32, true, "Vanta dev tone", "", fill, tone) ||
         !tone->stream->sample_is_float() || tone->stream->sample_bits() != 32) {
         if (tone->stream) tone->stream->close();
         delete tone;

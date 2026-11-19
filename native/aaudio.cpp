@@ -23,14 +23,14 @@
 // **Once FMOD has been told AAudio exists, there is no way back.** This is
 // the most consequential thing measured while writing this file, and it is
 // the reverse of what the plan assumed. A control run
-// (`CORDIAL_AUDIO=aaudio-refuse`) answered `supportsAAudio()` true and then
+// (`VANTA_AUDIO=aaudio-refuse`) answered `supportsAAudio()` true and then
 // reported `AAUDIO_ERROR_UNAVAILABLE` from every `openStream`. FMOD tried
 // twice and then abandoned audio altogether: no `AudioDevice.init`, no
 // `slCreateEngine`, no PipeWire node of any kind for the rest of the run, and
 // a place that loaded and played in silence. The "AAudio, then OpenSL ES,
 // then Java" chain does not exist on this build once the first link has been
 // claimed. That is why `supportsAAudio()` checks `pipewire_available()`
-// before saying yes. `CORDIAL_AUDIO=java` remains the rollback when that check
+// before saying yes. `VANTA_AUDIO=java` remains the rollback when that check
 // is not enough for a particular host.
 //
 // **What the engine actually asks for is measured, not assumed.**
@@ -169,7 +169,7 @@ using AAudioStream_errorCallback = void (*)(AAudioStream* stream, void* userData
 
 // ------------------------------------------------------------ backend choice
 
-/// What `CORDIAL_AUDIO` selected, decided once and logged once.
+/// What `VANTA_AUDIO` selected, decided once and logged once.
 ///
 /// The variable did not exist before this file. It was described in
 /// conversation as the intended design, then tried on a live run where
@@ -179,7 +179,7 @@ using AAudioStream_errorCallback = void (*)(AAudioStream* stream, void* userData
 enum class Backend {
     /// FMOD's Java `org.fmod.AudioDevice` path. Was the default until AAudio
     /// had been measured against it; now the fallback, reachable with
-    /// `CORDIAL_AUDIO=java`, and still the path a host with no PipeWire takes
+    /// `VANTA_AUDIO=java`, and still the path a host with no PipeWire takes
     /// because `supportsAAudio()` answers false there whatever this says.
     Java,
     /// AAudio over PipeWire: this file, wired all the way through. **The
@@ -206,12 +206,12 @@ Backend parse_backend(const char* value) {
     // the microphone indicator would stay lit for the session.
     //
     // Answered on 2026-08-22 by a real signed-in session -- Doors, 1 hour 44
-    // minutes, `CORDIAL_AUDIO=aaudio`, the user's own account:
+    // minutes, `VANTA_AUDIO=aaudio`, the user's own account:
     //
     //     input stream opened   x2      FMOD probing for capabilities
     //     microphone opened      0
     //     microphone closed      0
-    //     cordial-audiorecord nodes at the end: 0
+    //     vanta-audiorecord nodes at the end: 0
     //     AudioDevice.init       0      the Java path never ran at all
     //
     // **FMOD opens input streams and never calls requestStart.** So the
@@ -232,24 +232,24 @@ Backend parse_backend(const char* value) {
     // Falls back to the default rather than to `java`, so that a typo does not
     // quietly select a different backend from the one an untyped run gets.
     std::fprintf(stderr,
-        "W/Cordial-AAudio          CORDIAL_AUDIO=%s is not a backend I know "
+        "W/Vanta-AAudio          VANTA_AUDIO=%s is not a backend I know "
         "(java, aaudio, aaudio-refuse); using aaudio, the default.\n", value);
     return Backend::AAudio;
 }
 
 Backend selected_backend() {
     static const Backend backend = [] {
-        Backend b = parse_backend(std::getenv("CORDIAL_AUDIO"));
+        Backend b = parse_backend(std::getenv("VANTA_AUDIO"));
         const char* name = b == Backend::AAudio          ? "aaudio"
                             : b == Backend::AAudioRefuse ? "aaudio-refuse"
                                                           : "java";
         std::fprintf(stderr,
-            "I/Cordial-AAudio          audio backend: %s (CORDIAL_AUDIO=%s). %s\n", name,
-            std::getenv("CORDIAL_AUDIO") ? std::getenv("CORDIAL_AUDIO") : "unset",
+            "I/Vanta-AAudio          audio backend: %s (VANTA_AUDIO=%s). %s\n", name,
+            std::getenv("VANTA_AUDIO") ? std::getenv("VANTA_AUDIO") : "unset",
             b == Backend::Java
                 ? "libaaudio.so is not registered and org.fmod.FMOD.supportsAAudio() reports "
                   "false, so FMOD takes its Java AudioDevice path. This is the explicit "
-                  "rollback; unset CORDIAL_AUDIO selects AAudio."
+                  "rollback; unset VANTA_AUDIO selects AAudio."
                 : b == Backend::AAudio
                       ? "libaaudio.so is registered and supportsAAudio() reports true; streams "
                         "open against the host audio backend named on the `host backend:` "
@@ -290,7 +290,7 @@ struct Builder {
 /// converts on its side of the link, which it does for capture the same way
 /// it does for playback.
 ///
-/// Mono S16 at 48 kHz because that is what the rest of Cordial's capture side
+/// Mono S16 at 48 kHz because that is what the rest of Vanta's capture side
 /// already asks for and what voice wants: `CaptureStream` negotiates
 /// `SPA_AUDIO_FORMAT_S16` and nothing else, and `WebRtcAudioRecord` in
 /// `audio_classes.cpp` is opened mono for the same reason.
@@ -318,7 +318,7 @@ struct Stream {
     /// The host backend, behind ADR-023's seam rather than named here. This
     /// was a `CallbackStream` by value, which is what left no room for a
     /// second backend: every call site below said "PipeWire" by holding one.
-    std::unique_ptr<cordial::audio::OutputStream> pw = cordial::audio::make_output_stream();
+    std::unique_ptr<vanta::audio::OutputStream> pw = vanta::audio::make_output_stream();
 
     /// **Input only, and it holds no PipeWire resource until `requestStart`.**
     ///
@@ -330,7 +330,7 @@ struct Stream {
     /// application to see. `requestStart` opens it, `requestPause`,
     /// `requestStop` and `close` all destroy it, and so does this object's
     /// own destructor on every failure path in `openStream`.
-    cordial::audio::CaptureStream capture;
+    vanta::audio::CaptureStream capture;
 
     /// Serialises capture open/close/is_open across the callback exit hook and
     /// external lifecycle calls. It is never held while joining the callback
@@ -341,7 +341,7 @@ struct Stream {
     /// thread. It is idle until `requestStart`, cancelled and joined by every
     /// external pause/stop/close, and allowed to cancel itself without joining
     /// when those calls are re-entered from the engine callback.
-    cordial::audio::InputCallbackDriver input_callback;
+    vanta::audio::InputCallbackDriver input_callback;
 
     /// Serialises external input lifecycle calls. Callback-thread lifecycle
     /// calls never take it: an external stop may hold it while joining that
@@ -377,10 +377,10 @@ struct Stream {
     std::atomic<unsigned long> callback_thread{0};
 
     /// Reported by `AAudioStream_getXRunCount`. See the comment there: this
-    /// counts what Cordial can honestly see, which is not what Android counts.
+    /// counts what Vanta can honestly see, which is not what Android counts.
     std::atomic<int32_t> xruns{0};
 
-    // CORDIAL_TRACE_AUDIO=1 bookkeeping only. Output callbacks and each input
+    // VANTA_TRACE_AUDIO=1 bookkeeping only. Output callbacks and each input
     // delivery shape have one owner thread. Lifecycle joins callback input
     // before resetting these fields, so plain members remain sufficient.
     uint64_t trace_cycles = 0;
@@ -437,9 +437,9 @@ const char* format_name(aaudio_format_t f) {
     }
 }
 
-/// `CORDIAL_TRACE_AUDIO=1` only. Off, this is one relaxed bool load per cycle.
+/// `VANTA_TRACE_AUDIO=1` only. Off, this is one relaxed bool load per cycle.
 bool trace_audio_enabled() {
-    static const bool enabled = std::getenv("CORDIAL_TRACE_AUDIO") != nullptr;
+    static const bool enabled = std::getenv("VANTA_TRACE_AUDIO") != nullptr;
     return enabled;
 }
 
@@ -501,7 +501,7 @@ float buffer_peak(const void* data, uint32_t frames, uint32_t channels, uint32_t
 ///
 /// **Realtime.** With the trace off this is two relaxed atomic stores and the
 /// engine's own callback: no lock, no allocation, no log. With
-/// `CORDIAL_TRACE_AUDIO=1` it also scans the buffer for a peak and prints a
+/// `VANTA_TRACE_AUDIO=1` it also scans the buffer for a peak and prints a
 /// line a second, which breaks that rule deliberately and only when asked —
 /// the same bargain `PlaybackStream::process` already strikes with the same
 /// variable, and the reason it is a switch rather than a default.
@@ -535,7 +535,7 @@ bool fill_from_engine(void* dst, uint32_t frames, void* user) {
             // callback are this second's. This line used to say all of it
             // was "since the last line", which was true of the peak only.
             std::fprintf(stderr,
-                "D/Cordial-AAudio          audio trace: %llu callback(s), %llu frame(s), "
+                "D/Vanta-AAudio          audio trace: %llu callback(s), %llu frame(s), "
                 "%llu non-silent, %llu silence-filled cycle(s) in total; peak %.4f of full "
                 "scale, slowest callback %.2f ms (a %u-frame burst is %.2f ms) since the "
                 "last line\n",
@@ -595,12 +595,12 @@ bool input_capture_is_open(Stream* s) {
 
 bool open_input_capture(Stream* s) {
     std::lock_guard<std::mutex> lifecycle(s->capture_lifecycle);
-    // Empty unless the user chose a microphone (`CORDIAL_AUDIO_SOURCE`), and
+    // Empty unless the user chose a microphone (`VANTA_AUDIO_SOURCE`), and
     // empty is PipeWire's own default as before. The lookup only walks the
     // registry; it opens nothing.
     return s->capture.open(kCaptureRate, kCaptureChannels,
-                           cordial::audio::resolve_input_target(
-                               cordial::audio::configured_input_device()));
+                           vanta::audio::resolve_input_target(
+                               vanta::audio::configured_input_device()));
 }
 
 void close_input_capture(Stream* s) {
@@ -620,7 +620,7 @@ bool disconnect_failed_input(Stream* s) {
         close_input_capture(s);
         s->read_residue_len = 0;
         std::fprintf(stderr,
-            "E/Cordial-AAudio          capture backend disconnected; microphone closed "
+            "E/Vanta-AAudio          capture backend disconnected; microphone closed "
             "and input stream moved to DISCONNECTED.\n");
         if (s->error_callback) {
             s->error_callback(reinterpret_cast<AAudioStream*>(s), s->error_user,
@@ -641,7 +641,7 @@ void trace_capture_delivery(Stream* s, const void* data, uint32_t frames) {
     if (now - s->trace_last >= std::chrono::seconds(1)) {
         s->trace_last = now;
         std::fprintf(stderr,
-            "D/Cordial-AAudio          capture trace: %llu delivery(s), %llu frame(s), peak "
+            "D/Vanta-AAudio          capture trace: %llu delivery(s), %llu frame(s), peak "
             "%.4f of full scale, %llu frame(s) dropped by the ring in total\n",
             static_cast<unsigned long long>(s->trace_cycles),
             static_cast<unsigned long long>(s->trace_frames), s->trace_peak,
@@ -662,7 +662,7 @@ bool deliver_input_callback(void* data, uint32_t frames, void* user) {
     s->callback_thread.store(static_cast<unsigned long>(pthread_self()),
                              std::memory_order_relaxed);
     trace_capture_delivery(s, data, frames);
-    if (cordial::audio::voice_muted().load(std::memory_order_relaxed)) {
+    if (vanta::audio::voice_muted().load(std::memory_order_relaxed)) {
         std::memset(data, 0, static_cast<size_t>(frames) * kCaptureBytesPerFrame);
     }
 
@@ -683,7 +683,7 @@ void input_callback_exited(bool callback_stopped, void* user) {
     close_input_capture(s);
     if (callback_stopped) {
         std::fprintf(stderr,
-            "I/Cordial-AAudio          input data callback returned "
+            "I/Vanta-AAudio          input data callback returned "
             "AAUDIO_CALLBACK_RESULT_STOP; capture stream destroyed and recording stopped.\n");
     }
 }
@@ -712,7 +712,7 @@ aaudio_result_t open_input_stream(const Builder& b, AAudioStream** streamOut) {
     // is noise rather than an error.
     if (b.format != AAUDIO_FORMAT_UNSPECIFIED && b.format != AAUDIO_FORMAT_PCM_I16) {
         std::fprintf(stderr,
-            "E/Cordial-AAudio          refusing an input stream asking for %s: the PipeWire "
+            "E/Vanta-AAudio          refusing an input stream asking for %s: the PipeWire "
             "capture path negotiates PCM_I16 and nothing else. Refusing costs recording; "
             "answering with I16 anyway would cost it audibly and silently.\n",
             format_name(b.format));
@@ -730,7 +730,7 @@ aaudio_result_t open_input_stream(const Builder& b, AAudioStream** streamOut) {
     s->state.store(AAUDIO_STREAM_STATE_OPEN, std::memory_order_relaxed);
 
     std::fprintf(stderr,
-        "I/Cordial-AAudio          input stream opened: will report %u Hz, %u channel(s), "
+        "I/Vanta-AAudio          input stream opened: will report %u Hz, %u channel(s), "
         "%s, %u frames per burst, delivery=%s. **No microphone is open yet** — the capture stream is "
         "created by requestStart and destroyed by requestPause, requestStop and close, so "
         "an opened-but-unstarted stream is invisible to pw-cli and leaves the desktop's "
@@ -746,7 +746,7 @@ aaudio_result_t open_input_stream(const Builder& b, AAudioStream** streamOut) {
 
 // --------------------------------------------------------------- entry points
 //
-// Exported through `cordial_aaudio_symbols` below rather than as real ELF
+// Exported through `vanta_aaudio_symbols` below rather than as real ELF
 // exports: nothing on the host links `libaaudio.so`, the guest reaches it
 // through the bionic linker's virtual-library table, and keeping these
 // internal means the host's own dynamic symbol table gains no `AAudio*` names
@@ -827,7 +827,7 @@ static aaudio_result_t AAudioStreamBuilder_openStream(AAudioStreamBuilder* build
     *streamOut = nullptr;
 
     std::fprintf(stderr,
-        "I/Cordial-AAudio          openStream requested: direction=%s format=%s "
+        "I/Vanta-AAudio          openStream requested: direction=%s format=%s "
         "bufferCapacity=%d performanceMode=%d usage=%d inputPreset=%d dataCallback=%s "
         "errorCallback=%s\n",
         b->direction == AAUDIO_DIRECTION_INPUT ? "INPUT" : "OUTPUT", format_name(b->format),
@@ -836,7 +836,7 @@ static aaudio_result_t AAudioStreamBuilder_openStream(AAudioStreamBuilder* build
 
     if (selected_backend() == Backend::AAudioRefuse) {
         std::fprintf(stderr,
-            "I/Cordial-AAudio          CONTROL RUN (CORDIAL_AUDIO=aaudio-refuse): reporting "
+            "I/Vanta-AAudio          CONTROL RUN (VANTA_AUDIO=aaudio-refuse): reporting "
             "AAUDIO_ERROR_UNAVAILABLE so that what FMOD does next can be read off the log.\n");
         return AAUDIO_ERROR_UNAVAILABLE;
     }
@@ -845,12 +845,12 @@ static aaudio_result_t AAudioStreamBuilder_openStream(AAudioStreamBuilder* build
     bool is_float = false;
     if (!format_to_bits(b->format, bits, is_float)) {
         std::fprintf(stderr,
-            "E/Cordial-AAudio          no PipeWire equivalent for aaudio_format_t %d; "
+            "E/Vanta-AAudio          no PipeWire equivalent for aaudio_format_t %d; "
             "refusing rather than substituting a nearby format.\n", b->format);
         return AAUDIO_ERROR_ILLEGAL_ARGUMENT;
     }
 
-    if (!cordial::audio::host_backend_available()) {
+    if (!vanta::audio::host_backend_available()) {
         // Should be unreachable: `org.fmod.FMOD.supportsAAudio()` in
         // `audio_classes.cpp` asks the same question first and answers false
         // when there is no session, precisely so that FMOD never gets here.
@@ -859,7 +859,7 @@ static aaudio_result_t AAudioStreamBuilder_openStream(AAudioStreamBuilder* build
         // rather than falling back — so the one place that could still
         // produce it should say what it cost.
         std::fprintf(stderr,
-            "E/Cordial-AAudio          no audio backend reachable, and FMOD has already "
+            "E/Vanta-AAudio          no audio backend reachable, and FMOD has already "
             "committed to AAudio; there will be no audio this run and no fallback. This "
             "means supportsAAudio() said yes and the backend went away between then and "
             "now.\n");
@@ -903,8 +903,8 @@ static aaudio_result_t AAudioStreamBuilder_openStream(AAudioStreamBuilder* build
     // 25 symbols this build dlsyms, so nothing on this path will ever be asked
     // for a particular output and the choice has to arrive from outside the
     // engine entirely. See `docs/analysis/aaudio-contract.md`.
-    if (!s->pw->open(bits, is_float, "Cordial (Roblox via AAudio)",
-                    cordial::audio::configured_output_device().c_str(), &fill_from_engine, s)) {
+    if (!s->pw->open(bits, is_float, "Vanta (Roblox via AAudio)",
+                    vanta::audio::configured_output_device().c_str(), &fill_from_engine, s)) {
         delete s;
         return AAUDIO_ERROR_UNAVAILABLE;
     }
@@ -912,7 +912,7 @@ static aaudio_result_t AAudioStreamBuilder_openStream(AAudioStreamBuilder* build
     s->format = bits_to_format(s->pw->sample_bits(), s->pw->sample_is_float());
     if (s->format == AAUDIO_FORMAT_INVALID) {
         std::fprintf(stderr,
-            "E/Cordial-AAudio          PipeWire negotiated a %u-bit %s format with no "
+            "E/Vanta-AAudio          PipeWire negotiated a %u-bit %s format with no "
             "aaudio_format_t to describe it; refusing rather than reporting a format the "
             "engine would lay its mixer out against wrongly.\n",
             s->pw->sample_bits(), s->pw->sample_is_float() ? "float" : "integer");
@@ -921,7 +921,7 @@ static aaudio_result_t AAudioStreamBuilder_openStream(AAudioStreamBuilder* build
     }
 
     std::fprintf(stderr,
-        "I/Cordial-AAudio          openStream ok: PipeWire negotiated %u Hz, %u channel(s), "
+        "I/Vanta-AAudio          openStream ok: PipeWire negotiated %u Hz, %u channel(s), "
         "%s, %u frames per burst. Requested format was %s; rate and channel count were left "
         "for PipeWire to choose, which is why nothing resamples.\n",
         s->pw->rate_hz(), s->pw->channels(), format_name(s->format), s->pw->burst_frames(),
@@ -937,7 +937,7 @@ static aaudio_result_t AAudioStream_close(AAudioStream* stream) {
     if (s->direction == AAUDIO_DIRECTION_INPUT) {
         if (s->input_callback.is_callback_thread()) {
             std::fprintf(stderr,
-                "E/Cordial-AAudio          AAudioStream_close called from inside the input "
+                "E/Vanta-AAudio          AAudioStream_close called from inside the input "
                 "data callback; refusing (AAudio requires another thread for close) rather "
                 "than deleting the callback's stream underneath it.\n");
             return AAUDIO_ERROR_INVALID_STATE;
@@ -953,9 +953,9 @@ static aaudio_result_t AAudioStream_close(AAudioStream* stream) {
             s->input_callback.join();
         }
         std::fprintf(stderr,
-            "I/Cordial-AAudio          input stream closed; %u capture stream(s) still "
-            "open across Cordial (must be 0 unless something else is recording).\n",
-            cordial::audio::active_capture_streams());
+            "I/Vanta-AAudio          input stream closed; %u capture stream(s) still "
+            "open across Vanta (must be 0 unless something else is recording).\n",
+            vanta::audio::active_capture_streams());
         // The lifecycle guard must be gone before this destroys its mutex.
         delete s;
         return AAUDIO_OK;
@@ -965,7 +965,7 @@ static aaudio_result_t AAudioStream_close(AAudioStream* stream) {
         // is a plain mutex and would hang the graph. AAudio documents that
         // this is not allowed; refusing keeps the bug visible.
         std::fprintf(stderr,
-            "E/Cordial-AAudio          AAudioStream_close called from inside the data "
+            "E/Vanta-AAudio          AAudioStream_close called from inside the data "
             "callback; refusing (AAudio requires another thread for this) rather than "
             "deadlocking PipeWire's loop.\n");
         return AAUDIO_ERROR_INVALID_STATE;
@@ -973,7 +973,7 @@ static aaudio_result_t AAudioStream_close(AAudioStream* stream) {
     s->pw->close();
     s->state.store(AAUDIO_STREAM_STATE_CLOSED, std::memory_order_relaxed);
     std::fprintf(stderr,
-        "I/Cordial-AAudio          stream closed after %llu silence-filled cycle(s).\n",
+        "I/Vanta-AAudio          stream closed after %llu silence-filled cycle(s).\n",
         static_cast<unsigned long long>(s->pw->silence_cycles()));
     delete s;
     return AAUDIO_OK;
@@ -1026,7 +1026,7 @@ static aaudio_result_t AAudioStream_requestStart(AAudioStream* stream) {
             close_input_capture(s);
             s->state.store(AAUDIO_STREAM_STATE_STOPPED, std::memory_order_relaxed);
             std::fprintf(stderr,
-                "E/Cordial-AAudio          requestStart could not open a capture stream; "
+                "E/Vanta-AAudio          requestStart could not open a capture stream; "
                 "staying stopped with no microphone open rather than reporting a recording "
                 "that is not happening.\n");
             return AAUDIO_ERROR_UNAVAILABLE;
@@ -1044,7 +1044,7 @@ static aaudio_result_t AAudioStream_requestStart(AAudioStream* stream) {
             s->state.store(AAUDIO_STREAM_STATE_STOPPED, std::memory_order_relaxed);
             close_input_capture(s);
             std::fprintf(stderr,
-                "E/Cordial-AAudio          requestStart could not start the input callback "
+                "E/Vanta-AAudio          requestStart could not start the input callback "
                 "consumer; staying stopped with no microphone open.\n");
             return AAUDIO_ERROR_UNAVAILABLE;
         }
@@ -1066,7 +1066,7 @@ static aaudio_result_t AAudioStream_requestStart(AAudioStream* stream) {
 /// which costs nothing anybody can see. For input the equivalent would be a
 /// `pw_stream` left in the graph with the samples thrown away — the desktop's
 /// microphone indicator still lit, every other application still seeing
-/// Cordial holding the capture device, and no way for a user to tell it from
+/// Vanta holding the capture device, and no way for a user to tell it from
 /// recording. So an input pause destroys the stream, the same as a stop, and
 /// a later `requestStart` opens a fresh one.
 static void stop_capture(Stream* s, aaudio_stream_state_t to) {
@@ -1083,10 +1083,10 @@ static void stop_capture(Stream* s, aaudio_stream_state_t to) {
     s->read_residue_len = 0;
     if (was_started) {
         std::fprintf(stderr,
-            "I/Cordial-AAudio          recording %s: capture stream destroyed, not "
-            "deactivated. %u capture stream(s) still open across Cordial.\n",
+            "I/Vanta-AAudio          recording %s: capture stream destroyed, not "
+            "deactivated. %u capture stream(s) still open across Vanta.\n",
             to == AAUDIO_STREAM_STATE_PAUSED ? "paused" : "stopped",
-            cordial::audio::active_capture_streams());
+            vanta::audio::active_capture_streams());
     }
     if (s->data_callback && !s->input_callback.is_callback_thread()) {
         s->input_callback.join();
@@ -1193,7 +1193,7 @@ static aaudio_result_t AAudioStream_setBufferSizeInFrames(AAudioStream* stream,
     int32_t actual = AAudioStream_getBufferCapacityInFrames(stream);
     if (numFrames != actual) {
         std::fprintf(stderr,
-            "I/Cordial-AAudio          setBufferSizeInFrames(%d) -> %d: on output the buffer "
+            "I/Vanta-AAudio          setBufferSizeInFrames(%d) -> %d: on output the buffer "
             "is PipeWire's quantum with nothing between it and the engine to resize, and on "
             "input it is CaptureStream's ring, which is sized in one place.\n",
             numFrames, actual);
@@ -1208,19 +1208,19 @@ static aaudio_result_t AAudioStream_setBufferSizeInFrames(AAudioStream* stream,
 /// PipeWire's own cycle, so a late callback is a late PipeWire cycle: the
 /// glitch is real and audible, but it is counted on the server side, and
 /// nothing in `pw_time` or the stream API hands it back to the client. What
-/// this reports is the only underrun Cordial can see for itself — cycles that
+/// this reports is the only underrun Vanta can see for itself — cycles that
 /// had to be filled with silence while the stream was running, which in a
 /// healthy run is zero and stays zero.
 ///
 /// So a flat zero here is **not** evidence of a clean run. The instrument for
-/// that is `pw-top`'s ERR column against Cordial's node, which counts the
+/// that is `pw-top`'s ERR column against Vanta's node, which counts the
 /// server's own xruns and is comparable across this backend and the Java one.
 /// This project has four "fixes" on record that were scored with an
 /// instrument that turned out to be constant across every run; this comment
 /// is here so that this counter does not become the fifth.
 ///
 /// **Input is the exception, and there the number means something.** The ring
-/// a capture stream fills is Cordial's own, so a reader that falls half a
+/// a capture stream fills is Vanta's own, so a reader that falls half a
 /// second behind loses samples where this file can count them:
 /// `CaptureStream::dropped_bytes` is a real overrun tally and this reports it
 /// in frames. A non-zero reading there is evidence; a zero one still is not,
@@ -1261,7 +1261,7 @@ static aaudio_result_t AAudioStream_read(AAudioStream* stream, void* buffer, int
         if (!warned) {
             warned = true;
             std::fprintf(stderr,
-                "E/Cordial-AAudio          AAudioStream_read on an output stream; reporting "
+                "E/Vanta-AAudio          AAudioStream_read on an output stream; reporting "
                 "AAUDIO_ERROR_UNIMPLEMENTED.\n");
         }
         return AAUDIO_ERROR_UNIMPLEMENTED;
@@ -1323,7 +1323,7 @@ static aaudio_result_t AAudioStream_read(AAudioStream* stream, void* buffer, int
 
     // After the trace, so the trace still says whether the microphone itself
     // is delivering sound while Roblox has it muted.
-    if (cordial::audio::voice_muted().load(std::memory_order_relaxed)) {
+    if (vanta::audio::voice_muted().load(std::memory_order_relaxed)) {
         std::memset(dst, 0, static_cast<size_t>(frames) * bpf);
     }
 
@@ -1332,12 +1332,12 @@ static aaudio_result_t AAudioStream_read(AAudioStream* stream, void* buffer, int
 
 // ------------------------------------------------------------- symbol table
 
-struct CordialAAudioSymbol {
+struct VantaAAudioSymbol {
     const char* name;
     void* address;
 };
 
-static const CordialAAudioSymbol kSymbols[] = {
+static const VantaAAudioSymbol kSymbols[] = {
     {"AAudio_createStreamBuilder", reinterpret_cast<void*>(&AAudio_createStreamBuilder)},
     {"AAudioStreamBuilder_delete", reinterpret_cast<void*>(&AAudioStreamBuilder_delete)},
     {"AAudioStreamBuilder_openStream", reinterpret_cast<void*>(&AAudioStreamBuilder_openStream)},
@@ -1373,57 +1373,57 @@ static const CordialAAudioSymbol kSymbols[] = {
      reinterpret_cast<void*>(&AAudioStream_setBufferSizeInFrames)},
 };
 
-const CordialAAudioSymbol* cordial_aaudio_symbols(size_t* count) {
+const VantaAAudioSymbol* vanta_aaudio_symbols(size_t* count) {
     if (count) *count = sizeof(kSymbols) / sizeof(kSymbols[0]);
     return kSymbols;
 }
 
-int cordial_audio_backend_is_aaudio(void) {
+int vanta_audio_backend_is_aaudio(void) {
     return selected_backend() == Backend::Java ? 0 : 1;
 }
 
-void cordial_audio_backend_announce(void) {
+void vanta_audio_backend_announce(void) {
     (void)selected_backend();
     // **Said out loud, because `pipewire_backend.h` has claimed for some time
     // that it was and it never was.** A user on 2026-08-27 set
-    // `CORDIAL_AUDIO_HOST=oss`, got "no audio", and had no way to tell whether
+    // `VANTA_AUDIO_HOST=oss`, got "no audio", and had no way to tell whether
     // their variable had been seen -- it had not, and one line here would have
     // said so in ten seconds rather than costing a diagnosis.
     //
     // Both names, because they answer different questions: what was asked for,
     // and what is actually there. When nobody asked, the first reads `auto` and
     // the second is the probe's answer.
-    const char* asked = cordial::audio::host_backend_name();
-    const char* got = cordial::audio::effective_backend_name();
+    const char* asked = vanta::audio::host_backend_name();
+    const char* got = vanta::audio::effective_backend_name();
     // **One verdict, after every backend has been asked.** Each probe used to
     // print its own failure as an error, so a PulseAudio-only machine logged
     // "no PipeWire session reachable ... no audio output" directly above a
     // working "host backend: pulse" (#104), and a machine where nothing
     // answered logged "host backend: pipewire", which named the backend that had
     // just failed. Nothing answering is now said as that, with what to check.
-    if (!cordial::audio::host_backend_available()) {
+    if (!vanta::audio::host_backend_available()) {
         if (std::strcmp(asked, "auto") == 0) {
             std::fprintf(stderr,
-                "E/Cordial-Audio           host backend: none. No sound server answered "
+                "E/Vanta-Audio           host backend: none. No sound server answered "
                 "(asked PipeWire, PulseAudio, ALSA and OSS), so there will be no sound. "
                 "Check that PipeWire or PulseAudio is running for this user and that "
-                "XDG_RUNTIME_DIR points at its socket; `cordial --doctor` shows what it "
+                "XDG_RUNTIME_DIR points at its socket; `vanta --doctor` shows what it "
                 "can reach. PipeWire is asked again the next time sound is wanted.\n");
         } else {
             std::fprintf(stderr,
-                "E/Cordial-Audio           host backend: none. CORDIAL_AUDIO_HOST=%s was "
+                "E/Vanta-Audio           host backend: none. VANTA_AUDIO_HOST=%s was "
                 "asked for and did not answer, so there will be no sound. Unset it to let "
-                "Cordial try every backend, or check that it is running for this user and "
+                "Vanta try every backend, or check that it is running for this user and "
                 "that XDG_RUNTIME_DIR points at its socket.\n",
                 asked);
         }
         return;
     }
     if (std::strcmp(asked, got) == 0) {
-        std::fprintf(stderr, "I/Cordial-Audio           host backend: %s\n", got);
+        std::fprintf(stderr, "I/Vanta-Audio           host backend: %s\n", got);
     } else {
         std::fprintf(stderr,
-            "I/Cordial-Audio           host backend: %s (CORDIAL_AUDIO_HOST=%s)\n",
+            "I/Vanta-Audio           host backend: %s (VANTA_AUDIO_HOST=%s)\n",
             got, asked);
     }
 }

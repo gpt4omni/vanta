@@ -1,4 +1,4 @@
-// Drives Cordial's audio backend the way Roblox drives it, so that "audio
+// Drives Vanta's audio backend the way Roblox drives it, so that "audio
 // works" can be a measurement rather than a reading of the code.
 //
 // Everything about this backend that had been established before this file
@@ -21,7 +21,7 @@
 //
 // Built out of tree on purpose, and never by `cargo build`:
 //
-//     clang++ -std=c++17 -DCORDIAL_HAVE_PIPEWIRE=1 \
+//     clang++ -std=c++17 -DVANTA_HAVE_PIPEWIRE=1 \
 //         -I/usr/include/pipewire-0.3 -I/usr/include/spa-0.2 \
 //         native/opensles.cpp native/pipewire_backend.cpp native/aaudio.cpp \
 //         native/alsa_backend.cpp native/pulse_backend.cpp native/oss_backend.cpp \
@@ -352,7 +352,7 @@ bool run_switch_steps(const std::vector<std::string>& steps, double hold_seconds
     sleep_ms(static_cast<int>(hold_seconds * 1000));
     for (const std::string& step : steps) {
         set_amplitude(step.empty() ? 0.0 : amplitude);
-        const cordial::audio::OutputSwitch r = cordial::audio::set_output_device(step);
+        const vanta::audio::OutputSwitch r = vanta::audio::set_output_device(step);
         mark("SWITCH %d to '%s' -> moved %zu stream(s)%s%s", index, step.c_str(), r.moved,
              r.note.empty() ? "" : "; note: ", r.note.c_str());
         if (r.moved == 0) ok = false;
@@ -365,7 +365,7 @@ bool run_switch_steps(const std::vector<std::string>& steps, double hold_seconds
 }
 
 int cmd_devices() {
-    auto devices = cordial::audio::enumerate_devices();
+    auto devices = vanta::audio::enumerate_devices();
     mark("enumerate_devices returned %zu device(s)", devices.size());
     for (const auto& d : devices) {
         mark("  id=%u %s%s name='%s' description='%s' nick='%s' object.path='%s'", d.id,
@@ -377,7 +377,7 @@ int cmd_devices() {
     // one. `pipewire_backend_test.cpp` pins the same property with no session
     // at all; this is the version that could actually catch a regression in
     // `enumerate_devices` itself.
-    mark("active_capture_streams after enumeration = %u", cordial::audio::active_capture_streams());
+    mark("active_capture_streams after enumeration = %u", vanta::audio::active_capture_streams());
     return devices.empty() ? 1 : 0;
 }
 
@@ -554,7 +554,7 @@ int cmd_record(double seconds) {
     SLObjectItf recorder = nullptr;
     SLresult r = (*g_engine)->CreateAudioRecorder(g_engine, &recorder, &source, &sink, 2, ids, req);
     mark("CreateAudioRecorder -> %u  (capture streams open: %u)", r,
-         cordial::audio::active_capture_streams());
+         vanta::audio::active_capture_streams());
     if (r != SL_RESULT_SUCCESS) {
         mark("MIC-NEVER-OPENED: no recorder object exists, so nothing can open the microphone");
         return 1;
@@ -562,7 +562,7 @@ int cmd_record(double seconds) {
 
     r = (*recorder)->Realize(recorder, SL_BOOLEAN_FALSE);
     mark("RECORDER-REALIZED Realize -> %u  (capture streams open: %u)", r,
-         cordial::audio::active_capture_streams());
+         vanta::audio::active_capture_streams());
     if (r != SL_RESULT_SUCCESS) return 1;
 
     SLRecordItf record = nullptr;
@@ -578,9 +578,9 @@ int cmd_record(double seconds) {
     // nothing in: the pause here is long enough for a `pw-dump` sampler to
     // catch it.
     mark("IDLE-BEGIN realized, not recording (capture streams open: %u)",
-         cordial::audio::active_capture_streams());
+         vanta::audio::active_capture_streams());
     sleep_ms(3000);
-    mark("IDLE-END (capture streams open: %u)", cordial::audio::active_capture_streams());
+    mark("IDLE-END (capture streams open: %u)", vanta::audio::active_capture_streams());
 
     g_sink.queue = queue;
     g_sink.buffers.assign(2, std::vector<int16_t>(rate / 100 * channels, 0));
@@ -592,7 +592,7 @@ int cmd_record(double seconds) {
 
     r = (*record)->SetRecordState(record, SL_RECORDSTATE_RECORDING);
     mark("MIC-OPEN SetRecordState(RECORDING) -> %u  (capture streams open: %u)", r,
-         cordial::audio::active_capture_streams());
+         vanta::audio::active_capture_streams());
     // Long enough for the session manager to have linked the new node.
     sleep_ms(700);
     snapshot("opensl-open");
@@ -600,8 +600,8 @@ int cmd_record(double seconds) {
 
     if (g_switch_source_set) {
         // The live path the Settings row uses: re-aim the stream that is open.
-        const cordial::audio::OutputSwitch moved =
-            cordial::audio::set_input_device(g_switch_source);
+        const vanta::audio::OutputSwitch moved =
+            vanta::audio::set_input_device(g_switch_source);
         mark("SOURCE-SWITCH to '%s': %zu stream(s) moved, note '%s'", g_switch_source.c_str(),
              moved.moved, moved.note.c_str());
         sleep_ms(700);
@@ -619,28 +619,28 @@ int cmd_record(double seconds) {
     // pausing has to put the microphone out, not merely stop reading from it.
     r = (*record)->SetRecordState(record, SL_RECORDSTATE_PAUSED);
     mark("MIC-PAUSE SetRecordState(PAUSED) -> %u  (capture streams open: %u)", r,
-         cordial::audio::active_capture_streams());
+         vanta::audio::active_capture_streams());
     sleep_ms(3000);
-    mark("PAUSED-SETTLED (capture streams open: %u)", cordial::audio::active_capture_streams());
+    mark("PAUSED-SETTLED (capture streams open: %u)", vanta::audio::active_capture_streams());
 
     r = (*record)->SetRecordState(record, SL_RECORDSTATE_RECORDING);
     mark("MIC-REOPEN SetRecordState(RECORDING) -> %u  (capture streams open: %u)", r,
-         cordial::audio::active_capture_streams());
+         vanta::audio::active_capture_streams());
     sleep_ms(static_cast<int>(seconds * 1000));
 
     r = (*record)->SetRecordState(record, SL_RECORDSTATE_STOPPED);
     mark("MIC-CLOSE SetRecordState(STOPPED) -> %u  (capture streams open: %u)", r,
-         cordial::audio::active_capture_streams());
+         vanta::audio::active_capture_streams());
     sleep_ms(3000);
-    mark("STOPPED-SETTLED (capture streams open: %u)", cordial::audio::active_capture_streams());
+    mark("STOPPED-SETTLED (capture streams open: %u)", vanta::audio::active_capture_streams());
 
     mark("buffers filled from the microphone: %llu, peak sample %d of 32767",
          static_cast<unsigned long long>(g_sink.filled.load()), g_sink.peak.load());
 
     (*recorder)->Destroy(recorder);
-    mark("recorder destroyed (capture streams open: %u)", cordial::audio::active_capture_streams());
+    mark("recorder destroyed (capture streams open: %u)", vanta::audio::active_capture_streams());
     (*g_engine_obj)->Destroy(g_engine_obj);
-    return cordial::audio::active_capture_streams() == 0 ? 0 : 1;
+    return vanta::audio::active_capture_streams() == 0 ? 0 : 1;
 }
 
 // ------------------------------------------------------ the interlock, live
@@ -654,7 +654,7 @@ int cmd_record(double seconds) {
 // funnels through, OpenSL's recorder and WebRTC's alike. This exercises that
 // primitive directly: real Android's own `AudioRecorderObject` for the first
 // stream (the same object `cmd_record` above drives), and a bare
-// `cordial::audio::CaptureStream` standing in for `WebRtcAudioRecord`'s own
+// `vanta::audio::CaptureStream` standing in for `WebRtcAudioRecord`'s own
 // member for the second, since `audio_classes.cpp`'s jnivm hooks are not
 // reachable from this probe without a JVM.
 int cmd_record_interlock() {
@@ -680,20 +680,20 @@ int cmd_record_interlock() {
 
     r = (*record)->SetRecordState(record, SL_RECORDSTATE_RECORDING);
     mark("FIRST-OPEN (OpenSL) SetRecordState(RECORDING) -> %u  (capture streams open: %u)", r,
-         cordial::audio::active_capture_streams());
-    if (r != SL_RESULT_SUCCESS || cordial::audio::active_capture_streams() != 1) {
+         vanta::audio::active_capture_streams());
+    if (r != SL_RESULT_SUCCESS || vanta::audio::active_capture_streams() != 1) {
         mark("FAIL: the first, uncontested capture stream did not open");
         return 1;
     }
 
     // The second owner: not the OpenSL surface again, but the same primitive
     // `WebRtcAudioRecord::startRecording` opens, standing in for it directly.
-    cordial::audio::CaptureStream second;
+    vanta::audio::CaptureStream second;
     bool opened_second = second.open(48000, 1, std::string());
     mark("SECOND-OPEN (bare CaptureStream, first still recording) open() -> %s  "
          "(capture streams open: %u)", opened_second ? "true" : "false",
-         cordial::audio::active_capture_streams());
-    if (opened_second || cordial::audio::active_capture_streams() != 1) {
+         vanta::audio::active_capture_streams());
+    if (opened_second || vanta::audio::active_capture_streams() != 1) {
         mark("FAIL: a second capture stream opened while the first was still recording -- "
               "the interlock did not hold");
         (*recorder)->Destroy(recorder);
@@ -704,19 +704,19 @@ int cmd_record_interlock() {
 
     r = (*record)->SetRecordState(record, SL_RECORDSTATE_STOPPED);
     mark("FIRST-CLOSE SetRecordState(STOPPED) -> %u  (capture streams open: %u)", r,
-         cordial::audio::active_capture_streams());
+         vanta::audio::active_capture_streams());
     sleep_ms(500); // give the destroyed pw_stream's fetch_sub a moment to land
 
     opened_second = second.open(48000, 1, std::string());
     mark("SECOND-OPEN-RETRY (first closed) open() -> %s  (capture streams open: %u)",
-         opened_second ? "true" : "false", cordial::audio::active_capture_streams());
-    bool ok = opened_second && cordial::audio::active_capture_streams() == 1;
+         opened_second ? "true" : "false", vanta::audio::active_capture_streams());
+    bool ok = opened_second && vanta::audio::active_capture_streams() == 1;
     second.close();
-    mark("second closed (capture streams open: %u)", cordial::audio::active_capture_streams());
+    mark("second closed (capture streams open: %u)", vanta::audio::active_capture_streams());
 
     (*recorder)->Destroy(recorder);
     (*g_engine_obj)->Destroy(g_engine_obj);
-    ok = ok && cordial::audio::active_capture_streams() == 0;
+    ok = ok && vanta::audio::active_capture_streams() == 0;
     mark(ok ? "PASS: interlock refused concurrent capture, allowed sequential capture"
             : "FAIL: see the marks above");
     return ok ? 0 : 1;
@@ -749,11 +749,11 @@ void selfstop_filled(SLAndroidSimpleBufferQueueItf, void*) {
         mark("SELFSTOP calling SetRecordState(STOPPED) from inside the buffer callback");
         SLresult r = (*g_selfstop.record)->SetRecordState(g_selfstop.record, SL_RECORDSTATE_STOPPED);
         mark("SELFSTOP SetRecordState(STOPPED) returned %u  (capture streams open: %u)", r,
-             cordial::audio::active_capture_streams());
+             vanta::audio::active_capture_streams());
         mark("SELFSTOP calling Destroy from inside the same callback");
         (*g_selfstop.recorder)->Destroy(g_selfstop.recorder);
         mark("SELFSTOP Destroy returned  (capture streams open: %u)",
-             cordial::audio::active_capture_streams());
+             vanta::audio::active_capture_streams());
         g_selfstop.done.store(true);
         return;
     }
@@ -806,9 +806,9 @@ int cmd_record_selfstop() {
     sleep_ms(1000); // let the detached pump unwind and free itself
 
     mark("SELFSTOP survived: %d buffers, capture streams open: %u", g_selfstop.count.load(),
-         cordial::audio::active_capture_streams());
+         vanta::audio::active_capture_streams());
     (*g_engine_obj)->Destroy(g_engine_obj);
-    return (g_selfstop.done.load() && cordial::audio::active_capture_streams() == 0) ? 0 : 1;
+    return (g_selfstop.done.load() && vanta::audio::active_capture_streams() == 0) ? 0 : 1;
 }
 
 // ----------------------------------------------------- the AAudio capture path
@@ -835,11 +835,11 @@ int cmd_record_selfstop() {
 // each state.
 
 extern "C" {
-struct CordialAAudioSymbol {
+struct VantaAAudioSymbol {
     const char* name;
     void* address;
 };
-const CordialAAudioSymbol* cordial_aaudio_symbols(size_t* count);
+const VantaAAudioSymbol* vanta_aaudio_symbols(size_t* count);
 }
 
 namespace aa {
@@ -877,7 +877,7 @@ int32_t (*getXRunCount)(stream_t*) = nullptr;
 
 void* find(const char* name) {
     size_t count = 0;
-    const CordialAAudioSymbol* table = cordial_aaudio_symbols(&count);
+    const VantaAAudioSymbol* table = vanta_aaudio_symbols(&count);
     for (size_t i = 0; i < count; ++i) {
         if (std::strcmp(table[i].name, name) == 0) return table[i].address;
     }
@@ -958,11 +958,11 @@ int cmd_aaudio_record(double seconds) {
     r = aa::openStream(builder, &stream);
     aa::builderDelete(builder);
     mark("openStream(INPUT) -> %d  (capture streams open: %u)", r,
-         cordial::audio::active_capture_streams());
+         vanta::audio::active_capture_streams());
     if (r != 0 || !stream) return 1;
 
     bool ok = true;
-    if (cordial::audio::active_capture_streams() != 0) {
+    if (vanta::audio::active_capture_streams() != 0) {
         mark("FAIL openStream opened a microphone; it must not");
         ok = false;
     }
@@ -983,20 +983,20 @@ int cmd_aaudio_record(double seconds) {
     }
 
     mark("IDLE-BEGIN opened, not started (capture streams open: %u)",
-         cordial::audio::active_capture_streams());
+         vanta::audio::active_capture_streams());
     sleep_ms(3000);
-    mark("IDLE-END (capture streams open: %u)", cordial::audio::active_capture_streams());
-    if (cordial::audio::active_capture_streams() != 0) {
+    mark("IDLE-END (capture streams open: %u)", vanta::audio::active_capture_streams());
+    if (vanta::audio::active_capture_streams() != 0) {
         mark("FAIL a microphone appeared while the stream was merely open");
         ok = false;
     }
 
     r = aa::requestStart(stream);
     mark("MIC-OPEN requestStart -> %d  (capture streams open: %u)", r,
-         cordial::audio::active_capture_streams());
+         vanta::audio::active_capture_streams());
     sleep_ms(700);
     snapshot("aaudio-open");
-    if (r != 0 || cordial::audio::active_capture_streams() != 1) {
+    if (r != 0 || vanta::audio::active_capture_streams() != 1) {
         mark("FAIL requestStart did not open exactly one capture stream");
         ok = false;
     }
@@ -1024,17 +1024,17 @@ int cmd_aaudio_record(double seconds) {
 
     r = aa::requestPause(stream);
     mark("MIC-PAUSE requestPause -> %d  (capture streams open: %u)", r,
-         cordial::audio::active_capture_streams());
+         vanta::audio::active_capture_streams());
     sleep_ms(3000);
-    mark("PAUSED-SETTLED (capture streams open: %u)", cordial::audio::active_capture_streams());
-    if (cordial::audio::active_capture_streams() != 0) {
+    mark("PAUSED-SETTLED (capture streams open: %u)", vanta::audio::active_capture_streams());
+    if (vanta::audio::active_capture_streams() != 0) {
         mark("FAIL pause left the microphone open");
         ok = false;
     }
 
     r = aa::requestStart(stream);
     mark("MIC-REOPEN requestStart -> %d  (capture streams open: %u)", r,
-         cordial::audio::active_capture_streams());
+         vanta::audio::active_capture_streams());
     frames = 0;
     peak = aaudio_drain(stream, seconds, aa::getFramesPerBurst(stream), &frames);
     mark("RE-RECORDED %llu frame(s), peak %.5f of full scale", 
@@ -1046,10 +1046,10 @@ int cmd_aaudio_record(double seconds) {
 
     r = aa::requestStop(stream);
     mark("MIC-STOP requestStop -> %d  (capture streams open: %u)", r,
-         cordial::audio::active_capture_streams());
+         vanta::audio::active_capture_streams());
     sleep_ms(3000);
-    mark("STOPPED-SETTLED (capture streams open: %u)", cordial::audio::active_capture_streams());
-    if (cordial::audio::active_capture_streams() != 0) {
+    mark("STOPPED-SETTLED (capture streams open: %u)", vanta::audio::active_capture_streams());
+    if (vanta::audio::active_capture_streams() != 0) {
         mark("FAIL stop left the microphone open");
         ok = false;
     }
@@ -1063,8 +1063,8 @@ int cmd_aaudio_record(double seconds) {
 
     r = aa::closeStream(stream);
     mark("MIC-CLOSED close -> %d  (capture streams open: %u)", r,
-         cordial::audio::active_capture_streams());
-    if (cordial::audio::active_capture_streams() != 0) {
+         vanta::audio::active_capture_streams());
+    if (vanta::audio::active_capture_streams() != 0) {
         mark("FAIL close left the microphone open");
         ok = false;
     }
@@ -1183,11 +1183,11 @@ int cmd_aaudio_record_never() {
     aa::builderDelete(builder);
     if (r != 0 || !stream) return 1;
     mark("NEVER-RECORD opened (capture streams open: %u)",
-         cordial::audio::active_capture_streams());
+         vanta::audio::active_capture_streams());
     sleep_ms(2000);
-    const uint32_t during = cordial::audio::active_capture_streams();
+    const uint32_t during = vanta::audio::active_capture_streams();
     aa::closeStream(stream);
-    const uint32_t after = cordial::audio::active_capture_streams();
+    const uint32_t after = vanta::audio::active_capture_streams();
     mark("NEVER-RECORD closed (during: %u, after: %u)", during, after);
     const bool ok = during == 0 && after == 0;
     mark(ok ? "MIC-NEVER-OPENED PASS" : "MIC-NEVER-OPENED FAIL");

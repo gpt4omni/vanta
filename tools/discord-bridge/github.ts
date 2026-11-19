@@ -20,7 +20,7 @@ import { send } from "./resilient.ts";
 import type { Label } from "./labels.ts";
 
 const API = "https://api.github.com";
-const UA = "cordial-issue-bridge";
+const UA = "vanta-issue-bridge";
 
 /**
  * `SEQUENCE { INTEGER 0, SEQUENCE { OID rsaEncryption, NULL }, OCTET STRING [...] }`

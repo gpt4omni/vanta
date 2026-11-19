@@ -1,6 +1,6 @@
 # NVIDIA graphics
 
-<!-- description: What Cordial does on NVIDIA GPUs, the known driver problems, and what to try if the game will not start or crashes. -->
+<!-- description: What Vanta does on NVIDIA GPUs, the known driver problems, and what to try if the game will not start or crashes. -->
 <!-- icon: microchip -->
 
 > [!WARNING]
@@ -10,14 +10,14 @@
 > which booted and rendered, got through one resize and fullscreen session,
 > and crashed once at startup in eight launches. Nothing below has been run on
 > a hybrid laptop or a 535/550 driver. What follows is what people running the same Roblox engine (through
-> Sober) have reported, what Cordial does about the reports it can act on, and
+> Sober) have reported, what Vanta does about the reports it can act on, and
 > what to try. Where something is a guess it says so.
 
 If you have an NVIDIA card, the tester plan in
 [`analysis/nvidia-support.md`](analysis/nvidia-support.md) is the most useful
 thing you can do for this page.
 
-## What Cordial does on NVIDIA
+## What Vanta does on NVIDIA
 
 It decides by the GPU the game is drawing on, not by whether an NVIDIA driver is
 loaded, so a laptop that renders on its Intel or AMD chip is left alone
@@ -32,9 +32,9 @@ loaded, so a laptop that renders on its Intel or AMD chip is left alone
   `vkGetPhysicalDeviceSurfacePresentModesKHR failed` error some two-GPU laptops
   hit on the first launch after boot. A guess: it may not help.
 - **Says so, in a Flatpak, if the sandbox's NVIDIA driver does not match your
-  machine's**, on the crash page and in `cordial --diagnostics` (the `Graphics`
+  machine's**, on the crash page and in `vanta --diagnostics` (the `Graphics`
   line).
-- **Checks the same things in `cordial --doctor`** and the report screen: the
+- **Checks the same things in `vanta --doctor`** and the report screen: the
   driver series, whether a Flatpak's GL extension matches your driver, and
   whether `nvidia-drm` has `modeset` on ([details](doctor.md#nvidia-lines)).
 - **Adds a hint to the crash page** when the game stops after any of the above,
@@ -48,7 +48,7 @@ It does not switch renderer, window system or GPU for you.
 |---|---|
 | Game closes as the window first appears or is resized (driver 535 or 550) | Update to driver 580 or newer, or set **Settings, Graphics, Renderer** to **OpenGL ES** and relaunch. OpenGL ES has been shown to reach the landing page, not to be stable in play |
 | Game exits at start with `vkGetPhysicalDeviceSurfacePresentModesKHR failed` (two-GPU laptop) | Use the NVIDIA GPU once after boot before launching, see [Laptops with two GPUs](#laptops-with-two-gpus) |
-| Window will not appear, or the compositor drops it (Wayland) | `CORDIAL_X11=1` for the game. The cost: the embedded web windows do not attach on X11 |
+| Window will not appear, or the compositor drops it (Wayland) | `VANTA_X11=1` for the game. The cost: the embedded web windows do not attach on X11 |
 | No NVIDIA GPU found, or the integrated one is used and it runs slowly (Flatpak) | The sandbox's driver does not match yours, see [Flatpak](#flatpak) |
 | `RBXCRASH: OutOfMemoryGraphics` some minutes into a big place | See [Out of graphics memory](#out-of-graphics-memory) |
 
@@ -72,12 +72,12 @@ launching: `vulkaninfo`, or `switcherooctl glxgears`. It is a once-per-boot effe
 in their reports.
 
 To make the game use the NVIDIA GPU rather than the Intel or AMD one, people
-report that these work. They are not Cordial settings and are untested here:
+report that these work. They are not Vanta settings and are untested here:
 
 ```bash
-__NV_PRIME_RENDER_OFFLOAD=1 __VK_LAYER_NV_optimus=NVIDIA_only cordial-shell
+__NV_PRIME_RENDER_OFFLOAD=1 __VK_LAYER_NV_optimus=NVIDIA_only vanta-shell
 flatpak override --user --env=__NV_PRIME_RENDER_OFFLOAD=1 \
-  --env=__VK_LAYER_NV_optimus=NVIDIA_only io.github.luohoa97.Cordial
+  --env=__VK_LAYER_NV_optimus=NVIDIA_only io.github.gpt4omni.Vanta
 ```
 
 Check the `physical device` line in the output afterwards. If it names the wrong
@@ -88,7 +88,7 @@ GPU, nothing else about your setup matters yet.
 The Flatpak carries its own copy of the NVIDIA driver, as an extension named
 `org.freedesktop.Platform.GL.nvidia-<version>`, and it has to match the driver on
 your machine exactly. When it does not, the sandbox has only the open-source
-drivers: Cordial finds no NVIDIA GPU, or quietly uses the integrated one.
+drivers: Vanta finds no NVIDIA GPU, or quietly uses the integrated one.
 
 ```bash
 flatpak list | grep GL.nvidia        # what the sandbox has
@@ -97,7 +97,7 @@ flatpak update
 ```
 
 After a driver update on your machine, Flathub can be a day behind; wait, or
-install the older version. `cordial --diagnostics` prints the `Graphics` line that
+install the older version. `vanta --diagnostics` prints the `Graphics` line that
 compares the two. There is nothing to do on the AppImage or a native package; they
 use your machine's driver directly.
 
@@ -128,7 +128,7 @@ set to 8192, in a run where override delivery was proven in the same session
 Roblox maintainer statement (Sober #2077) says the figure is hard-coded and not
 what allocation is decided on. Do not spend a session on it.
 
-## What Cordial does not do
+## What Vanta does not do
 
 It does not apply `FStringGraphicsVulkanShaderMTDenyPattern` or patch NVIDIA's
 driver library the way Sober does for one problem. The reasons are in
@@ -138,7 +138,7 @@ you want to test it; the test is in the analysis page.
 
 ## Reporting a problem
 
-Use **Report a Problem** in the main menu, or run `cordial --diagnostics` and paste
+Use **Report a Problem** in the main menu, or run `vanta --diagnostics` and paste
 the block, including the `Graphics` line. Add:
 
 1. The `physical device` line from the output when you launch from a terminal.

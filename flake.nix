@@ -1,5 +1,5 @@
 {
-  # A shell that can BUILD Cordial, and a package output that installs it.
+  # A shell that can BUILD Vanta, and a package output that installs it.
   #
   # The devShell exists because the build quietly compiles different code
   # depending on what happens to be installed: `native/CMakeLists.txt` probes
@@ -15,19 +15,19 @@
   # like Fedora Silverblue, where `dnf install` means layering onto the host
   # image for one project's build dependency.
   #
-  # `packages.default` / `packages.cordial` below is a separate concern: an
-  # actual installable Cordial for anyone on Nix, alongside the Flatpak,
+  # `packages.default` / `packages.vanta` below is a separate concern: an
+  # actual installable Vanta for anyone on Nix, alongside the Flatpak,
   # AppImage, deb, rpm and AUR builds. Verified on 2026-10-01: it builds from a
-  # local checkout (`nix build '.?submodules=1#cordial'`, x86_64-linux,
-  # nixpkgs b4fd65b as pinned in flake.lock), `cordial --help` and
+  # local checkout (`nix build '.?submodules=1#vanta'`, x86_64-linux,
+  # nixpkgs b4fd65b as pinned in flake.lock), `vanta --help` and
   # `--diagnostics` run from the output, `ldd` finds nothing missing, and
-  # `cordial-run` links WebKitGTK. NOT verified: launching it into a game,
+  # `vanta-run` links WebKitGTK. NOT verified: launching it into a game,
   # `cargo test` (skipped, see `doCheck`), the devShell end to end, and the
   # remote `github:...?submodules=1` form against a pushed commit.
   #
   # Deliberately out of scope:
   #
-  #   * Roblox. Cordial ships no Roblox code and never will. This pins the
+  #   * Roblox. Vanta ships no Roblox code and never will. This pins the
   #     toolchain, not the input; you still supply an APK yourself, and
   #     CONTRIBUTING.md explains the least fiddly way to obtain one.
 
@@ -40,14 +40,14 @@
     # Linux only. `eachDefaultSystem` also evaluates x86_64-darwin, and
     # nixpkgs 26.11 throws on that outright ("has dropped support for
     # x86_64-darwin"), which failed every `nix build` and `nix develop` here
-    # at evaluation time, before any package was looked at. Cordial loads a
+    # at evaluation time, before any package was looked at. Vanta loads a
     # Linux ELF and has no Darwin build, so those systems were never useful.
     flake-utils.lib.eachSystem [ "x86_64-linux" "aarch64-linux" ] (system:
       let
         pkgs = import nixpkgs { inherit system; };
         lib = pkgs.lib;
 
-        # Cordial loads Roblox's official Android **x86-64** build natively —
+        # Vanta loads Roblox's official Android **x86-64** build natively —
         # no emulation, no CPU translation (see docs/multiarch.md and the
         # rpm spec's `ExclusiveArch: x86_64`). A package for any other system
         # cannot run the one thing this project exists to run, so rather than
@@ -59,10 +59,10 @@
         # binary it produces is not.
         isPackageableSystem = system == "x86_64-linux";
 
-        cordial = pkgs.rustPlatform.buildRustPackage rec {
-          pname = "cordial";
+        vanta = pkgs.rustPlatform.buildRustPackage rec {
+          pname = "vanta";
           # Read rather than duplicated, so this cannot drift from the
-          # workspace the way packaging/rpm/cordial.spec's hand-maintained
+          # workspace the way packaging/rpm/vanta.spec's hand-maintained
           # %%global version has already been caught doing.
           version = (builtins.fromTOML (builtins.readFile ./Cargo.toml)).workspace.package.version;
 
@@ -72,14 +72,14 @@
           # **This is also the biggest open question in this file, and it is
           # a packaging concern rather than a build one.** `third_party/
           # mcpelauncher-linker` and `third_party/libjnivm` are git
-          # submodules (.gitmodules), and `crates/cordial-linker-sys/
+          # submodules (.gitmodules), and `crates/vanta-linker-sys/
           # build.rs` panics outright if the first one's content is not on
           # disk. A `path:`/implicit-`.` flake reference and a plain
           # `github:owner/repo` reference do NOT fetch submodule content
           # unless the caller asks for it with a `?submodules=1` query
           # parameter on the flake URL — that is Nix's fetcher behaviour, not
           # something this file can default on the caller's behalf. A user
-          # who runs `nix run github:luohoa97/cordial` without it will hit
+          # who runs `nix run github:gpt4omni/vanta` without it will hit
           # the `preConfigure` check below with a clear message rather than
           # the build.rs panic's `git submodule update --init --recursive`,
           # which cannot be run inside the sandbox (no network, no `.git`).
@@ -92,7 +92,7 @@
             if [ ! -f third_party/mcpelauncher-linker/bionic/linker/linker.cpp ]; then
               echo "error: third_party/mcpelauncher-linker (a git submodule) has no content in this source tree." >&2
               echo "Flakes do not fetch submodules by default. Re-run with the flake URL suffixed" >&2
-              echo '  ?submodules=1  (e.g. nix run "github:luohoa97/cordial?submodules=1")' >&2
+              echo '  ?submodules=1  (e.g. nix run "github:gpt4omni/vanta?submodules=1")' >&2
               echo "or, from a local checkout, run: git submodule update --init --recursive" >&2
               exit 1
             fi
@@ -126,7 +126,7 @@
           # `CMAKE_CXX_COMPILER_ID` and refuses anything that is not Clang.
           # `clangStdenv` alone does not guarantee a binary literally named
           # `clang`/`clang++` is what ends up on PATH under every nixpkgs
-          # configuration, and `crates/cordial-linker-sys/build.rs` passes
+          # configuration, and `crates/vanta-linker-sys/build.rs` passes
           # those two literal names to CMake rather than deferring to
           # `$CC`/`$CXX` — so `clang` is also listed explicitly below,
           # exactly as the devShell already does.
@@ -144,7 +144,7 @@
           # hit for the string anywhere in `Cargo.lock` is `wasm-bindgen`,
           # pulled in transitively by an unrelated dependency, which is a
           # different crate doing a different job and needs no libclang.
-          # `crates/cordial-linker-sys` gets its bindings from hand-written
+          # `crates/vanta-linker-sys` gets its bindings from hand-written
           # `extern "C"` declarations over the `cmake`-built static libraries
           # (see `build.rs`), not from bindgen over a header.
           buildInputs = with pkgs; [
@@ -153,7 +153,7 @@
             # at all, not merely to run — same set the devShell already
             # lists, for the same reason (ADR-011, ADR-002).
             #
-            # Version floor: cordial-shell/Cargo.toml pins `gtk4 0.11` with
+            # Version floor: vanta-shell/Cargo.toml pins `gtk4 0.11` with
             # feature `v4_20` and `libadwaita 0.9` with `v1_8` — i.e. GTK
             # 4.20+ and libadwaita 1.8+ at the C library level, not just the
             # Rust binding version. This project's own floor, not one raised
@@ -172,7 +172,7 @@
             libxkbcommon
 
             # `org.gnome.desktop.interface`'s `color-scheme` key, read by
-            # `cordial-shell/src/lib.rs` to follow the system dark-mode
+            # `vanta-shell/src/lib.rs` to follow the system dark-mode
             # setting. Degrades gracefully without it —
             # `gio::SettingsSchemaSource::lookup` returning `None` is checked
             # before the read — so this is a quality-of-life addition rather
@@ -194,7 +194,7 @@
             webkitgtk_6_0
 
             # Headers only, same reasoning as pipewire/webkitgtk above and
-            # matching packaging/rpm/cordial.spec's BuildRequires list:
+            # matching packaging/rpm/vanta.spec's BuildRequires list:
             # native/CMakeLists.txt compiles the real ALSA/PulseAudio backend
             # when it finds these and the honest "unavailable" arm when it
             # does not. `libpipewire-0.3.so.0`, `libasound.so.2` and
@@ -205,24 +205,24 @@
             alsa-lib
             libpulseaudio
 
-            # `-lz` on cordial-linker-sys's native link line
+            # `-lz` on vanta-linker-sys's native link line
             # (`cargo:rustc-link-lib=dylib=z`); glibc does not bundle zlib.
             zlib
 
-            # Headers only, for dynarmic (crates/cordial-guest, the VR
-            # mode's translator, behind `cordial-runtime/vr` below), which
+            # Headers only, for dynarmic (crates/vanta-guest, the VR
+            # mode's translator, behind `vanta-runtime/vr` below), which
             # find_package()s Boost.
             boost
           ];
 
           # Both crates' `webview` feature, and both, not one. The shell
-          # holds the WebKit window and `cordial-runtime` holds the presenter
+          # holds the WebKit window and `vanta-runtime` holds the presenter
           # that calls it, so enabling only the shell's leaves the caller
           # cfg'd out, the linker collects `webview::open`, and the binary
           # links no WebKitGTK at all — silently, the build still succeeds.
           # That exact shape shipped once in the Flatpak
-          # (packaging/io.github.luohoa97.Cordial.yml's own comment on this
-          # line) and was reported as "webview doesnt work in cordial
+          # (packaging/io.github.gpt4omni.Vanta.yml's own comment on this
+          # line) and was reported as "webview doesnt work in vanta
           # flatpak". This package makes the same choice every other
           # packaging script here makes: build the full client, not the
           # host-only default a bare `cargo build` on a headers-less machine
@@ -234,10 +234,10 @@
           # first build of this flake (2026-10-01) succeeded and linked no
           # WebKitGTK -- the exact failure described above. The `readelf`
           # tripwire in `postInstall` below now fails the build instead.
-          buildFeatures = [ "cordial-shell/webview" "cordial-runtime/webview" "cordial-runtime/vr" ];
+          buildFeatures = [ "vanta-shell/webview" "vanta-runtime/webview" "vanta-runtime/vr" ];
 
           # `cargo test --workspace` is not run as part of this build.
-          # `packaging/rpm/cordial.spec`'s own `%check` already had to skip
+          # `packaging/rpm/vanta.spec`'s own `%check` already had to skip
           # three tests by name for environments this sandboxed either —
           # two secrets-service round-trip tests that need a live
           # `org.freedesktop.secrets` on the session bus, and one GIO
@@ -254,23 +254,23 @@
           # Neither this nor the CMake build reach the network — no
           # `--share=network`-equivalent exists for a Nix build sandbox in
           # the first place, so there is nothing to disable here the way
-          # packaging/io.github.luohoa97.Cordial.yml's build-commands do
-          # deliberately for reproducibility. Worth restating anyway: Cordial
+          # packaging/io.github.gpt4omni.Vanta.yml's build-commands do
+          # deliberately for reproducibility. Worth restating anyway: Vanta
           # ships no Roblox code, this derivation fetches none, and nothing
           # here tries to.
 
-          CORDIAL_GIT_SHA =
+          VANTA_GIT_SHA =
             # Best-effort provenance, never the version — see
-            # crates/cordial-shell/src/version.rs's own module comment for
+            # crates/vanta-shell/src/version.rs's own module comment for
             # why those are two separate facts. `self.rev`/`self.shortRev`
             # exist only when the flake was fetched from a clean git commit;
             # `self.dirtyShortRev` exists for a dirty tree fetched with
             # `?submodules=1` from a local path. Neither exists for a source
             # tarball, and `""` here is deliberately the same "supply
-            # nothing" signal `crates/cordial-shell/build.rs` already treats
+            # nothing" signal `crates/vanta-shell/build.rs` already treats
             # as absent — filtered out by its own `.filter(|s| !s.is_empty())`
             # — so a build with no git identity present degrades to the
-            # documented, correct behaviour: a clean "Cordial ${version}"
+            # documented, correct behaviour: a clean "Vanta ${version}"
             # with no parenthesised commit, not a build error.
             self.shortRev or self.dirtyShortRev or "";
 
@@ -281,7 +281,7 @@
           # normal, and preferred, way a GTK4 app is wrapped in nixpkgs.
           #
           # What it does NOT cover is everything dlopen'd rather than linked:
-          # the Vulkan loader `cordial_screenshot` and the engine's own
+          # the Vulkan loader `vanta_screenshot` and the engine's own
           # renderer read through
           # (docs/adr/ADR-019-development-control-surface.md; GLES2+EGL is
           # the load-bearing path per the Flatpak manifest's own comment, with
@@ -294,8 +294,8 @@
           # way to add to a wrapGAppsHook wrapper without fighting it.
           #
           # `deno` goes on `PATH` for the same reason
-          # packaging/rpm/cordial.spec explains it could NOT: plugins are Deno
-          # programs (ADR-008) and Cordial bundles no runtime, so without
+          # packaging/rpm/vanta.spec explains it could NOT: plugins are Deno
+          # programs (ADR-008) and Vanta bundles no runtime, so without
           # `deno` reachable every plugin fails to spawn. The rpm spec says
           # outright "there is no `deno` package" for Fedora or Debian: nixpkgs
           # has one, so this is one thing a Nix install can offer that the
@@ -313,91 +313,91 @@
           '';
 
           postInstall = ''
-            # `cordial`, not just `cordial-shell` — the same alias
-            # packaging/deb/build-deb.sh and packaging/rpm/cordial.spec both
+            # `vanta`, not just `vanta-shell` — the same alias
+            # packaging/deb/build-deb.sh and packaging/rpm/vanta.spec both
             # add, and for the same reason given there: "nobody wants to type
             # the second word", and a symlink rather than a rename keeps
-            # anything already invoking `cordial-shell` by name working.
-            # `cordial-run` deliberately gets no alias — it is the loader the
+            # anything already invoking `vanta-shell` by name working.
+            # `vanta-run` deliberately gets no alias — it is the loader the
             # shell launches, found as `current_exe`'s sibling, and is not
             # what anyone should run by hand.
-            ln -sf cordial-shell "$out/bin/cordial"
+            ln -sf vanta-shell "$out/bin/vanta"
 
-            # Tripwire, the same one packaging/aur/cordial/PKGBUILD has: the
+            # Tripwire, the same one packaging/aur/vanta/PKGBUILD has: the
             # failure it guards against builds cleanly and links nothing.
-            readelf -d "$out/bin/cordial-run" | grep -qi webkit || {
-              echo "error: cordial-run linked no WebKitGTK; the webview features did not take" >&2
+            readelf -d "$out/bin/vanta-run" | grep -qi webkit || {
+              echo "error: vanta-run linked no WebKitGTK; the webview features did not take" >&2
               exit 1
             }
 
             # First-party plugins, read-only beside the binary — the same
             # install performed by every other packaging script here.
             # `system_plugin_dir` only ever looks in a packaged location
-            # ($out/share/cordial/plugins, or /app/share/... under Flatpak),
-            # so without this a Nix-installed Cordial's settings window would
+            # ($out/share/vanta/plugins, or /app/share/... under Flatpak),
+            # so without this a Nix-installed Vanta's settings window would
             # list no built-in plugins at all, same bug this project already
             # shipped once for deb/rpm before those scripts existed.
             for plugin in plugins/*/; do
               id=$(basename "$plugin")
               [ -f "$plugin/plugin.json" ] || continue
-              install -Dm644 "$plugin/plugin.json" "$out/share/cordial/plugins/$id/plugin.json"
-              install -Dm644 "$plugin/main.ts" "$out/share/cordial/plugins/$id/main.ts"
+              install -Dm644 "$plugin/plugin.json" "$out/share/vanta/plugins/$id/plugin.json"
+              install -Dm644 "$plugin/main.ts" "$out/share/vanta/plugins/$id/main.ts"
             done
 
-            install -Dm644 packaging/icons/hicolor/scalable/apps/io.github.luohoa97.Cordial.svg \
-              "$out/share/icons/hicolor/scalable/apps/io.github.luohoa97.Cordial.svg"
+            install -Dm644 packaging/icons/hicolor/scalable/apps/io.github.gpt4omni.Vanta.svg \
+              "$out/share/icons/hicolor/scalable/apps/io.github.gpt4omni.Vanta.svg"
             # Frostbite, the twice-a-year joke in
-            # crates/cordial-shell/src/branding.rs — installed unconditionally
+            # crates/vanta-shell/src/branding.rs — installed unconditionally
             # for the same reason every other packaging script here installs
             # it unconditionally: the alternative is a name that resolves to
             # nothing on the one day nobody is watching for it.
-            install -Dm644 packaging/icons/hicolor/scalable/apps/io.github.luohoa97.Cordial.Frostbite.svg \
-              "$out/share/icons/hicolor/scalable/apps/io.github.luohoa97.Cordial.Frostbite.svg"
-            install -Dm644 packaging/io.github.luohoa97.Cordial.desktop \
-              "$out/share/applications/io.github.luohoa97.Cordial.desktop"
-            install -Dm644 packaging/io.github.luohoa97.Cordial.metainfo.xml \
-              "$out/share/metainfo/io.github.luohoa97.Cordial.metainfo.xml"
+            install -Dm644 packaging/icons/hicolor/scalable/apps/io.github.gpt4omni.Vanta.Frostbite.svg \
+              "$out/share/icons/hicolor/scalable/apps/io.github.gpt4omni.Vanta.Frostbite.svg"
+            install -Dm644 packaging/io.github.gpt4omni.Vanta.desktop \
+              "$out/share/applications/io.github.gpt4omni.Vanta.desktop"
+            install -Dm644 packaging/io.github.gpt4omni.Vanta.metainfo.xml \
+              "$out/share/metainfo/io.github.gpt4omni.Vanta.metainfo.xml"
 
             # Licence and attribution, travelling with the binary rather than
             # only with the source tree — MIT requires its notice in "all
             # copies or substantial portions", Apache-2.0 section 4(d)
             # requires NOTICE to travel with derivative works. Same set the
             # Flatpak manifest and the deb/rpm scripts install.
-            install -Dm644 LICENSE "$out/share/licenses/cordial/LICENSE"
-            install -Dm644 THIRD-PARTY-NOTICES.md "$out/share/licenses/cordial/THIRD-PARTY-NOTICES.md"
-            install -Dm644 NOTICE "$out/share/licenses/cordial/NOTICE"
+            install -Dm644 LICENSE "$out/share/licenses/vanta/LICENSE"
+            install -Dm644 THIRD-PARTY-NOTICES.md "$out/share/licenses/vanta/THIRD-PARTY-NOTICES.md"
+            install -Dm644 NOTICE "$out/share/licenses/vanta/NOTICE"
             install -Dm644 third_party/libbadcpu/LICENSE.upstream \
-              "$out/share/licenses/cordial/libbadcpu-MIT.txt"
+              "$out/share/licenses/vanta/libbadcpu-MIT.txt"
             install -Dm644 third_party/mcpelauncher-linker/LICENSE \
-              "$out/share/licenses/cordial/mcpelauncher-linker-MIT.txt"
+              "$out/share/licenses/vanta/mcpelauncher-linker-MIT.txt"
             install -Dm644 third_party/mcpelauncher-linker/core/NOTICE \
-              "$out/share/licenses/cordial/aosp-NOTICE.txt"
+              "$out/share/licenses/vanta/aosp-NOTICE.txt"
             install -Dm644 third_party/libjnivm/LICENSE \
-              "$out/share/licenses/cordial/libjnivm-MIT.txt"
+              "$out/share/licenses/vanta/libjnivm-MIT.txt"
             install -Dm644 third_party/mocktail-webview/LICENSE \
-              "$out/share/licenses/cordial/mocktail-webview-Apache-2.0.txt"
+              "$out/share/licenses/vanta/mocktail-webview-Apache-2.0.txt"
             # dynarmic and its compiled-in externals, the VR translator.
             install -Dm644 third_party/dynarmic/LICENSE.txt \
-              "$out/share/licenses/cordial/dynarmic-0BSD.txt"
+              "$out/share/licenses/vanta/dynarmic-0BSD.txt"
             install -Dm644 third_party/dynarmic/externals/fmt/LICENSE \
-              "$out/share/licenses/cordial/fmt-MIT.txt"
+              "$out/share/licenses/vanta/fmt-MIT.txt"
             install -Dm644 third_party/dynarmic/externals/mcl/LICENSE \
-              "$out/share/licenses/cordial/mcl-MIT.txt"
+              "$out/share/licenses/vanta/mcl-MIT.txt"
             install -Dm644 third_party/dynarmic/externals/robin-map/LICENSE \
-              "$out/share/licenses/cordial/robin-map-MIT.txt"
+              "$out/share/licenses/vanta/robin-map-MIT.txt"
             install -Dm644 third_party/dynarmic/externals/xbyak/COPYRIGHT \
-              "$out/share/licenses/cordial/xbyak-BSD-3-Clause.txt"
+              "$out/share/licenses/vanta/xbyak-BSD-3-Clause.txt"
             install -Dm644 third_party/dynarmic/externals/zydis/LICENSE \
-              "$out/share/licenses/cordial/zydis-MIT.txt"
+              "$out/share/licenses/vanta/zydis-MIT.txt"
             install -Dm644 third_party/dynarmic/externals/zycore/LICENSE \
-              "$out/share/licenses/cordial/zycore-MIT.txt"
+              "$out/share/licenses/vanta/zycore-MIT.txt"
           '';
 
           meta = {
             description = "Run Roblox natively on Linux -- you supply the Roblox build, none is shipped";
-            homepage = "https://github.com/luohoa97/cordial";
+            homepage = "https://github.com/gpt4omni/vanta";
             license = lib.licenses.gpl3Plus;
-            mainProgram = "cordial-shell";
+            mainProgram = "vanta-shell";
             # Real, not a formality — see `isPackageableSystem` above. The
             # engine this loads is Roblox's Android **x86-64** build, run
             # with no emulation, so a `libroblox.so` built for any other
@@ -439,35 +439,35 @@
             # Optional at build time, and that is exactly the problem this
             # shell solves: without them the tree still compiles, it just
             # silently loses the audio backend and the web views. Including
-            # them means everyone builds the same Cordial.
+            # them means everyone builds the same Vanta.
             pipewire
             webkitgtk_6_0
 
             # dynarmic's Boost headers, and lld and llvm for
-            # cordial-guest's arm64 test image.
+            # vanta-guest's arm64 test image.
             boost
             lld
             llvm
           ];
 
           shellHook = ''
-            echo "cordial: clang $(clang --version | head -1 | grep -o '[0-9.]*' | head -1), rust $(rustc --version | cut -d' ' -f2)"
+            echo "vanta: clang $(clang --version | head -1 | grep -o '[0-9.]*' | head -1), rust $(rustc --version | cut -d' ' -f2)"
             echo "  pipewire  $(pkg-config --modversion libpipewire-0.3 2>/dev/null || echo MISSING)"
             echo "  webkitgtk $(pkg-config --modversion webkitgtk-6.0 2>/dev/null || echo MISSING)"
             echo "  gtk4      $(pkg-config --modversion gtk4 2>/dev/null || echo MISSING)"
             echo "  libadwaita $(pkg-config --modversion libadwaita-1 2>/dev/null || echo MISSING)"
             echo
-            echo "This shell builds Cordial. Run it on the host: just dev"
+            echo "This shell builds Vanta. Run it on the host: just dev"
           '';
         };
       }
       // lib.optionalAttrs isPackageableSystem {
-        packages.default = cordial;
-        packages.cordial = cordial;
+        packages.default = vanta;
+        packages.vanta = vanta;
 
         apps.default = {
           type = "app";
-          program = "${cordial}/bin/cordial-shell";
+          program = "${vanta}/bin/vanta-shell";
         };
       });
 }

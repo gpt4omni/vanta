@@ -9,7 +9,7 @@
 # application — twenty-one candidates eliminated with controls, the last one
 # instrumented rather than inferred. If that is true, the only route left is the
 # memory write ADR-001 makes deliberately absent, and that is a decision about
-# Cordial's security posture rather than an engineering problem.
+# Vanta's security posture rather than an engineering problem.
 #
 # Sober reaches `RbxStorage::init [INIT] user: flagLoaded` on this machine. It is
 # the only existence proof that the state is reachable by *something*. So:
@@ -28,10 +28,10 @@
 #
 # Sober is a Flatpak. Its engine runs inside the sandbox's PID namespace, so no
 # host /proc/<pid>/maps contains the mapping at all, and `flatpak enter` needs
-# CAP_SYS_ADMIN. `nsenter -p -m` crosses it. Cordial reads clean as the control,
+# CAP_SYS_ADMIN. `nsenter -p -m` crosses it. Vanta reads clean as the control,
 # and you can check that first without any privileges:
 #
-#     tools/engine-text-diff.py            # against a running cordial-run
+#     tools/engine-text-diff.py            # against a running vanta-run
 #
 # ## Usage
 #

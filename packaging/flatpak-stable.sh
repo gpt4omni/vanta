@@ -5,7 +5,7 @@
 #     flatpak-stable.sh MERGED_REPO
 #
 # Environment:
-#   APP_ID          io.github.luohoa97.Cordial
+#   APP_ID          io.github.gpt4omni.Vanta
 #   PAGES_REPO_URL  the live OSTree remote, with a trailing slash
 #   RELEASE_TAG     the v* tag on the commit this run built, or empty
 #   NEWEST_TAG      the newest v* tag that is an ancestor of that commit, or

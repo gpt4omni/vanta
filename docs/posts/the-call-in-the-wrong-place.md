@@ -3,7 +3,7 @@
 *How a nineteen-section investigation ended in one repeated function call, and
 why six of its conclusions had to be withdrawn first.*
 
-Cordial runs Roblox's Android client natively on Linux. Not in an emulator, not
+Vanta runs Roblox's Android client natively on Linux. Not in an emulator, not
 in Waydroid — the actual `libroblox.so`, loaded by a ported AOSP bionic linker,
 with a shim mapping bionic onto glibc and libjnivm standing in where Android's
 ART would be. It signs in, loads an experience, and you can play it.
@@ -16,7 +16,7 @@ or fast and untextured, and which one you got felt like weather.
 
 The engine reports its flag state to the host application through one of two
 callbacks: `gameActivity_onFlagsLoaded(ByteBuffer)` on success, or
-`gameActivity_onFlagsFailed()` on failure. Cordial got the failure one. Twice,
+`gameActivity_onFlagsFailed()` on failure. Vanta got the failure one. Twice,
 every launch, for months.
 
 Downstream of that, nothing: no `ClientRunInfo`, no `RbxStorage::init`, none of
@@ -39,7 +39,7 @@ Three separate engine calls were faulting at address `0x8` inside glibc's
 pointer field a few bytes into a zeroed `FILE`.
 
 Pre-API-23 bionic exports `FILE __sF[3]` — the legacy `stdin`/`stdout`/`stderr`
-array. Cordial supplied zeroed storage for the symbol so that it resolved, with
+array. Vanta supplied zeroed storage for the symbol so that it resolved, with
 a comment saying honestly that this was half the job and the other half was only
 worth building once something was observed using it.
 
@@ -57,7 +57,7 @@ is why it survived so long.
 
 Android's client calls `nativeInitClientSettings` to hand the engine its flags,
 then `nativePostClientSettingsLoadedInitialization3` to finish the handshake.
-Cordial called both, in that order, from inside the engine's own
+Vanta called both, in that order, from inside the engine's own
 `bootstrapTheApp` callback.
 
 An earlier session had recorded, precisely, that the second call "returns without
@@ -71,7 +71,7 @@ conceptually one handshake. Moving them together late is a different failure —
 it dies on the TaskScheduler gate before the second call matters. So the one
 arrangement nobody tried was: leave the settings where they are, and repeat the
 post call later, after the surface is handed to the engine. Then
-`nativeRetryInit`, which Cordial already called but only early, re-runs init
+`nativeRetryInit`, which Vanta already called but only early, re-runs init
 against that new state.
 
     [FLog::NativeDM] initialize: state:11. areFlagsLoaded:true.
@@ -82,7 +82,7 @@ against that new state.
     [FLog::NativeDM] continueAfterFlagsLoaded_:
     [FLog::NativeDM] initEngine_:  →  initializeLuaApp_:  →  startLuaApp_:
 
-And on Cordial's side, for the first time, `flags loaded (1300800 bytes)`. Three
+And on Vanta's side, for the first time, `flags loaded (1300800 bytes)`. Three
 consecutive runs, with the switch off as a control: `flagsLoaded=0`,
 `continueAfter=0`.
 
@@ -93,7 +93,7 @@ This is the part worth writing down, because it is the transferable bit.
 **Every wrong conclusion in that investigation was an instrument, never the
 engine.** Six of them:
 
-1. A `CORDIAL_TRACE_PATHS` run concluded storage was never attempted — 19,296
+1. A `VANTA_TRACE_PATHS` run concluded storage was never attempted — 19,296
    intercepted path calls, none naming it. The tracer did not wrap `statvfs`,
    which is the call storage actually makes.
 2. A sweep set 135 log channels "to maximum" and concluded loud logging was
@@ -130,7 +130,7 @@ corresponds to any entry point the interface exposes.
 
 Which makes it, as far as anything can currently show, not reachable from a host
 application — and the remaining route is the memory write this project
-deliberately does not have. That is a decision about what Cordial is willing to
+deliberately does not have. That is a decision about what Vanta is willing to
 be, not an engineering problem, and it is not one to make quietly at the end of a
 long day.
 

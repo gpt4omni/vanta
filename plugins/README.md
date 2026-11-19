@@ -1,7 +1,7 @@
 # Plugins
 
-A plugin is a directory containing `plugin.json` and its entry module. Cordial
-discovers them under `~/.local/share/cordial/plugins/`.
+A plugin is a directory containing `plugin.json` and its entry module. Vanta
+discovers them under `~/.local/share/vanta/plugins/`.
 
 ```json
 {
@@ -16,7 +16,7 @@ discovers them under `~/.local/share/cordial/plugins/`.
 
 `capabilities` is what the plugin **requests**. What it actually gets is what you
 approved, in the profile you approved it in —
-`~/.local/share/cordial/profiles/<profile>/plugin-grants.json`:
+`~/.local/share/vanta/profiles/<profile>/plugin-grants.json`:
 
 ```json
 { "flag-inspector": ["flags.read", "log"] }
@@ -30,7 +30,7 @@ author can tell "not allowed" from "broken".
 profile you made to try something out does not approve it in the profile you
 actually play on. The plugin is installed once for the machine; what it is
 allowed to do is decided per account. An existing
-`~/.config/cordial/plugin-grants.json` from before this changed is moved into the
+`~/.config/vanta/plugin-grants.json` from before this changed is moved into the
 first profile that looks for one, and every other profile starts at default deny
 — see [ADR-013](../docs/adr/ADR-013-per-profile-configuration.md).
 
@@ -41,7 +41,7 @@ noticed within a second or two and starts, stops or restarts exactly that
 plugin. An update that changes what your manifest requests never lets a
 restarted process keep a capability the new manifest stopped asking for,
 whatever the grants file still says — see `intersect_for_restart` in
-`crates/cordial-plugins/src/reconcile.rs`. The one thing that still waits for
+`crates/vanta-plugins/src/reconcile.rs`. The one thing that still waits for
 the next launch is a `flags.write` layer, because `FFlag`/`FInt`/`FString`
 are read once at startup regardless (ADR-005) — see "Flags have two
 lifetimes" below.
@@ -52,9 +52,9 @@ lifetimes" below.
 without one still loads, so nothing written before this existed stopped working
 — but a plugin cannot be published or depended upon without it.
 
-`dependencies` names **other Cordial plugins**, by id. It is not npm's field
+`dependencies` names **other Vanta plugins**, by id. It is not npm's field
 under another roof: if you also need a JavaScript package, that is your
-`deno.json`'s business and Cordial neither reads nor validates it. One key
+`deno.json`'s business and Vanta neither reads nor validates it. One key
 cannot honestly mean both, and you may well need both.
 
 A requirement is written in one of exactly two forms, and a bare version is
@@ -66,7 +66,7 @@ refused:
 | `"^1.2.0"` | anything compatible with it |
 
 `"1.2.0"` on its own means *exactly that version* in npm and *`^1.2.0`* in
-Cargo. Rather than pick one and be wrong for half of you, Cordial refuses it and
+Cargo. Rather than pick one and be wrong for half of you, Vanta refuses it and
 the error names both forms. `>=`, `~`, `*` and comma-separated lists are refused
 too — every operator in the language is one you have to understand before you
 can tell what an install will do.
@@ -76,7 +76,7 @@ before it too. That matters: `events.subscribe` only matches types somebody has
 already declared, so a plugin that subscribes to another's events needs that
 other one running first. It is the same order, from the same graph, on purpose.
 
-Cordial refuses, by name, on a missing dependency, a requirement nothing
+Vanta refuses, by name, on a missing dependency, a requirement nothing
 satisfies, a cycle, and two dependents needing incompatible versions of one
 plugin — there is one directory per plugin id, so exactly one version can win.
 
@@ -97,10 +97,10 @@ that what is on offer is a diff somebody can read, anyone who dislikes it can
 fork it, and hosting it costs nothing.
 
 **Who runs an index, and who decides what goes in one, is not settled.** Nothing
-in Cordial names a URL and nothing assumes there is only one. A curated list and
+in Vanta names a URL and nothing assumes there is only one. A curated list and
 an index you host yourself are the same file in the same format; where two of
 them publish the same version of the same plugin pointing at different bytes,
-Cordial refuses rather than picking, because picking is the decision nobody has
+Vanta refuses rather than picking, because picking is the decision nobody has
 made yet.
 
 **Index signing is not implemented.** The intended scheme is a detached minisign
@@ -124,7 +124,7 @@ intent.
 
 **The capabilities are still the boundary, and they are still yours to grant.**
 Installing a plugin that depends on another does not grant the other one
-anything: Cordial refuses a plan where any plugin in it — including one that
+anything: Vanta refuses a plan where any plugin in it — including one that
 arrived only as somebody else's dependency — asks for something you have not
 granted it by name. Being listed in an index is not review, and should not be
 read as any.
@@ -133,7 +133,7 @@ read as any.
 
 It runs as a separate Deno process started with **no permissions**: no file,
 network, environment or subprocess access. That is a second, independent layer
-under Cordial's own capability broker, so a plugin cannot reach the machine even
+under Vanta's own capability broker, so a plugin cannot reach the machine even
 if the broker had a hole in it.
 
 There is no script execution against Roblox and no memory access. Those are
@@ -153,11 +153,11 @@ the capability at all.
 ## Host resources are brokered, never handed over
 
 A plugin never receives a socket, a D-Bus connection or a file descriptor, and
-installing one can never widen Cordial's Flatpak permissions. Where a capability
-needs a host resource, Cordial holds the permission and performs the effect.
+installing one can never widen Vanta's Flatpak permissions. Where a capability
+needs a host resource, Vanta holds the permission and performs the effect.
 
 Discord Rich Presence is the example: `presence.set` takes a presence payload.
-Cordial owns the connection to Discord's IPC socket — your plugin never learns
+Vanta owns the connection to Discord's IPC socket — your plugin never learns
 where it is, cannot read Discord's state, and cannot send anything else down it.
 
 The reasoning is in [ADR-007](../docs/adr/ADR-007-host-resources-are-brokered.md),
@@ -165,8 +165,8 @@ and the short version is that a Flatpak permission is app-wide and permanent
 while a capability is per-plugin and revocable. If installing a plugin could add
 a permission, uninstalling it would not take the permission away.
 
-This also means a resource Cordial does not already broker needs a change to
-Cordial rather than to your manifest. Slower on purpose: the manifest is the one
+This also means a resource Vanta does not already broker needs a change to
+Vanta rather than to your manifest. Slower on purpose: the manifest is the one
 place anyone can read the whole sandbox, and it should stay true.
 
 To keep that rare, the common effects are already brokered — `presence.set`,
@@ -175,11 +175,11 @@ here, open an issue: a broker is a payload type and an effect, so adding one is 
 small change rather than a redesign. If a proposed broker *cannot* be small, that
 usually means the capability is too broad and wants splitting.
 
-## Settings: Cordial keeps them, your plugin never touches the file
+## Settings: Vanta keeps them, your plugin never touches the file
 
 A plugin runs with no file access, so it has nowhere of its own to remember
 anything. `settings.read` and `settings.write` give it one without giving it a
-path: Cordial owns `<profile>/plugins/<your-id>/settings.json` and your plugin
+path: Vanta owns `<profile>/plugins/<your-id>/settings.json` and your plugin
 exchanges a JSON document.
 
 The document arrives unasked, in the handshake, so the usual case costs no round
@@ -187,7 +187,7 @@ trip:
 
 ```ts
 // A push has no id; the handshake is the one with this event name.
-if (msg.id === undefined && msg.event === "cordial/init") {
+if (msg.id === undefined && msg.event === "vanta/init") {
   const settings = msg.payload.settings;   // your document, {} if you have none,
                                            // null if you were not granted settings.read
 }
@@ -201,7 +201,7 @@ a key you have stopped using. It must be a JSON object, and it is capped at a
 megabyte: this is configuration, not a data store.
 
 **Scoped to your own id, structurally.** Neither call takes a plugin id, because
-Cordial already knows which process is on the other end of the pipe. Naming
+Vanta already knows which process is on the other end of the pipe. Naming
 another plugin in your params is not an error and is not honoured — you get your
 own document. There is no field to set to somebody else's name, which is the same
 defence `events.declare` uses for namespaces.
@@ -210,10 +210,10 @@ They are two capabilities, not one, for the reason `events.declare` and
 `events.publish` are two: a plugin that only reads its configuration should not
 have to be trusted to rewrite it.
 
-## Preferences: you declare them, Cordial draws them
+## Preferences: you declare them, Vanta draws them
 
 The section above is your plugin's own scratch document. This is a different
-thing: **settings a person sets**, in a page Cordial builds and Cordial owns.
+thing: **settings a person sets**, in a page Vanta builds and Vanta owns.
 
 Declare them in `plugin.json` and a gear appears on your row in Settings. There
 is no capability and no other manifest key to set — declaring a field *is* how
@@ -252,7 +252,7 @@ first appear; ungrouped fields come first.
 Reading them is the same shape as settings, and needs the same `settings.read`:
 
 ```ts
-if (msg.id === undefined && msg.event === "cordial/init") {
+if (msg.id === undefined && msg.event === "vanta/init") {
   const prefs = msg.payload.preferences;   // every declared key, always
 }
 const prefs = (await call("preferences.get")).result;
@@ -262,7 +262,7 @@ const prefs = (await call("preferences.get")).result;
 declared is present, and every value fits the declaration you wrote — so no
 `?? default` and no range checks in your code. A value saved against an older
 version of your manifest that no longer fits falls back to the current default,
-and Cordial says so in its log rather than silently.
+and Vanta says so in its log rather than silently.
 
 **There is no `preferences.set`, and there is not going to be one.** These
 answers are the user's. A plugin that could rewrite them could set them to
@@ -276,7 +276,7 @@ them refuses the whole plugin at install rather than being stripped quietly.
 **Why you cannot draw the page yourself.** GNOME Shell extensions can, because
 they run inside the shell's own process. Your plugin does not: it is a separate
 sandboxed process with no display and no toolkit, and a plugin able to draw in
-Cordial's window could draw something indistinguishable from Cordial's own
+Vanta's window could draw something indistinguishable from Vanta's own
 sign-in dialog. See
 [ADR-020](../docs/adr/ADR-020-declarative-plugin-preferences.md), which also
 lists what the declarative form gives up and what is planned to be added to it.
@@ -284,7 +284,7 @@ lists what the declarative form gives up and what is planned to be added to it.
 ## Plugins may declare their own events
 
 `events.declare` registers an event type under your plugin's own namespace —
-you provide a bare name, Cordial prefixes it with your plugin id, so
+you provide a bare name, Vanta prefixes it with your plugin id, so
 `flag-manager` declaring `profile-changed` gets `flag-manager/profile-changed`
 back, never a bare `profile-changed`. `events.publish` broadcasts on a type
 you declared; `events.subscribe` receives events, including ones other
@@ -304,8 +304,8 @@ declared. If you depend on another plugin's events, that dependency has to
 have started first, the same ordering [ADR-006](../docs/adr/ADR-006-plugin-events-and-first-party.md)
 already describes for first-party plugins.
 
-Core event types are never available to publish on — only Cordial can speak
-for what Cordial did.
+Core event types are never available to publish on — only Vanta can speak
+for what Vanta did.
 
 ## Flags have two lifetimes
 
@@ -334,11 +334,11 @@ and where each came from, then deliberately attempts a write it was not granted
 so the refusal is visible.
 
 [`discord-presence/`](discord-presence) is first-party — it ships with
-Cordial — and is still an ordinary plugin: same manifest, same grants, same
+Vanta — and is still an ordinary plugin: same manifest, same grants, same
 isolation ([ADR-006](../docs/adr/ADR-006-plugin-events-and-first-party.md)
 is explicit that "built in" and "a plugin" are not opposites). It listens for
 client lifecycle events and keeps Discord Rich Presence in step with them,
 through `presence.set`/`presence.clear` — the two lines in its own source say
 plainly that its Discord application id is a placeholder and that the
 lifecycle push does not yet carry which game is running, because that needs
-work in `cordial-runtime` this plugin does not touch.
+work in `vanta-runtime` this plugin does not touch.

@@ -1,9 +1,9 @@
 # Voice permission delivery and callback capture
 
-2026-09-14, Roblox 2.738.0.1397, custom Cordial 0.14.2.
+2026-09-14, Roblox 2.738.0.1397, custom Vanta 0.14.2.
 
 Mocktail's permission bridge publishes the protocol response before resolving
-the async callback. Cordial previously only resolved the callback. Its
+the async callback. Vanta previously only resolved the callback. Its
 `AUTHORIZED` answer therefore did not establish that all consumers received
 the permission result.
 
@@ -14,7 +14,7 @@ Source: Mocktail `src/runtime/roblox_permissions_bridge.cc` at
 ## Observed control
 
 Protocol publication followed by async resolution is now the default for
-PermissionsProtocol. `CORDIAL_PERMISSIONS_DUAL_RESPONSE=0` restores the old
+PermissionsProtocol. `VANTA_PERMISSIONS_DUAL_RESPONSE=0` restores the old
 async-only route; `1` explicitly selects the default. The diagnostic launcher
 used `1` while this was still an experiment, so the controlled run did not
 depend on changing the normal launcher.
@@ -32,7 +32,7 @@ Dual delivery reached a new explicit failure:
 
     refusing an input stream that installed a data callback
 
-PipeWire showed Cordial audio output but no capture node. At that point voice
+PipeWire showed Vanta audio output but no capture node. At that point voice
 transmission did not work: the AAudio bridge only implemented blocking input
 reads and refused callback-driven capture. The comment claiming the engine
 necessarily used blocking reads was an inference from its imports and was wrong.
@@ -62,7 +62,7 @@ same place 14236925335, joined by `--join-url
 roblox://experiences/start?placeId=<id>` and connected through that game's own
 Connect control. The maintainer confirmed voice working. Line 456 of the run:
 
-    I/Cordial-Audio  WebRtcAudioManager.init reports success: WebRtcAudioTrack
+    I/Vanta-Audio  WebRtcAudioManager.init reports success: WebRtcAudioTrack
     implements the downlink and WebRtcAudioRecord implements the uplink, so a
     voice session can both send and receive.
 
@@ -78,5 +78,5 @@ the vocabulary in issue #47 — `voice_service_init`, `VoiceChatInternal`,
 `ClientMuteUnmuteOperation` — returns empty on a *healthy* run and reads as a
 total failure of voice. That mistake was made here before the log was searched
 for the string this document already named. The positive marker is emitted by
-Cordial's own `Cordial-Audio` layer, and a run that only reaches Home does not
+Vanta's own `Vanta-Audio` layer, and a run that only reaches Home does not
 contain it, so its presence is attributable to the join and the connect.

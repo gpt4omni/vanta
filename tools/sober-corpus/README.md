@@ -3,9 +3,9 @@
 A local, incrementally-updated copy of [vinegarhq/sober](https://github.com/vinegarhq/sober)'s
 issue tracker. Sober is another project running Roblox on Linux — closed
 source, so its GitHub repo is purely an issue tracker — which means it is
-prior art: real users hitting real problems on the same engine Cordial
+prior art: real users hitting real problems on the same engine Vanta
 loads, with a maintainer's actual answer attached to most of them. The point
-is to give a Cordial maintainer something to search when triaging a new
+is to give a Vanta maintainer something to search when triaging a new
 issue: has someone already hit this against Sober, and what did Sober's
 maintainer say. See [ADR-017](../../docs/adr/ADR-017-sober-issue-corpus.md)
 for the full reasoning.
@@ -46,13 +46,13 @@ next run resumes from the last completed page rather than starting over.
   *substantive* maintainer reply (see `triage.ts` for what counts as
   triage noise — "duplicate of #123", "please fill the template" — and gets
   filtered out), pairing the problem statement with the maintainer's actual
-  resolution. This is the file worth grepping when triaging a new Cordial
+  resolution. This is the file worth grepping when triaging a new Vanta
   issue.
 
 ## The data is gitignored
 
 `data/` never leaves this machine. These are other people's GitHub bug
-reports with no license grant to Cordial, and Cordial is a public repo.
+reports with no license grant to Vanta, and Vanta is a public repo.
 Every issue and comment body is PII-redacted on write, before anything
 touches disk (`pii.ts`) — emails, `/home/<user>/` paths, IPv4 addresses, and
 shell-prompt/`Host:`-style hostnames. That redaction is defence in depth,
@@ -79,7 +79,7 @@ needs a PR filter bolted on after the fact.
 | `derive.ts` | Entry point. Builds `eval-set.jsonl` from `raw.jsonl`; never calls GitHub. |
 
 Deno, not Node: this is a Deno TypeScript tool because Deno is already a
-Cordial dependency for the plugin runtime (ADR-008), so nothing new gets
+Vanta dependency for the plugin runtime (ADR-008), so nothing new gets
 installed to run it. `deno fmt`'s default line width was not applied
 uniformly — the existing plugin code under `plugins/` isn't `deno fmt`-clean
 either, and forcing it here would have broken the aligned progress-log

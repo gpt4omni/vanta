@@ -4,7 +4,7 @@
  * of #123", "please fill the template", a bare "wontfix". These pass the
  * "has a maintainer reply" bar but carry no ground-truth diagnostic content,
  * so including them in the derived set would surface triage boilerplate to
- * a Cordial maintainer instead of a real diagnosis. Quality of the set
+ * a Vanta maintainer instead of a real diagnosis. Quality of the set
  * matters more than volume here (see ADR-017).
  *
  * This is a pattern-based heuristic, not a classifier trained on labelled

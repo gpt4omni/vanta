@@ -10,7 +10,7 @@ from a mirror (`ejoy/ant`, Apache-2.0, matches the upstream
 is supposed to do. `decompiled/` was not read, per instructions.
 
 **Bottom line up front:** the raw AGDK `GameActivity` surface lifecycle that
-Cordial currently drives (`initializeNativeCode` → `onStartNative` →
+Vanta currently drives (`initializeNativeCode` → `onStartNative` →
 `onResumeNative` → `onSurfaceCreatedNative` → `onSurfaceChangedNative`, all
 against `MainGameActivity`) is a dead end for rendering. Disassembly shows
 Roblox's own `onNativeWindowCreated` handler for that path does not call any
@@ -132,7 +132,7 @@ its mutex/condvar, then calls `pthread_create` (`0x24ff068`, detached:
 `0x24fff60`, and **immediately blocks the calling thread** on a second
 mutex/condvar pair waiting for the new thread to set `r12+0x148` ("started")
 — this is why `initializeNativeCode` can return at all (this barrier already
-passes in Cordial today, since `MainGameActivity`'s lifecycle calls are
+passes in Vanta today, since `MainGameActivity`'s lifecycle calls are
 observed firing).
 
 The spawned thread (`0x24fff60`), read start to end, does exactly this,
@@ -163,9 +163,9 @@ thread Roblox spawns to own this handoff finishes its entire job and exits
 during app startup, before any `Surface` can plausibly exist.** By the time
 `onSurfaceCreatedNative` is ever called and reaches `onNativeWindowCreated`
 (§1.2), the thread that was supposed to read the pipe and advance
-`r12+0x38` is gone. Cordial's own `ALooper` implementation
-(`crates/cordial-runtime/src/android/looper.rs`) is genuinely per-thread
-(`thread_local!`), matching real Android — so this is not a Cordial bug to fix
+`r12+0x38` is gone. Vanta's own `ALooper` implementation
+(`crates/vanta-runtime/src/android/looper.rs`) is genuinely per-thread
+(`thread_local!`), matching real Android — so this is not a Vanta bug to fix
 in the looper; the *real* Android would have exactly the same problem if
 nothing else served that fd. On real Android something else evidently does
 not need to, because — per §2 and §3 — this handoff mechanism is very likely
@@ -310,7 +310,7 @@ consistent with, but not proof of, this being the same surface that reaches
 
 **Stop trying to make `MainGameActivity`'s raw `GameActivity` surface
 lifecycle produce a frame — the disassembly in §1 shows concretely that it
-cannot, on its own, no matter how faithfully Cordial drives it.** Roblox's own
+cannot, on its own, no matter how faithfully Vanta drives it.** Roblox's own
 `onNativeWindowCreated` for that path hands the window to a thread that has
 already exited by the time any window would arrive; nothing downstream of
 that ever reaches EGL.
@@ -324,7 +324,7 @@ actually launches into by default:
 2. Call, in the order recovered from `ActivityNativeMain.N2()`'s bytecode:
    `nativeGameGlobalInit` → `nativeUpdateAdapterInit` →
    `nativeAppBridgeV2InitWithParams(InitParams)` → `nativeAppBridgeStartLuaAppDM()`.
-3. Provide a plain `android.view.Surface` (backed by whatever Cordial's
+3. Provide a plain `android.view.Surface` (backed by whatever Vanta's
    `SurfaceView`/`SurfaceHolder` equivalent is — this does not need AGDK's
    `Surface`/`ANativeWindow` ceremony, just a JNI object with the right shape)
    through `nativeAppBridgeV2StartAppWithParams(StartAppParams{surface=...})`
@@ -372,7 +372,7 @@ downstream work would not run.
 
 **The decisive argument** is that the crash address *moves* while the verdict
 stays constant: `libroblox+0x2ccd912` (fault `0x0`) on the full path,
-`libroblox+0x240462b` (fault `0x140`) under `CORDIAL_SKIP_LUA_DM=1`, with flags
+`libroblox+0x240462b` (fault `0x140`) under `VANTA_SKIP_LUA_DM=1`, with flags
 reported `FAILED` in both. A branch conditioned on "flags failed" would fault at
 the same address every time. A race does exactly this.
 
@@ -383,7 +383,7 @@ investigations, including two that converged on it independently.
 
 Not one. `thread backtrace all` distinguishes:
 
-1. Cordial's driving thread,
+1. Vanta's driving thread,
 2. the AGDK looper-service thread,
 3. a third thread the engine spawns from `nativeGameGlobalInit`.
 
@@ -395,7 +395,7 @@ were not necessarily doing so, and every earlier note in this repo that says
 
 # No EGL or GL call ever happens
 
-Read out of the paused process at the moment of the SIGSEGV, from Cordial's own
+Read out of the paused process at the moment of the SIGSEGV, from Vanta's own
 counters:
 
 ```
@@ -411,7 +411,7 @@ nothing follows it — no `acquire`, no `getWidth`/`getHeight`, no
 
 At the moment of death, the driving thread is **not** crashed. It is blocked in
 a syscall, deep inside Roblox's own code, synchronously underneath
-`cordial_appbridge_start_app`. It never returns, so it never reaches the
+`vanta_appbridge_start_app`. It never returns, so it never reaches the
 get-or-create-graphics-device path that would call `eglCreateWindowSurface`.
 
 It dies because thread 3 segfaults first, and a SIGSEGV on any thread kills the
@@ -424,7 +424,7 @@ finished populating — and not any missing API, missing asset, or missing flag.
 That reframes the remaining work. The question is no longer "what have we not
 implemented"; it is **"why is the driving thread blocked, and what is it waiting
 for?"** A strong candidate worth testing first: on Android these calls are made
-*from* the UI thread, which is also the thread that pumps the looper. Cordial
+*from* the UI thread, which is also the thread that pumps the looper. Vanta
 calls `StartAppWithParams` from its driving thread and that thread then blocks
 inside the call — so if the engine is waiting on work it posted to the looper,
 nobody is draining it, and the wait cannot end. Pumping the looper from another

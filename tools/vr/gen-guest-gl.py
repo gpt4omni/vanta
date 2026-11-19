@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generates crates/cordial-runtime/src/guest_gl_table.rs from Khronos's
+"""Generates crates/vanta-runtime/src/guest_gl_table.rs from Khronos's
 gl.xml and egl.xml.
 
 Under dynarmic the arm64 engine's EGL and GLES calls go to the host's real
@@ -14,7 +14,7 @@ below -- leave the command out, and the script says which on stderr: a
 command not in the table stops when imported and is not handed out by
 eglGetProcAddress.
 
-    tools/vr/gen-guest-gl.py gl.xml egl.xml > crates/cordial-runtime/src/guest_gl_table.rs
+    tools/vr/gen-guest-gl.py gl.xml egl.xml > crates/vanta-runtime/src/guest_gl_table.rs
 
 The XML is Khronos's (OpenGL-Registry and EGL-Registry on GitHub, Apache-2.0);
 pass the commits it came from as GL_REGISTRY_COMMIT and EGL_REGISTRY_COMMIT so
@@ -44,7 +44,7 @@ INT = {
     "EGLOutputLayerEXT": "Ptr", "EGLOutputPortEXT": "Ptr", "EGLLabelKHR": "Ptr",
     "EGLObjectKHR": "Ptr", "EGLNativeDisplayType": "Ptr", "EGLNativeWindowType": "Ptr",
     "EGLNativePixmapType": "Ptr", "EGLClientPixmapHI": "Ptr",
-    # Android's EGLNativeWindowType is an ANativeWindow*; the Cordial override
+    # Android's EGLNativeWindowType is an ANativeWindow*; the Vanta override
     # of eglCreateWindowSurface substitutes the real window either way.
     "int": "I32", "void": None,
 }
@@ -143,12 +143,12 @@ def main():
     print(f"// {gl_commit}) and egl.xml (EGL-Registry {egl_commit}). Do not edit; rerun the")
     print("// script.")
     print()
-    print("use cordial_guest::{Ret, Ty::*};")
+    print("use vanta_guest::{Ret, Ty::*};")
     print()
     print("/// Every EGL command, and every command GLES 2/3 or a GLES extension names,")
     print("/// whose arguments the call builder can move: name, argument types, return.")
     print("#[rustfmt::skip]")
-    print(f"pub(crate) static GL: [(&str, &[cordial_guest::Ty], Ret); {len(rows)}] = [")
+    print(f"pub(crate) static GL: [(&str, &[vanta_guest::Ty], Ret); {len(rows)}] = [")
     for name, args, r in rows:
         print(f'    ("{name}", &[{", ".join(args)}], {ret(r)}),')
     print("];")

@@ -1,18 +1,18 @@
-# Cordial's own dnf/yum repository, and why it is not Fedora itself
+# Vanta's own dnf/yum repository, and why it is not Fedora itself
 
-"Publish Cordial to Fedora's repositories" has two readings, the same shape
+"Publish Vanta to Fedora's repositories" has two readings, the same shape
 [`apt-repository.md`](apt-repository.md) draws for Debian and Ubuntu: one
-ships this week, and the other is a review process Cordial does not control
+ships this week, and the other is a review process Vanta does not control
 the outcome of.
 
-1. **Cordial's own dnf repository.** An `rpm/<releasever>/<arch>/` tree at a
-   URL Cordial controls, that a user drops a `.repo` file for and then runs
-   `dnf install cordial` against, the same shape
-   [`packaging/cordial.flatpakrepo`](../../packaging/cordial.flatpakrepo)
+1. **Vanta's own dnf repository.** An `rpm/<releasever>/<arch>/` tree at a
+   URL Vanta controls, that a user drops a `.repo` file for and then runs
+   `dnf install vanta` against, the same shape
+   [`packaging/vanta.flatpakrepo`](../../packaging/vanta.flatpakrepo)
    already gives `flatpak remote-add` and
    [`apt-repository.md`](apt-repository.md) gives `apt`. This is what §1
    below covers, and it is built, signed and published; see "Current status".
-2. **The `cordial` package in Fedora proper** -- in the repos every `dnf
+2. **The `vanta` package in Fedora proper** -- in the repos every `dnf
    install` reaches by default, with no third-party `.repo` file added
    first. §2 below is the honest assessment of that path, and it is not
    started.
@@ -20,18 +20,18 @@ the outcome of.
 ## Current status
 
 **Published and signed.** On 2026-09-30 `rpm/44/x86_64/repodata/repomd.xml.asc`
-verified as a good signature against `rpm/RPM-GPG-KEY-cordial`, and
+verified as a good signature against `rpm/RPM-GPG-KEY-vanta`, and
 `rpm/44/aarch64/` exists too. `dnf install` was not run. Only `rpm/44/` exists,
 for the reason under "Why $releasever" below. The paragraphs further down that
 speak of a missing secret or of 404s on `/rpm/` describe the state before the
 key was added.
 
-## §1. Cordial's own repository
+## §1. Vanta's own repository
 
 ### Why $releasever, and what that honestly costs
 
 **The published tree is split by Fedora release, not one flat directory.**
-`packaging/rpm/cordial.spec` requires `%global toolchain clang` and Fedora
+`packaging/rpm/vanta.spec` requires `%global toolchain clang` and Fedora
 44's `gtk4` (4.22) and `libadwaita` (1.9) -- Fedora 43 ships older versions of
 both and fails to build against, which is why `release.yml`'s `rpm` job runs
 inside `registry.fedoraproject.org/fedora:44` specifically (see
@@ -41,11 +41,11 @@ binary from one flat directory to every release's dnf would either silently
 work by luck or silently fail by an unrelated missing symbol -- neither of
 which points a user at the actual cause.
 
-So `packaging/cordial.repo`'s `baseurl` carries dnf's own `$releasever` and
+So `packaging/vanta.repo`'s `baseurl` carries dnf's own `$releasever` and
 `$basearch` variables, and `packaging/rpm/build-repo.sh` publishes each
 `.rpm` it is given into `rpm/<releasever>/<arch>/`, reading the release
 number out of the filename's own `.fcNN.` tag (`make-srpm.sh`'s
-`%dist` -- e.g. `cordial-0.12.1-1.fc44.x86_64.rpm`, the actual filename on
+`%dist` -- e.g. `vanta-0.12.1-1.fc44.x86_64.rpm`, the actual filename on
 the v0.12.1 release page) rather than guessing it.
 
 **As of this writing, that means exactly one directory exists: `rpm/44/`.**
@@ -71,8 +71,8 @@ rpm/<releasever>/<arch>/repodata/repomd.xml.asc   # detached signature of repomd
 rpm/<releasever>/<arch>/repodata/primary.xml.gz   # package index, createrepo_c output
 rpm/<releasever>/<arch>/repodata/filelists.xml.gz # file lists, createrepo_c output
 rpm/<releasever>/<arch>/repodata/other.xml.gz     # changelogs, createrepo_c output
-rpm/<releasever>/<arch>/cordial-<version>.<arch>.rpm
-rpm/RPM-GPG-KEY-cordial                            # the public half, for a user's .repo
+rpm/<releasever>/<arch>/vanta-<version>.<arch>.rpm
+rpm/RPM-GPG-KEY-vanta                            # the public half, for a user's .repo
 ```
 
 **The signature is on `repomd.xml`, not on the individual `.rpm`** -- the same
@@ -91,7 +91,7 @@ already signed on the release page -- the byte-identity concern
 [`flatpak.yml`](../../.github/workflows/flatpak.yml)'s own comment on the
 single-file bundle raises for exactly the same reason ("Built from the same
 `repo` the remote is published from... not a second build that might
-differ"). So `packaging/cordial.repo` carries `gpgcheck=0` **permanently**,
+differ"). So `packaging/vanta.repo` carries `gpgcheck=0` **permanently**,
 not as a placeholder waiting for a future `1` -- the setting that actually
 carries this repository's trust guarantee is `repo_gpgcheck=1`, checked
 against `repomd.xml.asc`, not `gpgcheck`.
@@ -140,7 +140,7 @@ trap 'rm -rf "$GNUPGHOME"' EXIT
 #    uses `gpg --batch --import` and never `--pinentry-mode loopback
 #    --passphrase`, so the key must need no passphrase to sign with).
 gpg --batch --passphrase '' --quick-generate-key \
-    'Cordial RPM Repository <choose-an-address-you-monitor>' \
+    'Vanta RPM Repository <choose-an-address-you-monitor>' \
     rsa4096 sign 2y
 
 # 3. Read back the fingerprint -- this is what RPM_GPG_KEY_ID becomes.
@@ -155,29 +155,29 @@ echo "$FPR"
 #    convenience; packaging/rpm/build-repo.sh re-exports it itself from the
 #    imported key during each signed run, so this copy is for the maintainer
 #    generating the key to keep, not something CI reads.
-gpg --armor --export-secret-keys "$FPR" > cordial-rpm-signing-key.private.asc
-gpg --armor --export             "$FPR" > cordial-rpm-signing-key.public.asc
+gpg --armor --export-secret-keys "$FPR" > vanta-rpm-signing-key.private.asc
+gpg --armor --export             "$FPR" > vanta-rpm-signing-key.public.asc
 
 # 5. Set the two repository secrets .github/workflows/yum.yml reads --
 #    KEY_ID is the bare 40-character fingerprint from step 3, not the short
 #    form (a collision-attack target, and every --local-user/--export call
 #    in build-repo.sh and yum.yml takes either, so there is no reason to use
 #    the weaker one).
-gh secret set RPM_GPG_PRIVATE_KEY -R luohoa97/cordial < cordial-rpm-signing-key.private.asc
-gh secret set RPM_GPG_KEY_ID      -R luohoa97/cordial --body "$FPR"
+gh secret set RPM_GPG_PRIVATE_KEY -R gpt4omni/vanta < vanta-rpm-signing-key.private.asc
+gh secret set RPM_GPG_KEY_ID      -R gpt4omni/vanta --body "$FPR"
 
 # 6. Rebuild the repository now, rather than waiting for the next push --
 #    .github/workflows/yum.yml's own workflow_dispatch trigger exists for
 #    exactly this moment.
-gh workflow run yum.yml -R luohoa97/cordial
+gh workflow run yum.yml -R gpt4omni/vanta
 ```
 
 **GitHub secrets are write-only.** There is no "view" button once saved, so
-`cordial-rpm-signing-key.private.asc` needs a durable, access-controlled home
+`vanta-rpm-signing-key.private.asc` needs a durable, access-controlled home
 -- a password manager's file storage, an encrypted volume -- before the
 scratch keyring and loose `.asc` files are deleted. Losing the only copy
 means the next key generated cannot re-sign anything the old one did, and
-every user who fetched the old `RPM-GPG-KEY-cordial` needs telling, which is
+every user who fetched the old `RPM-GPG-KEY-vanta` needs telling, which is
 the rotation case below.
 
 ### What ties this together in CI
@@ -186,11 +186,11 @@ Three files, three jobs, in order, the same shape
 [`apt-repository.md`](apt-repository.md) describes for apt:
 
 1. **`release.yml`**'s existing `rpm` job builds
-   `cordial-<version>-<release>.fc44.x86_64.rpm` inside
-   `registry.fedoraproject.org/fedora:44` and uploads it as the `cordial-rpm`
+   `vanta-<version>-<release>.fc44.x86_64.rpm` inside
+   `registry.fedoraproject.org/fedora:44` and uploads it as the `vanta-rpm`
    artifact, exactly as it did before this change.
 2. **`.github/workflows/yum.yml`**, new, triggers when that job's workflow
-   finishes, downloads `cordial-rpm` from that specific run, and runs
+   finishes, downloads `vanta-rpm` from that specific run, and runs
    `build-repo.sh` against it -- but only when `RPM_GPG_PRIVATE_KEY` is set;
    otherwise it stops after saying so, and produces no artifact at all
    rather than an unsigned one (see "Why this repository refuses to ever
@@ -202,7 +202,7 @@ Three files, three jobs, in order, the same shape
    Pages has no per-path incremental publish, so a second workflow deploying
    independently would replace the site rather than add to it.
    `flatpak.yml`'s "Assemble the Pages tree" step looks up `yum.yml`'s latest
-   successful run, downloads `cordial-rpm-repo` from it, and copies it into
+   successful run, downloads `vanta-rpm-repo` from it, and copies it into
    `pages/rpm/` alongside the existing `pages/apt/` and `pages/repo/`. If no
    successful `yum.yml` run exists yet -- no key, or it has simply never run
    -- that step says so and publishes without `/rpm/`, the graceful
@@ -219,15 +219,15 @@ has already cost real debugging time to get right.
 ### Installing it, and verifying the key
 
 ```bash
-sudo curl -fsSL https://luohoa97.github.io/cordial/cordial.repo \
-    -o /etc/yum.repos.d/cordial.repo
-sudo dnf install cordial
+sudo curl -fsSL https://gpt4omni.github.io/vanta/vanta.repo \
+    -o /etc/yum.repos.d/vanta.repo
+sudo dnf install vanta
 ```
 
 **Verify the key before you trust it**, out of band from this file:
 
 ```bash
-curl -fsSL https://luohoa97.github.io/cordial/rpm/RPM-GPG-KEY-cordial | gpg --show-keys
+curl -fsSL https://gpt4omni.github.io/vanta/rpm/RPM-GPG-KEY-vanta | gpg --show-keys
 ```
 
 ### The key
@@ -237,13 +237,13 @@ still wants to be added here by whoever holds the key.
 
 ### Key rotation
 
-**A user who already has `/etc/yum.repos.d/cordial.repo` keeps trusting the
+**A user who already has `/etc/yum.repos.d/vanta.repo` keeps trusting the
 old key until they replace it, the same correct failure mode
 `apt-repository.md` describes for apt.** dnf checks the current
 `repomd.xml.asc` against whatever `gpgkey=` in the `.repo` file points at, on
 every `dnf install`/`dnf update`. If the signing key is ever rotated, new
 `repomd.xml` files signed by the new key will not verify against a
-`RPM-GPG-KEY-cordial` a user's dnf has already imported and cached, and dnf
+`RPM-GPG-KEY-vanta` a user's dnf has already imported and cached, and dnf
 starts failing loudly with a signature error rather than silently accepting
 either key. The fix is the same shape: re-fetch the key at the published URL
 (`sudo dnf clean all` if dnf has cached the old one under
@@ -266,7 +266,7 @@ channel.
 **Not started, and the case for starting it is weaker than it looks** -- the
 same honest framing `apt-repository.md` gives Debian, applied to Fedora's
 own process, which is stricter in the one place that matters most for
-Cordial.
+Vanta.
 
 **The process itself.** Fedora does not accept a package directly from an
 upstream project either. It needs:
@@ -274,16 +274,16 @@ upstream project either. It needs:
 - A Fedora account and a package review request filed in Fedora's Pagure
   (`fedora-review`), the rough equivalent of Debian's ITP bug.
 - A spec that satisfies the Fedora Packaging Guidelines -- closer to
-  `packaging/rpm/cordial.spec` in shape than Debian's packaging would be to
+  `packaging/rpm/vanta.spec` in shape than Debian's packaging would be to
   `packaging/deb/`, since both are native RPM/spec formats, but Fedora's
   guidelines are their own document and a formal review checks the spec line
   by line against them, not against whatever already builds.
 - A sponsor: an existing Fedora packager who reviews and can vouch for a new
   contributor before they can commit packages themselves, the same
-  gatekeeping role Debian's sponsor plays. Cordial has none today.
+  gatekeeping role Debian's sponsor plays. Vanta has none today.
 
 **Licensing is not the obstacle**, for the same reason `apt-repository.md`
-gives: Cordial itself is GPL-3.0-or-later, and the vendored third-party code
+gives: Vanta itself is GPL-3.0-or-later, and the vendored third-party code
 in [`NOTICE`](../../NOTICE) is independently permissively licensed
 throughout.
 
@@ -291,7 +291,7 @@ throughout.
 Debian's `main`/`contrib` split, not looser.** Debian at least has a
 `contrib` section for software that is itself free but depends on
 non-free software to be useful -- the section `apt-repository.md` argues
-Cordial's own shape (loading a proprietary binary it fetches at runtime)
+Vanta's own shape (loading a proprietary binary it fetches at runtime)
 would realistically land in, if anywhere. **Fedora has no equivalent
 section in its own official repositories.** Software whose purpose depends
 on something Fedora will not ship itself does not have a softer landing
@@ -305,12 +305,12 @@ repository run by a separate community specifically to host packages Fedora
 itself will not carry for licensing or patent reasons -- multimedia codecs,
 proprietary graphics drivers, and games or launchers built around one
 specific non-free target are its ordinary content, which is exactly
-Cordial's shape. Submitting to RPM Fusion is a real option this document
+Vanta's shape. Submitting to RPM Fusion is a real option this document
 does not rule out, but it is **a separate community with its own review and
 its own account system**, not a shortcut into Fedora proper, and nothing
 towards it has been started either. Whether it is worth pursuing instead of,
 or alongside, this document's §1 is a decision for whoever holds the project
-to make, not one this document resolves on Cordial's behalf.
+to make, not one this document resolves on Vanta's behalf.
 
 **The honest conclusion:** a Fedora review request is realistic to *file* at
 any point, but landing in Fedora's own repositories is not the likely
@@ -319,7 +319,7 @@ proprietary binary, and RPM Fusion, if pursued, is a different project's
 process with its own timeline. **§1 is therefore the plan, not a stopgap for
 §2** -- the same framing `apt-repository.md` gives Debian and
 [`flatpak-remote-signing.md`](flatpak-remote-signing.md) gives Flathub, for
-the same underlying reason: the channel Cordial controls is the one that can
+the same underlying reason: the channel Vanta controls is the one that can
 actually ship this week.
 
 ## Notes moved from docs/install.md (2026-10-02)

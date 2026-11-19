@@ -10,7 +10,7 @@ Phase 0 done ([`base-evaluation.md`](base-evaluation.md)). Phase 1 has begun —
 
 ## 1. Task A verdict — no CPU architecture translation is required
 
-> **Roblox ships a complete x86-64 Android build. On x86-64 hosts, Cordial executes
+> **Roblox ships a complete x86-64 Android build. On x86-64 hosts, Vanta executes
 > Roblox's own native code directly. Only CPU *feature* gaps require emulation.**
 
 This is the tractable outcome described in §16.2. Phase 1 is a loader, a bionic shim,
@@ -147,8 +147,8 @@ Vendored at [`third_party/libbadcpu/`](../third_party/libbadcpu) from `sober-oss
 commit `e48a905efdffa1ad49a3ebb873895bcff73aa935`, MIT, attribution in
 [`third_party/libbadcpu/README.md`](../third_party/libbadcpu/README.md).
 
-Built as part of Cordial's native subtree (`native/CMakeLists.txt`), which Cargo
-drives via `cordial-linker-sys`'s build script. Meson was dropped when the bionic
+Built as part of Vanta's native subtree (`native/CMakeLists.txt`), which Cargo
+drives via `vanta-linker-sys`'s build script. Meson was dropped when the bionic
 linker arrived: that subtree is CMake-and-Clang-only, and two build systems for one
 repository was not worth the small independence libbadcpu had.
 
@@ -181,7 +181,7 @@ pessimistic, and the correction is load-bearing for scoping.
 Sober's own attribution notice credits **ChristopherHX** and **MCMrARM** (MIT) plus the
 Android Open Source Project (Apache 2.0). Those are the authors of the
 [`minecraft-linux`](https://github.com/minecraft-linux) stack, which solves precisely
-Cordial's Phase 1–2 problem for a different Android app:
+Vanta's Phase 1–2 problem for a different Android app:
 
 | Component | What it is | Maps to |
 |---|---|---|
@@ -195,7 +195,7 @@ Roblox-specific work* — which is consistent with everything observed and would
 a small team got it working.
 
 **This does not make Phases 1–2 easy.** Minecraft is not Roblox, the graphics and input
-paths are Cordial's own problem, and integrating a foreign linker is real work. But
+paths are Vanta's own problem, and integrating a foreign linker is real work. But
 "port and adapt a working MIT-licensed Android linker and JNI VM" is a materially
 different — and smaller — task than "write an Android linker from scratch", and it should
 be the first thing evaluated when Phase 1 starts. Read those repositories before writing
@@ -217,7 +217,7 @@ an open-ended one.
 
 **(b) Roblox uses AGDK `GameActivity`.** `Java_com_google_androidgamesdk_GameActivity_initializeNativeCode`
 is exported and the `GameActivity` and `gametextinput` classes are in the dex. `GameActivity`
-is **Apache-2.0 open source**, so the entire activity/surface/input/IME contract Cordial
+is **Apache-2.0 open source**, so the entire activity/surface/input/IME contract Vanta
 must satisfy is readable rather than inferred. This is the largest single de-risking of
 Phase 2 and it should shape the order of work.
 
@@ -243,7 +243,7 @@ One more assumption worth retesting early: spec §4.3 assumes the passkey call a
 `androidx.credentials.CredentialManager`. The APK carries both the **platform**
 `android.credentials.CredentialManager` (12 classes) and the AndroidX **Play Services**
 backend (33 classes). Target SDK 35 means the platform path should win, but that depends
-on the API level Cordial reports. Confirm by instrumenting the call, not by reasoning
+on the API level Vanta reports. Confirm by instrumenting the call, not by reasoning
 about it.
 
 ---
@@ -252,7 +252,7 @@ about it.
 
 Stated plainly, so nothing here reads as more settled than it is.
 
-- **Nothing has been run.** Cordial launches no Roblox process. Nothing beyond
+- **Nothing has been run.** Vanta launches no Roblox process. Nothing beyond
   `libbadcpu` is written. The inventory is a map, not an implementation.
 - **The API surface is enumerated, not understood.** §5 lists *which* APIs Roblox
   references. It does not establish what behaviour each one needs, which is only knowable
@@ -275,7 +275,7 @@ Stated plainly, so nothing here reads as more settled than it is.
 
 ## 8. Phase 1 progress — the engine loads
 
-`cordial-run` maps Roblox's `libroblox.so` with the AOSP bionic linker, resolves
+`vanta-run` maps Roblox's `libroblox.so` with the AOSP bionic linker, resolves
 every relocation, and runs all of its static constructors to completion in ~35 ms.
 105.6 MB of code, `JNI_OnLoad` resolved, **zero stubs called**, exit 0.
 
@@ -305,14 +305,14 @@ lldb's backtrace past the innermost frame was guesswork that sent the first
 investigation to the wrong function entirely.
 
 What worked was owning the symbol table: any import can be replaced with a
-wrapper. `CORDIAL_TRACE=1` logs the libc calls Roblox makes, which is what turned
+wrapper. `VANTA_TRACE=1` logs the libc calls Roblox makes, which is what turned
 an anonymous abort into `sysconf(39) = 1000` in one run. `abort`,
 `__stack_chk_fail` and `__android_log_assert` are wrapped unconditionally — a
 silent abort costs more time than the wrapper costs anything.
 
 ### 8.2 JNI_OnLoad — reached, and it marks the Phase 2 boundary
 
-With `libjnivm` standing up a `JavaVM`, `cordial-run --jni-onload` calls Roblox's
+With `libjnivm` standing up a `JavaVM`, `vanta-run --jni-onload` calls Roblox's
 `JNI_OnLoad`. It does not return. Two worker threads — neither the calling thread —
 immediately call back through the JNI invocation interface with a **null**
 `JavaVM`, and libjnivm throws.
@@ -333,7 +333,7 @@ Phase 1.
 `GameActivity` being Apache-2.0 (§5(b)) is what makes this tractable: the sequence
 is readable rather than inferred.
 
-A practical note for whoever picks this up: an exception escaping a thread Cordial
+A practical note for whoever picks this up: an exception escaping a thread Vanta
 did not start cannot be caught anywhere, so the default outcome is `std::terminate`
 and a core dump carrying no information at all. `native/jni_shim.cpp` installs a
 terminate handler that prints the thread, the `what()`, and a backtrace. Without it

@@ -7,7 +7,7 @@ established without it, and where the trail runs out.
 
 ## The request does not match anything on file
 
-Neither Cordial's own issue tracker (`gh issue list --state all`, 51 issues,
+Neither Vanta's own issue tracker (`gh issue list --state all`, 51 issues,
 searched for `nvidia`/`texture`/`tm2`/`shader`/`astc`/`etc2` in title and body)
 nor `docs/NEXT.md` names an NVIDIA-plus-texture report. The only NVIDIA item on
 record is TASKS.md's **T2**, and it is not about textures:
@@ -27,13 +27,13 @@ something this document confirms — nobody traced the exact wording back to a
 person.
 
 **TextureManager2 itself already has a long, measured history here, and it
-argues against the premise.** `crates/cordial-runtime/src/flags.rs` (around
-line 390) and `docs/analysis/flag-init.md` §20 record that Cordial once shipped
+argues against the premise.** `crates/vanta-runtime/src/flags.rs` (around
+line 390) and `docs/analysis/flag-init.md` §20 record that Vanta once shipped
 `FStringGraphicsTextureManager2DenyPattern2=".*"` as a default — forcing the
 engine onto the legacy TM1 — copied from a mocktail commit titled "Another fix
 for low quality texture." It was removed because:
 
-- the blurring it was meant to fix **was never once observed on Cordial**, by
+- the blurring it was meant to fix **was never once observed on Vanta**, by
   anyone, on any hardware;
 - forcing TM1 broke lobby rendering and slowed loading, measured from real
   play;
@@ -53,7 +53,7 @@ Sober runs the same engine on the same class of desktop hardware and has a
   > which still supported the texture override fastflag. We had to remove that
   > downgrade because it was breaking the Mesh LOD system.
 
-  Sober tried the identical TM1-forcing flag Cordial once shipped, for the
+  Sober tried the identical TM1-forcing flag Vanta once shipped, for the
   identical reason, and reverted it for the identical class of regression
   (something else broke). Two independent projects converged on the same
   finding without sharing code.
@@ -73,9 +73,9 @@ Sober runs the same engine on the same class of desktop hardware and has a
   "couldn't find a supported graphics device") — a real and large NVIDIA
   problem class on this engine, just not this one.
 
-## What Cordial's Vulkan shim actually does before this session
+## What Vanta's Vulkan shim actually does before this session
 
-`crates/cordial-runtime/src/android/vulkan.rs` interposes Roblox's Vulkan
+`crates/vanta-runtime/src/android/vulkan.rs` interposes Roblox's Vulkan
 entry points onto the host loader (see its module doc). Before this session it
 intercepted exactly five names: `vkCreateInstance`,
 `vkEnumerateInstanceExtensionProperties`, `vkCreateAndroidSurfaceKHR`,
@@ -83,9 +83,9 @@ intercepted exactly five names: `vkCreateInstance`,
 (WSI plumbing), and `vkQueuePresentKHR` (present-mode override and counting).
 **Nothing touched format or feature queries, image creation, or shader module
 creation** — every one of those calls went straight through to the real host
-driver, unmodified. So the premise that Cordial needs to *translate* anything
+driver, unmodified. So the premise that Vanta needs to *translate* anything
 at the Vulkan boundary for texture formats was, before this session, untested
-in both directions: nobody had shown the engine asks a format question Cordial
+in both directions: nobody had shown the engine asks a format question Vanta
 would need to answer differently, and nobody had shown it doesn't.
 
 TASKS.md's own "detex: premise unproven" section named exactly this gap:
@@ -95,7 +95,7 @@ TASKS.md's own "detex: premise unproven" section named exactly this gap:
 > recording which `VK_FORMAT_*` the engine requests and whether any are
 > refused.
 
-That measurement had never been taken for Cordial. This session takes it.
+That measurement had never been taken for Vanta. This session takes it.
 
 ## What was added, and what it measured
 
@@ -103,18 +103,18 @@ That measurement had never been taken for Cordial. This session takes it.
 `vkGetPhysicalDeviceFormatProperties` (logs/counts the format family queried —
 ETC2, ASTC, BC, or other — and whether the driver's answer is fully
 unsupported) and on `vkCreateShaderModule` (a call count). Both are wired into
-the existing `CORDIAL_COUNT_GL=1` report and `CORDIAL_ANDROID_TRACE=1` tracing
+the existing `VANTA_COUNT_GL=1` report and `VANTA_ANDROID_TRACE=1` tracing
 that `glcount.rs` and `android::trace` already provide for other graphics
 calls — no new mechanism, same switches. Neither can change engine behaviour
 by itself; see `vk_get_physical_device_format_properties`'s doc comment.
 
 A second, explicitly test-only capability was added and gated behind
-`CORDIAL_MASK_MOBILE_TEXTURE_FORMATS=1` (off by default, never set by any
+`VANTA_MASK_MOBILE_TEXTURE_FORMATS=1` (off by default, never set by any
 shipped configuration): when set, the same interposer reports ETC2 and ASTC as
 **fully unsupported** to the engine regardless of what the real driver says.
 This substitutes for NVIDIA hardware this project does not have. See
 [ADR-042](../adr/ADR-042-texture-format-query-observability.md) for why this
-lives in Cordial's own shim rather than being a permanent behaviour change,
+lives in Vanta's own shim rather than being a permanent behaviour change,
 and for the ADR-001/003 boundary argument.
 
 **Why not point the client at real desktop-GPU-shaped hardware instead of
@@ -140,13 +140,13 @@ accordingly below.
 
 ## Measurements
 
-All runs: `target-toolbox/release/cordial-run --host-libc --game-activity
+All runs: `target-toolbox/release/vanta-run --host-libc --game-activity
 --profile tex`, signed-out landing UI (no account, no game join — the daily
 signed-in test cap was already used today), `XDG_DATA_HOME` pointed at a
-throwaway root, a nested headless `sway` under `distrobox enter cordial` on
-its own `WAYLAND_DISPLAY`, `CORDIAL_COUNT_GL=1 CORDIAL_ANDROID_TRACE=1`. Built
+throwaway root, a nested headless `sway` under `distrobox enter vanta` on
+its own `WAYLAND_DISPLAY`, `VANTA_COUNT_GL=1 VANTA_ANDROID_TRACE=1`. Built
 at this session's
-HEAD (`crates/cordial-runtime/src/android/vulkan.rs` and `glcount.rs` changes
+HEAD (`crates/vanta-runtime/src/android/vulkan.rs` and `glcount.rs` changes
 below), on top of commit `38528b8` (`9d43ce2` plus two unrelated packaging
 commits the maintainer made concurrently on this shared host — see the
 session's commit log; neither touches `crates/`).
@@ -178,14 +178,14 @@ Engine log: `Using TM2 in MipPackStream mode`, no `Using TM1` anywhere, no
 Vulkan error.
 
 **The engine queries ASTC directly, at the signed-out landing screen, before
-any game is joined.** That settles TASKS.md's prerequisite: Cordial's build
+any game is joined.** That settles TASKS.md's prerequisite: Vanta's build
 does exercise the compressed-format query path, not only a code path that
 assumes support. It never queried ETC2 in this window — worth keeping open
 rather than closing: the landing UI may simply have no ETC2-encoded asset in
 it, or the engine may gate ETC2 on the `VkPhysicalDeviceFeatures` boolean
 instead of a per-format query (not instrumented this session — see below).
 
-### Masked (`CORDIAL_MASK_MOBILE_TEXTURE_FORMATS=1`: ASTC forced to zero support)
+### Masked (`VANTA_MASK_MOBILE_TEXTURE_FORMATS=1`: ASTC forced to zero support)
 
 ```
 vkGetPhysicalDeviceFormatProperties(ETC2)   0
@@ -249,7 +249,7 @@ truth is told or hidden, at least for everything a landing screen exercises.
   observe here regardless.
 - **Real NVIDIA hardware behaviour remains `INFERRED`.** Everything above is
   either directly measured on Intel, or measured against a masked answer this
-  session invented to stand in for NVIDIA. Cordial's own device-selection log
+  session invented to stand in for NVIDIA. Vanta's own device-selection log
   line and driver report on a real NVIDIA part could differ from both.
 
 ## Conclusion
@@ -262,7 +262,7 @@ project's own measured history or a direct experiment built to test it this
 session. Building an ASTC/ETC2 transcoder (TASKS.md's T3) on the strength of
 this request would have repeated the exact mistake `flags.rs`'s own comment
 already documents: shipping a remedy for a symptom nobody has actually
-reproduced on Cordial, on the strength of another project's flag title.
+reproduced on Vanta, on the strength of another project's flag title.
 
 What was kept: a small, off-by-default observability addition
 (`vkGetPhysicalDeviceFormatProperties`/`vkCreateShaderModule` counting) that

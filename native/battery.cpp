@@ -3,7 +3,7 @@
 // `NativeGLInterface.reportBatteryStateChanged(II)V` and
 // `NativeGLInterface.reportBatteryStatus(Lcom/roblox/engine/jni/model/
 // BatteryStatus;)V` are exported by every build this project has looked at and
-// neither had ever been called. See `crates/cordial-runtime/src/battery.rs` for
+// neither had ever been called. See `crates/vanta-runtime/src/battery.rs` for
 // the sysfs read, the argument-meaning reasoning (`docs/traces/
 // waydroid-roblox-startup.log.gz` settles what the two ints track together, not
 // their exact numbering, which is `INFERRED` from Android's own public
@@ -11,7 +11,7 @@
 // unset rather than guessed at.
 //
 // `BatteryStatus`'s fields were not guessed either. `tools/dex_method.py
-// ~/.cache/cordial-dex/ --class .../BatteryStatus` shows only a no-arg
+// ~/.cache/vanta-dex/ --class .../BatteryStatus` shows only a no-arg
 // `<init>()V` — a plain field-carrying object, the same shape as
 // `DeviceStaticParams` in `android_classes.cpp` — so this project's own
 // `tools/dex_fields.py` was written to answer the next question that tool
@@ -35,7 +35,7 @@
 // int fields, i.e. a lookup from Android's raw number to Roblox's own —
 // confirming the outer object's plain-`Integer` fields are meant to receive
 // Android's raw numbers, with Roblox doing its own translation on the far
-// side, not Cordial's job to replicate.
+// side, not Vanta's job to replicate.
 //
 // **What was not established, because no APK was available in the session that
 // wrote this**: the actual live-run confirmation every other class in this
@@ -48,7 +48,7 @@
 // under-claim (nothing here uses fields the engine ignores as evidence they
 // exist) but it also has not been watched happen. Confirming that, or finding
 // out some of these fifteen are never read, is `tools/hook_descriptors.py`'s
-// job for spelling and `CORDIAL_JNI_TRACE=1` in a real run for the rest.
+// job for spelling and `VANTA_JNI_TRACE=1` in a real run for the rest.
 
 #include <jnivm.h>
 
@@ -58,7 +58,7 @@
 #include <memory>
 #include <string>
 
-namespace cordial {
+namespace vanta {
 
 using jnivm::Class;
 using jnivm::ENV;
@@ -82,9 +82,9 @@ jnivm::ENV* process_env();
 // classes' private layout, which would be exactly the kind of ART-internals
 // guess `docs/adr/` and AGENTS.md both warn away from.
 //
-// Kept minimal on purpose: no `valueOf`, no caching, no interning. Cordial is
+// Kept minimal on purpose: no `valueOf`, no caching, no interning. Vanta is
 // always the one constructing these — the engine only ever reads a
-// `BatteryStatus` Cordial built — so there is no call path that needs a
+// `BatteryStatus` Vanta built — so there is no call path that needs a
 // factory the engine itself invokes.
 
 class JavaInteger : public Object {
@@ -157,7 +157,7 @@ static std::shared_ptr<JavaFloat> box_float(jfloat v) {
 /// "sysfs on this machine did not answer this question" — a boxed type reads
 /// as Java `null` from an unset `shared_ptr`, not a fabricated zero.
 /// `battery_low` and `battery_saver_mode` are never set by anything in this
-/// file: Cordial has no low-battery threshold or power-saver concept of its
+/// file: Vanta has no low-battery threshold or power-saver concept of its
 /// own to report, and inventing one — Android's real low-battery event is a
 /// system policy decision, not a sysfs fact — would be exactly the kind of
 /// comfortable lie this project's `native/opensles.cpp` precedent argues
@@ -216,7 +216,7 @@ public:
 };
 
 /// Registers the box types and `BatteryStatus`. Called once, from
-/// `android_classes.cpp`'s `cordial_register_android_classes` — see that
+/// `android_classes.cpp`'s `vanta_register_android_classes` — see that
 /// file's own list of `register_*_classes` calls, which this joins rather than
 /// duplicates the pattern of.
 void register_battery_classes(jnivm::ENV* env) {
@@ -227,12 +227,12 @@ void register_battery_classes(jnivm::ENV* env) {
     BatteryStatus::Register(env);
 }
 
-} // namespace cordial
+} // namespace vanta
 
 // --------------------------------------------------------------- extern "C"
 //
 // The Rust-facing surface, matching the shape `init_params.cpp`'s
-// `cordial_pass_current_refresh_rate` and friends already establish: resolve
+// `vanta_pass_current_refresh_rate` and friends already establish: resolve
 // the exported native by symbol name on the Rust side, hand the function
 // pointer in here, and this file does the `jnivm::ENV`/`jobject` plumbing Rust
 // cannot name.
@@ -242,19 +242,19 @@ extern "C" {
 /// `NativeGLInterface.reportBatteryStateChanged(II)V`.
 ///
 /// `status` and `plugged` are Android's own `BatteryManager` raw values — see
-/// this file's header and `crates/cordial-runtime/src/battery.rs` for where
+/// this file's header and `crates/vanta-runtime/src/battery.rs` for where
 /// that reading came from and what about it is `INFERRED`.
-int cordial_report_battery_state_changed(void* fn, int status, int plugged, char* err,
+int vanta_report_battery_state_changed(void* fn, int status, int plugged, char* err,
                                           size_t err_len) {
     using Call = void (*)(JNIEnv*, jclass, jint, jint);
-    auto* env = cordial::process_env();
+    auto* env = vanta::process_env();
     if (!fn || !env) {
         snprintf(err, err_len, "no JavaVM, or reportBatteryStateChanged is not exported");
         return -1;
     }
     try {
         auto cls = env->GetClass("com/roblox/engine/jni/NativeGLInterface");
-        reinterpret_cast<Call>(fn)(env->GetJNIEnv(), (jclass)cordial::to_jni(env, cls),
+        reinterpret_cast<Call>(fn)(env->GetJNIEnv(), (jclass)vanta::to_jni(env, cls),
                                    static_cast<jint>(status), static_cast<jint>(plugged));
         return 0;
     } catch (const std::exception& e) {
@@ -270,15 +270,15 @@ int cordial_report_battery_state_changed(void* fn, int status, int plugged, char
 /// not need fifteen positional parameters of five different types. Each
 /// nullable field carries its own `has_*` flag; when clear the corresponding
 /// value is ignored and the Java field is left null, not zeroed — the whole
-/// point being that Cordial only claims what sysfs actually answered. Mirrored
-/// on the Rust side as a `#[repr(C)]` struct in `crates/cordial-linker-sys`.
+/// point being that Vanta only claims what sysfs actually answered. Mirrored
+/// on the Rust side as a `#[repr(C)]` struct in `crates/vanta-linker-sys`.
 ///
 /// `temperature_c` is a real Celsius float, not the tenths-of-a-degree integer
 /// Android's own `EXTRA_TEMPERATURE` uses and `battery.rs` reads out of
 /// sysfs's `temp` node — this class's field is declared `Ljava/lang/Float;`,
 /// not `Integer`, which only makes sense as an already-converted value, so the
 /// division happens on the Rust side before this struct is filled in.
-struct CordialBatteryStatus {
+struct VantaBatteryStatus {
     int32_t has_present;
     int32_t present;
     int32_t has_percentage;
@@ -306,36 +306,36 @@ struct CordialBatteryStatus {
 };
 
 /// `NativeGLInterface.reportBatteryStatus(Lcom/roblox/engine/jni/model/BatteryStatus;)V`.
-int cordial_report_battery_status(void* fn, const CordialBatteryStatus* in, char* err,
+int vanta_report_battery_status(void* fn, const VantaBatteryStatus* in, char* err,
                                    size_t err_len) {
     using Call = void (*)(JNIEnv*, jclass, jobject);
-    auto* env = cordial::process_env();
+    auto* env = vanta::process_env();
     if (!fn || !env || !in) {
         snprintf(err, err_len, "no JavaVM, no reading, or reportBatteryStatus is not exported");
         return -1;
     }
     try {
-        auto status = std::make_shared<cordial::BatteryStatus>();
-        if (in->has_present) status->present = cordial::box_bool(in->present != 0);
-        if (in->has_percentage) status->batteryPercentage = cordial::box_int(in->percentage);
-        if (in->has_status) status->status = cordial::box_int(in->status);
-        if (in->has_health) status->health = cordial::box_int(in->health);
-        if (in->has_voltage_mv) status->voltage = cordial::box_int(in->voltage_mv);
-        if (in->has_current_now_ua) status->currentNow = cordial::box_int(in->current_now_ua);
-        if (in->has_current_avg_ua) status->currentAverage = cordial::box_int(in->current_avg_ua);
+        auto status = std::make_shared<vanta::BatteryStatus>();
+        if (in->has_present) status->present = vanta::box_bool(in->present != 0);
+        if (in->has_percentage) status->batteryPercentage = vanta::box_int(in->percentage);
+        if (in->has_status) status->status = vanta::box_int(in->status);
+        if (in->has_health) status->health = vanta::box_int(in->health);
+        if (in->has_voltage_mv) status->voltage = vanta::box_int(in->voltage_mv);
+        if (in->has_current_now_ua) status->currentNow = vanta::box_int(in->current_now_ua);
+        if (in->has_current_avg_ua) status->currentAverage = vanta::box_int(in->current_avg_ua);
         if (in->has_charge_counter_uah)
-            status->chargeCounter = cordial::box_int(in->charge_counter_uah);
-        if (in->has_power_now_uw) status->power = cordial::box_int(in->power_now_uw);
+            status->chargeCounter = vanta::box_int(in->charge_counter_uah);
+        if (in->has_power_now_uw) status->power = vanta::box_int(in->power_now_uw);
         if (in->has_technology && in->technology)
-            status->technology = std::make_shared<cordial::String>(std::string(in->technology));
-        if (in->has_temperature_c) status->temperature = cordial::box_float(in->temperature_c);
-        if (in->has_plugged) status->plugged = cordial::box_int(in->plugged);
+            status->technology = std::make_shared<vanta::String>(std::string(in->technology));
+        if (in->has_temperature_c) status->temperature = vanta::box_float(in->temperature_c);
+        if (in->has_plugged) status->plugged = vanta::box_int(in->plugged);
         // batteryLow, batterySaverMode, energyCounter: never set. See the
         // class's own doc comment for why.
 
         auto cls = env->GetClass("com/roblox/engine/jni/NativeGLInterface");
-        reinterpret_cast<Call>(fn)(env->GetJNIEnv(), (jclass)cordial::to_jni(env, cls),
-                                   (jobject)cordial::to_jni(env, status));
+        reinterpret_cast<Call>(fn)(env->GetJNIEnv(), (jclass)vanta::to_jni(env, cls),
+                                   (jobject)vanta::to_jni(env, status));
         return 0;
     } catch (const std::exception& e) {
         snprintf(err, err_len, "%s", e.what());

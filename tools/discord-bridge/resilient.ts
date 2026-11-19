@@ -3,7 +3,7 @@
  *
  * The bridge had no retry at all: every call threw on the first non-`ok`
  * response, and a deferred interaction that threw left the reporter looking at
- * "Cordial Issues is thinking" for ever. The gap that mattered was **429** --
+ * "Vanta Issues is thinking" for ever. The gap that mattered was **429** --
  * Discord rate-limits and tells you exactly how long to wait, and the old code
  * treated that identically to a permanent failure while discarding the number
  * it was handed.

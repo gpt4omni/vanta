@@ -47,7 +47,7 @@ const response = await fetch(`https://discord.com/api/v10/channels/${channel}/me
   headers: {
     authorization: `Bot ${token}`,
     "content-type": "application/json",
-    "user-agent": "cordial-issue-bridge",
+    "user-agent": "vanta-issue-bridge",
   },
   body: JSON.stringify(message),
 });

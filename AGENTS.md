@@ -4,14 +4,14 @@ Instructions for any coding agent working in this repository. Human contributors
 should read [CONTRIBUTING.md](CONTRIBUTING.md), which says the same things at
 more length and explains why.
 
-Cordial loads Roblox's official Android x86-64 `libroblox.so` natively on Linux:
+Vanta loads Roblox's official Android x86-64 `libroblox.so` natively on Linux:
 a ported AOSP bionic linker, a bionic/glibc shim, libjnivm in place of Android's
 ART, and a framework layer that answers the calls the client makes into the
 platform.
 
 ## Reach for the MCP first
 
-**`tools/cordial-mcp.py` is how this client is driven, inspected and debugged.
+**`tools/vanta-mcp.py` is how this client is driven, inspected and debugged.
 Prefer it to anything you would otherwise write yourself.** Start the client and
 attach:
 
@@ -26,20 +26,20 @@ look up and nothing to configure.
 
 What it gives you, and why each one exists:
 
-- **`cordial_screenshot`** reads the frame out of Cordial's own Vulkan
+- **`vanta_screenshot`** reads the frame out of Vanta's own Vulkan
   swapchain, so it is unaffected by occlusion, by another window covering the
   client, or by the window being off-screen. It is also the only thing on this
   host that can photograph a Wayland window at all — five other routes were
   tried and every one was refused by the compositor or the kernel.
-- **`cordial_info`** returns the present count. **Called twice a few seconds
+- **`vanta_info`** returns the present count. **Called twice a few seconds
   apart it is the single best test for a wedged client**, because a wedged
   engine leaves it fixed while everything else keeps running. That reading — 42
   presents against 74 million polls — is what finally characterised the
   2026-08-21 freeze, in seconds, after a day of guessing.
-- **`cordial_click` / `cordial_move` / `cordial_key` / `cordial_text` /
-  `cordial_scroll`** drive Cordial's own input entry points. Never synthesise
+- **`vanta_click` / `vanta_move` / `vanta_key` / `vanta_text` /
+  `vanta_scroll`** drive Vanta's own input entry points. Never synthesise
   input at the compositor; see the caution near the end of this file.
-- **`cordial_loopers`** reports every `ALooper` in the process: the thread that
+- **`vanta_loopers`** reports every `ALooper` in the process: the thread that
   owns it, how many descriptors it has registered, its poll and event counts,
   and how long since a poll last found anything. **This is what separates a
   client that is stuck from one that is merely idle** -- a backtrace shows
@@ -47,18 +47,18 @@ What it gives you, and why each one exists:
   that poll return. It is also how the engine's busy-poll was quantified: 9.7
   million polls a second at 99.7% of a core with the idle backoff off, 3,261 a
   second at 1.2% with it on, same frame rate.
-- **`cordial_textbox`** is the only readback of typed text there is. The editor
-  on a focused Roblox TextBox is a GTK widget, and `cordial_screenshot` reads
+- **`vanta_textbox`** is the only readback of typed text there is. The editor
+  on a focused Roblox TextBox is a GTK widget, and `vanta_screenshot` reads
   the engine's swapchain, which cannot see one -- so before this verb existed,
   every check of typing asserted that the *path* worked and left "did the right
   characters end up in the box" to a human squinting at a screenshot. It reports
   the editor's real rectangle and which source placed it, plus the character
   count; the text itself is withheld unless
-  `CORDIAL_TRACE_TEXT_SHOW_PASSWORDS` is set on the client, because a focused
+  `VANTA_TRACE_TEXT_SHOW_PASSWORDS` is set on the client, because a focused
   field is as often a password box as a search bar.
-- **`cordial_backtrace`** attaches lldb and quotes the process CPU beside the
+- **`vanta_backtrace`** attaches lldb and quotes the process CPU beside the
   stacks, because a spinning pump and a blocked one produce identical
-  backtraces. **`cordial_debugger`** runs arbitrary debugger commands.
+  backtraces. **`vanta_debugger`** runs arbitrary debugger commands.
 
 **Write a bespoke harness only when the MCP genuinely cannot answer the
 question, and say why in the commit.** Every ad-hoc script written here in one
@@ -151,8 +151,8 @@ the diagnostics for each.
 |---|---|---|
 | A new Roblox build fails to load, or needs symbols we lack | `roblox_update.yml` | `cannot locate symbol` at load, or a called stub on exit |
 | An Android expectation is unanswered, so a feature silently does nothing | `broken_feature.yml` | `Constructed Unresolved symbol` in the jnivm log; audio is the live example |
-| Something Cordial or a plugin should be able to do | `feature.yml` | No engine call is involved |
-| Cordial misbehaves at something it already does | `bug_report.yml` | It used to work, or clearly should |
+| Something Vanta or a plugin should be able to do | `feature.yml` | No engine call is involved |
+| Vanta misbehaves at something it already does | `bug_report.yml` | It used to work, or clearly should |
 | You established or disproved something | `finding.yml` | The output is knowledge, not code |
 
 **Missing symbols.** `docs/analysis/undefined-symbols.tsv` generates the stub
@@ -209,8 +209,8 @@ Asset overlays **are** in scope, non-destructively and off by default
 ## Plugin capabilities expose effects, not channels
 
 A plugin never receives a socket, a D-Bus connection, or a file descriptor.
-Cordial holds the permission and performs the effect; the plugin sends a payload.
-`presence.set` takes a presence structure and Cordial owns the Discord socket.
+Vanta holds the permission and performs the effect; the plugin sends a payload.
+`presence.set` takes a presence structure and Vanta owns the Discord socket.
 
 A broker should be a payload type and an effect. If a proposed capability needs a
 design document, it is too broad and wants splitting.
@@ -259,7 +259,7 @@ and matching it is not optional.
 
 **A user who has to ask in Discord is a documentation bug, and it is the kind
 this project keeps shipping.** On 2026-08-28 two people asked, an hour apart,
-where to find plugins and how to install one. Cordial had shipped a plugin
+where to find plugins and how to install one. Vanta had shipped a plugin
 system, an installer, a signature-checked registry format, a permission model
 and three working plugins -- and the README had no plugins section at all. The
 only writing on the subject was `plugins/README.md`, which is addressed to
@@ -292,7 +292,7 @@ So:
   fifteen. `NOTICE` promised a list of third-party software and gave one entry
   of four, two of which are statically linked into every binary shipped.
 - **A commit message is documentation and inherits the rule about unobserved
-  results.** `35f38f9` listed "`CORDIAL_AUDIO_HOST=oss` selects it" among its
+  results.** `35f38f9` listed "`VANTA_AUDIO_HOST=oss` selects it" among its
   verified claims. It was true of the selector, measured by calling the selector
   directly, and false of the client, where three gates meant the selector never
   ran. That is the broken instrument this file opens with, in prose.
@@ -334,7 +334,7 @@ paths, Settings labels, and `INFERRED` where a claim is not measured.
 [`docs/plugins-overview.md`](docs/plugins-overview.md) is the model.
 
 **The README has a length ceiling, and it is the one document here that
-does.** It is read by somebody deciding whether to install Cordial and then
+does.** It is read by somebody deciding whether to install Vanta and then
 installing it, and nobody in that state reads twelve hundred lines. It reached
 1,250 on 2026-09-13 and the feedback was "the readme is waay too long. it
 should just be a short description, how to install, faq, etc." -- which is the
@@ -371,13 +371,13 @@ cargo test --workspace
 ```
 
 Both must pass. Run them; do not assume. A change to the VR mode needs both
-again with `--features cordial-runtime/vr`, which is off by default and needs
+again with `--features vanta-runtime/vr`, which is off by default and needs
 Boost's headers, and `lld` and `llvm` for its tests.
 
 **Two builds must never share one `target/`, and this is not a tidiness rule.**
 On 2026-08-24 an agent working in a `git worktree` pointed `CARGO_TARGET_DIR` at
 the main checkout's `target/` to save disk while the main session was building
-the same crates. What came out was two `cordial-linker-sys` rlibs with different
+the same crates. What came out was two `vanta-linker-sys` rlibs with different
 hashes, **neither containing a symbol that was plainly in the source**, and a
 link that failed on an undefined reference to it. From the other side of the
 same collision the main session saw `android_classes.cpp.o` timestamped six
@@ -389,25 +389,25 @@ code that compiled and had no effect -- the same sentence `build.rs` uses to
 explain why it watches the whole native tree. Give a worktree its own
 `CARGO_TARGET_DIR` on disk and delete it afterwards. If a symbol you can see in
 the source is undefined at link time, check the `.o` timestamp under
-`target/*/build/cordial-linker-sys-*/out/build` and check whether anything else
+`target/*/build/vanta-linker-sys-*/out/build` and check whether anything else
 was building, before believing anything about the build script.
 
-Running the client needs an APK the user supplies — Cordial ships none. On this
+Running the client needs an APK the user supplies — Vanta ships none. On this
 machine it is at
 `~/.var/app/org.vinegarhq.Sober/data/sober/packages/x86_64/com.roblox.client/base.apk`,
-downloaded by Sober, with the extracted library at `~/.cache/cordial/lib/x86_64`.
+downloaded by Sober, with the extracted library at `~/.cache/vanta/lib/x86_64`.
 **Three agents in succession have concluded no APK exists here and lost a session
 each to it.** Look there before searching:
 
 ```bash
-cargo run --release --bin cordial-run -- \
+cargo run --release --bin vanta-run -- \
   --lib-dir /path/to/lib/x86_64 --apk /path/to/base.apk \
   --host-libc --game-activity --run 30
 ```
 
-Useful switches: `CORDIAL_TRACE_TEXT=1` for text entry, `CORDIAL_TRACE_PATHS=1`
+Useful switches: `VANTA_TRACE_TEXT=1` for text entry, `VANTA_TRACE_PATHS=1`
 for path-taking libc calls, `--dump-classes <file>` for the Java surface Roblox
-asked for. **`CORDIAL_TRACE=1` aborts the engine** — it wraps variadic functions
+asked for. **`VANTA_TRACE=1` aborts the engine** — it wraps variadic functions
 ABI-unsafely. Do not reach for it.
 
 ## Do not use present counts as a frame rate
@@ -432,34 +432,34 @@ minutes later.
 
 ## Say which build you are talking about
 
-The window title is `Cordial <version> (<commit>)` -- the version from
+The window title is `Vanta <version> (<commit>)` -- the version from
 `Cargo.toml` and the commit from `git rev-parse --short=9`, stamped at compile
-time by `crates/cordial-shell/build.rs`. A release reads `Cordial 0.11.0
-(0fdbb4425)`; a build from a source drop with no git reads `Cordial 0.11.0`.
+time by `crates/vanta-shell/build.rs`. A release reads `Vanta 0.11.0
+(0fdbb4425)`; a build from a source drop with no git reads `Vanta 0.11.0`.
 
 **This used to be `git describe --tags --always --dirty`, and that was wrong.**
 The version and the commit are two facts, not two spellings of one: a tree whose
 manifest said 0.11.0 displayed `0.10.0-26-g571e69b-dirty`, the *previous*
-release, while the same binary told a mirror it was `Cordial/0.11.0` in the
-User-Agent `cordial-update` builds from `CARGO_PKG_VERSION`. Two numbers that
+release, while the same binary told a mirror it was `Vanta/0.11.0` in the
+User-Agent `vanta-update` builds from `CARGO_PKG_VERSION`. Two numbers that
 can disagree eventually do. `Cargo.toml` is the version, it compares as semver,
 and it survives a tarball, an AUR source package and the Flatpak's `type: dir`
 source -- none of which has a usable `.git`. See
-`crates/cordial-shell/src/version.rs`; a CI gate refuses a tag that disagrees
+`crates/vanta-shell/src/version.rs`; a CI gate refuses a tag that disagrees
 with the manifest.
 
 **`-dirty` on the commit means the binary was built from a tree with
 uncommitted changes.** It rides on the commit now rather than the version, which
 is where it belonged. Quote the full string in any report -- or better, the
-whole block from `cordial --diagnostics`, which carries it along with the
-distribution and how Cordial was installed. A build made from a working tree several
+whole block from `vanta --diagnostics`, which carries it along with the
+distribution and how Vanta was installed. A build made from a working tree several
 agents were editing is otherwise indistinguishable from a committed one, which
 cost an afternoon of chasing an input regression nobody could attribute to a
 tree.
 
 ## Ask a debugger before you theorise
 
-**lldb attaches to a running Cordial, and on a frozen one it is the fastest
+**lldb attaches to a running Vanta, and on a frozen one it is the fastest
 answer in this repository.** A stuck client took most of a session of guessing
 on 2026-08-21 -- four theories, three of them scored with instruments that were
 constant across every run -- and one `thread apply all bt` settled more in
@@ -467,18 +467,18 @@ thirty seconds than any of it.
 
 ```bash
 export PATH=/home/linuxbrew/.linuxbrew/bin:$PATH
-lldb -p $(pgrep -f 'cordial-run.*--profile <yours>') -b \
+lldb -p $(pgrep -f 'vanta-run.*--profile <yours>') -b \
      -o 'thread backtrace all -c 12'
 ```
 
-lldb rather than gdb because Cordial is a Clang project by necessity -- AOSP's
+lldb rather than gdb because Vanta is a Clang project by necessity -- AOSP's
 bionic does not build with GCC -- so it is the toolchain already required.
 **Not for speed:** attach-and-backtrace measured 1.63 s and 1.56 s against gdb's
 1.64 s and 1.65 s here, which is a tie. gdb still works and the equivalent is
 `gdb -p PID -batch -ex 'thread apply all bt 12'`.
 
 **Keep gdb to hand, because lldb cannot unwind every stack.** This paragraph
-used to say both resolved Cordial frames to file and line, which is true of an
+used to say both resolved Vanta frames to file and line, which is true of an
 ordinary address and false of the one that mattered. On 2026-08-22 a genuinely
 deadlocked client gave lldb nothing but
 
@@ -498,14 +498,14 @@ correct frames to gdb's four. Nor is it a missing-symbol problem: gdb reported
 debuginfod off, this host has no glibc debuginfo, and it still unwound from
 `.eh_frame` alone.
 
-`cordial_backtrace` now notices a stack that did not unwind and retries with
+`vanta_backtrace` now notices a stack that did not unwind and retries with
 gdb, saying so. **A one-frame backtrace is not an answer**, and reporting one as
 though it were is the broken instrument this file's opening rule is about.
 
 Easier still, and preferred, is to let the development MCP do it:
-`tools/cordial-mcp.py` exposes `cordial_backtrace` (which quotes the process's
+`tools/vanta-mcp.py` exposes `vanta_backtrace` (which quotes the process's
 CPU beside the stack, because that is the reading everyone gets wrong) and
-`cordial_debugger` for arbitrary commands. It also screenshots the client out of
+`vanta_debugger` for arbitrary commands. It also screenshots the client out of
 its own swapchain and drives its input, which is how a freeze should be
 investigated now -- see [ADR-019](docs/adr/ADR-019-development-control-surface.md).
 
@@ -553,21 +553,21 @@ already hijacked a developer's cursor once mid-session.
 
 This rule used to end "window-targeted `XSendEvent` only", which no longer means
 anything — [ADR-011](docs/adr/ADR-011-wayland-and-libadwaita.md) is Wayland, and
-Wayland has no window-targeted injection. To drive Cordial's own input, call
-`input::pass_key_event`/`input::pass_text` directly; Cordial is the client, so
+Wayland has no window-targeted injection. To drive Vanta's own input, call
+`input::pass_key_event`/`input::pass_text` directly; Vanta is the client, so
 there is nothing to send through. To drive somebody else's window, nest a
 headless compositor on its own `WAYLAND_DISPLAY` and inject inside that.
 
-**To type real keys at Cordial's own widgets, hold the device open.**
+**To type real keys at Vanta's own widgets, hold the device open.**
 `tools/build-wl-holders.sh` builds two small clients that create a virtual
 keyboard and a virtual pointer inside a nested compositor and *keep* them:
 `wlrctl` and `swaymsg seat - cursor` both create the device and exit in the same
 breath, and the compositor has not acted on it yet. It matters for more than
 reliability -- a headless seat with no device reports `capabilities: 0`, and
-Cordial reads seat capabilities once at `open()`, so under `cage` it never binds
-its own `wl_keyboard` at all and the guard that stops GDK and Cordial both
+Vanta reads seat capabilities once at `open()`, so under `cage` it never binds
+its own `wl_keyboard` at all and the guard that stops GDK and Vanta both
 inserting a character never runs. `tools/text-input-e2e.py` is the worked
-example; it asserts on `cordial_textbox` and fails rather than warns.
+example; it asserts on `vanta_textbox` and fails rather than warns.
 
 **Do not test with an account anyone cares about**, and keep test accounts on a
 separate IP. The risk is collateral rather than causal: enforcement is automated,
@@ -577,17 +577,17 @@ runs in waves, and associates accounts sharing an address.
 time, by `flock`, so a second launch against it is refused rather than allowed
 to corrupt Roblox's storage ([ADR-012](docs/adr/ADR-012-profiles-and-instances.md)).
 
-**That became true of `cordial-run` on 2026-08-22, and was not before.** This
+**That became true of `vanta-run` on 2026-08-22, and was not before.** This
 file said it for three weeks while only shell-launched clients took a claim; a
-hand-run `cordial-run --profile X` took none, and four `--profile CordialTest`
+hand-run `vanta-run --profile X` took none, and four `--profile VantaTest`
 engines were measured running at once with nothing refused. If you are reading a
 report or a comment written before that date which relies on the lock, it is
-wrong. `cordial-run` now claims the profile before it touches anything in it,
+wrong. `vanta-run` now claims the profile before it touches anything in it,
 and hands it back by exiting, however it exits.
 
 **So expect to start being refused where you were not.** A second client on the
 same profile now stops with `profile "default" is already open in another
-Cordial client`, names the process holding it, and exits 3. That is the lock
+Vanta client`, names the process holding it, and exits 3. That is the lock
 working, not a regression — but everyone here has been running several clients
 against `default` without knowing it was unprotected, so the habit breaks
 before the message is read.
@@ -597,22 +597,22 @@ collide on that lock and read the refusal as a bug in whatever they were
 working on:
 
 ```bash
-XDG_DATA_HOME=~/.cache/cordial-agent-<yours>/data \
-XDG_CACHE_HOME=~/.cache/cordial-agent-<yours>/cache \
-XDG_CONFIG_HOME=~/.cache/cordial-agent-<yours>/config just client --run 30
+XDG_DATA_HOME=~/.cache/vanta-agent-<yours>/data \
+XDG_CACHE_HOME=~/.cache/vanta-agent-<yours>/cache \
+XDG_CONFIG_HOME=~/.cache/vanta-agent-<yours>/config just client --run 30
 ```
 
 Both the shell's profile root and the client's data directory derive from
 `XDG_DATA_HOME`, but since 0.25.0 that no longer redirects the lot: the shell's
-first launch moves an old build store from `$XDG_CACHE_HOME/cordial/builds`
-into `$XDG_DATA_HOME/cordial/builds` (ADR-054). On 2026-10-08 an agent that
+first launch moves an old build store from `$XDG_CACHE_HOME/vanta/builds`
+into `$XDG_DATA_HOME/vanta/builds` (ADR-054). On 2026-10-08 an agent that
 redirected only `XDG_DATA_HOME` had the host's real store moved into its scratch
 directory, then deleted it with the rest of its scratch. Redirect all three. And start the shell under its own `dbus-run-session`: it is a
-`GApplication` named `io.github.luohoa97.Cordial`, so a test shell left on the
-real session bus owns that name, and the user's own Cordial then hands its
+`GApplication` named `io.github.gpt4omni.Vanta`, so a test shell left on the
+real session bus owns that name, and the user's own Vanta then hands its
 activation to it and exits in a tenth of a second -- on 2026-10-08 an agent's
 leftover shell, displaying into a nested sway nobody could see, made the
 maintainer's Flatpak look like it would not start. Use a path on disk — `/tmp` is tmpfs
-and comes out of RAM — and delete it when you are done. `CORDIAL_PROFILE_ROOT`
+and comes out of RAM — and delete it when you are done. `VANTA_PROFILE_ROOT`
 redirects `profile.rs` only, which is what the unit tests use; it does **not**
 move the client, which still hardcodes its own path.

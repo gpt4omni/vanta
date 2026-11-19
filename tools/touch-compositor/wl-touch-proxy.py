@@ -2,7 +2,7 @@
 """A Wayland protocol proxy that gives a client a touchscreen it does not have.
 
 Nothing on a development machine has a touchscreen and wlroots has no protocol
-for a virtual touch device, so touch handling in Cordial -- and in GTK, which
+for a virtual touch device, so touch handling in Vanta -- and in GTK, which
 listens to the same seat -- had never run before issue #36. This sits between
 a client and a real compositor (a nested headless sway), forwards every byte
 and file descriptor, and does two things to the stream:
@@ -23,10 +23,10 @@ Never run it at the developer's compositor: point `--upstream` at a nested
 headless sway.
 
 Usage:
-    wl-touch-proxy.py serve --upstream wayland-1 --listen cordial-touch \
+    wl-touch-proxy.py serve --upstream wayland-1 --listen vanta-touch \
                             --control /tmp/touch.sock
     wl-touch-proxy.py send /tmp/touch.sock tap 200 200 canvas
-    WAYLAND_DISPLAY=cordial-touch cordial-run ...
+    WAYLAND_DISPLAY=vanta-touch vanta-run ...
 
 Commands (one line each, answered with one line):
     list                        what the proxy has learned about the client
@@ -35,7 +35,7 @@ Commands (one line each, answered with one line):
     up [ID]                     it lifts, then frame
     cancel                      the compositor takes the sequence over
     tap X Y [TARGET] [MS]       down, hold for MS (default 80), up
-TARGET is `canvas` (the first subsurface the client created, which for Cordial
+TARGET is `canvas` (the first subsurface the client created, which for Vanta
 is the engine's), `toplevel` (that subsurface's parent), or a numeric object id.
 X and Y are surface-local pixels.
 """
@@ -385,10 +385,10 @@ def main():
     s = sub.add_parser("serve")
     s.add_argument("--upstream", default=os.environ.get("WAYLAND_DISPLAY"),
                    help="the real compositor's socket name or path (default $WAYLAND_DISPLAY)")
-    s.add_argument("--listen", default="cordial-touch", help="socket name to create in $XDG_RUNTIME_DIR")
-    s.add_argument("--control", default="/tmp/cordial-touch-proxy.sock")
+    s.add_argument("--listen", default="vanta-touch", help="socket name to create in $XDG_RUNTIME_DIR")
+    s.add_argument("--control", default="/tmp/vanta-touch-proxy.sock")
     s.add_argument("--trace-cursor", action="store_true",
-                   help="log every wl_pointer.set_cursor the client sends (pointer #0 is GTK's, #1 Cordial's)")
+                   help="log every wl_pointer.set_cursor the client sends (pointer #0 is GTK's, #1 Vanta's)")
     c = sub.add_parser("send")
     c.add_argument("sock")
     c.add_argument("words", nargs="+")

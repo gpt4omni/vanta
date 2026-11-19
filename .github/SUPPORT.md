@@ -2,13 +2,13 @@
 
 ## Report a bug, ask for a feature, or write down a finding
 
-[Open an issue](https://github.com/luohoa97/cordial/issues/new/choose) and
+[Open an issue](https://github.com/gpt4omni/vanta/issues/new/choose) and
 pick the template that matches. Every one of them asks for the same
 **Diagnostics** block — get it from **Report a Problem** in
-Cordial's main menu, or run `cordial --diagnostics` (`cordial-shell --diagnostics` from a
-checkout, or `flatpak run io.github.luohoa97.Cordial --diagnostics` under
-Flatpak). It carries the Cordial and Roblox build, your kernel and
-distribution, and how Cordial was installed — no account, no token, no
+Vanta's main menu, or run `vanta --diagnostics` (`vanta-shell --diagnostics` from a
+checkout, or `flatpak run io.github.gpt4omni.Vanta --diagnostics` under
+Flatpak). It carries the Vanta and Roblox build, your kernel and
+distribution, and how Vanta was installed — no account, no token, no
 profile name, and nothing from your home directory. It is shown on screen
 before it is copied, so read it before you paste it.
 
@@ -24,9 +24,9 @@ Five templates, routed by shape:
 | Template | Use it when |
 |---|---|
 | **Bug report** | Something behaves differently from what you expected |
-| **A Roblox feature does not work** | Something Android would answer that Cordial silently does nothing for |
-| **Roblox updated and something broke** | A new Roblox build fails to load, or reaches for a symbol Cordial does not have |
-| **Feature or capability** | Something Cordial, or a plugin, should be able to do |
+| **A Roblox feature does not work** | Something Android would answer that Vanta silently does nothing for |
+| **Roblox updated and something broke** | A new Roblox build fails to load, or reaches for a symbol Vanta does not have |
+| **Feature or capability** | Something Vanta, or a plugin, should be able to do |
 | **Finding** | Something you established about the engine, including something that turned out to be wrong |
 
 There is no blank-issue option — a report without the shape one of these
@@ -35,7 +35,7 @@ guess what to include.
 
 ## Get help, or just talk to us
 
-For getting Cordial running, quick questions, and what is currently being
+For getting Vanta running, quick questions, and what is currently being
 worked on, [the Discord](https://discord.gg/qJzU3Xfr9b) is faster than an
 issue and does not need a template. Bugs and feature requests found there
 still belong in an issue afterwards — chat is not searchable and does not
@@ -44,7 +44,7 @@ get triaged, so something reported only there is easy to lose.
 ## Security issue
 
 Report it privately through [a GitHub security
-advisory](https://github.com/luohoa97/cordial/security/advisories/new)
+advisory](https://github.com/gpt4omni/vanta/security/advisories/new)
 rather than in a public issue.
 
 ## Before you file anything

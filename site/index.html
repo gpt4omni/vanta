@@ -3,29 +3,29 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Cordial — Open-Source Roblox for Linux | Sober Alternative</title>
-<meta name="description" content="Cordial is an open-source Roblox client for Linux, GPL-3.0 and fully auditable. Runs Roblox natively with no Wine, no emulator and no Android container. A free and open-source alternative to Sober.">
-<link rel="canonical" href="https://luohoa97.github.io/cordial/">
-<meta property="og:title" content="Cordial — Open-Source Roblox for Linux">
+<title>Vanta — Open-Source Roblox for Linux | Sober Alternative</title>
+<meta name="description" content="Vanta is an open-source Roblox client for Linux, GPL-3.0 and fully auditable. Runs Roblox natively with no Wine, no emulator and no Android container. A free and open-source alternative to Sober.">
+<link rel="canonical" href="https://gpt4omni.github.io/vanta/">
+<meta property="og:title" content="Vanta — Open-Source Roblox for Linux">
 <meta property="og:description" content="An open-source, GPL-3.0 Roblox client for Linux. Native, no Wine, no emulator, no Android container.">
 <meta property="og:type" content="website">
-<meta property="og:url" content="https://luohoa97.github.io/cordial/">
+<meta property="og:url" content="https://gpt4omni.github.io/vanta/">
 <meta name="twitter:card" content="summary">
 <link rel="icon" href="favicon.svg">
 <script type="application/ld+json">
 {
   "@context": "https://schema.org",
   "@type": "SoftwareApplication",
-  "name": "Cordial",
-  "alternateName": "Cordial Roblox Linux client",
+  "name": "Vanta",
+  "alternateName": "Vanta Roblox Linux client",
   "description": "An open-source Roblox client for Linux. Runs Roblox's official Android build natively, with no Wine, no emulator and no Android container. GPL-3.0 and fully auditable.",
-  "url": "https://luohoa97.github.io/cordial/",
+  "url": "https://gpt4omni.github.io/vanta/",
   "applicationCategory": "GameApplication",
   "operatingSystem": "Linux",
   "license": "https://www.gnu.org/licenses/gpl-3.0.html",
   "isAccessibleForFree": true,
   "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
-  "codeRepository": "https://github.com/luohoa97/cordial",
+  "codeRepository": "https://github.com/gpt4omni/vanta",
   "programmingLanguage": ["Rust", "C++"]
 }
 </script>
@@ -92,15 +92,15 @@
 <div class="wrap">
 
   <header>
-    <img src="cordial.svg" alt="">
+    <img src="vanta.svg" alt="">
     <h1>Open-source Roblox for Linux</h1>
-    <p class="tag">Cordial runs Roblox natively. No Wine, no emulator, no Android container.</p>
+    <p class="tag">Vanta runs Roblox natively. No Wine, no emulator, no Android container.</p>
     <a class="cta" href="#install">Install</a>
     <span class="under">Flatpak · x86-64 · needs a Vulkan GPU</span>
   </header>
 
   <p>
-    Cordial runs Roblox’s official Android build natively on your machine —
+    Vanta runs Roblox’s official Android build natively on your machine —
     no Wine, no emulator, no Android container. It is
     <strong>GPL-3.0 and fully auditable</strong>: every line of what runs on
     your machine is published, which is the part most Linux Roblox clients
@@ -108,16 +108,16 @@
   </p>
 
   <p class="n">
-    <strong>Cordial fetches the Roblox build for you.</strong> It ships no
+    <strong>Vanta fetches the Roblox build for you.</strong> It ships no
     Roblox code and never will, but first run has one button — <strong>Download
     Roblox</strong> — and that is the whole of it. If Sober has already
-    downloaded the same build, Cordial uses that copy where it lies rather than
+    downloaded the same build, Vanta uses that copy where it lies rather than
     fetching it again; otherwise it downloads from a public APK mirror and
     verifies that Roblox's own signing certificate signed those exact bytes
     before installing. You can still point it at an APK yourself.
   </p>
 
-  <p class="under"><a href="compare.html">How Cordial compares to Sober, mocktail and Waydroid</a> &mdash; including where they are better.</p>
+  <p class="under"><a href="compare.html">How Vanta compares to Sober, mocktail and Waydroid</a> &mdash; including where they are better.</p>
 
 <h2>What you get</h2>
 
@@ -129,7 +129,7 @@
   <div class="card">
     <h3>Plugins</h3>
     <p>Discord presence, custom textures and sounds, and more. A plugin never
-       gets a socket or a file — it asks, and Cordial does it.</p>
+       gets a socket or a file — it asks, and Vanta does it.</p>
   </div>
   <div class="card">
     <h3>Settings that tell you what happened</h3>
@@ -137,7 +137,7 @@
        startup. No config file with a “don’t edit this by hand” warning at the top.</p>
   </div>
 
-  <h2 id="compare">Cordial vs Sober vs Waydroid</h2>
+  <h2 id="compare">Vanta vs Sober vs Waydroid</h2>
 
   <p class="n">
     Written to be useful rather than flattering. Sober is a good client and is
@@ -147,7 +147,7 @@
 
   <table>
     <tr>
-      <td colspan="2"><strong>Cordial</strong></td>
+      <td colspan="2"><strong>Vanta</strong></td>
     </tr>
     <tr><td class="n">Source</td><td><strong>Open, GPL-3.0.</strong> Every line auditable.</td></tr>
     <tr><td class="n">How</td><td>Native. AOSP bionic linker, a bionic/glibc shim, a JNI VM in place of Android’s.</td></tr>
@@ -159,7 +159,7 @@
     <tr><td class="n">Source</td><td><strong>Not available.</strong> <code>vinegarhq/sober</code> is an issue tracker; the client itself is not published.</td></tr>
     <tr><td class="n">How</td><td>Native, by its own account. Architecture not described in detail.</td></tr>
     <tr><td class="n">Extensible</td><td>FastFlags, no plugin API.</td></tr>
-    <tr><td class="n">Gets the build</td><td>Downloads it for you. This is the thing it does that Cordial does not.</td></tr>
+    <tr><td class="n">Gets the build</td><td>Downloads it for you. This is the thing it does that Vanta does not.</td></tr>
     <tr><td class="n">Maturity</td><td>Mature and widely used.</td></tr>
 
     <tr><td colspan="2" style="padding-top:1.2rem"><strong>Waydroid</strong></td></tr>
@@ -173,32 +173,32 @@
   <p class="n">
     The short version: <strong>Waydroid</strong> runs Android and Roblox happens
     to be in it. <strong>Sober</strong> runs Roblox and does not show you how.
-    <strong>Cordial</strong> runs Roblox and shows you all of it.
+    <strong>Vanta</strong> runs Roblox and shows you all of it.
   </p>
 
   <h2 id="install">Install</h2>
 
   <pre><code>flatpak remote-add --if-not-exists --no-gpg-verify \
-    cordial https://luohoa97.github.io/cordial/repo
+    vanta https://gpt4omni.github.io/vanta/repo
 
-flatpak install cordial io.github.luohoa97.Cordial</code></pre>
+flatpak install vanta io.github.gpt4omni.Vanta</code></pre>
 
   <p class="n">
     Then launch it, sign in, and press play. Nothing from Roblox is bundled or
-    redistributed — Cordial downloads the official build to your machine and
+    redistributed — Vanta downloads the official build to your machine and
     never re-serves it.
   </p>
 
   <p class="n">
     One thing to know first: if your account uses a <strong>passkey</strong> for
     two-factor, you cannot sign in yet. That is a missing piece in WebKitGTK
-    rather than something Cordial can work around.
-    <a href="https://github.com/luohoa97/cordial#status">Full status on GitHub</a>.
+    rather than something Vanta can work around.
+    <a href="https://github.com/gpt4omni/vanta#status">Full status on GitHub</a>.
   </p>
 
   <footer>
     <p>
-      <a href="https://github.com/luohoa97/cordial">Source, issues and documentation on GitHub</a>
+      <a href="https://github.com/gpt4omni/vanta">Source, issues and documentation on GitHub</a>
     </p>
     <p>
       GPL-3.0. Not affiliated with, endorsed by, or connected to Roblox Corporation.
@@ -213,7 +213,7 @@ flatpak install cordial io.github.luohoa97.Cordial</code></pre>
 // Client-side and hardcoded on purpose. The page is static and the switch is
 // a date comparison, so there is nothing to build, nothing to schedule and
 // nothing to deploy on the day -- and if scripting is off, the page is simply
-// Cordial, which is the correct fallback for a joke.
+// Vanta, which is the correct fallback for a joke.
 //
 // Nothing polls. This runs once on load and never again: a timer for
 // something that changes twice a year would be a wakeup for no observable
@@ -225,7 +225,7 @@ flatpak install cordial io.github.luohoa97.Cordial</code></pre>
 // the flatpak remote, the repository name. Renaming those would turn a joke
 // into a broken instruction.
 (function () {
-  // ?brand=frostbite previews it at any time, matching CORDIAL_BRAND on the
+  // ?brand=frostbite previews it at any time, matching VANTA_BRAND on the
   // client. Without it, looking at this means changing the machine's clock,
   // which is a bad thing to ask of anyone for a joke.
   var forced = /[?&]brand=frostbite\b/i.test(location.search);
@@ -234,9 +234,9 @@ flatpak install cordial io.github.luohoa97.Cordial</code></pre>
   var frostbite = forced || (m === 4 && d === 1) || (m === 12 && d === 21);
   if (!frostbite) return;
 
-  document.title = document.title.replace(/^Cordial/, 'Frostbite');
+  document.title = document.title.replace(/^Vanta/, 'Frostbite');
   document.querySelectorAll('h1').forEach(function (h) {
-    if (h.textContent.trim() === 'Cordial') h.textContent = 'Frostbite';
+    if (h.textContent.trim() === 'Vanta') h.textContent = 'Frostbite';
   });
 
   // The exact per-channel inversion of the mango gradient, which is why the

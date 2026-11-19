@@ -158,7 +158,7 @@ export async function openEditor(
   return {
     type: ResponseType.MODAL,
     data: {
-      custom_id: `cordial-edit:${number}:${part}:${hash}${withLabels ? ":l" : ""}`,
+      custom_id: `vanta-edit:${number}:${part}:${hash}${withLabels ? ":l" : ""}`,
       title: (`Edit #${number}` + (parts > 1 ? ` (${part + 1} of ${parts})` : "")).slice(0, 45),
       components,
     },
@@ -174,7 +174,7 @@ function moreButton(number: number, part: number, parts: number): unknown[] {
       type: BUTTON,
       style: 2,
       label: "Edit more fields",
-      custom_id: `cordial-edit-open:${number}:${part + 1}`,
+      custom_id: `vanta-edit-open:${number}:${part + 1}`,
     }],
   }];
 }

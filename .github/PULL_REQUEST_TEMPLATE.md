@@ -2,7 +2,7 @@
 
 ## What you measured
 
-Cordial's rule is that claims are worth what they were measured with. This
+Vanta's rule is that claims are worth what they were measured with. This
 project has a documented history of confident wrong conclusions drawn from
 reading the binary instead of running it — `docs/NEXT.md` keeps the list so
 nobody repeats them.

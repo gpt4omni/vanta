@@ -27,12 +27,12 @@ Deno.test("a webhook GitHub signed verifies, and nothing else does", async () =>
 
 const paired = {
   action: "created",
-  issue: { number: 7, body: "text\n<!-- cordial-bridge thread=555 -->" },
+  issue: { number: 7, body: "text\n<!-- vanta-bridge thread=555 -->" },
   comment: { body: "Fixed in 0.13.2.", user: { login: "maintainer" }, html_url: "https://x/1" },
 };
 
 Deno.test("a real comment on a paired issue relays to its thread", () => {
-  const relay = relayFor(paired, "cordial-bridge");
+  const relay = relayFor(paired, "vanta-bridge");
   assert(relay);
   assertEquals(relay.threadId, "555");
   assertStringIncludes(relay.content, "maintainer");
@@ -42,9 +42,9 @@ Deno.test("a real comment on a paired issue relays to its thread", () => {
 Deno.test("the bridge's own comment does not come back round", () => {
   // The loop this cuts is real: a Discord user's comment is posted by the App,
   // arrives here as an event, and would be echoed into the thread it came from.
-  for (const login of ["cordial-bridge", "cordial-bridge[bot]"]) {
+  for (const login of ["vanta-bridge", "vanta-bridge[bot]"]) {
     assertEquals(
-      relayFor({ ...paired, comment: { ...paired.comment, user: { login } } }, "cordial-bridge"),
+      relayFor({ ...paired, comment: { ...paired.comment, user: { login } } }, "vanta-bridge"),
       null,
       `${login} must not be relayed`,
     );
@@ -74,7 +74,7 @@ const closedEvent = {
   action: "closed",
   issue: {
     number: 7,
-    body: "text\n<!-- cordial-bridge thread=555 reporter=42 -->",
+    body: "text\n<!-- vanta-bridge thread=555 reporter=42 -->",
     html_url: "https://github.com/o/r/issues/7",
     state_reason: "completed",
   },
@@ -82,7 +82,7 @@ const closedEvent = {
 };
 
 Deno.test("a close on GitHub reaches the thread and archives it", () => {
-  const relay = relayFor(closedEvent, "cordial-bridge", "issues");
+  const relay = relayFor(closedEvent, "vanta-bridge", "issues");
   assert(relay);
   assertEquals(relay.threadId, "555");
   assertEquals(relay.archive, true, "the thread follows the issue");
@@ -96,7 +96,7 @@ Deno.test("closing as not planned reads differently from fixing it", () => {
   // wrong".
   const relay = relayFor(
     { ...closedEvent, issue: { ...closedEvent.issue, state_reason: "not_planned" } },
-    "cordial-bridge",
+    "vanta-bridge",
     "issues",
   )!;
   assertStringIncludes(relay.content, "closed #7");
@@ -106,7 +106,7 @@ Deno.test("closing as not planned reads differently from fixing it", () => {
 Deno.test("a reopen brings the thread back rather than archiving it", () => {
   const relay = relayFor(
     { ...closedEvent, action: "reopened" },
-    "cordial-bridge",
+    "vanta-bridge",
     "issues",
   )!;
   assertEquals(relay.archive, false);
@@ -116,9 +116,9 @@ Deno.test("a reopen brings the thread back rather than archiving it", () => {
 Deno.test("the bridge's own close does not come back round", () => {
   // Closing from the Discord button already posts in the thread; relaying the
   // webhook it causes would say it twice.
-  for (const login of ["cordial-bridge", "cordial-bridge[bot]"]) {
+  for (const login of ["vanta-bridge", "vanta-bridge[bot]"]) {
     assertEquals(
-      relayFor({ ...closedEvent, sender: { login } }, "cordial-bridge", "issues"),
+      relayFor({ ...closedEvent, sender: { login } }, "vanta-bridge", "issues"),
       null,
       `${login} must not be relayed`,
     );
@@ -136,7 +136,7 @@ Deno.test("state changes on an unpaired issue, and other actions, are ignored", 
 });
 
 Deno.test("a comment event still routes as a comment, not a state change", () => {
-  const relay = relayFor(paired, "cordial-bridge", "issue_comment")!;
+  const relay = relayFor(paired, "vanta-bridge", "issue_comment")!;
   assertEquals(relay.archive, undefined, "a comment must not touch the thread's state");
   assertStringIncludes(relay.content, "commented");
 });
@@ -159,19 +159,19 @@ Deno.test("an opened pull request asks for a thread rather than a relay", () => 
   assertEquals(opening?.title, "Fix the thing");
   assertEquals(opening?.author, "contributor");
   // Nothing to relay into yet, so `relayFor` must stay out of it.
-  assertEquals(relayFor(pr("opened"), "cordial-bridge", "pull_request"), null);
+  assertEquals(relayFor(pr("opened"), "vanta-bridge", "pull_request"), null);
   // And it is only ever `opened`.
   assertEquals(openingFor(pr("closed"), "pull_request"), null);
   assertEquals(openingFor(pr("opened"), "issues"), null);
 });
 
 Deno.test("merged and closed-without-merging are not the same sentence", () => {
-  const merged = relayFor(pr("closed", { merged: true }), "cordial-bridge", "pull_request");
+  const merged = relayFor(pr("closed", { merged: true }), "vanta-bridge", "pull_request");
   assertStringIncludes(merged!.content, "merged");
   assertFalse(merged!.content.includes("without merging"));
   assertEquals(merged!.archive, true);
 
-  const abandoned = relayFor(pr("closed", { merged: false }), "cordial-bridge", "pull_request");
+  const abandoned = relayFor(pr("closed", { merged: false }), "vanta-bridge", "pull_request");
   assertStringIncludes(abandoned!.content, "without merging");
   assertEquals(abandoned!.archive, true);
 
@@ -181,14 +181,14 @@ Deno.test("merged and closed-without-merging are not the same sentence", () => {
 });
 
 Deno.test("a reopened pull request brings its thread back", () => {
-  const relay = relayFor(pr("reopened"), "cordial-bridge", "pull_request");
+  const relay = relayFor(pr("reopened"), "vanta-bridge", "pull_request");
   assertStringIncludes(relay!.content, "reopened");
   assertEquals(relay!.archive, false);
 });
 
 Deno.test("the bridge's own pull request actions are not echoed back", () => {
-  const own = { ...pr("closed", { merged: true }), sender: { login: "cordial-bridge[bot]" } };
-  assertEquals(relayFor(own, "cordial-bridge", "pull_request"), null);
+  const own = { ...pr("closed", { merged: true }), sender: { login: "vanta-bridge[bot]" } };
+  assertEquals(relayFor(own, "vanta-bridge", "pull_request"), null);
 });
 
 Deno.test("a pull request comment carries its number for the caller to resolve", () => {
@@ -199,7 +199,7 @@ Deno.test("a pull request comment carries its number for the caller to resolve",
     action: "created",
     issue: { number: 41, body: "no marker here", pull_request: {} },
     comment: { body: "looks good", user: { login: "reviewer" } },
-  }, "cordial-bridge");
+  }, "vanta-bridge");
   assertEquals(relay?.threadId, undefined);
   assertEquals(relay?.number, 41);
   assertStringIncludes(relay!.content, "reviewer");
@@ -208,7 +208,7 @@ Deno.test("a pull request comment carries its number for the caller to resolve",
 Deno.test("an ordinary issue comment still resolves for free from the body", () => {
   // The regression guard for the change above: an issue's pairing is already
   // in the payload, and must not start costing a Discord lookup.
-  const relay = relayFor(paired, "cordial-bridge");
+  const relay = relayFor(paired, "vanta-bridge");
   assert(relay?.threadId, "an issue must still carry its thread id");
   assertFalse(relay!.threadId!.length === 0);
 });

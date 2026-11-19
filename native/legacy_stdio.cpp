@@ -1,6 +1,6 @@
 // bionic's pre-API-23 `FILE __sF[3]`, translated onto the host's real streams.
 //
-// `crates/cordial-runtime/src/bionic/mod.rs` supplies zeroed storage for `__sF`
+// `crates/vanta-runtime/src/bionic/mod.rs` supplies zeroed storage for `__sF`
 // so that the symbol resolves and glibc's exit-time walk of its stream list does
 // not report an invalid handle. Its comment is explicit that this is only half
 // the job: anything that actually writes through `&__sF[k]` needs every
@@ -17,8 +17,8 @@
 // ## Why C++ and not Rust
 //
 // `fprintf` is variadic. Rust cannot define a variadic `extern "C"` function, and
-// AGENTS.md records that Cordial's one previous attempt to wrap variadics
-// unsafely -- `CORDIAL_TRACE=1` -- aborts the engine outright. Forwarding through
+// AGENTS.md records that Vanta's one previous attempt to wrap variadics
+// unsafely -- `VANTA_TRACE=1` -- aborts the engine outright. Forwarding through
 // `va_list` is ordinary C and is safe here, so the wrappers live on this side.
 //
 // ## What this deliberately does not do
@@ -39,8 +39,8 @@ extern "C" {
 /// entries. Both come from Rust rather than being restated here: the size is
 /// `sizeof(struct __sFILE)` in pre-M bionic on LP64, and two copies of that
 /// constant would eventually disagree.
-extern const unsigned char* cordial_legacy_sf_base(void);
-extern size_t cordial_legacy_sf_stride(void);
+extern const unsigned char* vanta_legacy_sf_base(void);
+extern size_t vanta_legacy_sf_stride(void);
 
 /// Map a `FILE*` onto the host's real stream when it points into `__sF`.
 ///
@@ -49,13 +49,13 @@ extern size_t cordial_legacy_sf_stride(void);
 /// caller that computed `&__sF[1]` and a caller that took `stdout` as a macro
 /// arrive at the same place by different arithmetic and both must be caught.
 static FILE* translate(FILE* f) {
-    const unsigned char* base = cordial_legacy_sf_base();
+    const unsigned char* base = vanta_legacy_sf_base();
     if (!f || !base) {
         return f;
     }
     const auto addr = reinterpret_cast<uintptr_t>(f);
     const auto lo = reinterpret_cast<uintptr_t>(base);
-    const size_t stride = cordial_legacy_sf_stride();
+    const size_t stride = vanta_legacy_sf_stride();
     if (addr < lo || addr >= lo + stride * 3) {
         return f;
     }
@@ -68,31 +68,31 @@ static FILE* translate(FILE* f) {
 
 // Only the FILE-taking entry points `libroblox.so` actually imports. Checked
 // with `readelf --dyn-syms`; wrapping more would be surface with no caller, and
-// each of these shadows the host symbol for the engine only because Cordial's
+// each of these shadows the host symbol for the engine only because Vanta's
 // symbol table resolves the engine's imports before the host's.
 
-int cordial_legacy_fflush(FILE* f) { return fflush(translate(f)); }
-int cordial_legacy_fclose(FILE* f) { return fclose(translate(f)); }
-int cordial_legacy_fseek(FILE* f, long off, int whence) { return fseek(translate(f), off, whence); }
-long cordial_legacy_ftell(FILE* f) { return ftell(translate(f)); }
-int cordial_legacy_fputs(const char* s, FILE* f) { return fputs(s, translate(f)); }
-int cordial_legacy_setvbuf(FILE* f, char* buf, int mode, size_t size) {
+int vanta_legacy_fflush(FILE* f) { return fflush(translate(f)); }
+int vanta_legacy_fclose(FILE* f) { return fclose(translate(f)); }
+int vanta_legacy_fseek(FILE* f, long off, int whence) { return fseek(translate(f), off, whence); }
+long vanta_legacy_ftell(FILE* f) { return ftell(translate(f)); }
+int vanta_legacy_fputs(const char* s, FILE* f) { return fputs(s, translate(f)); }
+int vanta_legacy_setvbuf(FILE* f, char* buf, int mode, size_t size) {
     return setvbuf(translate(f), buf, mode, size);
 }
-size_t cordial_legacy_fread(void* p, size_t sz, size_t n, FILE* f) {
+size_t vanta_legacy_fread(void* p, size_t sz, size_t n, FILE* f) {
     return fread(p, sz, n, translate(f));
 }
-size_t cordial_legacy_fwrite(const void* p, size_t sz, size_t n, FILE* f) {
+size_t vanta_legacy_fwrite(const void* p, size_t sz, size_t n, FILE* f) {
     return fwrite(p, sz, n, translate(f));
 }
 
 /// The variadic pair, forwarded through `va_list`, which is the whole reason
 /// this file is C++.
-int cordial_legacy_vfprintf(FILE* f, const char* fmt, va_list ap) {
+int vanta_legacy_vfprintf(FILE* f, const char* fmt, va_list ap) {
     return vfprintf(translate(f), fmt, ap);
 }
 
-int cordial_legacy_fprintf(FILE* f, const char* fmt, ...) {
+int vanta_legacy_fprintf(FILE* f, const char* fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
     const int r = vfprintf(translate(f), fmt, ap);

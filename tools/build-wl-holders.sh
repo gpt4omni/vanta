@@ -8,7 +8,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-OUT="${CORDIAL_HOLDER_BIN:-/tmp/cordial-wl-holders}"
+OUT="${VANTA_HOLDER_BIN:-/tmp/vanta-wl-holders}"
 mkdir -p "$OUT"
 
 VK_XML=$(ls /usr/share/cargo/registry/wayland-protocols-misc-*/protocols/virtual-keyboard-unstable-v1.xml 2>/dev/null | tail -1)

@@ -1,9 +1,9 @@
-# Which platform Cordial tells Roblox it is on
+# Which platform Vanta tells Roblox it is on
 
 **What changed:** `NativeUserJavaInterface.getPlatformName()` answered `"Android"`,
 then `"Linux"`, and since 2026-09-14 follows the profile's device identity:
 `pc-windows-11` (the default) answers `"Windows"`, `android-tablet` and
-`roblox-app` answer `"Android"`. `CORDIAL_PLATFORM_NAME=<name>` still overrides
+`roblox-app` answer `"Android"`. `VANTA_PLATFORM_NAME=<name>` still overrides
 it. §1 records why `Linux` was chosen and why that was reversed; the rest of
 this file measured `Linux` against `Android` and still stands as a measurement.
 
@@ -24,7 +24,7 @@ desktop client is `INFERRED`; §4 is the two-launch check that would settle it.
 **The thing this pass did establish, and it was not the thing it went looking
 for:** `PlatformParams.isKeyboardDevice` and `isMouseDevice` are **never read by
 the engine** (§2e), with a control in the same run proving the probe worked. The
-belief that Cordial already describes desktop peripherals to the engine — written
+belief that Vanta already describes desktop peripherals to the engine — written
 into `native/init_params.cpp`'s own header and load-bearing for several days of
 input work — was two-thirds wrong. Only `isTouchDevice` is read.
 
@@ -36,13 +36,13 @@ input work — was two-thirds wrong. Only `isTouchDevice` is read.
 judged this one string in isolation. By then the default device profile,
 `pc-windows-11`, already sent the engine a Windows 11 PC User-Agent and
 `BuildInfo` model, so `Linux` was the one field contradicting the identity
-around it, and Cordial was the only host on this machine reporting it
+around it, and Vanta was the only host on this machine reporting it
 (mocktail's `pc-windows-11` answers `Windows`). The profile is a claim the user
 chose, and every field of it should make the same claim, so the platform name
 now follows it (`device_platform_name()` in `native/init_params.cpp`).
 
 What prompted the look was Settings > Device Preferences having no theme
-selector under Cordial while Sober and mocktail show one. The platform name is
+selector under Vanta while Sober and mocktail show one. The platform name is
 **not** that gate: with the override confirmed in the process environment,
 signed in, neither `Android` nor `Windows` brought the selector back. What does
 gate it is still unknown.
@@ -56,7 +56,7 @@ So the choice is between three answers, and only one of them is true:
 * `Windows` would be a lie, and the sort that invites the service to route the
   client down a path built for a client that does not exist here.
 * `Android` is *also* a lie. The host is a desktop Linux machine with a keyboard
-  and a mouse and no touchscreen. Cordial already tells the engine the last of
+  and a mouse and no touchscreen. Vanta already tells the engine the last of
   those three through `PlatformParams.isTouchDevice`, and the engine reads it
   (§2e) — so answering `Android` contradicted a value the engine had actually
   taken from us.
@@ -68,9 +68,9 @@ from whatever it fixes.
 
 ## 2. Where the platform identity is, and where it is not
 
-### 2a. It is not a parameter field Cordial was failing to answer
+### 2a. It is not a parameter field Vanta was failing to answer
 
-Read out of the shipping APK's dex rather than from Cordial's C++, the four
+Read out of the shipping APK's dex rather than from Vanta's C++, the four
 parameter classes declare, in full:
 
 | Class | Declared members |
@@ -81,7 +81,7 @@ parameter classes declare, in full:
 | `autovalue/StartAppParams` | `appStarterPlace appStarterScript appUserId isUnder13 membershipType platformParams selectedTheme surface username vrContext` |
 
 `native/init_params.cpp` already answers every one of those. There is no
-platform-identity field among them that Cordial was leaving null. Candidate
+platform-identity field among them that Vanta was leaving null. Candidate
 eliminated.
 
 ### 2b. It is not `AConfiguration`
@@ -116,7 +116,7 @@ string table. Not re-derived.
 ### 2d. It *is* asked for as a string, once per app-bridge stage
 
 `com.roblox.engine.jni.user.NativeUserJavaInterface.getPlatformName()Ljava/lang/String;`
-is declared in the dex and Cordial hooks it. Instrumented with an `fprintf` and
+is declared in the dex and Vanta hooks it. Instrumented with an `fprintf` and
 run, the engine calls it **four times** on a cold start, at:
 
 ```text
@@ -131,7 +131,7 @@ run, the engine calls it **four times** on a cold start, at:
 [probe] NativeUserJavaInterface.getPlatformName called
   Lua app DataModel started
   task scheduler foregrounded
-[cordial] app start as nobody signed in
+[vanta] app start as nobody signed in
 [probe] NativeUserJavaInterface.getPlatformName called
   app started with surface
 ```
@@ -158,7 +158,7 @@ carries the platform identity". Half of that premise is false, and it was worth
 one launch to find out.
 
 Registered as getter functions rather than plain field hooks, so that each read
-is observable (`CORDIAL_TRACE_PARAM_READS=1`), one cold start gives:
+is observable (`VANTA_TRACE_PARAM_READS=1`), one cold start gives:
 
 | Field | Times read |
 |---|---|
@@ -178,10 +178,10 @@ The reads land at the same app-bridge boundaries `getPlatformName` does —
 getter was called, and the engine then printed the value it was given:
 
 ```text
-[FLog::Graphics] Vulkan Android Device: Cordial
+[FLog::Graphics] Vulkan Android Device: Vanta
 ```
 
-So the probe was working, the receiver was live, and Cordial's own values were
+So the probe was working, the receiver was live, and Vanta's own values were
 what came back. `isKeyboardDevice` and `isMouseDevice` staying at zero is a
 result, not a broken instrument.
 
@@ -200,7 +200,7 @@ Two things follow, and the second is the important one:
 
 That is what makes `getPlatformName` the remaining candidate rather than a
 speculative one: it is the only platform-shaped value in this surface that the
-engine both asks for and Cordial can choose.
+engine both asks for and Vanta can choose.
 
 ### 2f. Things that look like the platform decision and are not
 
@@ -216,12 +216,12 @@ the APK's *content*, and no platform string can move them:
 ships, and
 `shaders_vulkan_mobile.pack` and `shaders_glsles3.pack` are the only shader packs
 in it. The Android build has no desktop app shell to load and no desktop shader
-pack to pick. **Cordial's app shell will look like the mobile app shell whatever
+pack to pick. **Vanta's app shell will look like the mobile app shell whatever
 it reports as its platform**, because it is the mobile app shell.
 
 The Quest APK also ships `places/Maquettes.rbxl`, and that one *is* an app
 shell place: with `InitParams.isVrDevice` true the Quest engine loads it in
-place of `Mobile.rbxl` and the menu sits in its environment (cordial-vr,
+place of `Mobile.rbxl` and the menu sits in its environment (vanta-vr,
 measured on Monado 2026-09-30). No platform string moves it; that field does.
 
 `NativeSettingsInterface.nativeOverrideChannelPlatformName(String)` is a real
@@ -231,7 +231,7 @@ export and Roblox's own settings document carries
 `buildVariant` and `viewportHeightMm`: what it takes is the *client-settings
 application name*, the `AndroidApp` in
 `https://clientsettingscdn.roblox.com/v2/settings/application/AndroidApp` — and
-`crates/cordial-runtime/src/client_settings.rs` records that the plausible
+`crates/vanta-runtime/src/client_settings.rs` records that the plausible
 alternatives all return HTTP 400 from that endpoint. On that reading it is not
 the device platform and pointing it at `Linux` would break the flag fetch, which
 is why it was left alone rather than tested.
@@ -240,7 +240,7 @@ is why it was left alone rather than tested.
 
 All runs: same binary, `--host-libc --game-activity`, nobody signed in, cold
 (`data/` wiped before each), against a data root of their own. The control is
-`CORDIAL_PLATFORM_NAME=Android`, which is the pre-change client in the same
+`VANTA_PLATFORM_NAME=Android`, which is the pre-change client in the same
 session differing in exactly this string.
 
 ### 3a. The engine's own log does not narrate it
@@ -250,7 +250,7 @@ and durations normalised away, differs in one line: the session id inside an HTT
 error body. 941 lines each, same channels, same stages, same `setStage`
 sequence.
 
-A run with `CORDIAL_PLATFORM_NAME=ZQPLATMARKER` puts that marker **nowhere** in
+A run with `VANTA_PLATFORM_NAME=ZQPLATMARKER` puts that marker **nowhere** in
 the engine's log or anywhere else under the profile. Whatever the engine does
 with this string, it does not print it. So the log is not a usable signal here,
 and "the field is set" cannot be verified from it.
@@ -294,10 +294,10 @@ is that **no verified behavioural difference was found** — the change is
 the string.
 
 Two things worth recording for whoever picks this up. No pointer or keyboard
-input was delivered deliberately on any run: Cordial's X event mask takes
+input was delivered deliberately on any run: Vanta's X event mask takes
 `PointerMotionMask` but not `EnterWindowMask`, so a resting cursor generates
 nothing. But **a second agent was launching the same client on the same display
-during part of this window** (observed as a concurrent `cordial-run` against a
+during part of this window** (observed as a concurrent `vanta-run` against a
 different `--lib-dir`), which is an uncontrolled confound over focus and pointer
 that could not be removed after the fact. A rerun on a quiet machine is cheap and
 would settle whether the three are real.
@@ -312,20 +312,20 @@ be read as evidence about the keyboard.**
 
 It needs somebody who can join a place. Put this in a `LocalScript` under
 `StarterPlayer/StarterPlayerScripts` of a place you own, publish it private, and
-join it from Cordial. It prints to the client log, so it lands in
+join it from Vanta. It prints to the client log, so it lands in
 `<profile>/data/files/appData/logs/*_Player_*.log` under `[FLog::Output]` with no
 UI to read:
 
 ```lua
 local UIS = game:GetService("UserInputService")
-print("CORDIAL-PROBE platform =", UIS:GetPlatform().Name)
-print("CORDIAL-PROBE touch/kbd/mouse =",
+print("VANTA-PROBE platform =", UIS:GetPlatform().Name)
+print("VANTA-PROBE touch/kbd/mouse =",
       UIS.TouchEnabled, UIS.KeyboardEnabled, UIS.MouseEnabled)
-print("CORDIAL-PROBE gamepad/tenfoot =",
+print("VANTA-PROBE gamepad/tenfoot =",
       UIS.GamepadEnabled, game:GetService("GuiService"):IsTenFootInterface())
 UIS.InputBegan:Connect(function(input, processed)
     if input.UserInputType == Enum.UserInputType.Keyboard then
-        print("CORDIAL-PROBE key", input.KeyCode.Name, "processed:", processed)
+        print("VANTA-PROBE key", input.KeyCode.Name, "processed:", processed)
     end
 end)
 ```
@@ -334,21 +334,21 @@ Two launches, same place, same session, differing in exactly one string:
 
 ```bash
 export XDG_DATA_HOME=~/.local/share            # your usual profile
-cd ~/Projects/cordial
+cd ~/Projects/vanta
 
-# treatment: what Cordial now ships
-CORDIAL_PLATFORM_NAME=Linux   ./target/release/cordial-run \
+# treatment: what Vanta now ships
+VANTA_PLATFORM_NAME=Linux   ./target/release/vanta-run \
   --lib-dir <lib/x86_64> --apk <base.apk> --host-libc --game-activity --run 180
 
 # control: the client exactly as it behaved before this change
-CORDIAL_PLATFORM_NAME=Android ./target/release/cordial-run \
+VANTA_PLATFORM_NAME=Android ./target/release/vanta-run \
   --lib-dir <lib/x86_64> --apk <base.apk> --host-libc --game-activity --run 180
 ```
 
 Then, for each:
 
 ```bash
-grep 'CORDIAL-PROBE' ~/.local/share/cordial/profiles/default/data/files/appData/logs/*_Player_*.log
+grep 'VANTA-PROBE' ~/.local/share/vanta/profiles/default/data/files/appData/logs/*_Player_*.log
 ```
 
 How to read it:
@@ -360,7 +360,7 @@ How to read it:
   name, not the client's (§2d's other reading). The value stays, because it is
   still the true one, but this file must be corrected to say the mechanism was
   not found, and the search moves on.
-* `KeyboardEnabled` and the `CORDIAL-PROBE key` lines are the ones that bear on
+* `KeyboardEnabled` and the `VANTA-PROBE key` lines are the ones that bear on
   the actual complaint. If keys print here but the character does not move, the
   break is above the engine's input layer and below Lua, and neither this change
   nor `PlatformParams` is where to look next.

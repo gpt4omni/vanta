@@ -148,15 +148,15 @@ It asks for each value, checks every one against the live API before writing any
 `.env` at `0600`. Secrets are read without echo and never printed back. If anything is wrong it
 names the setting and what the API said, and writes nothing.
 
-**Give the bridge its own application.** Cordial already has one — `1543200871767212062`, which
-`plugins/discord-presence/main.ts` publishes every user's "Playing Cordial" under. Setup rewrites
-the application description, which is public, and one application carrying both means a problem with
-the bot is a problem with every user's presence. The script refuses that id by name.
+**Give the bridge its own application.** Vanta already has one — `1543200871767212062`, which
+`plugins/discord-presence/main.ts` publishes every user's "Playing Vanta" under. Setup rewrites the
+application description, which is public, and one application carrying both means a problem with the
+bot is a problem with every user's presence. The script refuses that id by name.
 
 It does **not** touch the application's icon: the bot's face is the bot user's avatar
 (`PATCH /users/@me`) and the Rich Presence artwork is the application's icon
 (`PATCH /applications/@me`). They are separate pictures, and an earlier version of this script
-conflated them — which would have replaced Cordial's presence artwork with the bot's googly eyes for
+conflated them — which would have replaced Vanta's presence artwork with the bot's googly eyes for
 every user.
 
 **Two steps are not automatable and no script can make them so.** Discord has no endpoint that

@@ -1,9 +1,9 @@
 # Architectures
 
-<!-- description: Which CPU architectures Cordial runs on, how the Roblox build is chosen, and what has and has not been checked on aarch64. -->
+<!-- description: Which CPU architectures Vanta runs on, how the Roblox build is chosen, and what has and has not been checked on aarch64. -->
 <!-- icon: microchip -->
 
-Cordial runs Roblox's Android build **natively**: it loads the engine built for
+Vanta runs Roblox's Android build **natively**: it loads the engine built for
 the host's own architecture and never translates machine code. There is no
 translation layer, and none is planned
 ([ADR-043](adr/ADR-043-the-roblox-build-is-the-binarys-architecture.md)).
@@ -14,13 +14,13 @@ translation layer, and none is planned
 | aarch64 | `lib/arm64-v8a/` from the APK | Packages are published; **untested on real ARM64 hardware** |
 | Anything else | | Not supported |
 
-The architecture is fixed when Cordial is built, so a Cordial built for aarch64
+The architecture is fixed when Vanta is built, so a Vanta built for aarch64
 installs and runs the aarch64 build of Roblox. Settings shows it in a read-only
 **Roblox build** row; there is no dropdown, because choosing the other
-architecture's build would change nothing Cordial can run. Builds are kept in
-`~/.local/share/cordial/builds/<version>`, which is not keyed by architecture:
+architecture's build would change nothing Vanta can run. Builds are kept in
+`~/.local/share/vanta/builds/<version>`, which is not keyed by architecture:
 two architectures sharing one home directory and one version number would meet
-in one directory. Cordial refuses a build whose engine differs from the one kept
+in one directory. Vanta refuses a build whose engine differs from the one kept
 under that version, by name, rather than overwriting it (INFERRED for two
 architectures; not tried).
 
@@ -28,9 +28,9 @@ architectures; not tried).
 
 **What has been checked.** The code builds for aarch64, and the packaging,
 release and CI jobs have aarch64 legs. A real, Roblox-signed `arm64-v8a`
-`libroblox.so` was fetched through Cordial's own mirror path, its signature
+`libroblox.so` was fetched through Vanta's own mirror path, its signature
 verified, and loaded under qemu-user emulation (4K pages) in a one-off session:
-`cordial-run` got through the bionic linker, `JNI_OnLoad`, GameActivity native
+`vanta-run` got through the bionic linker, `JNI_OnLoad`, GameActivity native
 init and the engine's own flag initialisation (139 flags) before the time bound
 ended, with no crash and no undefined symbol. No command line for that session
 was kept, so it cannot be repeated from here.
@@ -61,7 +61,7 @@ was kept, so it cannot be repeated from here.
 ## VR is the one translated build
 
 The Meta Quest build ships only `arm64-v8a`. The VR mode runs its engine under an
-in-process translator (dynarmic) inside the x86-64 `cordial-run`, with the host's
+in-process translator (dynarmic) inside the x86-64 `vanta-run`, with the host's
 own Vulkan driver and OpenXR runtime
 ([ADR-053](adr/ADR-053-vr-is-a-mode-of-the-android-runtime.md), [VR](vr.md)).
 It is stored apart under `builds/arm64-v8a/`. It has been measured on Monado's

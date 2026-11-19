@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # One instrumented join, then a summary of what the engine said about it.
 #
-# Usage: tools/join-run.sh <tag> [bindir] [run-seconds] [extra cordial-run args...]
+# Usage: tools/join-run.sh <tag> [bindir] [run-seconds] [extra vanta-run args...]
 #
-# Runs the client the way cordial-shell runs it — same `--profile`, so the same
+# Runs the client the way vanta-shell runs it — same `--profile`, so the same
 # appData, cookie store and saved identity — but with `--join-url`, which is the
 # only path into a game that does not need somebody to press a button.
 #
@@ -14,7 +14,7 @@
 # AGENTS.md applies to anything measured with this:
 #
 #   * **Use the test account.** Enforcement is automated and associates accounts
-#     sharing an address. `--profile CordialTest` is not a default to change
+#     sharing an address. `--profile VantaTest` is not a default to change
 #     casually.
 #   * **One run is not a result.** The disconnect this exists to study reproduced
 #     on roughly one launch in three before it was understood; a single clean run
@@ -29,30 +29,30 @@ SECS="${3:-90}"
 shift $(( $# < 3 ? $# : 3 ))
 
 APK="$HOME/.var/app/org.vinegarhq.Sober/data/sober/packages/x86_64/com.roblox.client/base.apk"
-LIB="${XDG_CACHE_HOME:-$HOME/.cache}/cordial/lib/x86_64"
-PLACE="${CORDIAL_TEST_PLACE:-17625359962}"
-PROFILE="${CORDIAL_TEST_PROFILE:-CordialTest}"
-LOGS="$HOME/.local/share/cordial/profiles/$PROFILE/data/files/appData/logs"
-OUT="${TMPDIR:-/tmp}/cordial-join-$TAG.log"
+LIB="${XDG_CACHE_HOME:-$HOME/.cache}/vanta/lib/x86_64"
+PLACE="${VANTA_TEST_PLACE:-17625359962}"
+PROFILE="${VANTA_TEST_PROFILE:-VantaTest}"
+LOGS="$HOME/.local/share/vanta/profiles/$PROFILE/data/files/appData/logs"
+OUT="${TMPDIR:-/tmp}/vanta-join-$TAG.log"
 
 if [ ! -f "$APK" ]; then
-    echo "no APK at $APK — Cordial ships none; Sober downloads the same build" >&2
+    echo "no APK at $APK — Vanta ships none; Sober downloads the same build" >&2
     exit 1
 fi
-if [ ! -x "$BIN/cordial-run" ]; then
-    echo "no cordial-run in $BIN — did 'just build' succeed?" >&2
+if [ ! -x "$BIN/vanta-run" ]; then
+    echo "no vanta-run in $BIN — did 'just build' succeed?" >&2
     exit 1
 fi
 
 echo "=== $TAG: $(date -u +%H:%M:%SZ) place=$PLACE profile=$PROFILE bin=$BIN run=${SECS}s"
 # Anything already in the environment is passed through untouched, which is how
 # a one-variable experiment is run against this:
-#   CORDIAL_DEVICE_PROFILE=pc-windows-11 tools/join-run.sh pc
-CORDIAL_WAYLAND=1 "$BIN/cordial-run" \
+#   VANTA_DEVICE_PROFILE=pc-windows-11 tools/join-run.sh pc
+VANTA_WAYLAND=1 "$BIN/vanta-run" \
     --lib-dir "$LIB" --apk "$APK" \
     --host-libc --game-activity \
     --run "$SECS" --profile "$PROFILE" \
-    --join-url "${CORDIAL_TEST_LINK:-roblox://experiences/start?placeId=$PLACE}" \
+    --join-url "${VANTA_TEST_LINK:-roblox://experiences/start?placeId=$PLACE}" \
     "$@" > "$OUT" 2>&1
 echo "exit=$? out=$OUT ($(wc -l < "$OUT") lines)"
 

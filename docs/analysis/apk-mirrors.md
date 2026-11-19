@@ -1,4 +1,4 @@
-# Which mirrors actually carry a Roblox build Cordial can use
+# Which mirrors actually carry a Roblox build Vanta can use
 
 Measured 2026-08-26, from this machine, on wifi. Everything here is a request
 somebody can repeat; nothing is inferred from documentation.
@@ -26,7 +26,7 @@ answers 200 with clean JSON -- and VinegarHQ's own `custard` deployment tracker
 watches `com.roblox.client` there, so it had a reference implementation vouching
 for it.
 
-What it serves is not a Roblox build Cordial can use, and not a recent one:
+What it serves is not a Roblox build Vanta can use, and not a recent one:
 
 ```text
 vername   2.158.48944
@@ -50,7 +50,7 @@ lib/x86_64/libroblox.so: absent
 ```
 
 **armeabi only** -- 32-bit ARM, an architecture Roblox stopped shipping years
-ago and one Cordial cannot execute. And `cordial_update::apk_signature` refuses
+ago and one Vanta cannot execute. And `vanta_update::apk_signature` refuses
 it outright:
 
 ```text
@@ -60,7 +60,7 @@ signed only with the v1 scheme, which cannot establish where it came from
 
 That refusal is probably not evidence of tampering: v2 signing arrived with
 Android 7 in 2016 and a genuinely ancient APK would be v1-only for honest
-reasons. It is still exactly the right outcome. **Cordial cannot establish that
+reasons. It is still exactly the right outcome. **Vanta cannot establish that
 Roblox produced those bytes, so it will not install them**, and that judgement
 was made without anybody having to notice that the version number was eleven
 years stale or that the only library in it was for the wrong CPU.
@@ -97,7 +97,7 @@ variant 1 (142 443 839 bytes)      variant 2 (133 928 223 bytes)
 ```
 
 **No `config.x86_64.apk` in either.** 2.735.1138 is published for 32-bit ARM and
-64-bit ARM and not for x86-64, so there is nothing in it Cordial could run, and
+64-bit ARM and not for x86-64, so there is nothing in it Vanta could run, and
 2.734.917 genuinely is the newest x86-64 build APKPure has.
 
 This retires the freshness argument for a second provider. It also turns a
@@ -121,7 +121,7 @@ and returning a plausible wrong answer.
 
 APKCombo is the better of the two. Its old-versions listing yields clean version
 strings (`2.735.1138`, `2.734.917`, `2.734.916`) in sorted order, and it exposes
-per-ABI downloads, which is the filter Cordial actually needs.
+per-ABI downloads, which is the filter Vanta actually needs.
 
 Whichever is chosen, the rule from `provider::mod` applies unchanged and is what
 makes trying one cheap: **it returns bytes, it never returns trust.** A scraper
@@ -139,9 +139,9 @@ curl -sSL -r $((TOTAL-200000))-$((TOTAL-1)) "$XAPK_URL" -o tail.bin
 # Aptoide
 curl -sS 'https://ws75.aptoide.com/api/7/app/getMeta?package_name=com.roblox.client'
 
-# What Cordial thinks of any APK
-cargo run --release -p cordial-update --example verify-apk -- /path/to/base.apk
+# What Vanta thinks of any APK
+cargo run --release -p vanta-update --example verify-apk -- /path/to/base.apk
 
 # What APKPure currently offers
-cargo run --release -p cordial-update --example fetch_probe
+cargo run --release -p vanta-update --example fetch_probe
 ```

@@ -1,9 +1,9 @@
 # Photographing the launcher without a screen
 
-**Nothing in this repository can currently take a picture of Cordial's own GTK
-windows.** `cordial_screenshot` reads the engine's Vulkan swapchain, so it sees
+**Nothing in this repository can currently take a picture of Vanta's own GTK
+windows.** `vanta_screenshot` reads the engine's Vulkan swapchain, so it sees
 the game and cannot see the launcher, Settings, or any dialog -- the same blind
-spot that made `cordial_textbox` necessary for typing. Every UI change here has
+spot that made `vanta_textbox` necessary for typing. Every UI change here has
 therefore been checked by asking a human to look, which is slow and which has
 already shipped one settings page nobody could read.
 
@@ -24,7 +24,7 @@ be a broadway client.
 
 The GNOME Flatpak runtimes do include it. `org.gnome.Sdk//50` (GTK 4.22) and
 `runtime/org.gnome.Sdk/x86_64/49` (GTK 4.20) both accept the backend, and a
-host-built `cordial-shell` resolves every one of its libraries inside that
+host-built `vanta-shell` resolves every one of its libraries inside that
 sandbox -- `ldd` reports nothing missing -- so running our own binary there
 works.
 
@@ -61,7 +61,7 @@ the abstract name the server bound, carrying `SCM_RIGHTS` because broadway
 passes file descriptors over this socket -- five of them in a trivial session.
 
 That gets much further. GTK opens the display, the theme loads, and
-`cordial-shell` prints `shell: refresh -- 1 monitor(s)`. Then:
+`vanta-shell` prints `shell: refresh -- 1 monitor(s)`. Then:
 
     broadwayd: Gdk-WARNING: Unknown request of type 17
     broadwayd: Gdk:ERROR:../gdk/broadway/broadway-server.c:1651:
@@ -71,7 +71,7 @@ That gets much further. GTK opens the display, the theme loads, and
     client:    Unable to read from broadway server: eof
 
 **A twelve-line GTK control fails identically** -- one `Gtk.Window` holding one
-`Gtk.Label`, same assertion, same abort. So this is not Cordial, not
+`Gtk.Label`, same assertion, same abort. So this is not Vanta, not
 libadwaita, and not the complexity of the settings page.
 
 **What is not established is whether the relay causes it.** The relay is the

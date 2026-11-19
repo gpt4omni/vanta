@@ -18,7 +18,7 @@ libjnivm binds hooks by name *and* descriptor, and a mismatch fails silently in
 both directions — the hook registers and is simply never called. This project has
 found four separate instances of that bug.
 
-`tools/hook_descriptors.py ~/.cache/cordial-dex/` checks every hook against the
+`tools/hook_descriptors.py ~/.cache/vanta-dex/` checks every hook against the
 shipping dex and currently prints:
 
 ```
@@ -44,15 +44,15 @@ different (and cheaper) situation than one that cannot bind.
 
 **Good first issue.**
 
-Cordial answers Android's `__system_property_get` from a small table in
-`crates/cordial-runtime/src/bionic/mod.rs`. Anything not in the table returns
-`""`. Run with `CORDIAL_TRACE_PROPS=1` and the engine asks for four properties,
+Vanta answers Android's `__system_property_get` from a small table in
+`crates/vanta-runtime/src/bionic/mod.rs`. Anything not in the table returns
+`""`. Run with `VANTA_TRACE_PROPS=1` and the engine asks for four properties,
 one of which is unanswered:
 
 ```
 [props] ro.build.version.sdk = 33
-[props] ro.product.model = Cordial
-[props] ro.hardware = cordial
+[props] ro.product.model = Vanta
+[props] ro.hardware = vanta
 [props] ro.soc.manufacturer = <empty, not in table>
 ```
 
@@ -86,7 +86,7 @@ channels set with bare integers was read as "loud logging is exhausted" when it 
 partly turned logging off.
 
 The binary defines **724** channels. The cached settings document
-(`~/.cache/cordial/clientsettings.json`) names the shape for every channel Roblox
+(`~/.cache/vanta/clientsettings.json`) names the shape for every channel Roblox
 itself configures. Produce a table, and ideally make `flags.json` warn when a
 channel is given a shape that document disagrees with.
 
@@ -98,7 +98,7 @@ channel is given a shape that document disagrees with.
 
 **Intermediate. There is a worked example to copy.**
 
-Cordial runs Android's `libroblox.so` against the host's glibc, and the two libcs
+Vanta runs Android's `libroblox.so` against the host's glibc, and the two libcs
 disagree about struct layouts. Each disagreement is silent and produces a failure
 with no obvious relationship to its cause. Already fixed and documented:
 `sigset_t` (8 bytes vs 128), `struct sigaction` (32 vs 152), `addrinfo` field
@@ -149,7 +149,7 @@ something harmless is how the next `hypotf` becomes a mystery instead of an erro
 
 **Good first issue, and it is a stale comment as much as a bug.**
 
-In `crates/cordial-runtime/src/bin/load.rs`, `initStorageManagerNativeV3` is
+In `crates/vanta-runtime/src/bin/load.rs`, `initStorageManagerNativeV3` is
 called *before* the four `NativeSettingsInterface` directory setters, while its own
 comment says it runs "after the directories above are set". Confirmed from the
 source's control flow and from stdout ordering across two runs.

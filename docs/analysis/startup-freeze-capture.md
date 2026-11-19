@@ -1,8 +1,8 @@
 # The startup freeze, photographed
 
 First capture of a frozen client, 2026-08-26. Everything here is one run,
-`/tmp/cordial-freeze/capture-cap2`, taken with
-`CAPTURE=1 tools/startup-freeze-survey.sh 2 CordialTest`.
+`/tmp/vanta-freeze/capture-cap2`, taken with
+`CAPTURE=1 tools/startup-freeze-survey.sh 2 VantaTest`.
 
 ## How to reproduce it, which is the first thing that changed
 
@@ -41,7 +41,7 @@ captured that day spun: the engine thread was in `looper_poll_once` with
 `timeout_millis=0`, at 9.8 M polls a second and 103% CPU, which matches the
 captures below. The three `0-gdb` captures in `docs/NEXT.md` (2026-09-01) found
 the same pipe parked instead: `timeout_millis=-1`, clamped by
-`BLOCK_CEILING_MS` to 20 polls a second, at 1.6% CPU. In both, Cordial's own
+`BLOCK_CEILING_MS` to 20 polls a second, at 1.6% CPU. In both, Vanta's own
 pump was healthy and nothing wrote the pipe. Two engine call sites waiting on
 one pipe that is never written would explain both readings. That is
 **INFERRED**: no session has caught both states. So a CPU reading alone does
@@ -65,11 +65,11 @@ the life of the process, the last of them twenty-five seconds ago.
 The backtraces name both halves:
 
 ```text
-Thread 1  (LWP 498547) "Main"        -- Cordial's own pump
+Thread 1  (LWP 498547) "Main"        -- Vanta's own pump
   epoll_wait
   looper::looper_poll_once (timeout_millis=50, ...)   looper.rs:1620
   looper::pump                                        looper.rs:1240
-  cordial_run::main                                   load.rs:4063
+  vanta_run::main                                   load.rs:4063
 
 Thread 53 (LWP 498578) "Main"        -- an engine thread
   epoll_wait
@@ -79,11 +79,11 @@ Thread 53 (LWP 498578) "Main"        -- an engine thread
 
 So: **a Roblox thread is calling `ALooper_pollOnce` with a zero timeout in a
 tight loop, waiting for something on that descriptor that never arrives**, and
-burning a core doing it. Cordial's own pump is polling normally on the other
+burning a core doing it. Vanta's own pump is polling normally on the other
 looper and seeing nothing either -- seventeen events, none for twenty-five
 seconds.
 
-`timeout_millis=0` is the engine's choice, not Cordial's. A zero timeout means
+`timeout_millis=0` is the engine's choice, not Vanta's. A zero timeout means
 "tell me if anything is ready and return immediately", which is a poll designed
 to be called from a loop that has other work. Here there is no other work: the
 loop is all there is.
@@ -118,10 +118,10 @@ CPU       103% in all three; the spinning thread is the only one in state R
 So the spinning engine thread is polling **the read end of a pipe whose write
 end is open in this same process**. Nothing is closed and nothing has gone
 away; something simply stops writing. Ident 1 is the app-glue's main command
-channel, and `APP_CMD` appears nowhere in Cordial -- these pipes belong to the
+channel, and `APP_CMD` appears nowhere in Vanta -- these pipes belong to the
 engine's own glue inside `libroblox.so`, not to anything this project wrote.
 
-And Cordial's main thread is starved too: its Wayland display socket has
+And Vanta's main thread is starved too: its Wayland display socket has
 produced no event for twenty-five seconds.
 
 **Correction, 2026-09-29: this census does not separate a frozen client from a
@@ -147,7 +147,7 @@ the command comes from work the main thread drives, the main thread waits for
 events, the events come from presenting, and presenting needs the engine. If
 that were the whole story, one input event should break it.
 
-It does not. Driven through Cordial's own entry points on a live frozen client:
+It does not. Driven through Vanta's own entry points on a live frozen client:
 
 ```text
 before                  presents=2  accepted=0
@@ -190,7 +190,7 @@ verification run showed `accepted=13` during startup. That run froze.
 has bound it, which is well into startup. So this arm cannot deliver anything
 during the earliest phase, and if the freeze is decided before the socket
 appears, it has not been tested. What can be said is narrower than "input does
-not prevent it": input delivered from the moment Cordial can accept it does not
+not prevent it": input delivered from the moment Vanta can accept it does not
 prevent it.
 
 ## What this does not establish
@@ -211,7 +211,7 @@ prevent it.
 ## Repeating it
 
 ```bash
-CAPTURE=1 TAG=cap tools/startup-freeze-survey.sh 1 CordialTest
+CAPTURE=1 TAG=cap tools/startup-freeze-survey.sh 1 VantaTest
 ```
 
 Off by default: it costs a gdb attach on every frozen run, and the survey's job
@@ -224,12 +224,12 @@ both halves. A one-frame backtrace is not an answer.
 ## Recovery and prevention, both attempted and neither proven, 2026-09-18
 
 See `docs/NEXT.md`'s "Recovery and a settings-race prevention attempt" entry
-for the full account. In short: `CORDIAL_STARTUP_RETRY` is re-confirmed to
+for the full account. In short: `VANTA_STARTUP_RETRY` is re-confirmed to
 make a frozen client worse (the retried call never returns, 5/5 this
 session); a settings/flags-ordering fix aimed at matching Sober's clean
-single-pass finalize (`CORDIAL_SYNC_BOOTSTRAP`) made no measured difference
+single-pass finalize (`VANTA_SYNC_BOOTSTRAP`) made no measured difference
 to whether the finalize-retry line appears at all; and a whole-process
-self-relaunch (`CORDIAL_STARTUP_SELFRELAUNCH`) is mechanically sound but was
+self-relaunch (`VANTA_STARTUP_SELFRELAUNCH`) is mechanically sound but was
 observed to recover 0 of 3 fired attempts in this session's n=20 batch — not
 enough evidence to trust a rate, and possibly evidence that a freeze this
 soon after teardown is not an independent event. None of the three is
@@ -237,7 +237,7 @@ shipped as default.
 
 ## The settings document, 2026-09-24
 
-Cordial fetched the `AndroidApp` client-settings document; the engine's own
+Vanta fetched the `AndroidApp` client-settings document; the engine's own
 reloader fetches `GoogleAndroidApp`. A Roblox rollout that day left
 `AndroidApp` unable to start the client (grey window, 10/10), while
 `GoogleAndroidApp` reached Landing 10/10. That is fixed in 89d494a (0.18.0).
@@ -259,10 +259,10 @@ reads a file; the default goes through the fetch and cache path). The arm
 that separates the two is the `GoogleAndroidApp` document delivered with
 `--client-settings`.
 
-The startup experiments tried before this (`CORDIAL_SYNC_BOOTSTRAP`,
-`CORDIAL_STARTUP_RETRY`, `CORDIAL_STARTUP_SELFRELAUNCH`,
-`CORDIAL_SKIP_AGDK_SETTINGS` with a V1 `nativeAppBridgeAppStart`,
-`CORDIAL_SOBER_ORDER`) were each refuted and are removed; they are recorded
+The startup experiments tried before this (`VANTA_SYNC_BOOTSTRAP`,
+`VANTA_STARTUP_RETRY`, `VANTA_STARTUP_SELFRELAUNCH`,
+`VANTA_SKIP_AGDK_SETTINGS` with a V1 `nativeAppBridgeAppStart`,
+`VANTA_SOBER_ORDER`) were each refuted and are removed; they are recorded
 in 179ac13.
 
 ## Later on 2026-09-24: delivery path and latency, both refuted
@@ -271,7 +271,7 @@ Signed in, interleaved, flag cache reset per run:
 
 | condition | FROZEN |
 |---|---|
-| default, with `CORDIAL_SETTINGS_HISTORY`'s extra fetch in the callback | 3/10 |
+| default, with `VANTA_SETTINGS_HISTORY`'s extra fetch in the callback | 3/10 |
 | `--client-settings` file, same extra fetch | 0/10 |
 | default, no extra fetch | 0/10 |
 | `--client-settings` file of the same document, no extra fetch | 0/10 |
@@ -306,16 +306,16 @@ command" reading of the 09d315b redraw action invited, and it is now
 measured rather than argued. The actual wait is confirmed to be inside
 `UgcExperienceController`/`SingleSurfaceApp`'s own finalize retry, which
 prints no further `FLog::` line of any kind once it fails to recover, on a
-process whose every other thread (including `cordial-secrets`, checked and
+process whose every other thread (including `vanta-secrets`, checked and
 found idly parked on its own job queue, not blocked mid-request) stays
 observably healthy.
 
 ## 2026-10-04: the freeze is decided before the wait, at the first Lua app's teardown
 
-Eight signed-in launches of `CordialTest` (162 s or more apart, all signed in,
+Eight signed-in launches of `VantaTest` (162 s or more apart, all signed in,
 no `DID_LOG_OUT`) on 192fdfc gave one freeze, under core pinning plus a busy
 loop (1 of 3 amplified, 0 of 5 plain). Harness, logs and captures:
-`~/.cache/cordial-handoff/freeze-92/`.
+`~/.cache/vanta-handoff/freeze-92/`.
 
 **The HttpClient-completion model does not survive.** With
 `DFLogHttpTraceLight=7`, the frozen run had the same set of open requests at
@@ -339,11 +339,11 @@ rule was formed, fit it (the frozen one at +5 ms; all seven healthy outside).
 
 **INFERRED:** a race in the engine between the first Lua app's first render
 step and the teardown that `startLuaApp_` begins once settings and flags load;
-when it loses, the finalize thread waits for a task nothing posts. Cordial does
+when it loses, the finalize thread waits for a task nothing posts. Vanta does
 not cause it, but it fixes when `initialize` is called relative to the first
 render, so it likely sets how often the race is lost.
 
-**Next:** (1) the lever: delay Cordial's `initialize` until the first render
+**Next:** (1) the lever: delay Vanta's `initialize` until the first render
 step has run, measured against interleaved controls, at least 20 signed-in
 launches per arm (several days at the launch cap); (2) meanwhile, recovery:
 detect the frozen shape from the engine log (`Forcing finalize` with no
@@ -352,7 +352,7 @@ detect the frozen shape from the engine log (`Forcing finalize` with no
 
 ### Recovery in the shell (2026-10-04)
 
-`crates/cordial-shell/src/freeze_recovery.rs` implements the second item: the
+`crates/vanta-shell/src/freeze_recovery.rs` implements the second item: the
 shell reads the new client's engine log once a second, and calls it stuck when
 the first `Forcing finalize` has no `[Graphics] RenderView destroyed[1]` before
 it and no `~UgcExperienceController` within 5 s. It then stops the client
@@ -368,22 +368,22 @@ log was not found. It agrees, on all 139 logs that have a finalize, with the
 check that does not use the rule (a finished finalize logs the destructor sooner
 or later). In 112 healthy
 logs the finalize-to-destructor gap is at most 0.71 s, so 5 s is a wide margin.
-`cargo test -p cordial-shell --lib freeze_corpus -- --ignored --nocapture` with
-`CORDIAL_FREEZE_CORPUS` set to colon-separated directories reprints this.
+`cargo test -p vanta-shell --lib freeze_corpus -- --ignored --nocapture` with
+`VANTA_FREEZE_CORPUS` set to colon-separated directories reprints this.
 
 **Not measured:** that a real freeze is recovered. Whether `SIGTERM` stops a
 client that is wedged in the finalize is not known (the `SIGKILL` fallback is
 for that), and the restart's effect on how often the race is lost is not
-known. `CORDIAL_NO_FREEZE_RESTART=1` turns it off for the measurement in item
+known. `VANTA_NO_FREEZE_RESTART=1` turns it off for the measurement in item
 (1).
 
 ## 2026-10-16: this describes the first of two regimes
 
 Everything above is a launch with no usable flag cache: the engine says
-`onFlagsFailed`, waits for Cordial's post-settings call, and the freeze is the
+`onFlagsFailed`, waits for Vanta's post-settings call, and the freeze is the
 first render step landing between that call and the end of the teardown it
 starts. With a valid cache the engine starts its Lua app on its own and ignores
-the call; that regime did not freeze in this session, but holding Cordial's
+the call; that regime did not freeze in this session, but holding Vanta's
 thread in it left the client at four presents, the render thread in
 `vkAcquireNextImageKHR`. Evidence, counts and what was not measured:
 `docs/NEXT.md`, "#92: two startup regimes".
