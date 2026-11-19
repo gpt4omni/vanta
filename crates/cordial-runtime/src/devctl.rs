@@ -592,8 +592,7 @@ fn handle(line: &str) -> String {
 /// leaves it fixed while `polls` keeps climbing, which is exactly the shape the
 /// 2026-08-21 freeze turned out to have -- 42 presents and 74 million polls.
 fn info_line() -> String {
-    let presents =
-        crate::android::glcount::QUEUE_PRESENT.load(Ordering::Relaxed);
+    let presents = crate::android::glcount::frames();
     let (w, h) = crate::android::vulkan::last_extent();
     format!(
         "ok presents={presents}{}{} accepted={} extent={w}x{h} pid={}",

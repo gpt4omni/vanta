@@ -301,10 +301,12 @@ const IDLE_SPIN_THRESHOLD: u64 = 64;
 /// client never presents enough frames for the sleep to run at all. So the
 /// backoff is very probably not the cause and that comparison was noise.
 ///
-/// The gate stays anyway, because it costs one atomic load per poll and buys
+/// The gate stays anyway, because it costs two atomic loads per poll and buys
 /// the one thing worth having: **the core this saves is burned during play, and
 /// the race happens during startup**, so there is no reason for the two to
-/// touch. Below this many frames the poll loop behaves exactly as it did before
+/// touch. Frames on either backend count (`glcount::frames`); counting only
+/// Vulkan presents left a GLES session spinning a core for its whole life.
+/// Below this many frames the poll loop behaves exactly as it did before
 /// the backoff existed.
 ///
 /// What the backoff does once it is allowed to engage, measured in one session
@@ -1914,7 +1916,7 @@ extern "C" fn looper_poll_once(
     let backoff_ns = zero_timeout_coalesce_ns();
     if timeout_millis == 0
         && backoff_ns > 0
-        && super::glcount::QUEUE_PRESENT.load(Ordering::Relaxed) >= BACKOFF_AFTER_PRESENTS
+        && super::glcount::frames() >= BACKOFF_AFTER_PRESENTS
         && l.empty_zero_streak.load(Ordering::Relaxed) >= IDLE_SPIN_THRESHOLD
     {
         POLLS_COALESCED.fetch_add(1, Ordering::Relaxed);

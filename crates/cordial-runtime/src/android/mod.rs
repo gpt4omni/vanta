@@ -445,6 +445,8 @@ pub fn overrides() -> Vec<(&'static str, *mut c_void)> {
     });
     if std::env::var_os("CORDIAL_COUNT_GL").is_some() {
         v.extend(glcount::overrides());
+    } else {
+        v.extend(glcount::swap_counter());
     }
     v
 }
