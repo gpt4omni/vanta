@@ -1800,9 +1800,11 @@ fn track_key_held(down: bool, evdev_code: i32) {
 /// Desktop Roblox does not throttle a window in the foreground, and
 /// `ThrottleWhen` already decides what counts as the background, so with the
 /// pointer on the canvas and no key held this resends every
-/// [`IDLE_KEEPALIVE_INTERVAL_MS`] instead of every tick: the throttle engages
-/// about a second after the last call, so four a second holds it off at a
-/// fraction of the calls.
+/// [`IDLE_KEEPALIVE_INTERVAL_MS`] instead of every tick. Once throttled, the
+/// engine draws one frame per call rather than waking for a while: resent four
+/// times a second it presented 3.5 frames a second on an idle landing page
+/// (GLES, headless sway), against 1.0 with no keepalive. So the call has to
+/// land at least once a frame, and 4 ms covers a 240 Hz display.
 ///
 /// Called from [`super::looper::pump`] every tick the policy wants it; harmless to
 /// call when the interface native is not registered yet, since
@@ -1914,7 +1916,7 @@ pub fn idle_keepalive() {
 }
 
 /// How often [`idle_keepalive`] resends when no key is held.
-pub const IDLE_KEEPALIVE_INTERVAL_MS: u64 = 250;
+pub const IDLE_KEEPALIVE_INTERVAL_MS: u64 = 4;
 
 static LAST_KEEPALIVE_MS: AtomicU64 = AtomicU64::new(0);
 
@@ -3730,7 +3732,7 @@ pub fn script_type(handle: i64, text: &str, now_ms: i64) -> usize {
 mod tests {
 
     #[test]
-    fn the_idle_keepalive_resends_four_times_a_second_not_every_tick() {
+    fn the_idle_keepalive_resends_once_a_frame_not_every_tick() {
         assert!(keepalive_due(IDLE_KEEPALIVE_INTERVAL_MS, 0));
         assert!(!keepalive_due(1_000, 1_000 - IDLE_KEEPALIVE_INTERVAL_MS + 1));
         assert!(keepalive_due(1_000, 1_000 - IDLE_KEEPALIVE_INTERVAL_MS));
