@@ -156,7 +156,7 @@ pub fn frames() -> u64 {
     QUEUE_PRESENT.load(Ordering::Relaxed) + SWAP_BUFFERS.load(Ordering::Relaxed)
 }
 
-/// Just the `eglSwapBuffers` counter, for clients without `CORDIAL_COUNT_GL`,
+/// Just the `eglSwapBuffers` counter, for clients without `VANTA_COUNT_GL`,
 /// so [`frames`] counts GLES frames on every build and not only instrumented
 /// ones. One relaxed increment and a cached pointer load per swap.
 pub fn swap_counter() -> Vec<(&'static str, *mut c_void)> {
