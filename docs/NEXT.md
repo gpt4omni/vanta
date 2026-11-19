@@ -5188,6 +5188,15 @@ because it is one of the two shapes this file has already been bitten by.
 
 ## 1d. The frame rate. `vkQueuePresentKHR` over a fixed window measures the engine's idle throttle, not the frame rate
 
+**2026-11-19: Cordial now holds the throttle off itself while the window is in
+the foreground and the pointer is on the canvas.** `input::idle_keepalive`
+resends a zero-delta `nativePassMouseMove` every 4 ms, because once the engine
+is throttled it draws one frame per call. On an idle landing page (GLES,
+llvmpipe, headless sway, 3 runs each) that took the page from 1.0 to 35-40
+frames/s, against 1.0 on main. The 1.0/s reading below still holds when no
+pointer event has ever landed, and when `ThrottleWhen` says the window is in
+the background, so a survey that drives no input still measures the throttle.
+
 **This corrects the metric the rest of this file uses**, including §1a's own
 "547, 548 and 550 over three consecutive 25-second runs" and the 1286-1625 over
 120-180 s recorded elsewhere. Those numbers are real and they are not frame
