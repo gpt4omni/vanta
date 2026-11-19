@@ -171,7 +171,7 @@ The Android client has no frame-rate row in its own menu, so there are two separ
 
 Neither replaces the other. Frame pacing on FIFO caps you at your panel's rate whatever the limit says. Frame pacing applies at the next launch.
 
-**Frame rate limit** offers Display refresh, or 90, 120, 144, 165, 240, 360 or 480. Display refresh holds the engine's target at your monitor's rate when that is above 60 Hz, and sets nothing on a 60 Hz monitor. A new cap takes effect in a running game at once. Going back to Display refresh from a cap takes up to two minutes on a 60 Hz monitor, because the engine does not unset a flag that Roblox's settings leave out.
+**Frame rate limit** offers Display refresh, or 90, 120, 144, 165, 240, 360 or 480. Display refresh sets the engine's target to one and a half times your monitor's rate when that is above 60 Hz and the present mode is MAILBOX or IMMEDIATE (the default), to the rate itself under FIFO, and to nothing on a 60 Hz monitor. The extra half is because the engine's limiter lands short of its target, and under MAILBOX a frame finished early costs nothing on screen; see [present-headroom.md](https://github.com/gpt4omni/vanta/blob/main/docs/analysis/present-headroom.md). A new cap takes effect in a running game at once. Going back to Display refresh from a cap takes up to two minutes on a 60 Hz monitor, because the engine does not unset a flag that Roblox's settings leave out.
 
 For a number the row does not offer, set `DFIntTaskSchedulerTargetFps` in the FastFlags editor; your own flags beat the row. Whether the engine honours a target above 240 has not been measured here: 360 and 480 are `INFERRED` to work until someone with a monitor that fast says otherwise.
 
