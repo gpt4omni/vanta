@@ -5188,7 +5188,7 @@ because it is one of the two shapes this file has already been bitten by.
 
 ## 1d. The frame rate. `vkQueuePresentKHR` over a fixed window measures the engine's idle throttle, not the frame rate
 
-**2026-11-19: Cordial now holds the throttle off itself while the window is in
+**2026-11-19: Vanta now holds the throttle off itself while the window is in
 the foreground and the pointer is on the canvas.** `input::idle_keepalive`
 resends a zero-delta `nativePassMouseMove` every 4 ms, because once the engine
 is throttled it draws one frame per call. On an idle landing page (GLES,
