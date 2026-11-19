@@ -1,7 +1,7 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::ffi::{c_char, c_void, CStr};
 use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering::Acquire, Ordering::Relaxed, Ordering::Release};
-use std::sync::{Mutex, MutexGuard, OnceLock};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
 
 use super::etc_decode::{self, EtcFormat, Surface};
 use super::glcount;
@@ -911,59 +911,177 @@ extern "C" fn create_image_view(device: *mut c_void, info: *const c_void, alloc:
 }
 
 fn hash(data: &[u8]) -> u64 {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325 ^ data.len() as u64;
-    // `chunks_exact`, not `slice::as_chunks`, which needs Rust 1.88 where this
-    // workspace declares 1.75. Same words, same remainder, same hash.
-    let mut words = data.chunks_exact(8);
-    for c in &mut words {
-        let w = u64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]]);
-        h = (h ^ w).wrapping_mul(0x0100_0000_01b3).rotate_left(29);
+    let mut lanes = [
+        0xcbf2_9ce4_8422_2325 ^ data.len() as u64,
+        0x9e37_79b9_7f4a_7c15,
+        0xd6e8_feb8_6659_fd93,
+        0xa076_1d64_78bd_642f,
+    ];
+    let mut chunks = data.chunks_exact(32);
+    for c in &mut chunks {
+        for (lane, word) in lanes.iter_mut().zip(c.chunks_exact(8)) {
+            let w = u64::from_le_bytes(word.try_into().unwrap());
+            *lane = (*lane ^ w).wrapping_mul(0x0100_0000_01b3).rotate_left(29);
+        }
     }
-    for &b in words.remainder() {
+    let mut h = lanes.into_iter().fold(0u64, |h, lane| h.rotate_left(17) ^ lane);
+    for &b in chunks.remainder() {
         h = (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3);
     }
     h
 }
 
-fn run_job(job: &Job, src: &[u8]) -> Result<(), String> {
-    let dst = slice_mut(job.dst as *mut c_void, job.dst_len);
-    let tb = job.format.texel_bytes();
-    let bb = job.format.block_bytes();
-    let per_layer = job.width * job.height * tb;
-    let block_rows = job.height.div_ceil(4);
-    let threads = if job.width * job.height >= 256 * 256 {
-        std::thread::available_parallelism().map_or(1, |n| n.get()).min(8)
-    } else {
-        1
-    };
-    let band = block_rows.div_ceil(threads).max(1);
-    for (layer, out) in dst.chunks_mut(per_layer).take(job.layers).enumerate() {
-        let data = src.get(layer * job.layer_stride..).ok_or("layer outside the source")?;
-        if threads == 1 {
-            let surface = Surface { data, row_blocks: job.row_blocks, rows_of_blocks: job.rows_of_blocks };
-            etc_decode::decode_region(job.format, &surface, job.width, job.height, out)?;
-            continue;
+struct DecodeProgress {
+    remaining: usize,
+    error: Option<String>,
+}
+
+struct DecodeWork {
+    job: Job,
+    src: usize,
+    src_len: usize,
+    band_rows: usize,
+    bands_per_layer: usize,
+    next: AtomicUsize,
+    progress: Mutex<DecodeProgress>,
+    finished: Condvar,
+}
+
+impl DecodeWork {
+    fn claim(&self) -> Option<usize> {
+        let band = self.next.fetch_add(1, Relaxed);
+        (band < self.bands_per_layer * self.job.layers).then_some(band)
+    }
+
+    fn decode(&self, band: usize) -> Result<(), String> {
+        let job = &self.job;
+        let layer = band / self.bands_per_layer;
+        let first = (band % self.bands_per_layer) * self.band_rows;
+        let height = (job.height - first * 4).min(self.band_rows * 4);
+        let offset = layer * job.layer_stride + first * job.row_blocks * job.format.block_bytes();
+        // SAFETY: run_job keeps the source and staging allocation live until
+        // every claimed band has finished, including on a decode error/panic.
+        let src = unsafe { std::slice::from_raw_parts(self.src as *const u8, self.src_len) };
+        let data = src.get(offset..).ok_or("band outside the source")?;
+        let stride = job.width * job.format.texel_bytes();
+        let start = (layer * job.height + first * 4) * stride;
+        // SAFETY: claim assigns each band once; bands have disjoint output
+        // rows. No borrow of the whole output exists while helpers run.
+        let dst = unsafe { std::slice::from_raw_parts_mut((job.dst as *mut u8).add(start), height * stride) };
+        let surface = Surface {
+            data,
+            row_blocks: job.row_blocks,
+            rows_of_blocks: job.rows_of_blocks.saturating_sub(first),
+        };
+        etc_decode::decode_region(job.format, &surface, job.width, height, dst)
+    }
+
+    fn perform(&self, band: usize) {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.decode(band)))
+            .unwrap_or_else(|_| Err("decode worker panicked".into()));
+        let mut progress = self.progress.lock().unwrap_or_else(|e| e.into_inner());
+        if let Err(error) = result {
+            progress.error.get_or_insert(error);
         }
-        let results: Vec<Result<(), String>> = std::thread::scope(|s| {
-            let handles: Vec<_> = out
-                .chunks_mut(band * 4 * job.width * tb)
-                .enumerate()
-                .map(|(i, rows)| {
-                    let first = i * band;
-                    s.spawn(move || {
-                        let height = (job.height - first * 4).min(band * 4);
-                        let surface = Surface {
-                            data: data.get(first * job.row_blocks * bb..).ok_or("band outside the source")?,
-                            row_blocks: job.row_blocks,
-                            rows_of_blocks: job.rows_of_blocks.saturating_sub(first),
-                        };
-                        etc_decode::decode_region(job.format, &surface, job.width, height, rows)
-                    })
-                })
-                .collect();
-            handles.into_iter().map(|h| h.join().unwrap_or_else(|_| Err("decode thread panicked".into()))).collect()
+        progress.remaining -= 1;
+        if progress.remaining == 0 {
+            self.finished.notify_all();
+        }
+    }
+}
+
+#[derive(Default)]
+struct DecodeQueue {
+    ready: Mutex<VecDeque<Arc<DecodeWork>>>,
+    available: Condvar,
+}
+
+struct DecodePool {
+    queue: Arc<DecodeQueue>,
+    helpers: usize,
+}
+
+impl DecodePool {
+    fn get() -> &'static Self {
+        static POOL: OnceLock<DecodePool> = OnceLock::new();
+        POOL.get_or_init(|| {
+            let queue = Arc::new(DecodeQueue::default());
+            let helpers = std::thread::available_parallelism().map_or(1, |n| n.get()).min(8);
+            for i in 0..helpers {
+                let queue = Arc::clone(&queue);
+                let _ = std::thread::Builder::new().name(format!("ETC decode {i}")).spawn(move || loop {
+                    let (work, band) = {
+                        let mut ready = queue.ready.lock().unwrap_or_else(|e| e.into_inner());
+                        loop {
+                            if let Some(work) = ready.front() {
+                                if let Some(band) = work.claim() {
+                                    break (Arc::clone(work), band);
+                                }
+                                ready.pop_front();
+                            } else {
+                                ready = queue.available.wait(ready).unwrap_or_else(|e| e.into_inner());
+                            }
+                        }
+                    };
+                    work.perform(band);
+                });
+            }
+            Self { queue, helpers }
+        })
+    }
+
+    fn run(&self, job: &Job, src: &[u8]) -> Result<(), String> {
+        let block_rows = job.height.div_ceil(4);
+        let band_rows = block_rows.div_ceil(self.helpers + 1);
+        let bands_per_layer = block_rows.div_ceil(band_rows);
+        let work = Arc::new(DecodeWork {
+            job: *job,
+            src: src.as_ptr() as usize,
+            src_len: src.len(),
+            band_rows,
+            bands_per_layer,
+            next: AtomicUsize::new(0),
+            progress: Mutex::new(DecodeProgress { remaining: bands_per_layer * job.layers, error: None }),
+            finished: Condvar::new(),
         });
-        results.into_iter().collect::<Result<(), String>>()?;
+        // Claim before publication so the caller always contributes, even if
+        // helpers are free. It also guarantees progress if thread creation fails.
+        let first = work.claim().unwrap();
+        self.queue.ready.lock().unwrap_or_else(|e| e.into_inner()).push_back(Arc::clone(&work));
+        self.queue.available.notify_all();
+        work.perform(first);
+        while let Some(band) = work.claim() {
+            work.perform(band);
+        }
+        let mut progress = work.progress.lock().unwrap_or_else(|e| e.into_inner());
+        while progress.remaining != 0 {
+            progress = work.finished.wait(progress).unwrap_or_else(|e| e.into_inner());
+        }
+        // A queued Arc may outlive the borrowed buffers, but can only claim
+        // exhausted work. Remove it here too in case no helper could start.
+        self.queue.ready.lock().unwrap_or_else(|e| e.into_inner()).retain(|w| !Arc::ptr_eq(w, &work));
+        progress.error.take().map_or(Ok(()), Err)
+    }
+}
+
+fn run_job(job: &Job, src: &[u8]) -> Result<(), String> {
+    if job.width == 0 || job.height == 0 || job.layers == 0 {
+        return Ok(());
+    }
+    let stride = job.width.checked_mul(job.format.texel_bytes()).ok_or("row size overflow")?;
+    let per_layer = stride.checked_mul(job.height).ok_or("layer size overflow")?;
+    let total = per_layer.checked_mul(job.layers).ok_or("output size overflow")?;
+    if total > job.dst_len {
+        return Err("destination is shorter than the job".into());
+    }
+    if job.width * job.height >= 256 * 256 {
+        return DecodePool::get().run(job, src);
+    }
+    let dst = slice_mut(job.dst as *mut c_void, total);
+    for (layer, out) in dst.chunks_mut(per_layer).enumerate() {
+        let data = src.get(layer * job.layer_stride..).ok_or("layer outside the source")?;
+        let surface = Surface { data, row_blocks: job.row_blocks, rows_of_blocks: job.rows_of_blocks };
+        etc_decode::decode_region(job.format, &surface, job.width, job.height, out)?;
     }
     Ok(())
 }
@@ -1518,14 +1636,13 @@ extern "C" fn queue_submit(queue: *mut c_void, count: u32, submits: *const c_voi
         return VK_ERROR_INITIALIZATION_FAILED;
     };
     if LIVE_CMDS.load(Relaxed) != 0 && !submits.is_null() {
-        let mut all = Vec::new();
-        for i in 0..count as usize {
+        let all = (0..count as usize).flat_map(|i| {
             let s = (submits as *const u8).wrapping_add(i * 72) as *const c_void;
             let n: u32 = rd(s, 40);
             let p: *const c_void = rd(s, 48);
-            all.extend((0..n as usize).map(|j| rd::<usize>(p, j * 8)));
-        }
-        check_pending(all.into_iter());
+            (0..n as usize).map(move |j| rd::<usize>(p, j * 8))
+        });
+        check_pending(all);
     }
     f(queue, count, submits, fence)
 }
@@ -1537,14 +1654,13 @@ extern "C" fn queue_submit2(queue: *mut c_void, count: u32, submits: *const c_vo
         return VK_ERROR_INITIALIZATION_FAILED;
     };
     if LIVE_CMDS.load(Relaxed) != 0 && !submits.is_null() {
-        let mut all = Vec::new();
-        for i in 0..count as usize {
+        let all = (0..count as usize).flat_map(|i| {
             let s = (submits as *const u8).wrapping_add(i * 64) as *const c_void;
             let n: u32 = rd(s, 32);
             let p: *const c_void = rd(s, 40);
-            all.extend((0..n as usize).map(|j| rd::<usize>(p, j * 32 + 16)));
-        }
-        check_pending(all.into_iter());
+            (0..n as usize).map(move |j| rd::<usize>(p, j * 32 + 16))
+        });
+        check_pending(all);
     }
     f(queue, count, submits, fence)
 }
@@ -1749,21 +1865,26 @@ mod tests {
         assert!(banded == single);
     }
 
-    /// The hash as `as_chunks::<8>` computed it, written out by hand, so that
-    /// replacing that call could not have changed what a recorded region hashes
-    /// to between record and submit.
     fn reference_hash(data: &[u8]) -> u64 {
-        let mut h: u64 = 0xcbf2_9ce4_8422_2325 ^ data.len() as u64;
-        let whole = data.len() / 8 * 8;
+        let mut lanes = [
+            0xcbf2_9ce4_8422_2325 ^ data.len() as u64,
+            0x9e37_79b9_7f4a_7c15,
+            0xd6e8_feb8_6659_fd93,
+            0xa076_1d64_78bd_642f,
+        ];
+        let whole = data.len() / 32 * 32;
         let mut i = 0;
         while i < whole {
-            let mut w = 0u64;
-            for k in 0..8 {
-                w |= u64::from(data[i + k]) << (8 * k);
+            for lane in 0..4 {
+                let mut w = 0u64;
+                for k in 0..8 {
+                    w |= u64::from(data[i + lane * 8 + k]) << (8 * k);
+                }
+                lanes[lane] = (lanes[lane] ^ w).wrapping_mul(0x0100_0000_01b3).rotate_left(29);
             }
-            h = (h ^ w).wrapping_mul(0x0100_0000_01b3).rotate_left(29);
-            i += 8;
+            i += 32;
         }
+        let mut h = lanes[0].rotate_left(51) ^ lanes[1].rotate_left(34) ^ lanes[2].rotate_left(17) ^ lanes[3];
         for &b in &data[whole..] {
             h = (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3);
         }
@@ -1771,11 +1892,79 @@ mod tests {
     }
 
     #[test]
-    fn the_hash_is_unchanged_across_every_remainder_length() {
+    fn hash_matches_the_reference_across_every_remainder_length() {
         let data: Vec<u8> = (0..70u32).map(|i| (i * 37 + 11) as u8).collect();
         for len in 0..data.len() {
             assert_eq!(hash(&data[..len]), reference_hash(&data[..len]), "length {len}");
         }
+    }
+
+    #[test]
+    fn hashing_notices_each_lane_byte_and_tail_bit() {
+        for len in [1, 7, 8, 31, 32, 33, 63, 64, 65, 127] {
+            let mut data: Vec<u8> = (0..len).map(|i| (i * 37 + 11) as u8).collect();
+            let original = hash(&data);
+            for i in 0..len {
+                for bit in 0..8 {
+                    data[i] ^= 1 << bit;
+                    assert_ne!(hash(&data), original, "length {len}, byte {i}, bit {bit}");
+                    data[i] ^= 1 << bit;
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn concurrent_jobs_match_serial_decoding() {
+        let barrier = Arc::new(std::sync::Barrier::new(12));
+        let threads: Vec<_> = (0..12).map(|i| {
+            let barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                let (w, h, layers) = (257usize, 259usize, 2usize);
+                let src: Vec<u8> = (0..w.div_ceil(4) * h.div_ceil(4) * 16 * layers)
+                    .map(|j| (j * 37 + i * 17) as u8).collect();
+                let mut dst = vec![0; w * h * 4 * layers];
+                let job = job_for(w, h, layers, &mut dst);
+                for _ in 0..3 {
+                    barrier.wait();
+                    run_job(&job, &src).unwrap();
+                }
+                let mut expected = vec![0; w * h * 4];
+                for (i, layer) in dst.chunks(expected.len()).enumerate() {
+                    let surface = Surface { data: &src[i * job.layer_stride..], row_blocks: job.row_blocks, rows_of_blocks: job.rows_of_blocks };
+                    etc_decode::decode_region(job.format, &surface, w, h, &mut expected).unwrap();
+                    assert_eq!(layer, expected);
+                }
+            })
+        }).collect();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn pool_errors_finish_all_bands_and_leave_it_usable() {
+        let mut dst = vec![0; 256 * 256 * 4];
+        let mut job = job_for(256, 256, 1, &mut dst);
+        assert!(run_job(&job, &[0; 16]).is_err());
+        job.dst_len -= 1;
+        assert!(run_job(&job, &vec![0; 256 * 256]).is_err());
+        job.dst_len += 1;
+        run_job(&job, &vec![0; 256 * 256]).unwrap();
+        job.height = 0;
+        run_job(&job, &[]).unwrap();
+        job.height = 256;
+        job.layers = 0;
+        run_job(&job, &[]).unwrap();
+    }
+
+    #[test]
+    fn caller_can_finish_without_any_helpers() {
+        let pool = DecodePool { queue: Arc::new(DecodeQueue::default()), helpers: 8 };
+        let mut dst = vec![0; 256 * 256 * 4];
+        let job = job_for(256, 256, 1, &mut dst);
+        pool.run(&job, &vec![0; 256 * 256]).unwrap();
+        assert!(pool.queue.ready.lock().unwrap().is_empty());
     }
 
     #[test]
