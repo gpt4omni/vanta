@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
-"""Drive a touch at Cordial's engine canvas, in a nested headless sway.
+"""Drive a touch at Vanta's engine canvas, in a nested headless sway.
 
 Starts a headless sway, puts `wl-touch-proxy.py` between it and the client so
-the client believes the seat has a touchscreen, launches `cordial-run` signed
+the client believes the seat has a touchscreen, launches `vanta-run` signed
 out on its own data root, and injects finger-down/up on the canvas subsurface
 (and, as a control, on GTK's own toplevel). It reports whether the client is
-still alive after each contact and what Cordial's own touch path logged.
+still alive after each contact and what Vanta's own touch path logged.
 
 Issue #36: on a real touchscreen the first touch on the canvas killed the
 client with SIGSEGV inside libgtk-4. No machine here has one, so this is the
 only way the crash is ever seen. Run it before believing a fix, and run it
 against a build without the fix first: a test that cannot fail is not a test.
 
-Usage:  tools/touch-compositor/touch-e2e.py --binary target/release/cordial-run
+Usage:  tools/touch-compositor/touch-e2e.py --binary target/release/vanta-run
         [--label NAME] [--hold 3] [--no-toplevel]
 
 Exit status: 0 if every contact left the client running and the engine's own
@@ -28,7 +28,7 @@ import subprocess
 import sys
 import time
 
-BOX = "cordial"
+BOX = "vanta"
 HERE = os.path.dirname(os.path.abspath(__file__))
 PROXY = os.path.join(HERE, "wl-touch-proxy.py")
 
@@ -41,7 +41,7 @@ def in_box(cmd):
     return sh(["distrobox", "enter", BOX, "--", "bash", "-lc", cmd])
 
 
-HOLDERS = os.environ.get("CORDIAL_HOLDER_BIN", "/tmp/cordial-wl-holders")
+HOLDERS = os.environ.get("VANTA_HOLDER_BIN", "/tmp/vanta-wl-holders")
 
 
 class Holder:
@@ -93,14 +93,14 @@ def main():
     a = ap.parse_args()
     W, H = map(int, a.output.split("x"))
 
-    root = os.path.expanduser(f"~/.cache/cordial-agent-touch/{a.label}")
+    root = os.path.expanduser(f"~/.cache/vanta-agent-touch/{a.label}")
     shutil.rmtree(root, ignore_errors=True)
     os.makedirs(root + "/data")
-    build = os.path.expanduser("~/.cache/cordial-agent-touch/build")
+    build = os.path.expanduser("~/.cache/vanta-agent-touch/build")
     os.makedirs(build, exist_ok=True)
-    builds = os.path.expanduser("~/.cache/cordial/builds")
+    builds = os.path.expanduser("~/.cache/vanta/builds")
     if not os.path.isdir(builds) or not os.listdir(builds):
-        sys.exit(f"FAIL: no extracted Roblox build under {builds}; start Cordial once so it fetches one")
+        sys.exit(f"FAIL: no extracted Roblox build under {builds}; start Vanta once so it fetches one")
     src = os.path.join(builds, sorted(os.listdir(builds))[-1])
     for f in ("libroblox.so", "base.apk", "split_config.x86_64.apk"):
         if not os.path.exists(f"{build}/{f}"):
@@ -128,7 +128,7 @@ def main():
             sway_pid = int(pid)
     print(f"== sway {upstream} {W}x{H} pid {sway_pid}", flush=True)
 
-    # A seat with no keyboard or pointer makes Cordial skip binding them, which
+    # A seat with no keyboard or pointer makes Vanta skip binding them, which
     # would leave the pointer half of this test measuring nothing.
     kbd = ptr = None
     if a.pointer:
@@ -136,7 +136,7 @@ def main():
         ptr = Holder(f"{HOLDERS}/wl-pointer-holder", upstream, [str(W), str(H)])
 
     # ---- the proxy that adds the touchscreen
-    listen, control = f"cordial-touch-{os.getpid()}", f"{root}/control.sock"
+    listen, control = f"vanta-touch-{os.getpid()}", f"{root}/control.sock"
     proxy = subprocess.Popen(
         [sys.executable, PROXY, "serve", "--upstream", upstream, "--listen", listen, "--control", control, "--trace-cursor"],
         stdout=open(f"{root}/proxy.log", "w"), stderr=subprocess.STDOUT)
@@ -148,8 +148,8 @@ def main():
         return sh([sys.executable, PROXY, "send", control, *map(str, words)]).stdout.strip()
 
     env = dict(os.environ)
-    env.update(WAYLAND_DISPLAY=listen, GDK_BACKEND="wayland", CORDIAL_DEV_CONTROL="1",
-               CORDIAL_TRACE_TOUCH="1", CORDIAL_TRACE_MOUSE="1", XDG_DATA_HOME=root + "/data")
+    env.update(WAYLAND_DISPLAY=listen, GDK_BACKEND="wayland", VANTA_DEV_CONTROL="1",
+               VANTA_TRACE_TOUCH="1", VANTA_TRACE_MOUSE="1", XDG_DATA_HOME=root + "/data")
     env.pop("DISPLAY", None)
     for kv in a.env:
         k, _, v = kv.partition("=")
@@ -214,13 +214,13 @@ def main():
             check("client survives a touch on the canvas", ok,
                   "" if ok else f"(exit status {client.returncode})")
         if ok and not a.pointer_only:
-            check("Cordial's own wl_touch listener saw it", bool(re.search(r"wl_touch\.down id=0 x=", new)))
+            check("Vanta's own wl_touch listener saw it", bool(re.search(r"wl_touch\.down id=0 x=", new)))
             ok2, _ = contact("second tap, same place", 300, 250, "canvas")
             check("and a second one", ok2)
             if not a.no_toplevel and ok2:
                 ok3, new3 = contact("control: tap on GTK's own toplevel", 40, 15, "toplevel")
                 check("client survives a touch on the toplevel", ok3)
-                check("Cordial ignored the toplevel contact", "wl_touch.down id=0 x=" not in new3)
+                check("Vanta ignored the toplevel contact", "wl_touch.down id=0 x=" not in new3)
 
         if ptr and alive():
             print("\n-- the pointer still works, and still hides the host cursor over the canvas")

@@ -45,7 +45,7 @@ proceeds exactly as every run has so far. If it is set, the workflow:
    `flatpak build-update-repo --gpg-sign="$KEYID"` when the summary and
    appstream branch are generated.
 4. Exports the **public** half and appends it, base64-encoded, as a `GPGKey=`
-   line to the published `packaging/cordial.flatpakrepo`. This is the only
+   line to the published `packaging/vanta.flatpakrepo`. This is the only
    place the public key is ever written anywhere; the workflow never touches
    the private one after the import step, and nothing writes it to a log —
    `gpg --batch --import` does not echo key material, and no step after it
@@ -53,7 +53,7 @@ proceeds exactly as every run has so far. If it is set, the workflow:
 
 None of this needs a workflow change. The moment the two secrets exist, the
 next run against `main` (a push, or `workflow_dispatch`) signs. That is by
-design, and `packaging/cordial.flatpakrepo`'s own comment says why: "a key
+design, and `packaging/vanta.flatpakrepo`'s own comment says why: "a key
 committed to the repository would be a key anyone can sign with, so the real
 one only ever exists as an Actions secret."
 
@@ -69,7 +69,7 @@ again once saved.
 to become a copy-pasted GitHub Actions secret. If that secret ever leaks —
 a misconfigured `pull_request_target`, a compromised runner image, a
 `::add-mask::` that did not catch every code path — the cost should be a
-Cordial-signing key you can revoke and replace, not an identity you use
+Vanta-signing key you can revoke and replace, not an identity you use
 elsewhere.
 
 ```bash
@@ -89,7 +89,7 @@ trap 'rm -rf "$GNUPGHOME"' EXIT
 # years from now with nobody watching, has no built-in end date. Either is
 # defensible; pick one on purpose.
 gpg --batch --passphrase '' --quick-generate-key \
-    'Cordial Flatpak Remote <choose-an-address-you-monitor>' \
+    'Vanta Flatpak Remote <choose-an-address-you-monitor>' \
     rsa4096 sign 2y
 
 # The full 40-character fingerprint, not the short 8-character ID — the short
@@ -97,8 +97,8 @@ gpg --batch --passphrase '' --quick-generate-key \
 FPR=$(gpg --list-secret-keys --with-colons | awk -F: '/^fpr/{print $10; exit}')
 echo "$FPR"
 
-gpg --armor --export-secret-keys "$FPR" > cordial-flatpak-signing-key.private.asc
-gpg --armor --export             "$FPR" > cordial-flatpak-signing-key.public.asc
+gpg --armor --export-secret-keys "$FPR" > vanta-flatpak-signing-key.private.asc
+gpg --armor --export             "$FPR" > vanta-flatpak-signing-key.public.asc
 ```
 
 ## Storing it
@@ -106,7 +106,7 @@ gpg --armor --export             "$FPR" > cordial-flatpak-signing-key.public.asc
 1. Repository → Settings → Secrets and variables → Actions → New repository
    secret, twice:
    - `FLATPAK_GPG_PRIVATE_KEY` — the entire contents of
-     `cordial-flatpak-signing-key.private.asc`, including the
+     `vanta-flatpak-signing-key.private.asc`, including the
      `-----BEGIN PGP PRIVATE KEY BLOCK-----` / `-----END...-----` lines.
    - `FLATPAK_GPG_KEY_ID` — `$FPR` from above, the bare 40-character
      fingerprint.
@@ -115,7 +115,7 @@ gpg --armor --export             "$FPR" > cordial-flatpak-signing-key.public.asc
    and an inconvenient one for a signing key, because losing your only copy
    means the *next* key you generate cannot re-sign anything the old one
    already signed, and everyone who added the remote under the old key needs
-   telling. Keep `cordial-flatpak-signing-key.private.asc` somewhere durable and
+   telling. Keep `vanta-flatpak-signing-key.private.asc` somewhere durable and
    access-controlled — a password manager's file storage, an encrypted volume,
    whatever you already trust with account recovery codes — before you delete
    the scratch keyring.
@@ -136,21 +136,21 @@ gpg --armor --export             "$FPR" > cordial-flatpak-signing-key.public.asc
 survive this:
 
 ```bash
-flatpak remote-add --if-not-exists cordial \
-    https://luohoa97.github.io/cordial/cordial.flatpakrepo
-flatpak install cordial io.github.luohoa97.Cordial
+flatpak remote-add --if-not-exists vanta \
+    https://gpt4omni.github.io/vanta/vanta.flatpakrepo
+flatpak install vanta io.github.gpt4omni.Vanta
 ```
 
-What changes is the *content* of `cordial.flatpakrepo` at that URL — it gains a
+What changes is the *content* of `vanta.flatpakrepo` at that URL — it gains a
 `GPGKey=` line — and therefore what `flatpak remote-add` records locally about
 that remote. **A remote added before the key existed keeps the settings it was
 added with.** `flatpak update` re-fetches packages, not remote configuration, so
 existing users stay on `gpg-verify=false` until they re-add it:
 
 ```bash
-flatpak remote-delete cordial
-flatpak remote-add --if-not-exists cordial \
-    https://luohoa97.github.io/cordial/cordial.flatpakrepo
+flatpak remote-delete vanta
+flatpak remote-add --if-not-exists vanta \
+    https://gpt4omni.github.io/vanta/vanta.flatpakrepo
 ```
 
 That is worth a release note and a pinned Discord message the day this ships,
@@ -160,8 +160,8 @@ thing a user discovers on their own.
 **Verifying it took:**
 
 ```bash
-flatpak remote-info --log cordial io.github.luohoa97.Cordial   # look for a Signature line
-flatpak remote-list -d | grep cordial                          # the gpg-verify column
+flatpak remote-info --log vanta io.github.gpt4omni.Vanta   # look for a Signature line
+flatpak remote-list -d | grep vanta                          # the gpg-verify column
 ```
 
 Both are things to actually run once the secrets are in and a build has gone
@@ -187,12 +187,12 @@ a materially smaller set of attackers.
 
 Moved out of the install page when it was cut down to what a reader acts on.
 
-**Measured end to end on 2026-08-05, flatpak 1.18.0**, against the published URL rather than a stand-in: `remote-add` accepted, `remote-ls` returning `app/io.github.luohoa97.Cordial/x86_64/master`, `install` placing both `cordial-shell` and `cordial-run` in `/app/bin`, and `flatpak run` bringing up the launcher window and holding it. The appstream branch resolves and the metainfo validates, so a software centre lists it too.
+**Measured end to end on 2026-08-05, flatpak 1.18.0**, against the published URL rather than a stand-in: `remote-add` accepted, `remote-ls` returning `app/io.github.gpt4omni.Vanta/x86_64/master`, `install` placing both `vanta-shell` and `vanta-run` in `/app/bin`, and `flatpak run` bringing up the launcher window and holding it. The appstream branch resolves and the metainfo validates, so a software centre lists it too.
 
 **Observed on 2026-09-30:** `summary.sig` is published, and with the key imported into a throwaway OSTree repository `ostree remote refs` reads the summary with `gpg-verify-summary` on; the same command against a remote with no key fails with `Can't check signature: public key not found`. `flatpak install` itself was not run against it. The fingerprint was read from the published file, the same place a compromised site would have changed it, so it is not confirmed out of band.
 
 **What a signature does not do** is make the GitHub Pages site trustworthy to host it: whoever holds the private key, which lives as a repository secret, can sign anything. That is a weaker arrangement than Flathub's. Signing is set up in `.github/workflows/flatpak.yml`. Building from source is the whole of the alternative for someone who would rather not extend that trust.
 
-**Why release-page files use cosign and the repositories use OpenPGP.** Every `.deb`, `.rpm`, `.AppImage` and Arch package on a release page is signed keyless with cosign, so there is no Cordial signing key to lose, and the signature proves the file came out of this repository's own release workflow at that tag and not from someone who obtained a key. The trade is that every signature is recorded permanently in Sigstore's public transparency log, which for public release artefacts is the point: it lets a reader check, a year later, that a file was signed by this workflow at that tag. The Flatpak remote and the apt, dnf and pacman repositories use OpenPGP keys because Sigstore cannot supply them.
+**Why release-page files use cosign and the repositories use OpenPGP.** Every `.deb`, `.rpm`, `.AppImage` and Arch package on a release page is signed keyless with cosign, so there is no Vanta signing key to lose, and the signature proves the file came out of this repository's own release workflow at that tag and not from someone who obtained a key. The trade is that every signature is recorded permanently in Sigstore's public transparency log, which for public release artefacts is the point: it lets a reader check, a year later, that a file was signed by this workflow at that tag. The Flatpak remote and the apt, dnf and pacman repositories use OpenPGP keys because Sigstore cannot supply them.
 
-**Cordial is not on Flathub, and the generative-AI policy is the whole of what stands in the way.** The argument, including Sober's own manifest as precedent for a client that downloads Roblox's build at runtime, is in [`docs/HANDOVER.md`](../HANDOVER.md#flathub-and-why-it-is-not-the-plan).
+**Vanta is not on Flathub, and the generative-AI policy is the whole of what stands in the way.** The argument, including Sober's own manifest as precedent for a client that downloads Roblox's build at runtime, is in [`docs/HANDOVER.md`](../HANDOVER.md#flathub-and-why-it-is-not-the-plan).

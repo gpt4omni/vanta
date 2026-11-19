@@ -34,7 +34,7 @@ import sys
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 DOCS = os.path.join(REPO, "docs")
-GITHUB = "https://github.com/luohoa97/cordial/blob/main/"
+GITHUB = "https://github.com/gpt4omni/vanta/blob/main/"
 LINK = re.compile(r"(!?\[[^\]]*\]\()([^)\s]+)(\))")
 FENCE = re.compile(r"^\s*(```|~~~)")
 

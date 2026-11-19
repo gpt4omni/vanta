@@ -8,7 +8,7 @@ on the startup path* — the second is the work queue.
 Regenerate:
 
 ```bash
-cordial-load --lib-dir <apk lib/x86_64> --host-libc --dump-classes out.cpp
+vanta-load --lib-dir <apk lib/x86_64> --host-libc --dump-classes out.cpp
 ```
 
 ## 22 classes

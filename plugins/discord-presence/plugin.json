@@ -13,7 +13,7 @@
     {
       "key": "client_id",
       "title": "Discord application ID",
-      "description": "Leave blank to appear as Cordial. To use your own name and icon instead, paste that application's ID from discord.com/developers/applications. Digits only, and it is not a secret.",
+      "description": "Leave blank to appear as Vanta. To use your own name and icon instead, paste that application's ID from discord.com/developers/applications. Digits only, and it is not a secret.",
       "type": "text",
       "default": ""
     }

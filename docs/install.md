@@ -1,11 +1,11 @@
-# Installing Cordial
+# Installing Vanta
 
-<!-- description: Install Cordial from a Flatpak, AppImage, deb, rpm, Arch package, Nix or source, and get Roblox's Android build into it. -->
+<!-- description: Install Vanta from a Flatpak, AppImage, deb, rpm, Arch package, Nix or source, and get Roblox's Android build into it. -->
 <!-- icon: download -->
 
 **Use the Flatpak unless you have a reason not to.** It is sandboxed, updates in
 place, and runs on one fixed runtime (GNOME 50), so the GTK, WebKit, Vulkan and
-audio libraries are the ones Cordial is tested against. Most compatibility
+audio libraries are the ones Vanta is tested against. Most compatibility
 problems reported with the other formats come from those libraries differing.
 
 ## What you need
@@ -18,35 +18,35 @@ problems reported with the other formats come from those libraries differing.
   ([ADR-062](adr/ADR-062-the-x11-editor-is-an-override-redirect-window.md)),
   which has been tried under openbox, xfwm4, icewm and Xwayland, and not under
   KWin, Mutter's X11 mode or a tiling window manager.
-- **Roblox's official Android client, which you supply.** Cordial ships no
+- **Roblox's official Android client, which you supply.** Vanta ships no
   Roblox code, APK or assets.
 
 ### Getting Roblox's build
 
-On first run, press **Download Roblox**. Cordial fetches the newest build from a
+On first run, press **Download Roblox**. Vanta fetches the newest build from a
 mirror, checks that Roblox's own signing certificate signed it, and keeps its own
-copy in `~/.local/share/cordial/builds/` (in the Flatpak,
-`~/.var/app/io.github.luohoa97.Cordial/data/cordial/builds/`). Why:
+copy in `~/.local/share/vanta/builds/` (in the Flatpak,
+`~/.var/app/io.github.gpt4omni.Vanta/data/vanta/builds/`). Why:
 [ADR-015](adr/ADR-015-fetching-the-roblox-build.md),
 [ADR-025](adr/ADR-025-fetching-from-a-third-party-mirror.md),
 [ADR-054](adr/ADR-054-cordial-owns-its-roblox-builds.md).
 
 - **Sober is installed:** the first-run screen also offers **Copy Sober's
   build**, and **Settings → Roblox** has an **Import from Sober** row while Sober
-  holds a build Cordial does not. Either copies the files into Cordial's own
-  store after the same signature check. Cordial does not change Sober's files
+  holds a build Vanta does not. Either copies the files into Vanta's own
+  store after the same signature check. Vanta does not change Sober's files
   and does not follow its updates: from then on the build changes when you
-  update it in Cordial (**Settings → Updates**), not when Sober updates.
+  update it in Vanta (**Settings → Updates**), not when Sober updates.
 - **You have your own APK:** **Settings → Roblox → Import from a file** copies
   it into the store the same way. Keep `base.apk` and `split_config.x86_64.apk`
-  in one folder: on a split build the engine is in the split, and Cordial says
+  in one folder: on a split build the engine is in the split, and Vanta says
   which file it looked for if it finds none. In the Flatpak the file chooser may
-  hand Cordial only the file you picked, so a split build's other half would not
+  hand Vanta only the file you picked, so a split build's other half would not
   be seen (INFERRED, not tried): import a single combined APK there, or copy
   Sober's build. To run one APK for a single launch
-  without filing it, start Cordial with `CORDIAL_APK=/path/to/base.apk`.
-- **Upgrading from an older Cordial:** the first launch files whatever the old
-  layout ran (Cordial's own download, Sober's copy, or an APK chosen in Settings)
+  without filing it, start Vanta with `VANTA_APK=/path/to/base.apk`.
+- **Upgrading from an older Vanta:** the first launch files whatever the old
+  layout ran (Vanta's own download, Sober's copy, or an APK chosen in Settings)
   into the store, once. An APK chosen in Settings is imported, every profile with
   no pinned version is pinned to it so it keeps running that file, and the saved
   path is cleared.
@@ -76,19 +76,19 @@ Every file on a release page can be verified before you install it; see
 Recommended.
 
 ```bash
-flatpak remote-add --if-not-exists cordial \
-    https://luohoa97.github.io/cordial/cordial.flatpakrepo
-flatpak install cordial io.github.luohoa97.Cordial
+flatpak remote-add --if-not-exists vanta \
+    https://gpt4omni.github.io/vanta/vanta.flatpakrepo
+flatpak install vanta io.github.gpt4omni.Vanta
 ```
 
 Launch it from your application list, or with
-`flatpak run io.github.luohoa97.Cordial`.
+`flatpak run io.github.gpt4omni.Vanta`.
 
 | To | Run |
 |---|---|
 | Update | `flatpak update` |
-| Uninstall | `flatpak uninstall io.github.luohoa97.Cordial` |
-| Uninstall and delete profiles, sign-in and the Roblox builds | `flatpak uninstall --delete-data io.github.luohoa97.Cordial` |
+| Uninstall | `flatpak uninstall io.github.gpt4omni.Vanta` |
+| Uninstall and delete profiles, sign-in and the Roblox builds | `flatpak uninstall --delete-data io.github.gpt4omni.Vanta` |
 
 **Branches.** The install above is `stable`, which moves only on a tagged
 release. `master` moves on every commit to `main`. The remote once published
@@ -96,11 +96,11 @@ only `master`, so an install from before `stable` existed is still on it. To
 move it (add `--user` to both if that is how you installed):
 
 ```bash
-flatpak uninstall io.github.luohoa97.Cordial//master
-flatpak install cordial io.github.luohoa97.Cordial//stable
+flatpak uninstall io.github.gpt4omni.Vanta//master
+flatpak install vanta io.github.gpt4omni.Vanta//stable
 ```
 
-To follow `main` on purpose, install `io.github.luohoa97.Cordial//master`.
+To follow `main` on purpose, install `io.github.gpt4omni.Vanta//master`.
 
 **Flatpak limitation.** The updater asks NetworkManager on the system bus
 whether your connection is metered. The sandbox has no system bus, so the check
@@ -108,19 +108,19 @@ fails closed and a Flatpak install treats every connection as metered. It will
 not download a Roblox build in the background unless you turn on *Download on
 metered connections*. Manual downloads are unaffected.
 
-The [Flatpak workflow](https://github.com/luohoa97/cordial/actions/workflows/flatpak.yml)
+The [Flatpak workflow](https://github.com/gpt4omni/vanta/actions/workflows/flatpak.yml)
 publishes only on a green run, so a red run on `main` means the remote is still
 serving the previous build.
 
 ### AppImage
 
 One file, any distribution, nothing installed system-wide. Download
-`Cordial-<version>-<commit>-x86_64.AppImage` (or `-aarch64`) from the
-[releases page](https://github.com/luohoa97/cordial/releases):
+`Vanta-<version>-<commit>-x86_64.AppImage` (or `-aarch64`) from the
+[releases page](https://github.com/gpt4omni/vanta/releases):
 
 ```bash
-chmod +x Cordial-*.AppImage
-./Cordial-*.AppImage
+chmod +x Vanta-*.AppImage
+./Vanta-*.AppImage
 ```
 
 It carries GTK4, libadwaita and WebKitGTK. Delete the file to remove it;
@@ -140,38 +140,38 @@ with whatever the terminal printed. The Flatpak is unaffected. Background:
 
 ### Debian / Ubuntu
 
-The `.deb` on the [release page](https://github.com/luohoa97/cordial/releases/latest)
+The `.deb` on the [release page](https://github.com/gpt4omni/vanta/releases/latest)
 installs with no repository:
 
 ```bash
-sudo apt install ./cordial_*_amd64.deb     # or _arm64.deb
+sudo apt install ./vanta_*_amd64.deb     # or _arm64.deb
 ```
 
-Cordial's own apt repository keeps you current through `apt upgrade`. It is
-Cordial's repository, not a package in Debian or Ubuntu
+Vanta's own apt repository keeps you current through `apt upgrade`. It is
+Vanta's repository, not a package in Debian or Ubuntu
 ([design note](design/apt-repository.md)):
 
 ```bash
 sudo install -m 0755 -d /etc/apt/keyrings
-sudo curl -fsSL https://luohoa97.github.io/cordial/apt/cordial-archive-keyring.gpg \
-    -o /etc/apt/keyrings/cordial-archive-keyring.gpg
-echo "deb [signed-by=/etc/apt/keyrings/cordial-archive-keyring.gpg] https://luohoa97.github.io/cordial/apt stable main" \
-    | sudo tee /etc/apt/sources.list.d/cordial.list
+sudo curl -fsSL https://gpt4omni.github.io/vanta/apt/vanta-archive-keyring.gpg \
+    -o /etc/apt/keyrings/vanta-archive-keyring.gpg
+echo "deb [signed-by=/etc/apt/keyrings/vanta-archive-keyring.gpg] https://gpt4omni.github.io/vanta/apt stable main" \
+    | sudo tee /etc/apt/sources.list.d/vanta.list
 sudo apt update
-sudo apt install cordial
+sudo apt install vanta
 ```
 
-`sudo apt remove cordial` uninstalls; profiles stay in `~/.local/share`. Check
+`sudo apt remove vanta` uninstalls; profiles stay in `~/.local/share`. Check
 the key against its fingerprint before trusting it, see
 [Check what you downloaded](#check-what-you-downloaded).
 
 ### Fedora / RHEL
 
-The `.rpm` on the [release page](https://github.com/luohoa97/cordial/releases/latest)
+The `.rpm` on the [release page](https://github.com/gpt4omni/vanta/releases/latest)
 installs with no repository:
 
 ```bash
-sudo dnf install ./cordial-*.x86_64.rpm    # or .aarch64.rpm
+sudo dnf install ./vanta-*.x86_64.rpm    # or .aarch64.rpm
 ```
 
 **Only Fedora 44 has a build.** The `.fcNN` in the filename is the Fedora release
@@ -180,46 +180,46 @@ it was built against, and only one is built at a time. The repository is split b
 than installing a build meant for a different Fedora. That is by design, not a
 bug to report ([design note](design/rpm-repository.md)).
 
-Cordial's own dnf repository, on Fedora 44:
+Vanta's own dnf repository, on Fedora 44:
 
 ```bash
-sudo curl -fsSL https://luohoa97.github.io/cordial/cordial.repo \
-    -o /etc/yum.repos.d/cordial.repo
-sudo dnf install cordial
+sudo curl -fsSL https://gpt4omni.github.io/vanta/vanta.repo \
+    -o /etc/yum.repos.d/vanta.repo
+sudo dnf install vanta
 ```
 
 Check the key first, see [Check what you downloaded](#check-what-you-downloaded).
 
 ### Arch
 
-Install the package from the [release page](https://github.com/luohoa97/cordial/releases/latest).
+Install the package from the [release page](https://github.com/gpt4omni/vanta/releases/latest).
 It is built by the same `makepkg` run an AUR user would do, and needs no key:
 
 ```bash
-sudo pacman -U cordial-*-x86_64.pkg.tar.zst
+sudo pacman -U vanta-*-x86_64.pkg.tar.zst
 ```
 
 Arch is x86-64 only; Arch Linux does not build for aarch64.
 
-**The AUR packages are not published by this project.** `cordial`, `cordial-bin`
-and `cordial-git` on the AUR belong to an account that is not the maintainer's
+**The AUR packages are not published by this project.** `vanta`, `vanta-bin`
+and `vanta-git` on the AUR belong to an account that is not the maintainer's
 (`taxin-404`). On 2026-09-30 they were copies of
 [`packaging/aur/`](../packaging/aur) from 0.17.0, fetching only from this
 repository. Nobody here reviews what that account publishes next, so prefer the
-release package or Cordial's own repository.
+release package or Vanta's own repository.
 
-Cordial's own pacman repository. Import its key, then add the stanza to
+Vanta's own pacman repository. Import its key, then add the stanza to
 `pacman.conf`:
 
 ```bash
-curl -fsSL https://luohoa97.github.io/cordial/arch/cordial-archive-keyring.asc \
+curl -fsSL https://gpt4omni.github.io/vanta/arch/vanta-archive-keyring.asc \
     | sudo pacman-key --add -
 sudo pacman-key --lsign-key C82BBD7D82744F804A68DA8B3A69D3241BA6288F
 ```
 
 ```ini
-[cordial]
-Server = https://luohoa97.github.io/cordial/arch/$arch
+[vanta]
+Server = https://gpt4omni.github.io/vanta/arch/$arch
 SigLevel = DatabaseRequired PackageNever
 ```
 
@@ -234,27 +234,27 @@ this `pacman.conf` stanza have not been run; the `SigLevel` line comes from
 The flake builds a package for x86-64 Linux. From a checkout:
 
 ```bash
-nix build '.?submodules=1#cordial'
+nix build '.?submodules=1#vanta'
 ```
 
 The submodules need `?submodules=1`; flakes do not fetch them otherwise. **It has
 never been launched into a game.** What has been run: the package builds, and
-`cordial --help` and `cordial --diagnostics` run from the output.
-`cordial --diagnostics` reports `Install unknown`, because nothing recognises a
+`vanta --help` and `vanta --diagnostics` run from the output.
+`vanta --diagnostics` reports `Install unknown`, because nothing recognises a
 `/nix/store` path yet. The remote form,
-`nix run "github:luohoa97/cordial?submodules=1"`, is **INFERRED** from the local
+`nix run "github:gpt4omni/vanta?submodules=1"`, is **INFERRED** from the local
 build and has not been tried. More in
 [CONTRIBUTING.md](../CONTRIBUTING.md#or-use-the-flake).
 
 ### From source
 
-You do not need this to run Cordial. Build from source if you are changing it,
+You do not need this to run Vanta. Build from source if you are changing it,
 want your own patches in, or would rather not extend trust to a remote signed by a
 key held as a CI secret.
 
 ```bash
-git clone --recursive https://github.com/luohoa97/cordial
-cd cordial
+git clone --recursive https://github.com/gpt4omni/vanta
+cd vanta
 cargo build --release
 ```
 
@@ -265,7 +265,7 @@ You need:
   Fedora: `dnf install gtk4-devel libadwaita-devel`. Debian/Ubuntu:
   `apt install libgtk-4-dev libadwaita-1-dev`. Arch: `pacman -S gtk4 libadwaita`.
 - **Boost's headers**, only for Play in VR, which a plain `cargo build` leaves
-  out: build with `--features cordial-runtime/vr` and install `boost-devel`,
+  out: build with `--features vanta-runtime/vr` and install `boost-devel`,
   `libboost-dev` or `boost`. It is for dynarmic, the VR mode's translator, which
   `--recursive` fetches. Every package built from this repository's recipes has
   VR turned on; the unsubmitted nixpkgs draft in `packaging/nix/` pins v0.23.2,
@@ -280,15 +280,15 @@ To build the Flatpak yourself, which produces what the remote serves, no
 submodules needed:
 
 ```bash
-git clone https://github.com/luohoa97/cordial
-cd cordial
+git clone https://github.com/gpt4omni/vanta
+cd vanta
 packaging/build-flatpak.sh --install
 ```
 
 If you change a dependency, run `python3 packaging/cargo-sources.py` in the same
 commit as the `Cargo.lock` change, or the Flatpak build fails with
 `no matching package`
-([issue #3](https://github.com/luohoa97/cordial/issues/3)).
+([issue #3](https://github.com/gpt4omni/vanta/issues/3)).
 
 <!-- /tabs -->
 
@@ -300,17 +300,17 @@ Files on a release page and the package repositories are verified differently.
 <summary>Release-page files (cosign)</summary>
 
 Every `.deb`, `.rpm`, `.AppImage` and Arch package on a release page has a
-`.cosign.bundle` beside it. The signature is keyless: there is no Cordial signing
+`.cosign.bundle` beside it. The signature is keyless: there is no Vanta signing
 key to trust or lose. It proves the file came out of this repository's own
 release workflow at that tag. Install
 [cosign](https://docs.sigstore.dev/cosign/system_config/installation/), then:
 
 ```bash
 cosign verify-blob \
-  --bundle cordial_0.11.0-1_amd64.deb.cosign.bundle \
-  --certificate-identity-regexp '^https://github\.com/luohoa97/cordial/\.github/workflows/release\.yml@refs/tags/v' \
+  --bundle vanta_0.11.0-1_amd64.deb.cosign.bundle \
+  --certificate-identity-regexp '^https://github\.com/gpt4omni/vanta/\.github/workflows/release\.yml@refs/tags/v' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  cordial_0.11.0-1_amd64.deb
+  vanta_0.11.0-1_amd64.deb
 ```
 
 `Verified OK` is the whole answer. **Do not drop the two `--certificate-*`
@@ -326,7 +326,7 @@ pacman repositories use OpenPGP keys, below.
 <details>
 <summary>Flatpak remote key</summary>
 
-The published `cordial.flatpakrepo` carries a GPG key, and the repository summary
+The published `vanta.flatpakrepo` carries a GPG key, and the repository summary
 has a detached signature, so `flatpak install` checks the download was signed by
 it. Fingerprint:
 
@@ -337,7 +337,7 @@ it. Fingerprint:
 **A remote added while it was unsigned stays unverified.** Flatpak recorded
 `gpg-verify=false` then, and a later signed definition does not change it. If you
 added the remote before the key existed, remove and re-add it
-(`flatpak remote-delete cordial`, then the `remote-add` above).
+(`flatpak remote-delete vanta`, then the `remote-add` above).
 
 **INFERRED:** the fingerprint was read from the published file on 2026-09-30, not
 confirmed out of band. That day `summary.sig` was published and `ostree remote
@@ -347,7 +347,7 @@ refs` verified the summary against the key in a throwaway repository;
 A signature does not make GitHub Pages trustworthy: whoever holds the private
 key, a repository secret, can sign anything. That is a weaker arrangement than
 Flathub's, and if you would rather not extend that trust, build from source.
-Cordial is not on Flathub and, on its current generative-AI policy, cannot be; the
+Vanta is not on Flathub and, on its current generative-AI policy, cannot be; the
 remote is the distribution channel, not a stopgap
 ([why](HANDOVER.md#flathub-and-why-it-is-not-the-plan),
 [signing procedure](design/flatpak-remote-signing.md)).
@@ -358,7 +358,7 @@ remote is the distribution channel, not a stopgap
 <summary>apt repository key</summary>
 
 ```bash
-gpg --show-keys --with-fingerprint /etc/apt/keyrings/cordial-archive-keyring.gpg
+gpg --show-keys --with-fingerprint /etc/apt/keyrings/vanta-archive-keyring.gpg
 ```
 
 ```text
@@ -376,7 +376,7 @@ run.
 <summary>dnf repository key</summary>
 
 ```bash
-curl -fsSL https://luohoa97.github.io/cordial/rpm/RPM-GPG-KEY-cordial | gpg --show-keys
+curl -fsSL https://gpt4omni.github.io/vanta/rpm/RPM-GPG-KEY-vanta | gpg --show-keys
 ```
 
 ```text
@@ -402,7 +402,7 @@ C82BBD7D82744F804A68DA8B3A69D3241BA6288F
 ```
 
 **INFERRED:** read from the published keyring on 2026-09-30, not confirmed out of
-band. `cordial.db.sig` verified against it. The release-page package needs no key
+band. `vanta.db.sig` verified against it. The release-page package needs no key
 at all, see the cosign section.
 
 </details>

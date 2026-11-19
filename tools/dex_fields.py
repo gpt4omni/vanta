@@ -7,7 +7,7 @@ descriptor exactly as strictly as it binds a method — a mismatch there is the
 same silent failure `dex_method.py`'s own docstring describes for methods. This
 was written because `com.roblox.engine.jni.model.BatteryStatus` needed
 answering: `dex_method.py --class` on it shows only a bare `<init>()V`, which
-means every one of its fields is a name Cordial had no way to guess.
+means every one of its fields is a name Vanta had no way to guess.
 
 Declaration metadata only: `field_ids` and each class's `encoded_field` lists in
 `class_data_item`. No code units are read, and this is the same question

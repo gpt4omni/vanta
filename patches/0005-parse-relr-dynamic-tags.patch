@@ -7,7 +7,7 @@ index 5cc42383b..ea03059e6 100644
  
  #endif
 -#if 0
-+      // Cordial: these were compiled out as `#if 0` in the port, though
++      // Vanta: these were compiled out as `#if 0` in the port, though
 +      // `relocate_relr` and its call in linker_relocate.cpp were kept. A library
 +      // packed with RELR then loaded with every relative pointer left as a bare
 +      // file offset and died at its first constructor: the Quest build's

@@ -12,10 +12,10 @@ method is that claims are verified by running them.
 
 ## What counts
 
-Cordial runs a large proprietary binary inside a runtime it supplies, and hosts
+Vanta runs a large proprietary binary inside a runtime it supplies, and hosts
 plugins alongside it. In scope:
 
-- **Sandbox escape from a plugin** — a plugin reaching Cordial's memory, the
+- **Sandbox escape from a plugin** — a plugin reaching Vanta's memory, the
   Roblox process, or the host beyond its granted capabilities. Plugins are
   isolated by process ([ADR-003](docs/adr/ADR-003-plugin-isolation.md)); a way
   around that is the most serious class of bug here.
@@ -25,42 +25,42 @@ plugins alongside it. In scope:
   traversal out of the asset tree, the `/system` redirect
   (`native/system_paths.cpp`) resolving somewhere it should not, or the flag
   layering reading a file it should not.
-- **Memory-safety bugs in Cordial's own `unsafe` code**, of which there is a
+- **Memory-safety bugs in Vanta's own `unsafe` code**, of which there is a
   great deal: the linker bindings, the bionic shims, and the libc interposers
   in `native/`.
 
 ## What does not
 
 - **Crashes in Roblox's own code.** The engine is not ours and most crashes are
-  Cordial handing it something malformed. Those are ordinary bugs — open a
+  Vanta handing it something malformed. Those are ordinary bugs — open a
   normal issue.
 - **The ban risk from using a third-party client.** That is documented in the
   README, is inherent to what this is, and is not a vulnerability.
-- **Requests for an exploit surface.** Cordial deliberately has no script
+- **Requests for an exploit surface.** Vanta deliberately has no script
   execution, no hooking and no asset override
   ([ADR-001](docs/adr/ADR-001-in-process-hooking.md),
-  [ADR-004](docs/adr/ADR-004-plugin-asset-overrides.md)). "Cordial cannot cheat"
+  [ADR-004](docs/adr/ADR-004-plugin-asset-overrides.md)). "Vanta cannot cheat"
   is the design, not a bug.
 
-## Forks, and clients built on Cordial
+## Forks, and clients built on Vanta
 
-Cordial does not support script execution, exploiting, botting or
+Vanta does not support script execution, exploiting, botting or
 multi-accounting, and it will not. That is not a gap waiting to be filled.
 [ADR-001](docs/adr/ADR-001-in-process-hooking.md) makes in-process hooking,
 memory patching and injected script environments **absent** rather than
 disabled — there is no primitive here to switch on, and no API by which a plugin
 could ask for one. [ADR-003](docs/adr/ADR-003-plugin-isolation.md) is why a
 plugin never receives a socket, a file descriptor or a connection: it sends a
-payload and Cordial performs the effect.
+payload and Vanta performs the effect.
 
-**Cordial is GPL-3.0, so anyone may fork it, including in directions we
+**Vanta is GPL-3.0, so anyone may fork it, including in directions we
 disagree with.** That is the licence working as intended and we are not going to
 pretend otherwise. It does mean:
 
 - A fork is an independent project. It is not endorsed by us, not affiliated
   with us, and not supported here.
-- If you are using something built on Cordial that adds script execution, **you
-  are not using Cordial**, and this issue tracker cannot help you. We do not
+- If you are using something built on Vanta that adds script execution, **you
+  are not using Vanta**, and this issue tracker cannot help you. We do not
   know what that fork changed and we cannot reason about its behaviour.
 - Upstream will not accept commits that enable exploiting. Contributing here is
   not a route to getting one merged. Nothing happens *to* you for having
@@ -73,7 +73,7 @@ it carries it into every account on your network.
 
 ## WSL is not a supported target
 
-Running Cordial under WSL sidesteps client integrity checks, and that is the
+Running Vanta under WSL sidesteps client integrity checks, and that is the
 reason it is unsupported rather than merely untested. We will not help with WSL
 issues and will not take patches that exist to make that path work.
 

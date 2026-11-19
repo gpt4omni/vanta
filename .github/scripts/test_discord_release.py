@@ -14,7 +14,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).parent))
 import discord_release as dr  # noqa: E402
 
-REPO = "luohoa97/cordial"
+REPO = "gpt4omni/vanta"
 SECRET = "https://discord.com/api/webhooks/123/SECRET-TOKEN"
 
 
@@ -26,7 +26,7 @@ def asset(name, size=0):
 def release(**kw):
     base = {
         "tag_name": "v1.2.0",
-        "name": "Cordial 1.2.0",
+        "name": "Vanta 1.2.0",
         "html_url": f"https://github.com/{REPO}/releases/tag/v1.2.0",
         "published_at": "2026-10-15T09:26:39Z",
         "body": "Short notes.",
@@ -36,9 +36,9 @@ def release(**kw):
             "avatar_url": "https://avatars.githubusercontent.com/in/15368",
         },
         "assets": [
-            asset("cordial-1.2.0.deb"),
-            asset("cordial-1.2.0.deb.cosign.bundle"),
-            asset("cordial-1.2.0.rpm"),
+            asset("vanta-1.2.0.deb"),
+            asset("vanta-1.2.0.deb.cosign.bundle"),
+            asset("vanta-1.2.0.rpm"),
         ],
     }
     base.update(kw)
@@ -59,15 +59,15 @@ def build(rel=None, history=HISTORY, **kw):
 class Payload(unittest.TestCase):
     def test_shape(self):
         p = build()
-        self.assertEqual(p["username"], "Cordial")
-        self.assertEqual(p["content"], "New Release: `v1.2.0` in `luohoa97/cordial`")
+        self.assertEqual(p["username"], "Vanta")
+        self.assertEqual(p["content"], "New Release: `v1.2.0` in `gpt4omni/vanta`")
         (e,) = p["embeds"]
-        self.assertEqual(e["title"], "Cordial 1.2.0")
+        self.assertEqual(e["title"], "Vanta 1.2.0")
         self.assertEqual(e["url"], release()["html_url"])
         self.assertEqual(e["color"], 0x5865F2)
         self.assertEqual(e["description"], "Short notes.")
         self.assertEqual(e["author"]["name"], "github-actions[bot]")
-        self.assertEqual(e["footer"]["text"], "Cordial loads Roblox natively on Linux")
+        self.assertEqual(e["footer"]["text"], "Vanta loads Roblox natively on Linux")
         self.assertEqual(e["timestamp"], "2026-10-15T09:26:39Z")
         self.assertEqual([f["name"] for f in e["fields"]], ["Source Code", "Compare Changes"])
         json.dumps(p)
@@ -78,10 +78,10 @@ class Payload(unittest.TestCase):
 
     def test_signatures_are_dropped_and_archives_kept(self):
         value = build()["embeds"][0]["fields"][0]["value"]
-        self.assertIn("cordial-1.2.0.deb)", value)
-        self.assertIn("cordial-1.2.0.rpm)", value)
+        self.assertIn("vanta-1.2.0.deb)", value)
+        self.assertIn("vanta-1.2.0.rpm)", value)
         self.assertNotIn("cosign", value)
-        self.assertTrue(value.endswith("[TAR](https://github.com/luohoa97/cordial/tarball/v1.2.0)"))
+        self.assertTrue(value.endswith("[TAR](https://github.com/gpt4omni/vanta/tarball/v1.2.0)"))
         self.assertIn("/zipball/v1.2.0", value)
 
     def test_compare_uses_the_previous_tag_not_main(self):
@@ -206,7 +206,7 @@ class Post(unittest.TestCase):
         self.assertEqual(req.get_method(), "POST")
         self.assertEqual(json.loads(req.data), {"content": "hi"})
         self.assertEqual(req.get_header("Content-type"), "application/json")
-        self.assertIn("cordial", req.get_header("User-agent"))
+        self.assertIn("vanta", req.get_header("User-agent"))
 
     def test_http_error_fails_and_prints_discords_body_but_not_the_url(self):
         body = b'{"message": "Invalid Form Body", "code": 50035}'
@@ -267,7 +267,7 @@ class Main(unittest.TestCase):
     def test_dry_run_prints_the_payload_and_sends_nothing(self):
         code, out, _, m = self.run_main(["--dry-run", str(self.rel)], {})
         self.assertEqual(code, 0)
-        self.assertEqual(json.loads(out)["username"], "Cordial")
+        self.assertEqual(json.loads(out)["username"], "Vanta")
         m.assert_not_called()
 
     def test_unreadable_history_is_not_fatal(self):

@@ -7,7 +7,7 @@
 # 2.43 host emitted `log10f@GLIBC_2.43` -- the only symbol in either binary
 # above 2.39 -- and the `.rpm` then refused to install anywhere older with
 #
-#     nothing provides libm.so.6(GLIBC_2.43)(64bit) needed by cordial-0.10.0
+#     nothing provides libm.so.6(GLIBC_2.43)(64bit) needed by vanta-0.10.0
 #
 # The AppImage had it too, and that one bundles no libc at all, so the format
 # whose whole purpose is running anywhere would have run on Fedora 44 and
@@ -19,9 +19,9 @@
 # That is exactly the class of thing worth a check rather than a habit.
 set -euo pipefail
 
-# The oldest glibc Cordial claims to run on. Raise this deliberately, in a
+# The oldest glibc Vanta claims to run on. Raise this deliberately, in a
 # commit that says which distribution it drops, never to make this script pass.
-FLOOR="${CORDIAL_GLIBC_FLOOR:-2.39}"
+FLOOR="${VANTA_GLIBC_FLOOR:-2.39}"
 
 fail=0
 for bin in "$@"; do
@@ -60,7 +60,7 @@ unportable. Two ways out, in order of preference:
   2. Build in a container whose glibc is the floor, so the compiler binds to
      the older version node.
 
-Do not raise CORDIAL_GLIBC_FLOOR to make this pass.
+Do not raise VANTA_GLIBC_FLOOR to make this pass.
 WHY
   exit 1
 fi

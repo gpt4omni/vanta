@@ -42,7 +42,7 @@ export interface Label {
 }
 
 /**
- * Descriptive, not decisive: where in Cordial a problem lives. These only
+ * Descriptive, not decisive: where in Vanta a problem lives. These only
  * match labels that exist, so a repository without them offers reporters no
  * picker at all rather than a wrong one.
  */

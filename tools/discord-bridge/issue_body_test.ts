@@ -25,7 +25,7 @@ const submission = {
     "what-happened": "The window opens and stays black.\nEvery time.",
     "what-expected": "The Roblox home screen.",
     "repro": "Launch it.",
-    "diagnostics": "Cordial 0.13.2 (91f8ee9)\nInstall rpm",
+    "diagnostics": "Vanta 0.13.2 (91f8ee9)\nInstall rpm",
   },
   reporter: { id: "42", tag: "someone" },
 };
@@ -155,7 +155,7 @@ Deno.test("editing one field changes that section and nothing else", () => {
   assertStringIncludes(next, "### What happened\n\nIt crashes on launch.");
   assert(!next.includes("stays black"));
   // Everything else is byte for byte what it was.
-  assertStringIncludes(next, "### Diagnostics\n\nCordial 0.13.2 (91f8ee9)\nInstall rpm");
+  assertStringIncludes(next, "### Diagnostics\n\nVanta 0.13.2 (91f8ee9)\nInstall rpm");
   assertStringIncludes(next, "### What you expected");
   assertEquals(
     changedFields(parsed, form, { "what-happened": "It crashes on launch." }).map((c) =>
@@ -171,11 +171,11 @@ Deno.test("the diagnostics block, the credit line and the marker survive any edi
   // An attempt to edit diagnostics through the same path is ignored, because
   // the field is not editable.
   const next = assembleBody(form, parsed, {
-    "diagnostics": "Cordial 9.9.9 (forged)",
+    "diagnostics": "Vanta 9.9.9 (forged)",
     "repro": "Different steps.",
   });
   assert(!next.includes("forged"));
-  assertStringIncludes(next, "Cordial 0.13.2 (91f8ee9)");
+  assertStringIncludes(next, "Vanta 0.13.2 (91f8ee9)");
   assertStringIncludes(next, "Filed by **someone** (`42`)");
   assertEquals(reporterFromBody(next), "42");
   assertEquals(threadFromBody(next), "999");
@@ -268,7 +268,7 @@ Deno.test("a pasted heading inside an answer is content, not a boundary", () => 
   // refused; what it must not do is treat it as the Diagnostics section.
   if (parsed) {
     assertStringIncludes(parsed.sections.get("what-happened")!.value, "not the real one");
-    assertStringIncludes(parsed.sections.get("diagnostics")!.value, "Cordial 0.13.2");
+    assertStringIncludes(parsed.sections.get("diagnostics")!.value, "Vanta 0.13.2");
   }
 });
 

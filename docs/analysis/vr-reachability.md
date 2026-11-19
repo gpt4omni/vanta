@@ -1,12 +1,12 @@
-# Is the compiled-in VR path reachable from Cordial's side?
+# Is the compiled-in VR path reachable from Vanta's side?
 
-2026-09-15, Roblox 2.738.0.1397, Cordial 0.15.1 (worktree build).
+2026-09-15, Roblox 2.738.0.1397, Vanta 0.15.1 (worktree build).
 
 *Corrected 2026-10-01:* everything below was measured on the x86-64 **phone** build,
 and for that build it may still hold; nothing since has re-run it. What does not hold
 is the conclusion drawn from it that VR needs a device built some other way. Roblox's
 **Meta Quest** build (2.740.0.927, arm64-v8a only) constructs its VR device through
-ordinary OpenXR calls as soon as a runtime is present: under Cordial's in-process
+ordinary OpenXR calls as soon as a runtime is present: under Vanta's in-process
 translator it created an instance, a Vulkan device through `xrCreateVulkanDeviceKHR`
 and a session, logged `SurfaceController::enableVR`, and reached `FOCUSED` on Monado's
 simulated HMD with no engine memory written
@@ -19,7 +19,7 @@ its VR app-shell place, `Maquettes.rbxl`.
 produce no observable effect at all rather than hitting a nameable wall.**
 `TASKS.md`'s "Closed, not deferred" verdict (dex class-count of `Oculus`,
 `OpenXR`, `Cardboard`, `GvrLayout` = 0) survives, but for a different and
-stronger reason than the one it gave. That reason does not apply here — Cordial
+stronger reason than the one it gave. That reason does not apply here — Vanta
 supplies the Java surface itself, so Roblox's dex having no VR classes was never
 proof the engine never asks for one (see issue #35, `DeviceUtils`). What was
 actually tested is what the engine asks the *platform* for with VR flags on,
@@ -58,7 +58,7 @@ Two runs, identical command, same profile shape, only the flags file present
 or absent:
 
 ```
-XDG_DATA_HOME=<root> cordial-run --lib-dir ~/.cache/cordial/lib/x86_64 \
+XDG_DATA_HOME=<root> vanta-run --lib-dir ~/.cache/vanta/lib/x86_64 \
   --apk ~/.var/app/org.vinegarhq.Sober/data/sober/packages/x86_64/com.roblox.client/base.apk \
   --host-libc --game-activity --dump-classes classes.txt --run 30
 ```
@@ -66,7 +66,7 @@ XDG_DATA_HOME=<root> cordial-run --lib-dir ~/.cache/cordial/lib/x86_64 \
 The override was verifiably delivered and accepted, not just written to disk:
 
 ```
-off:  flags: 1 override(s) applied     (Cordial's own built-in default)
+off:  flags: 1 override(s) applied     (Vanta's own built-in default)
 on:   flags: 39 override(s) applied    (38 from flags.json + the same built-in)
 
 off:  nativeInitClientSettings -> 0    client settings: 1289398 bytes (cache)
@@ -84,7 +84,7 @@ Three instruments, each compared on and off:
 each. `diff off/classes.txt on/classes.txt` produced no output.
 
 **2. Unresolved-JNI-symbol log.** `Constructed Unresolved symbol` appears zero
-times in either run's stdout or stderr. Cordial's own end-of-run line agrees in
+times in either run's stdout or stderr. Vanta's own end-of-run line agrees in
 both: `=== nothing went unanswered this run ===`, and the stub tally is
 identical too: `=== stubs called: 2 distinct of 650 ===` in both arms (the two
 being `ZSTD_trace_decompress_begin`/`ZSTD_trace_compress_begin`, unrelated to
@@ -103,7 +103,7 @@ output in either arm, there is no signal to calibrate the channel's log
 verbosity syntax against, on or off.
 
 **Retracted 2026-09-16. The fourth check below never measured what it claimed,
-and its conclusion does not follow.** It read: `CORDIAL_TRACE_PATHS=1` traces
+and its conclusion does not follow.** It read: `VANTA_TRACE_PATHS=1` traces
 every path-taking libc call, *including `dlopen`*, and since grepping ~10,600
 logged calls for `openxr`, `oculus`, `libopenxr` or any `.so` name containing
 `vr` returned nothing, **the engine never attempted to open a VR runtime
@@ -190,7 +190,7 @@ whole VR input surface -- `isVRVirtualInputFlagEnabled()Z`,
 `enableVRVirtualInput(Z)V`, `setVRCameraCFrame(FFF)V`,
 `setVirtualVRJoyStickPosition(FF)V`,
 `setVRWorldRayCFrameFromScreenPosition(IFFI)V` -- all `GLOBAL FUNC` in dynsym
-and all declared in the dex. Cordial is the Java side, so calling them is the
+and all declared in the dex. Vanta is the Java side, so calling them is the
 published interface working as designed, not interposition. The getter returns
 `false`; `enableVRVirtualInput(true)` returns cleanly and the getter still
 returns `false`; no `VRService` line appears with all three log channels at
@@ -218,17 +218,17 @@ becomes a fact.
 ## Reproducing
 
 ```
-mkdir -p <root>/data/cordial/profiles/default
+mkdir -p <root>/data/vanta/profiles/default
 # write flags.json there with the VR overrides, or omit it for the control
-XDG_DATA_HOME=<root>/data cordial-run --lib-dir ~/.cache/cordial/lib/x86_64 \
+XDG_DATA_HOME=<root>/data vanta-run --lib-dir ~/.cache/vanta/lib/x86_64 \
   --apk ~/.var/app/org.vinegarhq.Sober/data/sober/packages/x86_64/com.roblox.client/base.apk \
   --host-libc --game-activity --dump-classes classes.txt --run 30 \
   >stdout.log 2>stderr.log
 ```
 
 Run artefacts (`flags.json`, `stdout.log`, `stderr.log`, `classes.txt` for both
-arms, and the `CORDIAL_TRACE_PATHS=1` capture) are not committed — they contain
+arms, and the `VANTA_TRACE_PATHS=1` capture) are not committed — they contain
 absolute paths to this machine's home directory and are large. They were
-produced under `~/cordial-vr-agent/` on this host and deleted after the counts
+produced under `~/vanta-vr-agent/` on this host and deleted after the counts
 and greps quoted above were taken from them; the log excerpts pasted into this
 document and its writing session are what is left of them.

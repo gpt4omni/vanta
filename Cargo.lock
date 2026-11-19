@@ -300,107 +300,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "cordial-guest"
-version = "0.34.1"
-dependencies = [
- "cmake",
-]
-
-[[package]]
-name = "cordial-linker-sys"
-version = "0.34.1"
-dependencies = [
- "cmake",
-]
-
-[[package]]
-name = "cordial-plugins"
-version = "0.34.1"
-dependencies = [
- "base64 0.23.1",
- "blake2",
- "ed25519-dalek",
- "minisign-verify",
- "rustix",
- "semver",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tar",
- "zbus",
- "zstd",
-]
-
-[[package]]
-name = "cordial-protocol"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "cordial-runtime"
-version = "0.34.1"
-dependencies = [
- "cordial-guest",
- "cordial-linker-sys",
- "cordial-plugins",
- "cordial-protocol",
- "cordial-shell",
- "cordial-update",
- "gtk4",
- "libadwaita",
- "libc",
- "libmimalloc-sys",
- "serde_json",
- "ureq",
- "zbus",
- "zip",
- "zstd",
-]
-
-[[package]]
-name = "cordial-shell"
-version = "0.34.1"
-dependencies = [
- "cordial-linker-sys",
- "cordial-plugins",
- "cordial-protocol",
- "cordial-update",
- "gdk4-wayland",
- "gtk4",
- "libadwaita",
- "libc",
- "minisign-verify",
- "percent-encoding",
- "serde",
- "serde_json",
- "tempfile",
- "ureq",
- "webkit6",
- "zbus",
- "zip",
-]
-
-[[package]]
-name = "cordial-update"
-version = "0.34.1"
-dependencies = [
- "cordial-plugins",
- "http",
- "pulldown-cmark",
- "ring",
- "rustix",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "ureq",
- "zbus",
- "zip",
-]
-
-[[package]]
 name = "cpufeatures"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1852,6 +1751,107 @@ dependencies = [
  "js-sys",
  "serde_core",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "vanta-guest"
+version = "0.34.1"
+dependencies = [
+ "cmake",
+]
+
+[[package]]
+name = "vanta-linker-sys"
+version = "0.34.1"
+dependencies = [
+ "cmake",
+]
+
+[[package]]
+name = "vanta-plugins"
+version = "0.34.1"
+dependencies = [
+ "base64 0.23.1",
+ "blake2",
+ "ed25519-dalek",
+ "minisign-verify",
+ "rustix",
+ "semver",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tar",
+ "zbus",
+ "zstd",
+]
+
+[[package]]
+name = "vanta-protocol"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "vanta-runtime"
+version = "0.34.1"
+dependencies = [
+ "gtk4",
+ "libadwaita",
+ "libc",
+ "libmimalloc-sys",
+ "serde_json",
+ "ureq",
+ "vanta-guest",
+ "vanta-linker-sys",
+ "vanta-plugins",
+ "vanta-protocol",
+ "vanta-shell",
+ "vanta-update",
+ "zbus",
+ "zip",
+ "zstd",
+]
+
+[[package]]
+name = "vanta-shell"
+version = "0.34.1"
+dependencies = [
+ "gdk4-wayland",
+ "gtk4",
+ "libadwaita",
+ "libc",
+ "minisign-verify",
+ "percent-encoding",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "ureq",
+ "vanta-linker-sys",
+ "vanta-plugins",
+ "vanta-protocol",
+ "vanta-update",
+ "webkit6",
+ "zbus",
+ "zip",
+]
+
+[[package]]
+name = "vanta-update"
+version = "0.34.1"
+dependencies = [
+ "http",
+ "pulldown-cmark",
+ "ring",
+ "rustix",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "ureq",
+ "vanta-plugins",
+ "zbus",
+ "zip",
 ]
 
 [[package]]

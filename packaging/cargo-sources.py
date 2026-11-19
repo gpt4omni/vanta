@@ -9,7 +9,7 @@ the build step needs no network at all.
 
 The upstream tool for this is flatpak-builder-tools' flatpak-cargo-generator.py,
 which is a hard dependency to acquire (aiohttp, toml) and which goes to the
-network to resolve git dependencies. Cordial has none: every entry in Cargo.lock
+network to resolve git dependencies. Vanta has none: every entry in Cargo.lock
 carries `source = "registry+https://github.com/rust-lang/crates.io-index"` and a
 `checksum`, and that checksum *is* the sha256 of the .crate tarball. So this
 reads the lock file and writes the source list, offline, out of the standard
@@ -35,7 +35,7 @@ CRATES_IO = "registry+https://github.com/rust-lang/crates.io-index"
 # directory has to be named absolutely. This is where flatpak-builder puts the
 # module's build directory, and it is why the manifest sets CARGO_HOME to the
 # same prefix. The two have to agree; if the module is ever renamed, both move.
-BUILD_DIR = "/run/build/cordial"
+BUILD_DIR = "/run/build/vanta"
 
 
 def main() -> int:

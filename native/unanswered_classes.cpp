@@ -1,6 +1,6 @@
-// Classes the engine looks up and Cordial answered with nothing.
+// Classes the engine looks up and Vanta answered with nothing.
 //
-// A `CORDIAL_JNI_TRACE=ON` capture of a landing-page run shows the engine
+// A `VANTA_JNI_TRACE=ON` capture of a landing-page run shows the engine
 // asking libjnivm for 39 distinct classes. Seven of them had no implementation
 // anywhere in `native/`. Five are here; the two djinni local-storage ones
 // (`ILocalStorageHandlerCore$CppProxy`, `com/snapchat/djinni/NativeObjectManager`)
@@ -29,10 +29,10 @@
 // voice place appeared to stall against its old "not valid" answer (INFERRED). Its own comment has
 // the reasoning.)
 //
-// So the rule applied here is: hook a method only where Cordial has a truthful
+// So the rule applied here is: hook a method only where Vanta has a truthful
 // answer today. Everything else is left unhooked on purpose. An unhooked
 // method on a *registered* class surfaces through libjnivm's own unresolved
-// reporting and lands in Cordial's end-of-run table, which is exactly where a
+// reporting and lands in Vanta's end-of-run table, which is exactly where a
 // gap should be visible -- rather than being papered over with a plausible
 // zero.
 
@@ -52,7 +52,7 @@
 #include <memory>
 #include <string>
 
-namespace cordial {
+namespace vanta {
 
 using jnivm::Class;
 using jnivm::ENV;
@@ -171,7 +171,7 @@ public:
 /// communication mode around a call, and the call's microphone mute.
 ///
 /// **`isValid()` used to answer false, and that was the wrong honest answer.**
-/// It was written when Cordial had no capture path, on the reasoning that a
+/// It was written when Vanta had no capture path, on the reasoning that a
 /// wrapper with nothing behind it should say so. There is a path now -- the
 /// engine records voice through `AAudioStream_read` over PipeWire, and plays
 /// it through the same output as everything else -- and a mic button that did
@@ -199,37 +199,37 @@ public:
         static std::atomic<bool> said{false};
         if (!said.exchange(true)) {
             std::fprintf(stderr,
-                "I/Cordial-Voice          AppRtcDeviceWrapper.isValid: yes. Voice uses the "
+                "I/Vanta-Voice          AppRtcDeviceWrapper.isValid: yes. Voice uses the "
                 "desktop's default input and output; there is no device to route.\n");
         }
         return JNI_TRUE;
     }
 
     jint getSelectedAudioDeviceAsInt(ENV*) {
-        std::fprintf(stderr, "I/Cordial-Voice          AppRtcDeviceWrapper.getSelectedAudioDeviceAsInt -> 0 (SPEAKER_PHONE)\n");
+        std::fprintf(stderr, "I/Vanta-Voice          AppRtcDeviceWrapper.getSelectedAudioDeviceAsInt -> 0 (SPEAKER_PHONE)\n");
         return 0;
     }
 
     std::shared_ptr<String> getSelectedAudioDeviceName(ENV*) {
-        std::fprintf(stderr, "I/Cordial-Voice          AppRtcDeviceWrapper.getSelectedAudioDeviceName -> SPEAKER_PHONE\n");
+        std::fprintf(stderr, "I/Vanta-Voice          AppRtcDeviceWrapper.getSelectedAudioDeviceName -> SPEAKER_PHONE\n");
         return std::make_shared<String>("SPEAKER_PHONE");
     }
 
     void wrapStartCommunication(ENV*) {
         std::fprintf(stderr,
-            "I/Cordial-Voice          AppRtcDeviceWrapper.wrapStartCommunication: a voice call "
+            "I/Vanta-Voice          AppRtcDeviceWrapper.wrapStartCommunication: a voice call "
             "started. Nothing to switch on a desktop; the microphone opens when Roblox starts "
             "recording.\n");
     }
 
     void wrapStopCommunication(ENV*) {
-        std::fprintf(stderr, "I/Cordial-Voice          AppRtcDeviceWrapper.wrapStopCommunication: the voice call ended.\n");
+        std::fprintf(stderr, "I/Vanta-Voice          AppRtcDeviceWrapper.wrapStopCommunication: the voice call ended.\n");
         audio::voice_muted().store(false);
     }
 
     void wrapSetCommunicationMute(ENV*, jboolean mute) {
         audio::voice_muted().store(mute != JNI_FALSE);
-        std::fprintf(stderr, "I/Cordial-Voice          AppRtcDeviceWrapper.wrapSetCommunicationMute(%s): "
+        std::fprintf(stderr, "I/Vanta-Voice          AppRtcDeviceWrapper.wrapSetCommunicationMute(%s): "
             "microphone samples are %s.\n", mute ? "true" : "false", mute ? "now silenced" : "passed through");
     }
 
@@ -249,7 +249,7 @@ public:
 ///
 /// Registered so the lookup resolves against a real class, and nothing more.
 ///
-/// This is not a subsystem Cordial implements: every method on `MemStorage`
+/// This is not a subsystem Vanta implements: every method on `MemStorage`
 /// (`bind`, `fire`, `getItem`, `setItem`, `hasItem`, `removeItem`) is exported
 /// by `libroblox.so` as a `Java_com_roblox_engine_jni_memstorage_*` native, so
 /// the engine owns both sides and the app only holds the handle. `Connection`
@@ -280,7 +280,7 @@ public:
 /// hit `NetworkUtils.getPublicIPv4Addresseses` above.
 ///
 /// Answers come from `device_profile()` in `init_params.cpp` (declared just
-/// outside this anonymous namespace), so `CORDIAL_DEVICE_PROFILE=pc-windows-11`
+/// outside this anonymous namespace), so `VANTA_DEVICE_PROFILE=pc-windows-11`
 /// changes BuildInfo in the same run as InitParams and the User-Agent. Nothing
 /// has been observed calling these yet (the engine resolves the class and
 /// stops); they are hooked so a future call cannot invent a second device
@@ -306,7 +306,7 @@ public:
         env->GetClass<WebRtcBuildInfo>("org/webrtc/voiceengine/BuildInfo");
         auto c = env->GetClass("org/webrtc/voiceengine/BuildInfo");
         // Static hooks: the dex declares static methods. Instance hooks would
-        // bind nothing and look fine until a CORDIAL_JNI_TRACE run printed
+        // bind nothing and look fine until a VANTA_JNI_TRACE run printed
         // `Constructed Unresolved symbol` for each.
         c->Hook(env, "getBrand", &WebRtcBuildInfo::getBrand);
         c->Hook(env, "getDeviceManufacturer", &WebRtcBuildInfo::getDeviceManufacturer);
@@ -362,4 +362,4 @@ void register_unanswered_classes(ENV* env) {
     WebRtcAudioTrack::Register(env);
 }
 
-} // namespace cordial
+} // namespace vanta

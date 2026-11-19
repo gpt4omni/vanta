@@ -1,12 +1,12 @@
 # Third-party notices
 
-Cordial as a whole is GPL-3.0-or-later (see [`LICENSE`](LICENSE)), except the
-first-party crate [`crates/cordial-protocol`](crates/cordial-protocol), which is
+Vanta as a whole is GPL-3.0-or-later (see [`LICENSE`](LICENSE)), except the
+first-party crate [`crates/vanta-protocol`](crates/vanta-protocol), which is
 `MIT OR Apache-2.0` (texts beside it) and needs no entry here. It incorporates the components below, each under its own licence, and each of those
 licences requires its notice to travel with the software — in source *and* in
 binary form. This file exists so that obligation is met by anyone redistributing
-Cordial, including from the Flatpak, which installs this file to
-`/app/share/licenses/cordial/`.
+Vanta, including from the Flatpak, which installs this file to
+`/app/share/licenses/vanta/`.
 
 MIT and Apache-2.0 are both compatible with GPL-3.0 in this direction: their
 terms are satisfied while the combined work is offered under the GPL. Preserving
@@ -19,7 +19,7 @@ these notices is a condition of that, not a courtesy.
 x86-64 CPU *feature* emulator. Vendored at
 [`third_party/libbadcpu/`](third_party/libbadcpu), from
 [`Z3ki/sober-oss`](https://github.com/Z3ki/sober-oss) at commit
-`e48a905efdffa1ad49a3ebb873895bcff73aa935`. Cordial vendors only
+`e48a905efdffa1ad49a3ebb873895bcff73aa935`. Vanta vendors only
 `src/libbadcpu/`, `include/badcpu.h` and the test.
 
 Upstream licence text is preserved verbatim at
@@ -105,7 +105,7 @@ Both vendored and read, which is why this entry is longer than the others.
 
 **Vendored.** [`third_party/mocktail-webview/`](third_party/mocktail-webview)
 holds unmodified copies of mocktail's implementation of Roblox's web-view
-protocol, kept as the reference for Cordial's own web window. They are not
+protocol, kept as the reference for Vanta's own web window. They are not
 compiled — nothing in the build reads that directory.
 
 ```
@@ -116,18 +116,18 @@ Licensed under the Apache License, Version 2.0
 
 Full text: `third_party/mocktail-webview/LICENSE`.
 
-**Derived and adapted.** Cordial's `crates/cordial-shell/src/webview_policy.rs`
+**Derived and adapted.** Vanta's `crates/vanta-shell/src/webview_policy.rs`
 is derived from mocktail's `webview_helper_policy.cc`;
-`crates/cordial-runtime/src/permissions.rs` follows the discovery pattern in its
+`crates/vanta-runtime/src/permissions.rs` follows the discovery pattern in its
 `roblox_permissions_bridge.cc`; and the performance tables in
-`crates/cordial-shell/src/shell_config.rs` are adapted from its own. Those are
+`crates/vanta-shell/src/shell_config.rs` are adapted from its own. Those are
 adaptations of Apache-2.0 work and are named as such in each file.
 
 **Read, and the reason several things here are right rather than guessed.**
 The field order of Roblox's `NativeTextBoxInfo` — including which slot carries
 `textWrapped` and the `xAlign`/`yAlign` pair — came from mocktail's constructor
 rather than from a stripped binary. So did several thread-count and pipeline
-flag values, the platform identity string Cordial reports, and a number of
+flag values, the platform identity string Vanta reports, and a number of
 engine behaviours confirmed by watching mocktail run against the same build.
 `docs/analysis/flag-init.md` cites it throughout.
 
@@ -150,7 +150,7 @@ signatures are correct.
 
 ## dynarmic — 0BSD, and what it bundles
 
-The arm64 dynamic recompiler behind `crates/cordial-guest`, compiled only into
+The arm64 dynamic recompiler behind `crates/vanta-guest`, compiled only into
 x86-64 builds with the `vr` feature, which every package turns on. Submodule at [`third_party/dynarmic/`](third_party/dynarmic), from
 [`azahar-emu/dynarmic`](https://github.com/azahar-emu/dynarmic) at commit
 `a46601580d5512d324104f985b5f0209dc980ddc`.
@@ -187,7 +187,7 @@ Zycore:  Copyright (c) 2018-2024 Florian Bernd
 ```
 
 The other three of dynarmic's submodules (biscuit, Catch2, oaknut) and Zydis's
-own copy of Zycore are not compiled into Cordial.
+own copy of Zycore are not compiled into Vanta.
 
 Boost's headers (`boost::icl`, `boost::variant`) are also compiled in, under
 the Boost Software License 1.0. They are not vendored: they come from the build
@@ -195,7 +195,7 @@ environment (`boost-devel`, `libboost-dev`, Arch's `boost`, Nix's `boost`; the
 Flatpak copies Boost 1.83.0's headers in a module that ships nothing). BSL-1.0
 does not require the notice to accompany object code.
 
-Each package installs the seven licence files above beside Cordial's own, as
+Each package installs the seven licence files above beside Vanta's own, as
 `dynarmic-0BSD.txt`, `fmt-MIT.txt`, `mcl-MIT.txt`, `robin-map-MIT.txt`,
 `xbyak-BSD-3-Clause.txt`, `zydis-MIT.txt` and `zycore-MIT.txt`.
 
@@ -211,9 +211,9 @@ from.
 
 | Generated file | From | Licence of the source |
 |---|---|---|
-| `crates/cordial-runtime/src/guest_vk_table.rs`, `guest_vk_probe.c` | `vk.xml`, Vulkan-Headers v1.4.341 | Apache-2.0 OR MIT |
-| `crates/cordial-runtime/src/guest_xr_table.rs`, `guest_xr_probe.c` | `xr.xml`, OpenXR-SDK-Source release-1.1.47 | Apache-2.0 OR MIT |
-| `crates/cordial-runtime/src/guest_gl_table.rs` | `gl.xml` (OpenGL-Registry) and `egl.xml` (EGL-Registry) | Apache-2.0 |
+| `crates/vanta-runtime/src/guest_vk_table.rs`, `guest_vk_probe.c` | `vk.xml`, Vulkan-Headers v1.4.341 | Apache-2.0 OR MIT |
+| `crates/vanta-runtime/src/guest_xr_table.rs`, `guest_xr_probe.c` | `xr.xml`, OpenXR-SDK-Source release-1.1.47 | Apache-2.0 OR MIT |
+| `crates/vanta-runtime/src/guest_gl_table.rs` | `gl.xml` (OpenGL-Registry) and `egl.xml` (EGL-Registry) | Apache-2.0 |
 
 ```
 Copyright 2013-2026 The Khronos Group Inc.
@@ -240,7 +240,7 @@ compiled only by the OpenXR layout test, not into any binary.
 
 ## What is *not* here
 
-**Roblox.** Cordial contains no Roblox code, APK, asset or decompiled material,
+**Roblox.** Vanta contains no Roblox code, APK, asset or decompiled material,
 and never will. It loads the official Android client that the user supplies from
 their own installation. Roblox is a trademark of Roblox Corporation, which does
 not endorse this project.

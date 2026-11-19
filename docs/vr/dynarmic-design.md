@@ -1,4 +1,4 @@
-# Phase 2: the Quest engine under dynarmic, inside an x86-64 Cordial
+# Phase 2: the Quest engine under dynarmic, inside an x86-64 Vanta
 
 Design, written before anything was built; §9 records what M0 and M1 then measured, and corrections are marked inline. Evidence comes from `readelf`, bit-pattern
 counts over `.text`, 12 sampled `llvm-objdump` windows (counted, not read),
@@ -11,7 +11,7 @@ dynarmic is usable, but not for the reason you'd expect. Its A64 frontend lacks
 **LSE atomics, LDAPR, FP16 arithmetic, SVE and PAC** (`frontend/A64/decoder/a64.inc`:
 643 `INST` lines live, 231 commented out, including `CAS`, `LDADD`, `SWP`, `LDAPR`,
 `FADD_1`, `PACIA_*`). This build of `libroblox.so` survives that, because **every
-instruction from those families is behind a runtime feature check**, and Cordial is
+instruction from those families is behind a runtime feature check**, and Vanta is
 the one answering that check (§1.3). Being honest about the emulated CPU's features
 is enough; no engine memory has to change.
 
@@ -30,8 +30,8 @@ is enough; no engine memory has to change.
 
 It builds as a CMake static library on x86-64 Linux. Dependencies: Boost headers
 (BSL-1.0), fmt (MIT), mcl, tsl-robin-map (MIT), xbyak (BSD-3) and Zydis (MIT), all
-vendored under `externals/`. Cordial uses Cargo, so it would go in through the `cmake`
-crate from `cordial-runtime/build.rs`, built with Clang. Rust bindings exist
+vendored under `externals/`. Vanta uses Cargo, so it would go in through the `cmake`
+crate from `vanta-runtime/build.rs`, built with Clang. Rust bindings exist
 (`exverge-0/dynarmic-rs`, 0BSD), but a thin C++ shim is simpler (INFERRED).
 
 ### 1.2 The API that matters (`interface/A64/config.h`, `a64.h`)
@@ -51,7 +51,7 @@ crate from `cordial-runtime/build.rs`, built with Clang. Rust bindings exist
     one call (`ir/opt/a64_merge_interpret_blocks.cpp`), so `n` is not always 1.
     *Corrected at M0*: this list used to send unallocated encodings to
     `ExceptionRaised`, and `.word 0` measurably arrives here instead
-    (`crates/cordial-guest/tests/m0.rs`).
+    (`crates/vanta-guest/tests/m0.rs`).
   - `InstructionCacheOperationRaised`, `DataCacheOperationRaised`.
   - Ticks: set `enable_cycle_counting=false` and `wall_clock_cntpct=true`.
 - Memory: `page_table` (up to 64 address bits) and/or **`fastmem_pointer`** with
@@ -90,7 +90,7 @@ crate from `cordial-runtime/build.rs`, built with Clang. Rust bindings exist
 | `SVC #0` | 16 | Raw Linux syscalls with arm64 numbering. The number is computed with `eor`, so it can't be read statically. |
 | DC CVAU / IC IVAU | 1 / 1 | One `__clear_cache`. Luau native-codegen strings are present (`LuauCodeGenBlockSize`…), so guest-generated code is possible. |
 
-**What Cordial has to do.** `getauxval(AT_HWCAP)` must report exactly what dynarmic
+**What Vanta has to do.** `getauxval(AT_HWCAP)` must report exactly what dynarmic
 implements: `FP|ASIMD|AES|PMULL|SHA1|SHA2|CRC32|ASIMDDP|FCMA`. It must never report
 `ATOMICS`, `FPHP/ASIMDHP`, `ASIMDRDM`, `JSCVT`, `LRCPC`, `SVE*` or `RNG`. This is the
 honest answer, because the CPU the guest runs on lacks those features. The control
@@ -103,7 +103,7 @@ real core.
 
 ## 2. Address space: identity-mapped, one process
 
-Keep what Cordial does natively: guest address = host address. Configure
+Keep what Vanta does natively: guest address = host address. Configure
 `fastmem_pointer = 0`, `fastmem_address_space_bits = 64`, no `page_table`, and
 `silently_mirror_fastmem` off. Pointers then cross the boundary unchanged. That is
 what makes most thunks trivial, and it is why a separate guest space (yuzu-style) is
@@ -111,7 +111,7 @@ the wrong model here. The cost is isolation: a guest pointer is a host pointer, 
 the guest can read and write any host memory that is mapped. Only an unmapped
 address faults, as a host SIGSEGV (dynarmic's recompile-on-fault path then calls the
 callbacks, which fault again). A stray guest write into mapped host memory -- the
-heap, a stack, Cordial's own data -- is not caught at all and can corrupt it
+heap, a stack, Vanta's own data -- is not caught at all and can corrupt it
 silently, to fail later somewhere unrelated. Guest `mmap` must not
 use `MAP_32BIT`-style assumptions; there aren't any, since both sides are 47-bit.
 *Corrected after review*: this said a wild pointer was always "a crash with a
@@ -131,7 +131,7 @@ address.
 | libovrplatformloader | RELR | – | 1 | 61 | – |
 
 All four are "write a 64-bit address", so they are arch-neutral. The patch is a
-`CORDIAL_GUEST_ARCH` macro that replaces `__aarch64__` in those three spots and
+`VANTA_GUEST_ARCH` macro that replaces `__aarch64__` in those three spots and
 accepts `EM_AARCH64`, plus `patches/0005` (RELR), which the fork already carries.
 Two behaviours change:
 
@@ -148,7 +148,7 @@ thunks.
 
 ### 3.1 Guest→host
 
-Each resolved import becomes a 16-byte stub in a Cordial-owned executable page:
+Each resolved import becomes a 16-byte stub in a Vanta-owned executable page:
 `svc #id; ret`. That gives 65,535 ids. `svc #0` stays reserved for real syscalls, so
 `CallSVC(imm)` tells the two apart for free. The dispatcher reads x0–x7, v0–v7 and SP,
 calls the host function, writes x0/v0 back, and returns inside the callback. That is
@@ -167,7 +167,7 @@ both ABIs order overflowed arguments by position but overflow different ones.
 with the fixed mapping and identical to native with a per-argument classifier
 (`tests/m1.rs`, `m1_snprintf_fp_overflow_before_int_overflow`). So the
 trampoline only loads a SysV image, and the image is built per call from the
-argument types (`crates/cordial-guest/src/abi.rs`). Variadics then need nothing
+argument types (`crates/vanta-guest/src/abi.rs`). Variadics then need nothing
 but a type list, which for printf is the format. The per-function descriptor still needs types for two
 fix-ups:
 
@@ -326,10 +326,10 @@ at slot 0:
 
 The guest uses TPIDR_EL0 as a thread identity as well as for the canary. There is no
 `PT_TLS`, so `thread_local` goes through emutls to `pthread_getspecific` and needs no
-DTV. Guest stacks are Cordial-allocated (8 MiB, as for the Android main thread).
+DTV. Guest stacks are Vanta-allocated (8 MiB, as for the Android main thread).
 *Corrected at M4*: that is the main thread's; a thread the guest creates gets
 the stack size its attr asks for, or bionic's default of 1 MiB less 32 KiB,
-and every Cordial-allocated guest stack sits above a 64 KiB guard (§9.3).
+and every Vanta-allocated guest stack sits above a 64 KiB guard (§9.3).
 `pthread_attr_getstack` and `pthread_getattr_np` report the *guest* stack.
 
 **`pthread_exit`** must not call glibc's `pthread_exit` from inside a callback. Its
@@ -345,7 +345,7 @@ reaches a frame with no FDE and terminates, which is what JNI does on Android to
 
 **Signals.** The host owns every real handler. The `sigaction` and `signal` thunks
 record the guest's handlers virtually and never install them. dynarmic installs its
-fault handler after Cordial's, so chaining works. *Checked at M3* (§9.2): the
+fault handler after Vanta's, so chaining works. *Checked at M3* (§9.2): the
 handler before the first Jit is Rust's `stack_overflow::signal_handler`, after it
 dynarmic's `SigAction`, which chains to it.
 
@@ -437,12 +437,12 @@ what the estimate above is about.
 ## 7. ADR line
 
 Running the engine's unmodified instructions in a translator, and supplying its
-imports as stubs in Cordial-owned memory, is the class of thing the linker already
+imports as stubs in Vanta-owned memory, is the class of thing the linker already
 does. The design stays inside it only if:
 
-- (a) dispatch is keyed only on Cordial's own stub addresses and SVC ids, never on
+- (a) dispatch is keyed only on Vanta's own stub addresses and SVC ids, never on
   engine addresses. There is no PC-keyed hook table, no breakpoint, and no
-  `InvalidateCacheRange`-and-substitute. Enforced in `cordial-guest`: a
+  `InvalidateCacheRange`-and-substitute. Enforced in `vanta-guest`: a
   handler can be installed only in the next free stub slot, and an `svc`
   outside its own stub is the guest's syscall (`tests/stub_page.rs`).
 - (b) nothing exposes Jit state to plugins.
@@ -461,16 +461,16 @@ into a hooking primitive, so (a) belongs in a fork ADR. That ADR must also super
 |---|---|---|
 | M0 | Azahar dynarmic builds from `build.rs`. A `cargo test` runs `add x0,x0,x1; ret` | Returns 5 for (2,3) and halts at the `svc #RET` stub. Control: a `.word 0` gives `InterpreterFallback` (corrected from `ExceptionRaised(UnallocatedEncoding)`, §1.2). **Done.** |
 | M1 | Stub, generic trampoline, nested Jit | Guest calls host `strlen`, `snprintf` (variadic, mixed int/double) and `qsort` with a guest comparator. Outputs are byte-identical to native x86 on 1,000 randomised cases. `pthread_create` gives 64 guest threads × 10⁶ LL/SC increments = exact total, with the global monitor and with `IgnoreGlobalMonitor`, timed. |
-| M2 | The guest-arch linker links libroblox inside x86-64 `cordial-run` | 0 unresolved. The relocation counts it logs equal the `llvm-readelf` table in §2 exactly. **Done** (§9; the table is re-measured there for 2.740.927). |
+| M2 | The guest-arch linker links libroblox inside x86-64 `vanta-run` | 0 unresolved. The relocation counts it logs equal the `llvm-readelf` table in §2 exactly. **Done** (§9; the table is re-measured there for 2.740.927). |
 | M3 | 3,617 constructors, then `JNI_OnLoad` | `JNI_OnLoad` returns `0x10006`. The class dump is identical to Phase 1's 4,458 lines. 0 unexpected `ExceptionRaised` or `InterpreterFallback`. Control: advertise `ATOMICS` and it stops with `InterpreterFallback` at a helper. **Record wall time against Phase 1's qemu figure**, since this is the first performance evidence. **Done** on 2.740.927's 3,622 (§9.2), with the wall time the wrong way round: slower than qemu on this run-once code. |
-| M4 | Engine start-up with threads | 3 × 120 s runs without a crash. `cordial_loopers` and `cordial_info` show progress. Jit count, code-cache bytes and per-thread CPU are logged. **Done** (§9.3), with no frame drawn: the Quest build ships only Vulkan shader packs, so its GLES fallback, which does reach the host GPU, has nothing to draw with. |
-| M5 | Vulkan via generated thunks on the NVIDIA ICD | `vkCreateDevice` succeeds on the 4070 Ti. The layout-diff gate passes with 0 differences. A flat or companion frame is non-black in `cordial_screenshot` (INFERRED that the Quest build renders flat at all; if not, go to M6). **Stopped** (§9.4): the gate passes and the generated stubs reach the 4070 Ti, but the engine abandons Vulkan when OpenXR has no runtime, before `vkCreateInstance`, so no frame. |
+| M4 | Engine start-up with threads | 3 × 120 s runs without a crash. `vanta_loopers` and `vanta_info` show progress. Jit count, code-cache bytes and per-thread CPU are logged. **Done** (§9.3), with no frame drawn: the Quest build ships only Vulkan shader packs, so its GLES fallback, which does reach the host GPU, has nothing to draw with. |
+| M5 | Vulkan via generated thunks on the NVIDIA ICD | `vkCreateDevice` succeeds on the 4070 Ti. The layout-diff gate passes with 0 differences. A flat or companion frame is non-black in `vanta_screenshot` (INFERRED that the Quest build renders flat at all; if not, go to M6). **Stopped** (§9.4): the gate passes and the generated stubs reach the 4070 Ti, but the engine abandons Vulkan when OpenXR has no runtime, before `vkCreateInstance`, so no frame. |
 | M6 | OpenXR on a host runtime, then WiVRn | Session state reaches `FOCUSED`. `xrEndFrame` is submitted with a projection layer. Rate ≥ 72/s sustained over 120 s with input driven, with the headset displaying. Cross-check against the runtime's own frame timing. **Part A done** (§9.5) on Monado's simulated HMD rather than SteamVR: `FOCUSED`, one projection layer per frame, 89.95–90.00/s at 90 Hz over 60 s in 3 of 3 120 s runs and 143.93/s at 144 Hz, a non-black left eye. Part B (WiVRn, the Quest 3 displaying) used by hand, not measured: no frame log has been taken on a headset (ADR-053, "Not established"). |
 | M7 | Performance pass | Report p50/p99 CPU frame time with each toggled against a same-session control: `Unsafe_*` FP flags, `IgnoreGlobalMonitor`, P-core pinning, LSE-in-dynarmic. Pass is 72 Hz with under 1% dropped frames in one reference place, 3 runs. **First pass** (§9.8): the stub boundary's bookkeeping and `pthread_getspecific` removed, 35--41 to 44--48 XR frames/s at 90 Hz in place 11256291667 on Monado; the `Unsafe_*` FP flags and P-core pinning measured and bought nothing. Not passed: p50 is two display periods. |
 
 ## 9. Measured at M0 and M1
 
-`crates/cordial-guest`, dynarmic `a46601580d55`, i9-13900KS (32 hardware
+`crates/vanta-guest`, dynarmic `a46601580d55`, i9-13900KS (32 hardware
 threads). Every figure is from `tests/m0.rs` or `tests/m1.rs`.
 
 | | Result |
@@ -495,7 +495,7 @@ AAPCS64 and memory in SysV. `va_list` is 32 bytes against 24.
 
 ## 9.1 Measured at M2
 
-`cordial-run --guest-arm64` (`patches/0006`, `crates/cordial-runtime/src/guest_link.rs`),
+`vanta-run --guest-arm64` (`patches/0006`, `crates/vanta-runtime/src/guest_link.rs`),
 Quest build 2.740.927, which is not the build §2 and §3 were measured on:
 
 | | 2.739.687 (§2, §3) | 2.740.927 |
@@ -511,36 +511,36 @@ import's own stub in the stub page, the 23 data slots the storage named for
 them, and the four slots of `__gcov_dump`/`__gcov_flush` zero, as on
 Android. One JUMP_SLOT binds to a function libroblox defines itself.
 
-How the 629 are answered: 62 dispatch to Cordial's implementation and 228 to
+How the 629 are answered: 62 dispatch to Vanta's implementation and 228 to
 the host's, through the generic call builder; 8 are thunks (printf family,
 `qsort`, `pthread_create`); 40 are the virtual OpenXR loader's honest failures;
 266 stop the guest with a fault naming the function when called; 23 are data;
 2 are weak and null. The stops are the M3 backlog, and each carries its
 reason.
 
-*Corrected at M2*: "the stub dispatches to Cordial's implementation" is not
-true of every function Cordial implements. Several of those implementations
+*Corrected at M2*: "the stub dispatches to Vanta's implementation" is not
+true of every function Vanta implements. Several of those implementations
 translate bionic's **x86-64** layouts (`stat`, `sigaction`, the `O_*` flags),
 which are exactly the ones §3.1 lists as differing on arm64. Only functions
 whose arguments mean the same on both sides dispatch; the rest stop.
 
 ## 9.2 Measured at M3
 
-`cordial-run --guest-arm64 --host-libc --jni-onload`, Quest build 2.740.927,
+`vanta-run --guest-arm64 --host-libc --jni-onload`, Quest build 2.740.927,
 i9-13900KS. The constructors run in linker order on the main thread's Jit,
 with TLS slot 5 equal to `__stack_chk_guard`, then `JNI_OnLoad` with a guest
-`JavaVM` (`crates/cordial-runtime/src/guest_jni.rs`).
+`JavaVM` (`crates/vanta-runtime/src/guest_jni.rs`).
 
 **Stops met, in order**, each answered by a thunk in
-`crates/cordial-runtime/src/guest_libc.rs` unless named otherwise:
+`crates/vanta-runtime/src/guest_libc.rs` unless named otherwise:
 
 | # | Where | Stop | Answer |
 |---|---|---|---|
 | 1 | constructor 0 | `getauxval` | the §1.3 hwcaps; `AT_HWCAP2` 0; ids and `AT_RANDOM` the host's; unknown types 0 with ENOENT |
-| 2 | constructor 1 | `__system_property_get` | Cordial's table, which names no instruction set (moved to the dispatch list) |
+| 2 | constructor 1 | `__system_property_get` | Vanta's table, which names no instruction set (moved to the dispatch list) |
 | 3 | constructor 2 | `newlocale` | bionic's locale model: `{mb_cur_max}` objects, five names, `_l` functions ignore the locale, multibyte always UTF-8 via the host's C.UTF-8 |
 | 4 | constructor 3 | `sysinfo` (and with it `writev`, `select`, `sendmsg`/`recvmsg`/`*mmsg`) | the kernel's own LP64 structures, dispatched |
-| 5 | constructor 3 | `__open_2` (and `open`, `fcntl`, `stat`/`lstat`/`fstat`, `statvfs`) | Cordial's path layer, O_* renumbered, arm64's `struct stat` |
+| 5 | constructor 3 | `__open_2` (and `open`, `fcntl`, `stat`/`lstat`/`fstat`, `statvfs`) | Vanta's path layer, O_* renumbered, arm64's `struct stat` |
 | 6 | constructor 3 | `prctl` | passed through; arm64-only options get EINVAL, which is true of the emulated CPU |
 | 7 | constructor 3 | `mmap` (and `munmap`, `mprotect`) | the host's, PROT_EXEC withheld and executable ranges tracked; a change to one stops, since cross-Jit invalidation is not built (*built at M7*, §9.10) |
 | 8 | constructor 71 | `vsnprintf` (and `__vsnprintf_chk`, `__vsprintf_chk`, `vfprintf`, `vasprintf`) | the AAPCS64 `va_list` walked by format onto the host's plain variadic |
@@ -561,7 +561,7 @@ and qemu-user 10.2, the Phase 1 reference, fakes an arm64 one too (with its own
 CPU's much longer list, `atomics` and `sve` included), so the host's x86 file
 was the one answer that matched neither.
 
-The import table is now 64 Cordial, 235 host, 75 thunk, 40 OpenXR honest
+The import table is now 64 Vanta, 235 host, 75 thunk, 40 OpenXR honest
 failure, 190 stop, 23 data, 2 weak-null (629). *Corrected at M3*: the stop
 note said bionic's and glibc's `LC_*_MASK` values differ; checked against both
 headers, they are the same. What differs is `locale_t` and the behaviour.
@@ -571,7 +571,7 @@ turned `x & ~0` into `x` and re-pointed the `ANDS`'s `GetNZCVFromOp` at a shift,
 which asserts. `FoldAdd`/`FoldSub` already skip an op with a pseudo-op;
 `FoldAND`/`EOR`/`OR`/`NOT` did not (`patches/0007`, applied by
 `tools/vr/build-aarch64.sh`). Found through a ring of the last 64 code fetches
-that `crates/cordial-guest/native/shim.cpp` now prints when dynarmic terminates.
+that `crates/vanta-guest/native/shim.cpp` now prints when dynarmic terminates.
 
 **Pass**, three runs of three: `CONSTRUCTORS DONE: 3622`, `JNI_OnLoad returned
 0x10006`, and a `--dump-classes` file byte-identical (`cmp`) to the qemu Phase 1
@@ -588,7 +588,7 @@ is now `guest_libc`'s `advertising_atomics_stops_the_guest_at_the_lse_instructio
 on a helper of the same shape, which only a test can switch.
 
 **Timing**, wall clock from the first constructor to `JNI_OnLoad` returning,
-dynarmic and qemu-user (Phase 1's aarch64 binary, `CORDIAL_TIME_CTORS=1`, which
+dynarmic and qemu-user (Phase 1's aarch64 binary, `VANTA_TIME_CTORS=1`, which
 needs `patches/0003`) interleaved run by run, 3 each. min / median / max:
 
 | | dynarmic | qemu | ratio (median) |
@@ -603,7 +603,7 @@ comparison. The machine was not idle (load average 5–8 of 32 threads, a deskto
 session with Roblox Studio under Wine and a chat client busy); both binaries
 pinned to one P-core's two threads (`taskset -c 6,7`) gave the same figures
 within 2% (dynarmic constructors 1.448 / 1.483 / 1.501 s, qemu 762 / 782 /
-783 ms). With `CORDIAL_GUEST_MONITOR=ignore` (`IgnoreGlobalMonitor`),
+783 ms). With `VANTA_GUEST_MONITOR=ignore` (`IgnoreGlobalMonitor`),
 `JNI_OnLoad` drops to 160.2 / 162.6 / 162.9 ms and the constructors to
 1.430 / 1.431 / 1.439 s: about 30 ms of `JNI_OnLoad` is exclusive accesses
 through the global monitor, on one thread. An earlier set, before cpuinfo was
@@ -615,7 +615,7 @@ fetched for translation, 41 MB of anonymous executable memory resident (the two
 64 MiB code caches, lazily committed), 812,519 guest-to-host calls, 92
 distinct. `pthread_getspecific` is 443,670 of them (the engine's `thread_local`,
 through emutls), then `strcmp` 117k, `strlen` 68k, `memmove` 48k,
-`pthread_mutex_lock`/`unlock` 41k each. With `CORDIAL_GUEST_PROFILE=1` the host
+`pthread_mutex_lock`/`unlock` 41k each. With `VANTA_GUEST_PROFILE=1` the host
 side of all those calls, exclusive of guest code they call back into, is 56 ms.
 
 What that says, INFERRED: the time is translation, not execution or the
@@ -626,13 +626,13 @@ and it measures neither's steady-state throughput -- M4's engine loop is the
 first place that can.
 
 **Signals.** dynarmic's `SIGSEGV` handler is installed when the first Jit is
-built and chains to whatever was there. In `cordial-run` that is Rust's own
+built and chains to whatever was there. In `vanta-run` that is Rust's own
 stack-overflow handler, which is the only `SIGSEGV` handler the guest path has:
 checked under gdb, `sigaction(SIGSEGV)` names
 `std::sys::pal::unix::stack_overflow::imp::signal_handler` at the first
 `cg_jit_new` and `Dynarmic::Backend::(anonymous namespace)::SigHandler::SigAction`
 at exit. Nothing else is needed while the guest's own `sigaction` stays virtual
-(§4). `crates/cordial-guest/tests/m3.rs` checks the three outcomes in child
+(§4). `crates/vanta-guest/tests/m3.rs` checks the three outcomes in child
 processes after a Jit exists: a host null dereference and a guest wild pointer
 (faulting in translated code) both end in SIGSEGV as before, dynarmic adding an
 `Unhandled SIGSEGV at rip` line; a stack overflow on the thread whose alternate
@@ -656,11 +656,11 @@ stack") and aborts.
 
 ## 9.3 Measured at M4
 
-`cordial-run --guest-arm64 --host-libc --app-bridge`, Quest build 2.740.927,
+`vanta-run --guest-arm64 --host-libc --app-bridge`, Quest build 2.740.927,
 the same bring-up `load.rs` drives the native and qemu builds through
 (`tools/vr/run-quest-dynarmic.sh`). The engine's `Java_*` exports reach the
 guest through host entries built from the `native` prototypes the APK's dex
-declares (`crates/cordial-runtime/src/guest_dex.rs`; 1,400 names), installed
+declares (`crates/vanta-runtime/src/guest_dex.rs`; 1,400 names), installed
 as `linker::set_symbol_filter`, so no bring-up call site changed.
 `JNI_OnLoad` goes through the same filter with the guest `JavaVM` swapped in.
 
@@ -669,12 +669,12 @@ as `linker::set_symbol_filter`, so no bring-up call site changed.
 | # | Where | Stop | Answer |
 |---|---|---|---|
 | 1 | `JNI_OnLoad`, once `pthread_create` succeeded (the M3 path too) | dynarmic `code is too big` from inside translated code, or, as often, a SIGSEGV | not the code cache (256 MiB changed nothing): the main thread's 8 MiB guest stack had run out and was writing below it. Made visible with a 64 KiB guard page under every guest stack and a check in the SVC path that names the last 64 stub calls when SP nears the guard; the cause is 2 |
-| 2 | the same | one engine function calling itself about 4,000 deep | **one `JNIEnv` was shared by every thread.** The engine interposes on the env it is given (keeps `env->functions`, installs its own table), so the second thread's interposition kept the first one's table as "the original". Now each thread has its own env and its own copy of the table (`guest_jni.rs`). Found by calling the two thread-local getters the loop used, on the faulted thread: one held a `JNIEnv*` (INFERRED to be the guest's, from its address), the other a copy of a `JNINativeInterface` whose `FindClass` slot was the looping function. Checked: without guest threads (`CORDIAL_GUEST_THREADS=0`, EAGAIN) it did not happen |
+| 2 | the same | one engine function calling itself about 4,000 deep | **one `JNIEnv` was shared by every thread.** The engine interposes on the env it is given (keeps `env->functions`, installs its own table), so the second thread's interposition kept the first one's table as "the original". Now each thread has its own env and its own copy of the table (`guest_jni.rs`). Found by calling the two thread-local getters the loop used, on the faulted thread: one held a `JNIEnv*` (INFERRED to be the guest's, from its address), the other a copy of a `JNINativeInterface` whose `FindClass` slot was the looping function. Checked: without guest threads (`VANTA_GUEST_THREADS=0`, EAGAIN) it did not happen |
 | 3 | — | `pthread_create` wrote the handle after the thread started | glibc now writes it through the guest's pointer, before the thread runs, as bionic does. A real race; not the cause of 2, which it was first taken for |
 | 4 | worker thread | `ioctl` | the host's for `FIO*`, `TIOCGWINSZ` and `SIOCGIF*` (same numbers and layouts on both); anything else stops by number |
 | 5 | worker thread | `getnameinfo` | the host's with bionic's `NI_*` renumbered and glibc's negative `EAI_*` mapped to bionic's |
 | 6 | worker thread | `mallinfo` | ten `size_t`s returned through x8, from glibc's `mallinfo2`; `ldiv` in x0/x1 |
-| 7 | render thread | `eglGetDisplay` | EGL/GLES signatures generated from Khronos's `gl.xml`/`egl.xml` (`tools/vr/gen-guest-gl.py`, 1,055 commands, 5 left out because they take a callback), dispatched like `FUNCS` to the native table's answers -- the host's libEGL/libGLESv2 and Cordial's EGL overrides. `eglGetProcAddress` hands back a stub per name, or null for a name the table lacks |
+| 7 | render thread | `eglGetDisplay` | EGL/GLES signatures generated from Khronos's `gl.xml`/`egl.xml` (`tools/vr/gen-guest-gl.py`, 1,055 commands, 5 left out because they take a callback), dispatched like `FUNCS` to the native table's answers -- the host's libEGL/libGLESv2 and Vanta's EGL overrides. `eglGetProcAddress` hands back a stub per name, or null for a name the table lacks |
 | 8 | engine thread | `InterpreterFallback` at `mrs x8, cntvct_el0` | emulated: the same clock and 600 MHz dynarmic gives CNTPCT/CNTFRQ, offset 0 (`jit.rs`) |
 
 Answered before they were reached: `pthread_create` with the attr's stack
@@ -687,7 +687,7 @@ the guest's callee-saved registers, refusing a jump across a host frame;
 `epoll_ctl`/`epoll_wait` between arm64's 16-byte and x86-64's packed 12-byte
 `epoll_event`; `ALooper_addFd` with the callback behind a host entry;
 `AAssetManager_fromJava`/`ANativeWindow_fromSurface` with the host env;
-`sem_*` to Cordial's bionic-layout semaphores; bionic's `__FD_*_chk`,
+`sem_*` to Vanta's bionic-layout semaphores; bionic's `__FD_*_chk`,
 `__sendto_chk` and POSIX `strerror_r`. In a 70 s run the engine called
 `sigaction` 60 times and installed no handler (every call a query,
 `SIG_DFL` or `SIG_IGN`), `setjmp` 62 times and `longjmp` never, and no
@@ -710,10 +710,10 @@ logs `SurfaceController::enableVR` and carries on without a RenderView.
 **Pass**, three runs of three at 120 s, each `exit=0`, each logging `APP_READY
 PlatformAccountRouter`, `Startup` and `Landing` (at 7.71, 7.39 and 7.75 s),
 seven more (IgnoreGlobalMonitor, profiling, the default after it changed)
-the same. `cordial_info` reads `presents=0` twice five seconds apart in every
+the same. `vanta_info` reads `presents=0` twice five seconds apart in every
 run, since there is no swapchain; progress is the looper census (the main
 looper at 1,752--1,793 polls 16 s in, moving) and the guest's own counters,
-which rise every ten seconds for the whole run. `cordial_screenshot` answers
+which rise every ten seconds for the whole run. `vanta_screenshot` answers
 "no frame was presented within three seconds": there is no frame to read.
 
 **Performance**, per-thread CPU from `/proc/<pid>/task/*/stat` over 30 s
@@ -734,7 +734,7 @@ guest instructions translated, 94 host entries, and 266--267 k guest-to-host
 calls a second (315 k at 60 s). The five most called:
 `pthread_getspecific` about 174 k/s (emutls), `strncmp` 31 k/s,
 `clock_gettime` 17 k/s, `pthread_mutex_lock` and `_unlock` 10 k/s each.
-`CORDIAL_GUEST_PROFILE=1` reports the host side of those calls as 6--8 cores
+`VANTA_GUEST_PROFILE=1` reports the host side of those calls as 6--8 cores
 of wall time, which is blocking waits (futex, `epoll_wait`) summed over
 threads, not CPU; it is not a cost figure.
 
@@ -757,7 +757,7 @@ implement compare-and-swap, fetch-and-op and swap -- and a value compare is
 exactly C++'s `compare_exchange`, so for those the result is the same.
 Hand-written LL/SC that relies on the reservation itself would not be;
 none is known, and that is INFERRED from the helpers' shape, not checked
-site by site. It is now the default, and `CORDIAL_GUEST_MONITOR=global`
+site by site. It is now the default, and `VANTA_GUEST_MONITOR=global`
 restores the exact monitor.
 
 **Not done, and known:**
@@ -766,7 +766,7 @@ restores the exact monitor.
 - Signals are never delivered to a guest handler. None was installed in
   these runs.
 - Guest thread exit runs key and `thread_local` destructors only for threads
-  the guest created; a Cordial thread that entered the guest through a host
+  the guest created; a Vanta thread that entered the guest through a host
   entry keeps its values.
 - `eglGetProcAddress` answers null for seven names the engine asked for that
   are desktop GL, not GLES (`glMapBuffer`, `glQueryCounter`,
@@ -778,15 +778,15 @@ restores the exact monitor.
 
 ## 9.4 Measured at M5
 
-`cordial-run --guest-arm64 --host-libc --app-bridge`, Quest build 2.740.927,
+`vanta-run --guest-arm64 --host-libc --app-bridge`, Quest build 2.740.927,
 host Vulkan headers and loader 1.4.341, NVIDIA 595.91.07.
 
-**The guest's `libvulkan.so`** (`crates/cordial-runtime/src/guest_vk.rs`)
+**The guest's `libvulkan.so`** (`crates/vanta-runtime/src/guest_vk.rs`)
 exports what the native virtual library does, `vkGetInstanceProcAddr` alone,
-registered as `libvulkan.so` and `libvulkan.so.1`. It calls Cordial's native
+registered as `libvulkan.so` and `libvulkan.so.1`. It calls Vanta's native
 `vkGetInstanceProcAddr` and hands back a stub per (command, host function),
 so `VK_KHR_android_surface`, the present-mode rewrite and the capture behind
-`cordial_screenshot` stay behind the stubs. The signatures are generated from
+`vanta_screenshot` stay behind the stubs. The signatures are generated from
 `vk.xml` v1.4.341 (`tools/vr/gen-guest-vk.py`): 804 commands; 3 left out
 (NvSci types, which have no Linux meaning). What cannot cross unchanged is a
 function pointer the host would call, and the generator finds 9 such members
@@ -838,7 +838,7 @@ fails, "failed to determine active runtime file path") and ends in the same
 two lines. So **this build has no flat Vulkan mode on its default flags**:
 without an OpenXR runtime, Mode 6 fails and the next mode is GLES, which it
 has no shaders for. `vkCreateDevice` is never reached, nothing is presented,
-and `cordial_info` reads `presents=0`. No frame time can be taken.
+and `vanta_info` reads `presents=0`. No frame time can be taken.
 
 Stability is unchanged from M4: a 120 s run exits 0 with Landing reached.
 
@@ -858,7 +858,7 @@ Stability is unchanged from M4: a 120 s run exits 0 with Landing reached.
 
 ## 9.5 Measured at M6, part A
 
-`cordial-run --guest-arm64 --host-libc --app-bridge`, Quest build 2.740.927,
+`vanta-run --guest-arm64 --host-libc --app-bridge`, Quest build 2.740.927,
 against **Monado** `9950e2a5f575` (v25.1.0-863, BSL-1.0) built from source
 into a prefix of its own (`<prefix>` below): in-process (`XRT_FEATURE_SERVICE=OFF`), the
 simulated HMD the only driver, selected per run with `XR_RUNTIME_JSON` and
@@ -867,11 +867,11 @@ never through `~/.config/openxr`. The host loader is the system's
 
     XR_RUNTIME_JSON=<prefix>/share/openxr/1/openxr_monado.json \
     SIMULATED_ENABLE=1 XRT_COMPOSITOR_COMPUTE=0 XRT_COMPOSITOR_DEFAULT_FRAMERATE=90 \
-    CORDIAL_PRESENT_MODE=off CORDIAL_XR_FRAME_LOG=<file> tools/vr/run-quest-dynarmic.sh ...
+    VANTA_PRESENT_MODE=off VANTA_XR_FRAME_LOG=<file> tools/vr/run-quest-dynarmic.sh ...
 
 `XRT_COMPOSITOR_COMPUTE=0` because Monado's default compute compositor picks a
 queue family that cannot present to a Wayland surface on this host and
-crashes, with a stock app too. `CORDIAL_PRESENT_MODE=off` so that Cordial does
+crashes, with a stock app too. `VANTA_PRESENT_MODE=off` so that Vanta does
 not rewrite the present mode of the engine's own (unused) window swapchain.
 
 **Control.** Khronos's `hello_xr -G Vulkan2` (OpenXR-SDK-Source
@@ -881,7 +881,7 @@ Name=Monado: Simulated HMD VendorId=42`, the compositor on the RTX 4070 Ti,
 session states `IDLE` → `READY` → `SYNCHRONIZED` → `VISIBLE` → `FOCUSED`,
 568 `xrEndFrame`s at 60.00 Hz over 9.43 s.
 
-**The bridge** (`crates/cordial-runtime/src/guest_xr.rs`) replaces M2's 40
+**The bridge** (`crates/vanta-runtime/src/guest_xr.rs`) replaces M2's 40
 honest failures. Every command's signature is generated from `xr.xml`
 (`tools/vr/gen-guest-xr.py`: 336 commands, 2 left out for by-value structs,
 `xrSetInputDeviceLocationEXT` and `xrSetInputDeviceStateVector2fEXT`). The
@@ -893,7 +893,7 @@ Hand-written:
 |---|---|
 | `xrInitializeLoaderKHR` | answered here, `XR_SUCCESS`: the desktop loader needs no initialisation; the Android struct (`applicationVM`, `applicationContext`) is logged and never passed on |
 | `xrCreateInstance` | a host copy of the create info and its whole `next` chain, without `XR_KHR_android_create_instance` in the list or `XrInstanceCreateInfoAndroidKHR` in the chain; a debug-utils callback behind a host-to-guest entry |
-| `xrCreateVulkanInstanceKHR`, `xrCreateVulkanDeviceKHR` | `pfnGetInstanceProcAddr`, the guest's `vkGetInstanceProcAddr` stub, becomes Cordial's native one; anything else is refused by name. The nested Vulkan create info and allocator go through `guest_vk`'s chain translation |
+| `xrCreateVulkanInstanceKHR`, `xrCreateVulkanDeviceKHR` | `pfnGetInstanceProcAddr`, the guest's `vkGetInstanceProcAddr` stub, becomes Vanta's native one; anything else is refused by name. The nested Vulkan create info and allocator go through `guest_vk`'s chain translation |
 | `xrCreateSession`, `xrCreateSwapchain`, `xrEnumerateSwapchainImages`, `xrAcquire`/`ReleaseSwapchainImage`, `xrWaitFrame`, `xrEndFrame`, `xrPollEvent` | passed through unchanged; read to record the Vulkan binding, the images, `predictedDisplayPeriod`, frame times and session state |
 
 **The OpenXR layout gate** (`guest_xr::tests::layout_gate`, over the
@@ -910,7 +910,7 @@ expect the application to supply it.
 | # | Where | Stop | Answer |
 |---|---|---|---|
 | 1 | `xrCreateVulkanInstanceKHR` | the chain copier refused the top struct's own `pfnGetInstanceProcAddr` as an unknown callback | the top struct's getter is left for the handler to replace |
-| 2 | a guest worker, after `xrCreateSession` | `AAsset_openFileDescriptor` had no signature | dispatched to Cordial's (a memfd; `off_t` is 64-bit on both sides) |
+| 2 | a guest worker, after `xrCreateSession` | `AAsset_openFileDescriptor` had no signature | dispatched to Vanta's (a memfd; `off_t` is 64-bit on both sides) |
 
 **What the engine does.** It checks enumeration and asks for only what is
 there: `XR_KHR_vulkan_enable2` and `XR_FB_display_refresh_rate`. It never
@@ -921,8 +921,8 @@ anyway. Then, from the bridge's log:
     xrCreateInstance: application "Roblox", engine "Roblox Engine", API 1.0.26, extensions [XR_KHR_vulkan_enable2 XR_FB_display_refresh_rate]; passed on without XR_KHR_android_create_instance and its XrInstanceCreateInfoAndroidKHR link
     xrCreateInstance -> XR_SUCCESS (instance 0x7a4e79921430)
     system "Monado: Simulated HMD", vendor 0x2a, max swapchain 16384x16384, 128 layers
-    xrCreateVulkanInstanceKHR: the engine's 3 Vulkan extensions [VK_KHR_surface VK_KHR_get_physical_device_properties2 VK_KHR_android_surface], pfnGetInstanceProcAddr 0x7a4f783175d0 (the guest stub) -> Cordial's native one -> XR_SUCCESS (VkResult 0, handle 0x7a4d693e7550)
-    xrCreateVulkanDeviceKHR: ... -> XR_SUCCESS (VkResult 0, handle 0x7a4d694ce630); physical device 0x7a4d6946b250; Cordial's vkCreateDevice saw physical 0x7a4d6946b250, device 0x7a4d694ce630: the same host handles
+    xrCreateVulkanInstanceKHR: the engine's 3 Vulkan extensions [VK_KHR_surface VK_KHR_get_physical_device_properties2 VK_KHR_android_surface], pfnGetInstanceProcAddr 0x7a4f783175d0 (the guest stub) -> Vanta's native one -> XR_SUCCESS (VkResult 0, handle 0x7a4d693e7550)
+    xrCreateVulkanDeviceKHR: ... -> XR_SUCCESS (VkResult 0, handle 0x7a4d694ce630); physical device 0x7a4d6946b250; Vanta's vkCreateDevice saw physical 0x7a4d6946b250, device 0x7a4d694ce630: the same host handles
     xrCreateSession -> XR_SUCCESS (session 0x7a4d694b44f0), Vulkan binding: instance 0x7a4d693e7550, physical device 0x7a4d6946b250, device 0x7a4d694ce630, queue family 0 index 0
     xrCreateSwapchain 0x7a4e7966b800: 896x1007, 2 layers, VkFormat 37, 1 samples, usage 0x21
     xrRequestDisplayRefreshRateFB(90 Hz) -> XR_SUCCESS
@@ -939,12 +939,12 @@ swapchain (multiview, INFERRED from the layer count). It also creates a
 **No `ovr_*` function was called** in any run, so the Meta platform stubs
 were never reached and remain stops.
 
-**Capture.** An XR engine never presents, so `cordial_screenshot` reads the
+**Capture.** An XR engine never presents, so `vanta_screenshot` reads the
 left eye instead: at `xrEndFrame` the bridge notes the projection layer's
 first view (swapchain, array layer, rect), and at the next
 `xrReleaseSwapchainImage` of that swapchain -- the moment the image is
 complete and in `COLOR_ATTACHMENT_OPTIMAL`, as a present's image is in
-`PRESENT_SRC` -- copies it on the session's queue. `cordial_info` reports
+`PRESENT_SRC` -- copies it on the session's queue. `vanta_info` reports
 `xr_frames=` (`xrEndFrame` calls), the session state and the last
 `predictedDisplayPeriod`. The left eye 20 s in
 (`runs/m6-left-eye.png`, 896x1007): the landing screen -- ROBLOX logo,
@@ -970,7 +970,7 @@ that path has not been looked at.
 stops, `FOCUSED` held throughout; plus one input-driven run at 90 Hz and one at
 144 Hz, also clean.
 
-**Frame time.** `CORDIAL_XR_FRAME_LOG` timestamps each `xrEndFrame` on the
+**Frame time.** `VANTA_XR_FRAME_LOG` timestamps each `xrEndFrame` on the
 calling thread; intervals over 60 s from 30 s after the first frame (Landing
 at about 7 s). Per-thread CPU from `/proc/<pid>/task/*/stat` over the same
 60 s window. The XR thread is the one the bridge logs calling `xrEndFrame`
@@ -1029,7 +1029,7 @@ add to them.
   `--app-bridge` now does, and `guest_ovr` answers all 24 names as a host
   with no Meta platform: every request fails through the message queue.
   The engine logs `Quest Platform SDK initialization failed: Meta platform
-  services are not available on this host (Cordial)` and the entitlement and
+  services are not available on this host (Vanta)` and the entitlement and
   purchases failures. 2026-09-30.
 - The debug-utils callback path is built and unit-tested but the engine never
   requested `XR_EXT_debug_utils`.
@@ -1054,10 +1054,10 @@ bionic's), `rt_sigprocmask` and `sigaltstack` through the virtual answers the
 imports already get; `clone`, `clone3` and `set_tid_address` refused with
 ENOSYS by name; `exit`, `exit_group` and `rt_sigreturn` stopping, since
 none can return. Unknown numbers get `-ENOSYS`, named once. The first call of
-each number is logged with its arguments; `CORDIAL_GUEST_SVC_LOG=1` logs
+each number is logged with its arguments; `VANTA_GUEST_SVC_LOG=1` logs
 every one.
 
-What the engine does, `CORDIAL_GUEST_SVC_LOG=1`, the same in every run:
+What the engine does, `VANTA_GUEST_SVC_LOG=1`, the same in every run:
 
     svc #0 at ...8978: nr 56 (openat) [18, ..., 0, 0, 0, 0] path "/proc/self/maps" -> 214
     svc #0 at ...0aa0: nr 44 (fstatfs) [d6, ...] -> 0
@@ -1110,7 +1110,7 @@ these. The raw-syscall sequence did not depend on it.
 The engine creates its OpenXR swapchain as `VK_FORMAT_R8G8B8A8_UNORM` (37)
 without calling `xrEnumerateSwapchainFormats`. OpenXR reads a UNORM swapchain
 as linear light and encodes it for the display, but the engine's bytes are
-already sRGB-encoded: blitted straight into Cordial's window the left eye
+already sRGB-encoded: blitted straight into Vanta's window the left eye
 shows correct colour, while Monado's composited preview of the same frames
 looked washed out -- lifted blacks, lower contrast and saturation, which is
 what encoding twice does.
@@ -1118,7 +1118,7 @@ what encoding twice does.
 `guest_xr::create_swapchain` now asks the runtime for the sRGB twin (43, which
 Monado lists third of 13) with `XR_SWAPCHAIN_USAGE_MUTABLE_FORMAT_BIT`, so the
 engine's UNORM views stay valid and write the same bytes, and the runtime now
-decodes them as what they are. `CORDIAL_XR_SWAPCHAIN_AS_ASKED=1` is the
+decodes them as what they are. `VANTA_XR_SWAPCHAIN_AS_ASKED=1` is the
 control. The image-use log shows the engine touching the swapchain images only
 through `vkCreateImageView` in format 37; no blit, resolve, clear or copy into
 one was logged in a 60 s run on Monado (2,048+ frames), so no path encodes
@@ -1175,15 +1175,15 @@ at 6--10 M calls a second from a dozen threads. 5 M of those were
 | Change | Control | XR frames/s | p50 / p95 / p99 ms | process CPU | busiest worker |
 |---|---|---|---|---|---|
 | lock-free stub table, per-thread counts, no allocation per call (`ce17bb0`) | 264b1b6's binary | 45.4, 46.4 against 34.8, 41.4 | 22.1 / 35.1 / 38.1 and 22.0 / 34.1 / 37.4 against 24.2 / 43.6 / 53.0 and 22.5 / 33.6 / 35.9 | 208, 198 % against 283, 269 % | 49 % against 57--82 % |
-| `pthread_getspecific`/`setspecific` as guest code over bionic's key map (`f5d1b2e`) | `CORDIAL_GUEST_TLS_KEYS=host` | 45.8, 46.9 against 44.9, 41.2 | 22.0 / 34.6 / 37.6 and 22.1 / 25.1 / 34.6 against 22.2 / 28.5 / 36.5 and 22.4 / 33.9 / 42.9 | 208, 207 % against 230, 243 % | 53--56 % against 59--67 % |
-| `Unsafe_InaccurateNaN`, `ReducedErrorFP`, `UnfuseFMA` together (`CORDIAL_GUEST_UNSAFE_FP=nan,recip,fma`) | unset | 45.1, 48.3 against 44.2, 46.0 | no difference | 203, 198 % against 197, 217 % | no difference |
+| `pthread_getspecific`/`setspecific` as guest code over bionic's key map (`f5d1b2e`) | `VANTA_GUEST_TLS_KEYS=host` | 45.8, 46.9 against 44.9, 41.2 | 22.0 / 34.6 / 37.6 and 22.1 / 25.1 / 34.6 against 22.2 / 28.5 / 36.5 and 22.4 / 33.9 / 42.9 | 208, 207 % against 230, 243 % | 53--56 % against 59--67 % |
+| `Unsafe_InaccurateNaN`, `ReducedErrorFP`, `UnfuseFMA` together (`VANTA_GUEST_UNSAFE_FP=nan,recip,fma`) | unset | 45.1, 48.3 against 44.2, 46.0 | no difference | 203, 198 % against 197, 217 % | no difference |
 | every thread pinned to the P-cores (`taskset -a -c 0-15`, all 88 threads checked) | unpinned | 45.7, 47.2 against 47.6, 48.2 | no difference | 222, 202 % against 194, 199 % | no difference |
 
 The first is a pure cost removal. The second moves the stub rate from
 8.2--10.0 M/s to 3.2--4.0 M/s; its frame-rate gain is inside the noise of
 two runs, its CPU gain is not. Its correctness argument is that it is
 bionic's algorithm (`libc/bionic/pthread_key.cpp`), data layout and limits,
-and `crates/cordial-guest/tests/m7.rs` checks each case -- deleted and
+and `crates/vanta-guest/tests/m7.rs` checks each case -- deleted and
 re-created keys, invalid keys, other threads, 128 then EAGAIN, destructors
 only for non-null values and cleared first -- through the translator. The
 FP flags and pinning bought nothing measurable and stay off; the flags
@@ -1193,7 +1193,7 @@ earned that here.
 Also fixed, found by a profiling run that stopped: this dynarmic raises
 `WaitForEvent`, `Yield`, `SendEvent` and `SendEventLocal` as exceptions
 whatever `hook_hint_instructions` says (`a64_interface.cpp` builds the
-translator's options without it, and its default there is true), and Cordial
+translator's options without it, and its default there is true), and Vanta
 stopped the process on the first. One run in about a dozen hit a WFE in a
 guest thread's key destructor. The hints now complete (`ff8142e`).
 
@@ -1240,7 +1240,7 @@ Worker C is not measured.
 - **Code-cache clears.** The perf map truncations show at least one Jit
   hitting its 64 MiB cache in game, and 0.6 M guest instructions were
   translated in one 10 s window at 264b1b6 against about 50 k in the
-  others (INFERRED to be a clear's retranslation). `CORDIAL_GUEST_CODE_CACHE_MIB`
+  others (INFERRED to be a clear's retranslation). `VANTA_GUEST_CODE_CACHE_MIB`
   already exists; a run with 256 would say whether that is a hitch source.
   An hour.
 
@@ -1250,7 +1250,7 @@ Same harness, place and host as §9.8, Monado's simulated HMD at 72 Hz
 (`XRT_COMPOSITOR_DEFAULT_FRAMERATE=72`) first and then 90 Hz, runs of 100 s,
 interleaved one-for-one against the HEAD binary (`184b6ec`, ahead-of-time
 code removed) built in its own copy. The machine was shared with another
-agent's client; every run waited until no `cordial-run` had existed for 10 s.
+agent's client; every run waited until no `vanta-run` had existed for 10 s.
 
 **The starting point had moved.** The control was not §9.8's: at 72 Hz it ran
 51.7--65.3 XR frames/s in game with p50 at one display period (14.0 ms), not
@@ -1287,19 +1287,19 @@ fixed-rate).
   host branch misses per 1,000 cycles at the control, 2.89 with 0008. Frame
   rate: 60.8 and 52.8 against 51.7 and 58.5, inside the noise.
 - *Guest `memcpy`, `memmove`, `memset`, `memcmp` up to 128 bytes*
-  (`cordial-guest` `string.rs`), as `keys.rs` did for `pthread_getspecific`:
+  (`vanta-guest` `string.rs`), as `keys.rs` did for `pthread_getspecific`:
   arm64 in the stub page, branching past 128 bytes to the host function's own
   stub. Every byte is loaded before any is stored, so the one routine is
   overlap-safe and serves both copies. `tests/m7.rs` checks every size 0--160
   at every alignment against glibc through the translator, overlap both ways,
   and that no SVC is taken at or under 128 bytes; planting a wrong
-  condition code in `memcmp` fails it. Control `CORDIAL_GUEST_STRING=host`.
+  condition code in `memcmp` fails it. Control `VANTA_GUEST_STRING=host`.
 - *Guest `clock_gettime(CLOCK_MONOTONIC)`* (`clock.rs`) from `mrs cntpct_el0`,
   which dynarmic emits as a direct call to `GetCNTPCT` without leaving
   translated code, scaled back from 600 MHz. It is never ahead of the host
   clock and at most 2 ns behind; the test checks 10,000 reads against host
   reads either side. Other clocks go to the stub. Control
-  `CORDIAL_GUEST_CLOCK=host`.
+  `VANTA_GUEST_CLOCK=host`.
 
 With all three, stub calls in game fell from 1.85 M/s to 1.12 M/s; `memcpy`
 still makes 0.2 M/s above 128 bytes. Worker C's stub boundary went from 4.7 %
@@ -1331,7 +1331,7 @@ small blocks), not anything at the boundary.
 
 Leaving a game stopped the client: over WiVRn, 0.8 s after
 `onGameLeaveBegin`, a guest thread's `mprotect` of a range the guest had made
-executable hit the M3 stop. `CORDIAL_GUEST_TRACE_EXEC=1` now logs every call
+executable hit the M3 stop. `VANTA_GUEST_TRACE_EXEC=1` now logs every call
 that makes a range executable or touches one. Three runs on Monado's
 simulated HMD, joining place 1818 by deep link and leaving after 30, 30 and
 60 s in game through the new `leavegame` devctl verb, all showed the same
@@ -1357,7 +1357,7 @@ stopped. With the stop simply removed it would have been, silently: the
 tests below, with the invalidation turned off, ran the old code in every
 case.
 
-**What is built** (`crates/cordial-guest/src/code.rs`). Any call that unmaps,
+**What is built** (`crates/vanta-guest/src/code.rs`). Any call that unmaps,
 maps over, discards or re-protects a range the guest made executable, or makes
 a range executable, drops every Jit's translations of it before returning to
 the guest; `R-X` to `R-X` is the one change skipped. One lock covers each
@@ -1417,7 +1417,7 @@ start loading sound in to fmod".
 
 **The route the Quest build's FMOD takes is AAudio, by `dlopen`.** It imports
 no `AAudio*` and no `sl*` (`libOpenSLES.so` is in `DT_NEEDED` with nothing
-bound from it). With `CORDIAL_TRACE_DLSYM=1`, which the guest's `dlopen` and
+bound from it). With `VANTA_TRACE_DLSYM=1`, which the guest's `dlopen` and
 `dlsym` thunks now honour with the native path's line, a signed-out run
 joining place 1818 by deep link showed, in order: `org.fmod.FMOD.checkInit`,
 `supportsAAudio` (both seen with gdb `dprintf`), then
@@ -1428,7 +1428,7 @@ phone build. The guest's linker only knows guest libraries (§2), and the
 x86-64 `libaaudio.so` the phone build uses is a host one, so the guest never
 saw it.
 
-**What is built** (`crates/cordial-runtime/src/guest_audio.rs`). A guest
+**What is built** (`crates/vanta-runtime/src/guest_audio.rs`). A guest
 `libaaudio.so` whose names are whatever `aaudio.cpp` exports, each a stub
 into that same implementation through the generic call builder; the
 signatures are scalars, handles and out-pointers. The two callback setters
@@ -1446,9 +1446,9 @@ closed unstarted) and `System::init` reported no error: the flog's first
 audio line became `InputDevice 0: Android audio output ... 48000/1/4`.
 
 **Measured, signed out, Monado simulated HMD, place 1818 by deep link**, two
-runs of 90 and 100 s with `CORDIAL_TRACE_AUDIO=1`. PipeWire negotiated F32LE,
+runs of 90 and 100 s with `VANTA_TRACE_AUDIO=1`. PipeWire negotiated F32LE,
 2 channels, 48 kHz, a 256-frame burst. `pactl list sink-inputs` and
-`pw-dump` showed `cordial-aaudio-2` running. The guest callback ran at the
+`pw-dump` showed `vanta-aaudio-2` running. The guest callback ran at the
 burst rate, 187.5 a second (18,238 calls in the 100 s run) with no
 silence-filled cycle. Each callback took 0.02--0.12 ms of a 5.33 ms burst,
 except the first, 17.3 ms, which is that thread's Jit being made and the

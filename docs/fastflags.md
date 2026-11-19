@@ -1,9 +1,9 @@
 # Changing FastFlags
 
-<!-- description: Set Roblox FastFlags in Cordial, see which layer wins, and find the flags and keys Cordial itself reads. -->
+<!-- description: Set Roblox FastFlags in Vanta, see which layer wins, and find the flags and keys Vanta itself reads. -->
 <!-- icon: flag -->
 
-FastFlags are Roblox's internal tuning switches. Cordial lets you override any of them, per profile, from a file or from **Settings → FastFlags**.
+FastFlags are Roblox's internal tuning switches. Vanta lets you override any of them, per profile, from a file or from **Settings → FastFlags**.
 
 ## Set a flag
 
@@ -23,7 +23,7 @@ FastFlags are Roblox's internal tuning switches. Cordial lets you override any o
 }
 ```
 
-Values can be booleans, numbers or strings. Roblox stores them all as strings and Cordial converts. The format is Bloxstrap's, so a list from a video or a Discord message pastes in as it is.
+Values can be booleans, numbers or strings. Roblox stores them all as strings and Vanta converts. The format is Bloxstrap's, so a list from a video or a Discord message pastes in as it is.
 
 ### Start Roblox again
 
@@ -38,47 +38,47 @@ To edit the file yourself, it is one file per profile:
 ### Native install
 
 ```text
-~/.local/share/cordial/profiles/<profile>/flags.json
+~/.local/share/vanta/profiles/<profile>/flags.json
 ```
 
 ### Flatpak
 
 ```text
-~/.var/app/io.github.luohoa97.Cordial/data/cordial/profiles/<profile>/flags.json
+~/.var/app/io.github.gpt4omni.Vanta/data/vanta/profiles/<profile>/flags.json
 ```
 
 `INFERRED` from how Flatpak remaps `XDG_DATA_HOME`; not checked against an installed package. The editor prints the real path under the text box.
 
 <!-- /tabs -->
 
-`CORDIAL_FLAGS` points the client at another file. It makes one file serve every profile, so it is for experiments.
+`VANTA_FLAGS` points the client at another file. It makes one file serve every profile, so it is for experiments.
 
 > [!WARNING]
 > A name the engine does not know is accepted and ignored, silently. An invented flag looks exactly like a working one. If a flag seems to do nothing, check that it exists:
 >
 > ```bash
-> strings ~/.cache/cordial/lib/x86_64/libroblox.so | grep -x DebugGraphicsDisableVulkan
+> strings ~/.cache/vanta/lib/x86_64/libroblox.so | grep -x DebugGraphicsDisableVulkan
 > ```
 >
 > The file carries the `FFlag`/`FInt`/`FString` prefix; the engine's own table stores the name without one, which is why the `grep` drops it.
 
-To choose a graphics backend, use **Settings → General → Graphics**, not a flag. Cordial decides that before the engine starts.
+To choose a graphics backend, use **Settings → General → Graphics**, not a flag. Vanta decides that before the engine starts.
 
 ## When a change takes effect
 
 | Flag family | When it is read |
 |---|---|
 | `FFlag`, `FInt`, `FString` | Once, at startup. Relaunch to change them. |
-| `DFFlag`, `DFInt`, `DFString` | At startup, and again while the game runs: Roblox re-fetches its settings about every two minutes and Cordial hands the engine your overrides again straight after. |
+| `DFFlag`, `DFInt`, `DFString` | At startup, and again while the game runs: Roblox re-fetches its settings about every two minutes and Vanta hands the engine your overrides again straight after. |
 
 A plugin loaded part-way through a session cannot change a startup flag, whatever it writes.
 
-Cordial puts your overrides back after each Roblox refresh, whatever the family. Each time it prints a `[reapply]` line with what it cost. Two limits:
+Vanta puts your overrides back after each Roblox refresh, whatever the family. Each time it prints a `[reapply]` line with what it cost. Two limits:
 
 - The first couple of seconds, before the engine's first fetch, are not covered.
 - It re-sends the cached copy of Roblox's document, so a flag Roblox changed during your session goes back to its older value, as at launch.
 
-`CORDIAL_NO_FLAG_REDELIVERY=1` in the client's environment turns the re-apply off. It exists to confirm that a flag reverts without it.
+`VANTA_NO_FLAG_REDELIVERY=1` in the client's environment turns the re-apply off. It exists to confirm that a flag reverts without it.
 
 Why: [ADR-051](adr/ADR-051-overrides-are-reapplied-after-the-engines-refresh.md).
 
@@ -89,7 +89,7 @@ Flags come from several sources and each owns its own file. From lowest preceden
 | Layer | Source | Notes |
 |---|---|---|
 | Roblox's settings | The client-settings document from Roblox | The base everything else is merged into. |
-| Cordial's default | Built in | Only `FFlagUserLaunchedWithBloxstrap`, see the table below. |
+| Vanta's default | Built in | Only `FFlagUserLaunchedWithBloxstrap`, see the table below. |
 | Graphics optimisation | **Settings → General → Graphics** | The "more cores" and "fewer cores" choices set thread-count flags. Balanced sets none. |
 | Plugins | `<plugin>/flags.json`, alphabetical | A plugin switched off contributes nothing. |
 | Frame rate limit | **Settings → General → Graphics** | Sets `DFIntTaskSchedulerTargetFps`. Beats a plugin that sets the same flag. |
@@ -104,27 +104,27 @@ flags: FIntTaskSchedulerAutoThreadLimit = 8 from user
 
 Two plugins that disagree are both named. The later one wins so the outcome is deterministic.
 
-Your flags live in the profile, so a flag you set while testing on one account is not still set on the account you play. A file left at the old `~/.config/cordial/flags.json` is moved into the first profile that looks for one ([ADR-013](adr/ADR-013-per-profile-configuration.md)). The layering itself: [ADR-005](adr/ADR-005-flag-service.md).
+Your flags live in the profile, so a flag you set while testing on one account is not still set on the account you play. A file left at the old `~/.config/vanta/flags.json` is moved into the first profile that looks for one ([ADR-013](adr/ADR-013-per-profile-configuration.md)). The layering itself: [ADR-005](adr/ADR-005-flag-service.md).
 
-## Flags and keys Cordial reads
+## Flags and keys Vanta reads
 
-Besides Roblox's own flags, these names mean something to Cordial. The `Cordial` ones are never sent to Roblox.
+Besides Roblox's own flags, these names mean something to Vanta. The `Vanta` ones are never sent to Roblox.
 
 | Name | Values | What it does |
 |---|---|---|
 | `FFlagUserLaunchedWithBloxstrap` | `True` (default) | Tells games the launcher speaks BloxstrapRPC, which Discord presence needs. Set `"False"` to retract the claim; games can then tell they are not under a launcher that implements it. It is not an engine flag. That a game then answers yes is `INFERRED`. |
 | `DFIntTaskSchedulerTargetFps` | whole number | The engine's own frame target. **Settings → General → Graphics → Frame rate limit** sets it for you. |
-| `CordialFrameRateLimit` | `display`, or a number of fps | The Frame rate limit row, as a key a plugin can set. The row beats a plugin; your `flags.json` beats the row. |
-| `CordialPresentMode` | `off`, `auto`, `mailbox`, `immediate`, `uncapped`, `fifo`, `fifo-relaxed` | Vulkan present mode. The **Frame pacing** row sets it. A mode the driver does not offer leaves the engine's own choice. |
-| `CordialGraphicsBackend` | `automatic`, `vulkan`, `gles` | Which graphics backend to offer the engine. The **Graphics** row beats a plugin's request. |
-| `CordialDeviceProfile` | `pc-windows-11`, `roblox-app`, `android-tablet`, `meta-quest` | Which device Cordial says it is. **Has no effect from `flags.json` today**; the Graphics optimisation row sets it, through `CORDIAL_DEVICE_PROFILE`. `INFERRED` from reading the code: nothing outside the flag module calls the reader. |
+| `VantaFrameRateLimit` | `display`, or a number of fps | The Frame rate limit row, as a key a plugin can set. The row beats a plugin; your `flags.json` beats the row. |
+| `VantaPresentMode` | `off`, `auto`, `mailbox`, `immediate`, `uncapped`, `fifo`, `fifo-relaxed` | Vulkan present mode. The **Frame pacing** row sets it. A mode the driver does not offer leaves the engine's own choice. |
+| `VantaGraphicsBackend` | `automatic`, `vulkan`, `gles` | Which graphics backend to offer the engine. The **Graphics** row beats a plugin's request. |
+| `VantaDeviceProfile` | `pc-windows-11`, `roblox-app`, `android-tablet`, `meta-quest` | Which device Vanta says it is. **Has no effect from `flags.json` today**; the Graphics optimisation row sets it, through `VANTA_DEVICE_PROFILE`. `INFERRED` from reading the code: nothing outside the flag module calls the reader. |
 
 Graphics optimisation sets these flags, sized to your physical core count:
 
 <details>
 <summary>What the more-cores and fewer-cores choices set</summary>
 
-"Windows PC - more cores" (`CORDIAL_PERFORMANCE=throughput`):
+"Windows PC - more cores" (`VANTA_PERFORMANCE=throughput`):
 
 | Flag | Value |
 |---|---|
@@ -137,7 +137,7 @@ Graphics optimisation sets these flags, sized to your physical core count:
 | `FFlagGcInParallelWithRenderPrepare3` | `True` |
 | `DFIntSimMidPhaseContactPipelineBatchSize` | `128` |
 
-"Windows PC - fewer cores" (`CORDIAL_PERFORMANCE=latency`) sets only `DFIntSimMidPhaseContactPipelineBatchSize` to `128` and `FIntTaskSchedulerThreadMin` to `0`.
+"Windows PC - fewer cores" (`VANTA_PERFORMANCE=latency`) sets only `DFIntSimMidPhaseContactPipelineBatchSize` to `128` and `FIntTaskSchedulerThreadMin` to `0`.
 
 None of these is measured on this project's hardware, which is why Balanced, which sets nothing, is the default.
 
@@ -145,7 +145,7 @@ None of these is measured on this project's hardware, which is why Balanced, whi
 
 ## Raise the frame rate
 
-The Android client has no frame-rate row in its own menu, so there are two separate levers in Cordial's Settings.
+The Android client has no frame-rate row in its own menu, so there are two separate levers in Vanta's Settings.
 
 | What you want | Where |
 |---|---|
@@ -166,12 +166,12 @@ For a number the row does not offer, set `DFIntTaskSchedulerTargetFps` in the Fa
 **Settings → FastFlags → Import…** reads a Bloxstrap or Fishstrap `ClientAppSettings.json`, or Sober's `config.json` (only its `fflags` object), and merges the flags into this profile's. From a terminal:
 
 ```bash
-cordial --import-flags ClientAppSettings.json     # or - for standard input
-cordial --import-flags --sober                    # finds Sober's own config
-cordial --import-flags list.json --profile NAME --replace
+vanta --import-flags ClientAppSettings.json     # or - for standard input
+vanta --import-flags --sober                    # finds Sober's own config
+vanta --import-flags list.json --profile NAME --replace
 ```
 
-Flags already set are kept unless the list sets them again. `--replace` starts from empty instead. Values are checked by prefix: `FFlag` takes `True` or `False`, `FInt` a whole number, and `FLog` anything, because a log channel takes either a number or a severity and Cordial cannot tell which one a channel wants.
+Flags already set are kept unless the list sets them again. `--replace` starts from empty instead. Values are checked by prefix: `FFlag` takes `True` or `False`, `FInt` a whole number, and `FLog` anything, because a log channel takes either a number or a severity and Vanta cannot tell which one a channel wants.
 
 An entry the check refuses is skipped and named, and the rest are imported. A name with no FastFlag prefix is imported and listed, so a typo shows. The Sober path outside the Flatpak (`~/.config/sober/config.json`) is `INFERRED`; only the Flatpak's has been seen.
 
@@ -179,17 +179,17 @@ An entry the check refuses is skipped and named, and the rest are imported. A na
 
 A `FLog` or `DFLog` channel takes a bare number (`"6"`) or a severity name (`"Verbose"`, `"Warning,6"`), and a number given to a channel that wants a name does not fail: the channel goes silent, so an empty log is not evidence the channel is quiet. **When you do not know which a channel takes, write `"Verbose"`.** Across 177 channels the engine logged under it in a signed-out launch of 2.738.0.1397, every one kept logging with it, and 66 of them (`FLogNativeDM` among them) went quiet when given a bare number.
 
-Look a channel up in [`docs/analysis/flog-channel-shapes.tsv`](https://github.com/luohoa97/cordial/blob/main/docs/analysis/flog-channel-shapes.tsv): `either` kept logging under both, `severity-only` went quiet under a number, and `unscored` is the 644 the landing page never reached, which tells you nothing. When an override in your `flags.json` gives a number to a channel known to need a name, the client log says so at launch (`flags: FLogNativeDM="100" is a bare number, ...`). Channels with no evidence are not warned about.
+Look a channel up in [`docs/analysis/flog-channel-shapes.tsv`](https://github.com/gpt4omni/vanta/blob/main/docs/analysis/flog-channel-shapes.tsv): `either` kept logging under both, `severity-only` went quiet under a number, and `unscored` is the 644 the landing page never reached, which tells you nothing. When an override in your `flags.json` gives a number to a channel known to need a name, the client log says so at launch (`flags: FLogNativeDM="100" is a bare number, ...`). Channels with no evidence are not warned about.
 
 `python3 tools/flog_channel_shapes.py` prints the shape Roblox's own settings use for the channels they set (139 in the settings fetched on 2026-10-15). Five of them are given a number there and still went quiet under one, so that document is a hint and not the rule. To repeat the measurement on a new build, `tools/flog_channel_survey.py` documents the three launches it takes.
 
 ## If the interface looks coarse
 
-The interface is laid out for a low-density phone: render resolution is 720p and `dpiScale` is 1.0. For a direct `cordial-run` launch, raise both:
+The interface is laid out for a low-density phone: render resolution is 720p and `dpiScale` is 1.0. For a direct `vanta-run` launch, raise both:
 
 ```bash
-CORDIAL_MONITOR=1 CORDIAL_RESOLUTION=1920x1200 CORDIAL_DPI_SCALE=1.75 \
-cordial-run --lib-dir /path/to/lib/x86_64 --apk /path/to/base.apk \
+VANTA_MONITOR=1 VANTA_RESOLUTION=1920x1200 VANTA_DPI_SCALE=1.75 \
+vanta-run --lib-dir /path/to/lib/x86_64 --apk /path/to/base.apk \
   --host-libc --game-activity --run 30
 ```
 

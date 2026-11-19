@@ -2,9 +2,9 @@
 <!-- description: Write, grant and run a first plugin, and what plugin.json may contain. -->
 <!-- icon: rocket -->
 
-A plugin is a directory holding a `plugin.json` and, usually, one TypeScript module. Cordial runs the module as a sandboxed Deno process and talks to it in newline-delimited JSON over stdin and stdout. A plugin cannot open a file, a socket or a subprocess, so asking Cordial to do things through [capabilities](capabilities.md) is the only surface there is. Why: [ADR-003](../adr/ADR-003-plugin-isolation.md), [ADR-007](../adr/ADR-007-host-resources-are-brokered.md).
+A plugin is a directory holding a `plugin.json` and, usually, one TypeScript module. Vanta runs the module as a sandboxed Deno process and talks to it in newline-delimited JSON over stdin and stdout. A plugin cannot open a file, a socket or a subprocess, so asking Vanta to do things through [capabilities](capabilities.md) is the only surface there is. Why: [ADR-003](../adr/ADR-003-plugin-isolation.md), [ADR-007](../adr/ADR-007-host-resources-are-brokered.md).
 
-A manifest with no `entry` is a plugin made of data: a texture pack, a set of flags, a preferences page. Cordial logs `data only, nothing to start` and carries on ([ADR-021](../adr/ADR-021-everything-is-a-plugin.md)). The rest of this page is about the kind that runs.
+A manifest with no `entry` is a plugin made of data: a texture pack, a set of flags, a preferences page. Vanta logs `data only, nothing to start` and carries on ([ADR-021](../adr/ADR-021-everything-is-a-plugin.md)). The rest of this page is about the kind that runs.
 
 ## The smallest plugin that works
 
@@ -13,7 +13,7 @@ A manifest with no `entry` is a plugin made of data: a texture pack, a set of fl
 ### Create the files
 
 ```text
-~/.local/share/cordial/plugins/
+~/.local/share/vanta/plugins/
 └── hello/
     ├── plugin.json
     └── main.ts
@@ -73,7 +73,7 @@ await call("log.write", { message: "hello from a plugin" });
 
 ### Grant it `log`
 
-Until something is granted the plugin is not refused, it is never started: `plugin hello: no capabilities granted, not started`. Flip the `log` switch on the plugin's row in Settings, or write `~/.local/share/cordial/profiles/default/plugin-grants.json`:
+Until something is granted the plugin is not refused, it is never started: `plugin hello: no capabilities granted, not started`. Flip the `log` switch on the plugin's row in Settings, or write `~/.local/share/vanta/profiles/default/plugin-grants.json`:
 
 ```json
 { "hello": ["log"] }
@@ -83,7 +83,7 @@ Grants are per profile ([ADR-013](../adr/ADR-013-per-profile-configuration.md)),
 
 ### Run it
 
-Start Cordial and look for the plugin's line in the client output:
+Start Vanta and look for the plugin's line in the client output:
 
 ```text
   [hello] hello from a plugin
@@ -92,10 +92,10 @@ Start Cordial and look for the plugin's line in the client output:
 <!-- /steps -->
 
 > [!WARNING]
-> Never write anything but protocol lines to stdout. `console.log` in Deno writes to stdout, which is the wire. The first line Cordial cannot parse as a request ends the session (`plugin hello: sent something unreadable (…)`) and the process is killed. Use `console.error`, which goes to Cordial's own output, or `log.write`.
+> Never write anything but protocol lines to stdout. `console.log` in Deno writes to stdout, which is the wire. The first line Vanta cannot parse as a request ends the session (`plugin hello: sent something unreadable (…)`) and the process is killed. Use `console.error`, which goes to Vanta's own output, or `log.write`.
 
 > [!IMPORTANT]
-> Keep the directory name and the manifest `id` identical. Cordial does not check. Grants, settings, events and `flags.set` key off the manifest `id`, but the flag layer read back at startup and the enablement check key off the directory name. A plugin in `hello-dev/` calling itself `hello` writes flags into a `hello/` directory that nothing installed.
+> Keep the directory name and the manifest `id` identical. Vanta does not check. Grants, settings, events and `flags.set` key off the manifest `id`, but the flag layer read back at startup and the enablement check key off the directory name. A plugin in `hello-dev/` calling itself `hello` writes flags into a `hello/` directory that nothing installed.
 
 ## `plugin.json`
 
@@ -131,15 +131,15 @@ The full list and the method each one gates is on [Capabilities and grants](capa
 
 ## Test without packaging
 
-You do not need an archive, an index or an install step. Cordial discovers plugins from a directory and follows symlinks to directories. Give the run its own data root so you stay off the profile you play on:
+You do not need an archive, an index or an install step. Vanta discovers plugins from a directory and follows symlinks to directories. Give the run its own data root so you stay off the profile you play on:
 
 ```bash
-export XDG_DATA_HOME=~/.cache/cordial-dev
-mkdir -p "$XDG_DATA_HOME/cordial/plugins" "$XDG_DATA_HOME/cordial/profiles/default"
-ln -s ~/code/hello "$XDG_DATA_HOME/cordial/plugins/hello"
-echo '{"hello":["log"]}' > "$XDG_DATA_HOME/cordial/profiles/default/plugin-grants.json"
+export XDG_DATA_HOME=~/.cache/vanta-dev
+mkdir -p "$XDG_DATA_HOME/vanta/plugins" "$XDG_DATA_HOME/vanta/profiles/default"
+ln -s ~/code/hello "$XDG_DATA_HOME/vanta/plugins/hello"
+echo '{"hello":["log"]}' > "$XDG_DATA_HOME/vanta/profiles/default/plugin-grants.json"
 
-cargo run --release --bin cordial-run -- \
+cargo run --release --bin vanta-run -- \
   --lib-dir /path/to/lib/x86_64 --apk /path/to/base.apk \
   --host-libc --game-activity --run 60
 ```
@@ -150,8 +150,8 @@ Two development switches exist. Neither is supported configuration:
 
 | Variable | What it moves |
 |---|---|
-| `CORDIAL_PLUGIN_DIR` | The plugin root: discovery, and where `flags.set` writes your flag layer. |
-| `CORDIAL_PLUGIN_GRANTS` | The grants file, for every profile at once. Use it for a scratch run, not a machine you play on. |
+| `VANTA_PLUGIN_DIR` | The plugin root: discovery, and where `flags.set` writes your flag layer. |
+| `VANTA_PLUGIN_GRANTS` | The grants file, for every profile at once. Use it for a scratch run, not a machine you play on. |
 
 > [!TIP]
 > Set `--run 60` generously. Plugins start late in bring-up, after the engine reports itself up, so a short run can exit before your plugin has said anything. How short is too short has not been measured (INFERRED from where `start_all` sits in bring-up).
@@ -161,7 +161,7 @@ Two development switches exist. Neither is supported configuration:
 | Channel | How | Where it lands |
 |---|---|---|
 | `log.write` | Needs `log`; takes `{message}` | The client's stdout, indented and tagged with your id, in order beside the grant and spawn lines. Nothing leaves the machine. |
-| stderr | `console.error`, uncaught exceptions, Deno's complaints about your TypeScript | Cordial's output directly, without passing through the protocol. The first place to look when a plugin starts and goes quiet. |
+| stderr | `console.error`, uncaught exceptions, Deno's complaints about your TypeScript | Vanta's output directly, without passing through the protocol. The first place to look when a plugin starts and goes quiet. |
 
 If a plugin subscribes to events and receives none, rule out that there are none to receive. A plugin event is written straight into your stdin with no queue, so nothing arrives if the publisher is not running or was never granted `events.publish`. A core event is addressed by capability, so check `lifecycle.read` was granted in this profile, and which of the events you are waiting for are actually published ([events](events.md#core-events)).
 

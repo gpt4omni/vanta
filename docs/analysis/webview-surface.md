@@ -2,7 +2,7 @@
 
 Marketplace, Profile, Friends, Communities, Create, Blog, Learn, gift cards, Help
 & Safety and most link-opening in Roblox's Android client are web content rather
-than engine-rendered UI. None of it works under Cordial. This is the map of what
+than engine-rendered UI. None of it works under Vanta. This is the map of what
 would have to exist for it to.
 
 **The headline is a correction.** The obvious plan — implement
@@ -18,29 +18,29 @@ Four sources, in descending order of authority.
 A live run of the current build, today, reaching the landing page:
 
 ```bash
-CORDIAL_LOG_LEVEL=v CORDIAL_STUB_QUIET=1 ./target/release/cordial-run \
-    --lib-dir ~/.cache/cordial-trace/lib/x86_64 --apk <base.apk> \
+VANTA_LOG_LEVEL=v VANTA_STUB_QUIET=1 ./target/release/vanta-run \
+    --lib-dir ~/.cache/vanta-trace/lib/x86_64 --apk <base.apk> \
     --host-libc --game-activity --dump-classes classes.cpp --run 45
 ```
 
 `just client --run 30` does the same thing and finds the APK itself.
 
-The binary was `cordial-load` until 312451e renamed it to `cordial-run`, and a
-stale `target/release/cordial-load` survives the rename and still executes. Two
+The binary was `vanta-load` until 312451e renamed it to `vanta-run`, and a
+stale `target/release/vanta-load` survives the rename and still executes. Two
 runs of this investigation were spent measuring code that was never in the
 binary under test. `native/CMakeLists.txt`'s build script warns about the
 neighbouring version of this trap; the check that settles it is
-`grep -ac '<a string you just added>' target/release/cordial-run`.
+`grep -ac '<a string you just added>' target/release/vanta-run`.
 
 `--dump-classes` is `libjnivm`'s `GenerateClassDump`: every class and member
-Roblox reached for through JNI during that run, whether or not Cordial answered
+Roblox reached for through JNI during that run, whether or not Vanta answered
 it. Note that "Constructed Unresolved symbol" lines do **not** appear at runtime
 in an ordinary build — the `LOG` call sites in `libjnivm` are behind a
 compile-time `JNI_TRACE`, which `native/CMakeLists.txt` leaves off. The class
 dump carries the same information without a rebuild and is what was used here.
 
 The engine's own log from the project owner's signed-in session,
-`~/.local/share/cordial/instances/default/data/files/appData/logs/*_Player_*.log`,
+`~/.local/share/vanta/instances/default/data/files/appData/logs/*_Player_*.log`,
 which reached `APP_READY (Home)`.
 
 `docs/traces/waydroid-roblox-startup.log.gz`, the logcat capture of the same APK
@@ -91,16 +91,16 @@ this dump too.
 `android/webkit/WebView`, `WebViewClient` and friends *do* appear in
 `docs/analysis/framework-classes.txt`, and that is not a contradiction: that file
 is the dex's referenced-type table, meaning the APK's **Java** code uses them.
-Roblox's Java code is what drives a `WebView`, and Cordial does not run Roblox's
+Roblox's Java code is what drives a `WebView`, and Vanta does not run Roblox's
 Java code — it stands in for it. So `WebView`, `WebViewClient`,
 `WebChromeClient`, `WebSettings`, `CookieManager` and `ValueCallback` are not on
-Cordial's implementation list at all. The distinction is the one
+Vanta's implementation list at all. The distinction is the one
 `observed-java-surface.md` opens with: which APIs the app references versus which
 ones the engine reaches for.
 
-What Cordial has to implement instead is the Roblox-owned interface that sits
+What Vanta has to implement instead is the Roblox-owned interface that sits
 between the engine and that Java code — the same relationship as
-`NativeGLJavaInterface`, which Cordial already implements most of.
+`NativeGLJavaInterface`, which Vanta already implements most of.
 
 ## 2. Two transports exist; the older one is the live one
 
@@ -191,7 +191,7 @@ applies to each — resolving matters for its own sake.
 |---|---|---|
 | `gameLoadedCallback` | `(J)V` | no reply expected; a no-op is honest |
 | `saveImageToAlbum` | `(Ljava/lang/String;)V` | reply failure via `NativeGLInterface.nativeImageSavedToAlbumFinished(Ljava/lang/String;ZLjava/lang/String;)V` |
-| `getMobileAdvertisingId` | `()V` | reply path is `NativeGLInterface.setMobileAdvertisingId(Ljava/lang/String;)V`; Cordial has no advertising id and must not invent one |
+| `getMobileAdvertisingId` | `()V` | reply path is `NativeGLInterface.setMobileAdvertisingId(Ljava/lang/String;)V`; Vanta has no advertising id and must not invent one |
 | `onExtendedAnalyticsRecvCallback` | `([BI)V` | no reply expected |
 | `onVrSessionStateUpdate` | `(I)V` | no reply expected |
 | `promptNativePurchase` | `(JLjava/lang/String;)V` | Play Billing does not exist here |
@@ -222,12 +222,12 @@ searchParams. Delivery is `Java_com_roblox_universalapp_messagebus_MessageBus_*`
 — `doSubscribeProtocolMethodRequestRaw`, `publishProtocolMethodResponseRaw`,
 `subscribe`, `setRequestHandlerRaw` — returning a
 `com.roblox.universalapp.messagebus.Connection`, which is the one class of this
-group Cordial's run already reaches (it is a return type, so the engine caches
+group Vanta's run already reaches (it is a return type, so the engine caches
 its method ids up front).
 
 `DomainAllowListChecker` is worth noting for the security shape: the engine, not
 the host, decides whether a url may be opened, and it exposes that decision to
-the platform rather than trusting it. A Cordial implementation should ask it and
+the platform rather than trusting it. A Vanta implementation should ask it and
 honour the answer, not open whatever it is handed.
 
 ## 4. Cookies — the part that carries the session
@@ -260,7 +260,7 @@ boundary, and so does `RBXEventTrackerV2` (`libroblox.so` carries
 `BrowserTrackerIdRequest: No RBXEventTrackerV2 in cookie.`). Two consequences
 that are not optional:
 
-Nothing on this path may be logged with its value. Cordial's own diagnostics
+Nothing on this path may be logged with its value. Vanta's own diagnostics
 must print at most a name and a count. The same applies to urls crossing
 `openNativeOverlay`, which can carry a one-time auth ticket in a query string —
 log origin and path, never the query.
@@ -298,9 +298,9 @@ against libwebkitgtk-6.0/libgtk-4/libadwaita-1/libsoup-3/libjavascriptcoregtk-6.
 and keeps its engine process toolkit-free. Both arrangements work; they are not
 interchangeable. Sober's buys crash isolation for the browser and pays for it
 with a separate window, and it is available to Sober precisely because its engine
-process has no GTK in it. Cordial's engine process already links GTK4 and
+process has no GTK in it. Vanta's engine process already links GTK4 and
 libadwaita — ADR-011 §"One connection, therefore one process" — so an in-window
-web view is available to Cordial and is the better answer to
+web view is available to Vanta and is the better answer to
 "the communities view opens as a separate window", which
 [ADR-001](../adr/ADR-001-in-process-hooking.md) lists as a motivating gap.
 
@@ -316,7 +316,7 @@ here has measured it.
   class in a full startup-to-landing `--dump-classes` capture.
 - The 64 classes the engine reached for in that run — and that `--dump-classes`
   output is 2501 *lines*, which is where the figure of 2501 classes came from.
-- Which members of `NativeGLJavaInterface` Cordial answers versus leaves
+- Which members of `NativeGLJavaInterface` Vanta answers versus leaves
   unresolved. `openNativeOverlay`, `onAppBridgeNotification`,
   `onDataModelNotificationCallback` and `getWebViewUserAgent` are all reached
   for; before this change the first was hooked to an empty body and the other
@@ -342,14 +342,14 @@ here has measured it.
   on its own side of the boundary — but nobody has watched it fire, because
   doing so needs a click in a signed-in client (§6, below).
 - That the legacy transport is the live one for *this* build. The flag value
-  comes from a 2026-07-31 capture on real Android; Cordial's own run is not
+  comes from a 2026-07-31 capture on real Android; Vanta's own run is not
   signed in and never gets far enough to exercise either path.
 - Everything in §5, which is API reading rather than running.
 
 **Not established, and the honest reason:**
 
-- **Nobody has observed a web-view request under Cordial.** Reproducing one needs
-  a signed-in client and a click on Marketplace or Buy Robux. Cordial does not
+- **Nobody has observed a web-view request under Vanta.** Reproducing one needs
+  a signed-in client and a click on Marketplace or Buy Robux. Vanta does not
   persist a session across runs — a fresh run stops at `APP_READY (Landing)` — so
   reaching the signed-in app means a human typing credentials, and driving the
   click is not something an agent may do here (AGENTS.md's caution on synthesised
@@ -424,7 +424,7 @@ the flow needs is absent from the browser engine, not merely disabled in it.
 
 ### What was measured
 
-`crates/cordial-shell/examples/webauthn_probe.rs` drives the same
+`crates/vanta-shell/examples/webauthn_probe.rs` drives the same
 `webview::open` the engine's `openWindow` request takes — same ephemeral
 `NetworkSession`, same `UserContentManager`, same policy — and `open` asks the
 loaded page three questions. Against `https://www.roblox.com/login`, six
@@ -486,7 +486,7 @@ about a stripped binary:
 So there is no Linux `HidService` to link against and no libfido2 backing in
 the tree; `-DENABLE_WEB_AUTHN=ON` on the GTK port would not build, let alone
 talk to a key. This is upstream work in WebKitGTK, not packaging work, and not
-work Cordial can do in this repository.
+work Vanta can do in this repository.
 
 Consistent with that, and cheap to re-check on any machine: `readelf -d` on
 either `libwebkitgtk-6.0.so.4` lists no `libfido2`, and its dynamic symbol
@@ -495,7 +495,7 @@ table has no undefined `fido_*`. Enumerating all 782 `WebKitFeature`s through
 `LoginStatusAPIRequiresWebAuthn`, which is a sub-flag of a different, also
 disabled, feature.
 
-### What Cordial does about it
+### What Vanta does about it
 
 Reports it, and nothing else. `webview.rs` prints the line above once per
 process on the first finished load.
@@ -512,7 +512,7 @@ node, and Flatpak's only lever coarse enough to reach it is `--device=all`,
 which is every device node in the sandbox — cameras, input devices, everything.
 Granting that for a feature no code in the sandbox can use would be a
 permission that lies about a capability, on the one file in this repository
-that exists to be audited. `packaging/io.github.luohoa97.Cordial.yml` records
+that exists to be audited. `packaging/io.github.gpt4omni.Vanta.yml` records
 what would be needed, commented out, beside the reason it is not granted.
 
 ### What would actually let a passkey user in
@@ -521,23 +521,23 @@ Unresolved, and listed rather than chosen, because each of these is a design
 decision for the maintainer and none of them has been measured:
 
 1. WebKitGTK grows a Linux WebAuthn backend upstream. **INFERRED** that the
-   manifest's device grant would then be the whole of Cordial's side of it —
+   manifest's device grant would then be the whole of Vanta's side of it —
    nothing has been built that way to check.
 2. Sign-in moves out of the embedded view to the user's own browser through
    `org.freedesktop.portal.OpenURI`, and the session comes back by a route the
-   user drives. Cordial already seeds a validated `.ROBLOSECURITY` into the
+   user drives. Vanta already seeds a validated `.ROBLOSECURITY` into the
    view (`WindowRequest::roblox_session_cookie`) and already keeps one in the
    secret service (ADR-012), so the storage half exists; the transfer half does
-   not, and any design for it must not have Cordial reading another
+   not, and any design for it must not have Vanta reading another
    application's cookie jar.
 3. Roblox's own cross-device sign-in, if the Android client's login page offers
-   it under Cordial's user agent. Nobody has looked, because looking means
+   it under Vanta's user agent. Nobody has looked, because looking means
    reaching a sign-in page with an account.
 
 ## 10. Whether the page runs as an app — measured, and it was the sign-in stall
 
 Issue #83 (sign-in with a two-step code ends in "Something went wrong" after
-about a minute). Both reporters' logs, one with `CORDIAL_TRACE_BRIDGE=1`, show
+about a minute). Both reporters' logs, one with `VANTA_TRACE_BRIDGE=1`, show
 the same sequence and nothing else from the page:
 
     APP_READY ChallengeHybridWebView
@@ -558,17 +558,17 @@ interactive (a code was typed into it) said nothing.
 `__globalRobloxAndroidBridge__` that logs every read and every call, run
 repeatedly (the desktop and mocktail rows four times each, the others once or
 twice) with only the User-Agent changed (instrument:
-`~/.cache/cordial-scratch/signin83/tools/probe.py`, not kept in the tree):
+`~/.cache/vanta-scratch/signin83/tools/probe.py`, not kept in the tree):
 
 | User-Agent | `Roblox.Hybrid.Bridge.isNative` | `Bridge.registerCallback` | `Hybrid.Navigation.navigateToFeature` arity | `navigateToFeature({feature:"CaptchaShown"})` |
 |---|---|---|---|---|
-| Cordial's default (`ROBLOX Windows App ... Desktop Hybrid()`) | `false` | absent | 2 | nothing reaches the bridge |
-| bare `RobloxApp/<v>(GlobalDist; Cordial)` | `false` | absent | not asked | not asked |
+| Vanta's default (`ROBLOX Windows App ... Desktop Hybrid()`) | `false` | absent | 2 | nothing reaches the bridge |
+| bare `RobloxApp/<v>(GlobalDist; Vanta)` | `false` | absent | not asked | not asked |
 | mocktail's (`ROBLOX Android App <v> Tablet Hybrid()  GooglePlayStore ...`) | `true` | present | 0 | `executeRoblox` called |
-| Cordial's own `android-tablet` string (device block, `GooglePlayStore`) | `true` | present | 0 | `executeRoblox` called |
-| `Android App <v> Tablet Hybrid()` with a device block and the `Cordial` channel | `true` | present | 0 | `executeRoblox` called |
-| `Android App <v> Tablet Hybrid()  Cordial RobloxApp/<v> (GlobalDist; Cordial)`, no device block (the one now used) | `true` | present | 0 | `executeRoblox` called |
-| `...Android App <v> Tablet  Cordial ...` (no `Hybrid()`) | `false` | absent | 2 | nothing reaches the bridge |
+| Vanta's own `android-tablet` string (device block, `GooglePlayStore`) | `true` | present | 0 | `executeRoblox` called |
+| `Android App <v> Tablet Hybrid()` with a device block and the `Vanta` channel | `true` | present | 0 | `executeRoblox` called |
+| `Android App <v> Tablet Hybrid()  Vanta RobloxApp/<v> (GlobalDist; Vanta)`, no device block (the one now used) | `true` | present | 0 | `executeRoblox` called |
+| `...Android App <v> Tablet  Vanta ...` (no `Hybrid()`) | `false` | absent | 2 | nothing reaches the bridge |
 
 The call that does arrive under the Android shape is exactly the envelope
 `webview_captcha::parse_captcha_event` was written against from mocktail, so
@@ -601,11 +601,11 @@ both give their web views the Android shape whatever they tell the engine
 
 ## The transport, found in mocktail's bridge rather than by tracing
 
-`crates/cordial-runtime/src/webview.rs` said the receiving half could not be
+`crates/vanta-runtime/src/webview.rs` said the receiving half could not be
 written because `WebViewProtocol`'s non-native methods are obfuscated to single
 letters and take `org.json.JSONObject`, so the message transport was unknown.
 It is not unknown. mocktail's `roblox_web_view_bridge.cc` names it outright, and
-Cordial already speaks it for something else.
+Vanta already speaks it for something else.
 
 **`com/roblox/universalapp/messagebus/MessageBus`.** The engine exports
 twenty-one natives for it, and `native/deeplink.cpp` has been using two of them —
@@ -626,12 +626,12 @@ Signatures, from the dex:
 So receiving `openWindow` is three steps, none of them mysterious:
 
 1. `getMessageId("WebView", "openWindow")` — the protocol name and the method id
-   both come from `WebViewProtocol`'s own getters, which Cordial already reads
+   both come from `WebViewProtocol`'s own getters, which Vanta already reads
    and prints at startup. Composing them gives the bus id.
 2. `doSubscribeRaw(id, callback, false)` — returns a `Connection`.
 3. The callback receives the message as raw JSON.
 
-### What Cordial still owes
+### What Vanta still owes
 
 Two classes the engine constructs or calls into, the `NativeFlagsInitResult`
 pattern again:
@@ -653,7 +653,7 @@ engine calls on the callback.
 
 That is fine, and it is the shape this project handles best: **register the class
 and run it.** libjnivm resolves by what the engine asks for at runtime, and
-`CORDIAL_JNI_TRACE=1` prints every lookup, including the ones it cannot satisfy.
+`VANTA_JNI_TRACE=1` prints every lookup, including the ones it cannot satisfy.
 One startup with a `RawCallback` class present and empty will name the method in
 the trace. Guessing it from the C++ would be the mistake AGENTS.md opens with.
 
@@ -662,7 +662,7 @@ the trace. Guessing it from the C++ would be the mistake AGENTS.md opens with.
 `docs/analysis/flag-init.md` §13.1: the `RBXEventTrackerV2` device cookie is set
 through `WebViewCookieHandler` during sign-in, not by an API call — the standalone
 endpoint answers 500. mocktail has the web view, signs in through it, gets the
-cookie, and plays for four minutes on the place Cordial is disconnected from at
+cookie, and plays for four minutes on the place Vanta is disconnected from at
 sixty seconds. That chain is unproven and it is the most coherent one this
 investigation has.
 
@@ -670,7 +670,7 @@ investigation has.
 
 The two natives `openWindow` needs are both exported and both resolve —
 `webview.rs` reports so on every startup. `getMessageId` can now be called:
-`cordial_deeplink_two_strings_ret_string` and its Rust wrapper
+`vanta_deeplink_two_strings_ret_string` and its Rust wrapper
 `call_static_two_strings_ret_string` were added for it, because no existing call
 shape took two `String`s and returned one. That was the first blocker and it is
 gone.

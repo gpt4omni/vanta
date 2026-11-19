@@ -9,9 +9,9 @@ Hyprland until it was given a host that offers `wl_compositor` and
 `xdg_wm_base` at version 6: sway and weston offer 5, and Hyprland's own
 `aquamarine` refuses them. KWin's virtual backend offers 6, so the stack is
 
-    kwin_wayland --virtual   ->   Hyprland (wayland backend)   ->   Cordial
+    kwin_wayland --virtual   ->   Hyprland (wayland backend)   ->   Vanta
 
-all inside the `cordial` distrobox, all under a private `XDG_RUNTIME_DIR`, and
+all inside the `vanta` distrobox, all under a private `XDG_RUNTIME_DIR`, and
 none of it on the desktop the person running this is sitting at. The runtime
 directory is what keeps it that way: with `WAYLAND_DISPLAY` unset Hyprland
 falls back to the first socket it finds, and an earlier attempt opened a window
@@ -21,31 +21,31 @@ already holds a compositor.
 
 The virtual pointer is `zwlr_virtual_pointer_v1` into the *nested* Hyprland,
 which is the one form of injection AGENTS.md allows. It must exist before
-Cordial starts, because Cordial reads the seat's capabilities once.
+Vanta starts, because Vanta reads the seat's capabilities once.
 
 What this measures, and the control. Each right drag is run and the readbacks
-are `cordial_pointerlock` (`requested`, `confirmed`, `held_for_lock`) and the
+are `vanta_pointerlock` (`requested`, `confirmed`, `held_for_lock`) and the
 client's own trace of what reached the engine (`nativePassMouseMove` with a
 nonzero `dx` while the button is down; `nativePassMouseButton down=false`
-exactly once). The control is `CORDIAL_DRAG_LOCK=0`, 0.28.0's behaviour:
+exactly once). The control is `VANTA_DRAG_LOCK=0`, 0.28.0's behaviour:
 `confirmed` stays false throughout and no relative motion is locked.
 
 Usage:  tools/hyprland-drag-e2e.py [--binary PATH] [--drags N] [--keep]
         tools/hyprland-drag-e2e.py --control
-Requires:  tools/build-wl-holders.sh output in $CORDIAL_HOLDER_BIN, the
-           `cordial` distrobox with Hyprland and kwin_wayland installed.
+Requires:  tools/build-wl-holders.sh output in $VANTA_HOLDER_BIN, the
+           `vanta` distrobox with Hyprland and kwin_wayland installed.
 """
 
 import argparse, os, re, shutil, socket, subprocess, sys, time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-HOLDERS = os.environ.get("CORDIAL_HOLDER_BIN", os.path.expanduser("~/.cache/cordial-scratch/holders"))
+HOLDERS = os.environ.get("VANTA_HOLDER_BIN", os.path.expanduser("~/.cache/vanta-scratch/holders"))
 # Short on purpose: Hyprland's IPC socket path is
 #   <runtime>/hypr/<40 hex>_<time>_<n>/.socket2.sock
 # and sockaddr_un holds 107 bytes.
-RT = os.environ.get("CORDIAL_HYPR_E2E_RT", "/tmp/cordial-he")
-OUT = os.environ.get("CORDIAL_HYPR_E2E_OUT", os.path.expanduser("~/.cache/cordial-scratch/hypr-e2e"))
-BOX = "cordial"
+RT = os.environ.get("VANTA_HYPR_E2E_RT", "/tmp/vanta-he")
+OUT = os.environ.get("VANTA_HYPR_E2E_OUT", os.path.expanduser("~/.cache/vanta-scratch/hypr-e2e"))
+BOX = "vanta"
 BUTTON_SECONDARY = 2
 
 HYPR_CONF = """monitor=,1280x800@60,0x0,1
@@ -196,17 +196,17 @@ def stop_stack():
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--binary", default=os.path.join(ROOT, "target/release/cordial-run"))
+    ap.add_argument("--binary", default=os.path.join(ROOT, "target/release/vanta-run"))
     ap.add_argument("--profile", default="HyprDrag")
     ap.add_argument("--drags", type=int, default=5)
     ap.add_argument("--control", action="store_true",
-                    help="run with CORDIAL_DRAG_LOCK=0 (0.28.0): the lock must not be taken")
+                    help="run with VANTA_DRAG_LOCK=0 (0.28.0): the lock must not be taken")
     ap.add_argument("--env", action="append", default=[], metavar="K=V",
                     help="extra environment for the client, for running an older binary as the control")
     ap.add_argument("--keep", action="store_true")
     args = ap.parse_args()
 
-    lib = os.path.expanduser("~/.cache/cordial/lib/x86_64")
+    lib = os.path.expanduser("~/.cache/vanta/lib/x86_64")
     apk = os.path.expanduser("~/.var/app/org.vinegarhq.Sober/data/sober/packages/x86_64/"
                              "com.roblox.client/base.apk")
     for path in (args.binary, lib, apk, f"{HOLDERS}/wl-pointer-holder"):
@@ -227,11 +227,11 @@ def main():
         for sub in ("data", "cache", "config"):
             os.makedirs(f"{scratch}/{sub}", exist_ok=True)
         env.update(WAYLAND_DISPLAY=display, GDK_BACKEND="wayland", XDG_CURRENT_DESKTOP="Hyprland",
-                   HYPRLAND_INSTANCE_SIGNATURE=sig, CORDIAL_DEV_CONTROL="1", CORDIAL_TRACE_MOUSE="1",
+                   HYPRLAND_INSTANCE_SIGNATURE=sig, VANTA_DEV_CONTROL="1", VANTA_TRACE_MOUSE="1",
                    XDG_DATA_HOME=f"{scratch}/data", XDG_CACHE_HOME=f"{scratch}/cache",
                    XDG_CONFIG_HOME=f"{scratch}/config")
         if args.control:
-            env["CORDIAL_DRAG_LOCK"] = "0"
+            env["VANTA_DRAG_LOCK"] = "0"
         env.update(kv.split("=", 1) for kv in args.env)
         log = open(log_path, "w")
         client = subprocess.Popen(
@@ -248,7 +248,7 @@ def main():
         else:
             sys.exit(f"FAIL: the app shell never became ready; see {log_path}")
         time.sleep(8)
-        dev = Devctl(f"{scratch}/data/cordial/profiles/{args.profile}/devctl.sock")
+        dev = Devctl(f"{scratch}/data/vanta/profiles/{args.profile}/devctl.sock")
         run_cases(case, dev, ptr, log_path, args)
     finally:
         if ptr:
@@ -286,7 +286,7 @@ def run_cases(case, dev, ptr, log_path, args):
     case.check("nothing requested before any input", before.get("requested"), "false")
     case.note("frame watch (the way a release is found)", before.get("frame_watch"))
     if args.control:
-        case.check("the frame watch is off with CORDIAL_DRAG_LOCK=0", before.get("frame_watch"), "false")
+        case.check("the frame watch is off with VANTA_DRAG_LOCK=0", before.get("frame_watch"), "false")
     else:
         case.check("a frame-watching pointer exists on Hyprland", before.get("frame_watch"), "true")
 

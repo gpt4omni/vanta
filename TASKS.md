@@ -5,7 +5,7 @@ Source: `komaruworld/mocktail` @ 41 commits, Apache-2.0, cloned to
 permitted with attribution and a NOTICE entry. Everything below that involves
 code is to be **written fresh against the problem**, not transcribed.
 
-Cordial and mocktail vendor the same two load-bearing dependencies —
+Vanta and mocktail vendor the same two load-bearing dependencies —
 `ChristopherHX/libjnivm` and `mcpelauncher-linker` — so the comparison is real
 rather than superficial.
 
@@ -16,7 +16,7 @@ rather than superficial.
 **mocktail uses SDL3, heavily.** The brief said "GTK4/libadwaita/Vulkan, no
 SDL3". Its CMake builds `mocktail_platform_sdl`, `mocktail_sdl_vulkan_wsi` and
 `mocktail_audio_sdl`, and links `SDL3::SDL3`. GTK4/libadwaita is the launcher
-shell; SDL3 is the platform layer under the game surface. Cordial's canvas is a
+shell; SDL3 is the platform layer under the game surface. Vanta's canvas is a
 Wayland subsurface of the libadwaita window with no intermediate layer
 (ADR-011), which is a different and, for a Wayland-only target, simpler design.
 **Recommendation: do not adopt SDL3.**
@@ -34,7 +34,7 @@ That list is Sober's dependency set as documented by `sober-oss`, not
 mocktail's. Adopting it wholesale would be importing another project's
 architecture, not this one's. Each is assessed separately below.
 
-**Cordial has no CMake.** It is a Cargo workspace; the native side builds via
+**Vanta has no CMake.** It is a Cargo workspace; the native side builds via
 `build.rs` with Clang. So "extract `find_package`/`target_link_libraries`" has
 no target here, and the `FetchContent` suggestion does not apply — the Cargo
 equivalent for anything new is a normal crate dependency, or a git dependency
@@ -49,7 +49,7 @@ pinned by tag.
 **This is the "fix low resolution textures" commit** (`e161fec`), and it is one
 line of configuration, not code.
 
-`FStringGraphicsTextureManager2DenyPattern2` is **absent from Cordial's live
+`FStringGraphicsTextureManager2DenyPattern2` is **absent from Vanta's live
 settings document**, so the engine uses its compiled-in default. mocktail sets
 it to `".*"`, which denies every pattern and takes the engine off TextureManager2
 entirely. The live set carries `FFlagTextureManager2SupportLegacyStreaming2 =
@@ -63,7 +63,7 @@ low-residency textures, and denying the manager outright restores full
 resolution. **`INFERRED` — the causal story is not established, only the flag
 value and its absence from our document.**
 
-- **Touches:** Cordial's default flag layer only. No source change to the
+- **Touches:** Vanta's default flag layer only. No source change to the
   runtime or native side.
 - **Status:** shipped in a new built-in flag layer (`flags.rs`), below plugins
   and the user so one line in `flags.json` overrules it. Confirmed applying, and
@@ -80,7 +80,7 @@ mocktail sets this to `"4318:.*"`. 4318 is `0x10DE`, the NVIDIA vendor ID, so
 this disables Vulkan shader multithreading on all NVIDIA parts.
 
 **Do not copy their value.** They *replace* the live string, which discards the
-entries Roblox ships (`4112:*` and `1010:*` device pairs). Cordial should append
+entries Roblox ships (`4112:*` and `1010:*` device pairs). Vanta should append
 `|4318:.*` to whatever the document carries, so both the vendor's own deny list
 and the NVIDIA workaround are in effect.
 
@@ -106,12 +106,12 @@ and the NVIDIA workaround are in effect.
 ### T3. ETC1 → BC1 texture transcoding (skybox and beyond)
 
 mocktail's `dcf22a1` adds a 294-line ETC1→BC1 transcoder and wires it into the
-asset path. The underlying problem is architectural and Cordial has it too:
+asset path. The underlying problem is architectural and Vanta has it too:
 **Roblox ships Android texture formats, and desktop GPUs do not implement
 ETC1.** An engine that asks for an unsupported format gets a black or missing
 surface, which is what "skybox issues" means.
 
-This is the single most substantial thing in mocktail that Cordial lacks.
+This is the single most substantial thing in mocktail that Vanta lacks.
 
 - **Touches:** new native module, plus the asset/AssetManager path in
   `native/`. Likely interacts with the graphics backend selection.
@@ -119,7 +119,7 @@ This is the single most substantial thing in mocktail that Cordial lacks.
   BCn and ETC block formats are specified publicly, so writing an encoder from
   the format specs is straightforward and avoids any question of derivation.
   Do not read their file while writing ours.
-- **Prerequisite:** first establish that Cordial actually hits this. Look for
+- **Prerequisite:** first establish that Vanta actually hits this. Look for
   ETC1/`VK_FORMAT_ETC2` requests or missing-format failures in a join run before
   building anything.
   **Partly established, 2026-09-29, on Intel (no NVIDIA hardware to hand):**
@@ -140,37 +140,37 @@ This is the single most substantial thing in mocktail that Cordial lacks.
 
 mocktail vendors `third_party/angle_headers` and gates behaviour on
 `MOCKTAIL_DISABLE_AUTO_ANGLE_FALLBACK` and `MOCKTAIL_SOFTWARE_WINDOW_FALLBACK`.
-Cordial has `CordialGraphicsBackend` deciding whether to offer the engine a
+Vanta has `VantaGraphicsBackend` deciding whether to offer the engine a
 Vulkan loader, but no GL-over-Vulkan translation fallback.
 
 Roblox renders through Vulkan now, so this is insurance for hardware where the
 Vulkan path fails rather than a feature. **Lower priority than it looks.**
 
-- **Touches:** `crates/cordial-runtime/src/graphics.rs`, backend selection.
+- **Touches:** `crates/vanta-runtime/src/graphics.rs`, backend selection.
 - **Scope:** major. Deferred pending evidence that any target hardware needs it.
 
 ### T5. WebView
 
-mocktail has a 1470-line `src/webview/` on WebKitGTK6. Cordial already links
-WebKitGTK for the cookie/login path (`crates/cordial-runtime/src/cookies.rs`),
+mocktail has a 1470-line `src/webview/` on WebKitGTK6. Vanta already links
+WebKitGTK for the cookie/login path (`crates/vanta-runtime/src/cookies.rs`),
 so the dependency is present and the gap is scope, not plumbing.
 
-- **Touches:** `cordial-shell`, cookies module.
+- **Touches:** `vanta-shell`, cookies module.
 - **Scope:** moderate. Worth scoping against what it would actually be *for* —
-  if it is the login flow, Cordial has that; if it is in-experience web content,
+  if it is the login flow, Vanta has that; if it is in-experience web content,
   that is a different and larger ask.
 
 ---
 
 ## Tier 3 — library assessments
 
-Each judged on whether it solves a problem **Cordial has**, not on whether
+Each judged on whether it solves a problem **Vanta has**, not on whether
 another project uses it.
 
 **mimalloc** (MIT) — general-purpose allocator, materially faster than glibc
 malloc under heavy threaded allocation. Sober uses it; mocktail does not.
-Cordial's engine is allocation-heavy, so this is a plausible general win. But
-Cordial loads a bionic-linked engine through a glibc shim, and interposing an
+Vanta's engine is allocation-heavy, so this is a plausible general win. But
+Vanta loads a bionic-linked engine through a glibc shim, and interposing an
 allocator across that boundary is exactly where the shim's assumptions live.
 **Effort: moderate, risk higher than the usual "just link mimalloc".** Wants a
 measurement first: is allocation actually hot? Nothing here has measured that.
@@ -181,41 +181,41 @@ the honest alternative to writing a transcoder: it is a small ISC-licensed C
 library that already handles the formats. **Effort: trivial to link, moderate to
 wire in. Assess together with T3, not separately.**
 
-**nlohmann/json** (MIT) — header-only C++ JSON. mocktail uses it. Cordial's JSON
+**nlohmann/json** (MIT) — header-only C++ JSON. mocktail uses it. Vanta's JSON
 is on the Rust side with `serde_json`; the native side barely parses JSON at
 all. **No need. Skip.**
 
 **volk** (MIT) — Vulkan meta-loader, avoids the loader trampoline. A real but
 small win, and only worth it if Vulkan call overhead shows up in a profile.
-Cordial currently links `libvulkan.so.1` directly. **Effort: trivial. Value:
+Vanta currently links `libvulkan.so.1` directly. **Effort: trivial. Value:
 unmeasured, probably marginal. Skip until profiled.**
 
-**fmt** (BSD) — C++ formatting. Cordial's native side uses `fprintf`/`snprintf`
+**fmt** (BSD) — C++ formatting. Vanta's native side uses `fprintf`/`snprintf`
 throughout and the codebase has a consistent voice built around that. Adding fmt
 would mean either a mixed style or a sweep. **Skip.**
 
 **mcl / oaknut** (MIT, merryhime) — ARM64 code emission. These exist to
 *generate* AArch64 instructions, which is a JIT/binary-translation concern.
-Cordial loads the **x86-64** Android build natively on x86-64 hardware; there is
+Vanta loads the **x86-64** Android build natively on x86-64 hardware; there is
 nothing to translate. **This is Sober-architecture-specific. Do not adopt.**
 *2026-10-01:* there is now something to translate, the Quest build, and dynarmic
-(`crates/cordial-guest`) links `mcl` as its own dependency. The verdict stands for
+(`crates/vanta-guest`) links `mcl` as its own dependency. The verdict stands for
 the phone path, which still translates nothing.
 
 **dyncall** (ISC) — dynamic FFI calls with runtime-constructed signatures. Same
 category: it exists for a translation layer that must call across an ABI it
-learns at runtime. Cordial's JNI boundary is statically typed through libjnivm.
+learns at runtime. Vanta's JNI boundary is statically typed through libjnivm.
 **Sober-specific. Do not adopt.**
 
-**libbadcpu** — already vendored in Cordial's `third_party/`. Listed in the
-brief as something Cordial lacks; it does not.
+**libbadcpu** — already vendored in Vanta's `third_party/`. Listed in the
+brief as something Vanta lacks; it does not.
 
-**imgui** (MIT) — immediate-mode debug UI. Cordial's UI is libadwaita and its
+**imgui** (MIT) — immediate-mode debug UI. Vanta's UI is libadwaita and its
 diagnostics are logs and traces. An imgui overlay would be a genuinely useful
 *debug* surface, but it is a new UI stack for a project that deliberately has
 one. **Skip unless a specific debugging need appears that logs cannot serve.**
 
-**libxml2** (MIT) — XML parsing. Nothing in Cordial parses XML. **Skip.**
+**libxml2** (MIT) — XML parsing. Nothing in Vanta parses XML. **Skip.**
 
 **capstone** — in mocktail, not on the proposed list. Disassembly framework;
 mocktail presumably uses it for diagnostics. Given AGENTS.md's rule that reading
@@ -229,7 +229,7 @@ wanted, `libmanette` is the GTK4-native option and does not bring a second
 platform layer.
 
 **libplacebo** — not used by mocktail. It is a GPU video/image processing
-library aimed at scaling, tone-mapping and colour management. Cordial presents
+library aimed at scaling, tone-mapping and colour management. Vanta presents
 the engine's own Vulkan output; there is no processing stage for it to live in.
 **Skip unless a post-processing pipeline is on the roadmap.**
 
@@ -239,7 +239,7 @@ the engine's own Vulkan output; there is no processing stage for it to live in.
 
 1. **T1** — one flag, plausibly fixes a visible quality problem, trivial to
    revert. Do this first.
-2. **T3 prerequisite** — establish whether Cordial hits the ETC1 gap at all.
+2. **T3 prerequisite** — establish whether Vanta hits the ETC1 gap at all.
    One join run with format logging answers it and costs nothing.
 3. **T2** — trivial, but unverifiable on current hardware; ship as `INFERRED`.
 4. **T3 proper** — only if step 2 confirms it, and with detex assessed as the
@@ -248,7 +248,7 @@ the engine's own Vulkan output; there is no processing stage for it to live in.
 6. **T4** — deferred.
 
 Nothing above has been implemented. `INFERRED` markers are load-bearing: T1's
-mechanism, T2 entirely, and T3's applicability to Cordial are all unestablished.
+mechanism, T2 entirely, and T3's applicability to Vanta are all unestablished.
 
 ---
 
@@ -258,16 +258,16 @@ mechanism, T2 entirely, and T3's applicability to Cordial are all unestablished.
 |---|---|---|
 | **mimalloc** | **yes — adopt** | See the note below. The earlier "measure first" verdict was over-cautious. |
 | **detex** | **yes, if T3 is real** | It is the honest alternative to hand-writing an ETC1→BC1 transcoder. Tied to T3; assess together. |
-| **nlohmann/json** | **no** | Cordial's JSON is `serde_json` on the Rust side. The native side barely parses JSON. |
+| **nlohmann/json** | **no** | Vanta's JSON is `serde_json` on the Rust side. The native side barely parses JSON. |
 | **volk** | **no** | Saves the Vulkan loader trampoline. Unmeasured, probably marginal. Revisit only if a profile shows it. |
 | **fmt** | **no** | The native side is `fprintf`/`snprintf` throughout with a consistent voice. Adding fmt means a mixed style or a sweep, for no capability. |
-| **mcl / oaknut** | **no** | AArch64 instruction emission. Cordial loads the **x86-64** build natively on x86-64. Nothing to emit. Sober-architecture-specific. |
-| **dyncall** | **no** | Runtime-signature FFI, for a translation layer that learns ABIs at runtime. Cordial's JNI boundary is statically typed through libjnivm. Sober-specific. |
+| **mcl / oaknut** | **no** | AArch64 instruction emission. Vanta loads the **x86-64** build natively on x86-64. Nothing to emit. Sober-architecture-specific. |
+| **dyncall** | **no** | Runtime-signature FFI, for a translation layer that learns ABIs at runtime. Vanta's JNI boundary is statically typed through libjnivm. Sober-specific. |
 | **imgui** | **no** | New UI stack for a project that deliberately has one (libadwaita). Diagnostics here are logs and traces. |
-| **libxml2** | **no** | Nothing in Cordial parses XML. |
+| **libxml2** | **no** | Nothing in Vanta parses XML. |
 | **AOSP portions** | **already have it** | The ported bionic linker is exactly this. |
-| **SDL3** | **no** | mocktail uses it as its platform layer under a GTK shell. Cordial's canvas is a Wayland subsurface of the libadwaita window (ADR-011) and works. Two platform layers means two event loops competing to be the Wayland client. |
-| **libplacebo** | **no** | GPU scaling/tone-mapping/colour. Cordial presents the engine's own Vulkan output; there is no processing stage for it to live in. |
+| **SDL3** | **no** | mocktail uses it as its platform layer under a GTK shell. Vanta's canvas is a Wayland subsurface of the libadwaita window (ADR-011) and works. Two platform layers means two event loops competing to be the Wayland client. |
+| **libplacebo** | **no** | GPU scaling/tone-mapping/colour. Vanta presents the engine's own Vulkan output; there is no processing stage for it to live in. |
 
 ## Input, voice, camera, VR — what the engine we load actually supports
 
@@ -282,18 +282,18 @@ x86-64 Android build, `2.730.0.790`:
 | `AppRtcDevice` | **5** | reachable — this is the real voice path |
 | `Oculus`, `OpenXR`, `Cardboard`, `GvrLayout` | **0** | **not present** |
 
-### VR is not available and this is not a Cordial limitation
+### VR is not available and this is not a Vanta limitation
 
 *Corrected 2026-10-01:* this section is about the x86-64 phone build, and for it the
 findings below may still hold. VR now works through a different build: Roblox's Meta
 Quest build, run under an in-process translator, constructs its VR device through
 ordinary OpenXR and reaches `FOCUSED` on Monado's simulated HMD
 ([ADR-053](docs/adr/ADR-053-vr-is-a-mode-of-the-android-runtime.md),
-[docs/vr.md](docs/vr.md)). The heading's "not available" is no longer true of Cordial.
+[docs/vr.md](docs/vr.md)). The heading's "not available" is no longer true of Vanta.
 
 **The reasoning above is incomplete, though the verdict holds.** A dex
 class-count of zero only shows Roblox's own Java code has no VR surface — it
-says nothing about what the engine asks the *platform* for, and Cordial
+says nothing about what the engine asks the *platform* for, and Vanta
 supplies that platform, not Roblox's dex (see issue #35, `DeviceUtils`, for a
 case where the engine asked for a class no dex declared). The binary does have
 VR code compiled in: flag-shaped strings (`IsVRAppBuild`, `ExposeOpenXrAPI1`,
@@ -310,7 +310,7 @@ class surface, the `Constructed Unresolved symbol` / stub-call log, and the
 engine's own log stream with `FLogVRService`/`DFLogVRService` turned on — the
 two runs are indistinguishable. No new class or method is requested, no
 unresolved symbol appears, no VRService line is ever printed, and a
-`CORDIAL_TRACE_PATHS=1` capture shows no attempt to `dlopen` a VR runtime
+`VANTA_TRACE_PATHS=1` capture shows no attempt to `dlopen` a VR runtime
 library (*retracted:* that trace does not wrap `dlopen` and could not show this
 either way; vr-reachability.md withdrew it on 2026-09-16). The flags do nothing observable, which is a different and stronger
 finding than "no VR classes in the dex" — reached at the account-router/menu
@@ -333,13 +333,13 @@ Settling it from the other direction: a working implementation exists against
 this same x86-64 APK and this same engine, running the OpenXR integration
 host-side, outside `libroblox.so`, at roughly 15,500 lines. So the engine's VR
 path is reachable, and "zero OpenXR symbols imported by `libroblox.so`" never
-ruled it out. On this architecture Cordial supplies the platform, so a runtime
+ruled it out. On this architecture Vanta supplies the platform, so a runtime
 integration lives in the host by construction and no imported symbol would ever
 appear in the engine. The symbol scan answered a question nobody needed asked.
 
 *Corrected 2026-10-01:* no such implementation was ever shown. `git log --all -S`
 for `xrCreateVulkanDeviceKHR`, `xrEndFrame`, `XrInstance` and `openxr/openxr.h`
-finds no OpenXR code in any branch before the cordial-vr fork's own, which runs the
+finds no OpenXR code in any branch before the vanta-vr fork's own, which runs the
 arm64 Quest build rather than this x86-64 APK, and the commit that added this
 paragraph changed only this file and vr-reachability.md. Treat the 15,500-line
 figure as unverified. The Quest build does import OpenXR (`xr*`) symbols itself.
@@ -356,11 +356,11 @@ nothing, so the gap this section opened is now closed by measurement rather
 than by assumption.
 
 The platform-layer route is closed too, for a more basic reason than the
-experiment: **there is no VR-shaped question for Cordial to answer.** The one
+experiment: **there is no VR-shaped question for Vanta to answer.** The one
 VR item anywhere in the observed JNI surface is
 `NativeGLJavaInterface.onVrSessionStateUpdate(I)V`, and it is outbound -- the
 engine notifying Java that a session exists, not a capability the engine
-consults. It appears in the 2026-08-06 `CORDIAL_JNI_TRACE` capture (the one
+consults. It appears in the 2026-08-06 `VANTA_JNI_TRACE` capture (the one
 that reached a joined place) only as a `jmethodID` cached during
 `JNI_OnLoad`'s blanket pass, never invoked. `PackageManager.hasSystemFeature`
 was deliberately never implemented here because nothing has ever been seen
@@ -402,11 +402,11 @@ blockers or next steps.
 getters, start/stop communication and the call mute
 (`native/unanswered_classes.cpp`), with the mute zeroing samples in
 `AAudioStream_read`. **The engine has never called any of it**: every method
-logs as `I/Cordial-Voice`, and three runs in a voice place printed none. It is
+logs as `I/Vanta-Voice`, and three runs in a voice place printed none. It is
 kept because the contract comes from the dex and the Android capture, not
 because it fixed anything.
 
-Voice does not join under Cordial. In place 14236925335 with
+Voice does not join under Vanta. In place 14236925335 with
 `FLogVoiceChatLogs=7`, under `roblox-app`, `android-tablet` and the default
 `pc-windows-11` (runs on 2026-09-13 logged the constructor under all three), the engine
 logs `voice_service_init`, `IsVoiceEnabledForUserIdAsync ... true`,
@@ -421,15 +421,15 @@ its `fflags`, it wrote `DFLog*` lines (`VoiceChatRequestTrace`,
 `HttpTraceError`) and no `FLog*` voice line, so the `FLog` channels were never
 on in Sober. Whether a working join logs `ClientJoinOperation Constructed`,
 `asyncInitRTCThreadsAndAudioDevice` or `ClientPublishOperation` is untested;
-none of the three has appeared in any Cordial run. What the comparison does
+none of the three has appeared in any Vanta run. What the comparison does
 show is where the two split: Sober was already in voice when the game loaded,
-since the mic button it toggled only exists after a join, while Cordial's top
+since the mic button it toggled only exists after a join, while Vanta's top
 bar still offers the join-voice button. The fault is the automatic join at
 load, not the button. The only line the toggles
 produced in Sober was a re-enumeration of the audio devices,
-`[FLog::Audio] InputDevice 0: ... 48000/2/4`, once per toggle. Cordial's
+`[FLog::Audio] InputDevice 0: ... 48000/2/4`, once per toggle. Vanta's
 Neighbors runs log that line only before the join, never after it, and report
-`48000/1/4`: Cordial's AAudio input answers mono (`kCaptureChannels` in
+`48000/1/4`: Vanta's AAudio input answers mono (`kCaptureChannels` in
 `native/aaudio.cpp`) where Sober answers stereo. Whether the channel count
 matters is untested. `DFLogHttpTraceLight`, the channel that prints URLs, stops
 0.76 s after launch when Roblox's settings fetch replaces DF overrides;
@@ -438,7 +438,7 @@ voice HTTP is still not visible.
 
 The microphone permission ask comes before any of that: the engine sends it
 over the message bus on `PermissionsProtocol`, not through
-`checkSelfPermission`, and nothing answered it. `crates/cordial-runtime/src/permissions.rs`
+`checkSelfPermission`, and nothing answered it. `crates/vanta-runtime/src/permissions.rs`
 now binds it and grants `MICROPHONE_ACCESS` alone. In Neighbors a voice click
 sends `PermissionsRequest`, the `AUTHORIZED` answer is delivered inline with
 (id, response) order and no `PermissionsProtocolCore: Invalid response
@@ -452,7 +452,7 @@ The bursts of `status:429` on `voice.roblox.com/v1/settings` (33 at once) and
 repeated clicking; a single click in a clean run produced neither, so they
 look like a consequence rather than the cause. The one route left to the
 voice settings responses is intercepting the engine's own HTTPS: curl reads
-`HTTPS_PROXY` through the host `getenv` (`crates/cordial-shell/src/network.rs`)
+`HTTPS_PROXY` through the host `getenv` (`crates/vanta-shell/src/network.rs`)
 and trusts the extracted `assets/ssl/cacert.pem`, so a local proxy whose CA is
 appended to that file should see them. That has not been tried.
 
@@ -462,7 +462,7 @@ appended to that file should see them. That has not been tried.
 
 **Partly done, and blocked on one integer.** `android/gamepad.rs` and the six
 `NativeInputInterface` trampolines in `native/game_activity.cpp` are in place;
-the feature is off unless `CORDIAL_GAMEPAD=1`, because the engine cannot be told
+the feature is off unless `VANTA_GAMEPAD=1`, because the engine cannot be told
 a pad exists without being told what *kind* of pad it is, and nothing available
 here says what the values mean.
 
@@ -476,7 +476,7 @@ written. **gilrs** is the real candidate — it carries `SDL_GameControllerDB` a
 exposes the vendor and product ids a type classifier wants — but it pulls
 `libudev-sys`, whose `build.rs` is an unconditional
 `pkg_config::find_library("libudev").unwrap()` and whose output links
-`libudev.so.1`. Cordial has no udev in `Cargo.lock` today, so that is a
+`libudev.so.1`. Vanta has no udev in `Cargo.lock` today, so that is a
 packaging decision (flatpak, deb, rpm, AppImage, CI) and not an implementation
 detail. Until it is taken, `gamepad.rs` reads `/dev/input/js*` directly with no
 new dependency and a fixed mapping table for the standard layout.
@@ -500,22 +500,22 @@ it:
    Needs a pad and the Waydroid setup in `docs/traces/README.md`.
 2. **Sweep the argument against the engine's own glyphs.** The binary carries
    three glyph folders — `DefaultController`, `PlayStationController`,
-   `XboxController` — so the UI is a readout of the type. `CORDIAL_GAMEPAD=1
-   CORDIAL_GAMEPAD_PROBE=1 CORDIAL_GAMEPAD_TYPE=N` announces a synthetic pad with
-   no hardware at all; read the frame with `cordial_screenshot` and sweep N. A
+   `XboxController` — so the UI is a readout of the type. `VANTA_GAMEPAD=1
+   VANTA_GAMEPAD_PROBE=1 VANTA_GAMEPAD_TYPE=N` announces a synthetic pad with
+   no hardware at all; read the frame with `vanta_screenshot` and sweep N. A
    different N drawing different glyphs is the control.
 
 Getting this wrong is not theoretical — Sober #1018 is *"Sober detects my PS4
 controller as a XBOX one"*.
 
-- **Touches:** `crates/cordial-runtime/src/android/gamepad.rs`,
-  `android/input.rs`, `native/game_activity.cpp`, `cordial-linker-sys`.
+- **Touches:** `crates/vanta-runtime/src/android/gamepad.rs`,
+  `android/input.rs`, `native/game_activity.cpp`, `vanta-linker-sys`.
 - **Scope:** the remaining work is one measurement, then a mapping layer.
 
 ### Camera
 
 89 hits on Camera2. The engine expects an Android `CameraManager`/`CameraDevice`
-and Cordial answers none of it, so anything camera-driven silently does nothing —
+and Vanta answers none of it, so anything camera-driven silently does nothing —
 the `broken_feature` shape from AGENTS.md.
 
 - **Touches:** new `native/camera_classes.cpp`, a PipeWire/v4l2 source.
@@ -544,26 +544,26 @@ gameplay has made a choice and we are diverging from it for no reason, the
 divergence is the thing that needs justifying, not the adoption.
 
 **It is cheap and trivially revertible.** Link mimalloc's override into
-`cordial-run` so it wins symbol resolution ahead of glibc; remove one line to
+`vanta-run` so it wins symbol resolution ahead of glibc; remove one line to
 undo it.
 
-**The one real technical question, which is not a hedge.** Cordial runs with
+**The one real technical question, which is not a hedge.** Vanta runs with
 `--host-libc`, so the engine resolves libc symbols through the host, and the AOSP
 bionic linker does its own symbol resolution. Whether mimalloc's override
-actually captures the *engine's* allocations — as opposed to only Cordial's own —
+actually captures the *engine's* allocations — as opposed to only Vanta's own —
 depends on how that resolution binds `malloc`. If the ported linker binds it from
 `libc.so`'s handle directly rather than through the global symbol table, the
 override captures nothing and the change is a no-op wearing a performance badge.
 
 That is checkable rather than arguable: mimalloc reports allocation statistics
 (`MIMALLOC_SHOW_STATS=1`). If the engine's allocations are flowing through it,
-the counts will be large; if they are not, they will be Cordial-sized. **Do that
+the counts will be large; if they are not, they will be Vanta-sized. **Do that
 check first — not to decide whether to adopt, but to know whether the adoption
 did anything.** Shipping a no-op as a performance improvement is the exact
 failure mode AGENTS.md exists to prevent.
 
-- **Touches:** `crates/cordial-runtime` dependency list, one `#[global_allocator]`
-  or link-order change in `cordial-run`. Possibly the linker's symbol table
+- **Touches:** `crates/vanta-runtime` dependency list, one `#[global_allocator]`
+  or link-order change in `vanta-run`. Possibly the linker's symbol table
   handling if the check comes back negative.
 - **Scope:** trivial to add, moderate if the shim needs to route it.
 - **Priority:** high. Do it after T1.
@@ -583,7 +583,7 @@ verifying a downloaded APK bundle before installing it. Unrelated to client
 attestation. There is no handling of a 304 or any server-initiated disconnect
 anywhere in the tree.
 
-So mocktail is not a source of a fix for the error Cordial hits at 60 seconds.
+So mocktail is not a source of a fix for the error Vanta hits at 60 seconds.
 It is a useful source for texture handling, platform layering and packaging, and
 it is silent on this. Anyone reading this backlog hoping the comparison would
 close the 304 should stop here rather than go looking.
@@ -613,7 +613,7 @@ under exactly the allocator this task proposed to give it, and the version it
 uses is Roblox's own choice rather than ours.
 
 Overriding `malloc` in `bionic::function_overrides` would therefore have reached
-only Cordial's own Rust allocations, which are trivial next to the engine's. That
+only Vanta's own Rust allocations, which are trivial next to the engine's. That
 is the no-op-wearing-a-performance-badge outcome, and it is now measured rather
 than guessed at.
 
@@ -645,15 +645,15 @@ window. See [docs/analysis/nvidia-texture-manager2.md](docs/analysis/nvidia-text
 detex's place in this decision is unchanged: nothing has yet shown a format the
 driver refuses, on any hardware this project has access to.
 
-## JNI surface diff — 24 classes mocktail names that Cordial does not
+## JNI surface diff — 24 classes mocktail names that Vanta does not
 
 The comparison that is actually apples-to-apples between a Rust project and a C++
-one: not source, but which Java classes each answers. Cordial answers 62;
+one: not source, but which Java classes each answers. Vanta answers 62;
 mocktail names 86.
 
-Spot-checked rather than trusted, four of the five confirmed absent from Cordial:
+Spot-checked rather than trusted, four of the five confirmed absent from Vanta:
 
-| class | Cordial | mocktail |
+| class | Vanta | mocktail |
 |---|---|---|
 | `com/roblox/engine/jni/memstorage/MemStorage` (+ `Connection`, `Callback`) | **absent** | yes |
 | `com/roblox/engine/jni/autovalue/StartGameParams` | **absent** | yes |
@@ -670,17 +670,17 @@ Also named by mocktail and unanswered here: `RobloxActivity`,
 **`MemStorage` is the most interesting.** The engine exports
 `MemStorage_bind`, `_fire`, `_getItem`, `_setItem`, `hasItem`, `removeItem` and
 `Connection_disconnect`/`_releaseConnection` — a complete key-value channel with
-a subscription mechanism — and Cordial answers none of it. **`StartGameParams`**
-is second: it is on the join path, which is where Cordial's remaining problem
+a subscription mechanism — and Vanta answers none of it. **`StartGameParams`**
+is second: it is on the join path, which is where Vanta's remaining problem
 lives.
 
 Two honest caveats. mocktail *naming* a class is not proof it implements it
-usefully. And this diff was built by grepping `GetClass("...")` out of Cordial
-and string literals out of mocktail, so a class Cordial answers by another route
+usefully. And this diff was built by grepping `GetClass("...")` out of Vanta
+and string literals out of mocktail, so a class Vanta answers by another route
 would read as absent. **This is a lead list, not a verdict** — each entry needs
 confirming against a JNI trace before anyone builds to it.
 
-**Next:** run one `CORDIAL_JNI_TRACE=1` join and intersect the unresolved-symbol
+**Next:** run one `VANTA_JNI_TRACE=1` join and intersect the unresolved-symbol
 lines with this list. That turns 24 leads into the subset the engine actually
 asks for, and it costs one run.
 
@@ -688,17 +688,17 @@ asks for, and it costs one run.
 
 ## Correction: the 24-class list, re-read against the dex
 
-The "Cordial answers none of `MemStorage`" framing was wrong in a way that
+The "Vanta answers none of `MemStorage`" framing was wrong in a way that
 changes what the work is.
 
 `MemStorage`'s methods are **engine natives**. `libroblox.so` exports
 `Java_com_roblox_engine_jni_memstorage_MemStorage_bind`, `_fire`, `_getItem`,
 `_setItem`, `hasItem`, `removeItem` and `Connection_disconnect`/
 `_releaseConnection`. So the engine *implements* that channel and the application
-*calls* it. There is nothing for Cordial to answer there, and an implementation
+*calls* it. There is nothing for Vanta to answer there, and an implementation
 would be shadowing the engine's own.
 
-What Cordial does owe is the two classes the engine constructs and calls back
+What Vanta does owe is the two classes the engine constructs and calls back
 into, exactly the `NativeFlagsInitResult` pattern:
 
     com/roblox/engine/jni/memstorage/Connection   <init> (J)V
@@ -724,7 +724,7 @@ meaning.
 
 ### And the startup trace does not settle this either way
 
-A `CORDIAL_JNI_TRACE=1` startup on 2.734.0.917 leaves only five classes
+A `VANTA_JNI_TRACE=1` startup on 2.734.0.917 leaves only five classes
 unresolved — `NativeGLJavaInterface` (14), `GameActivity` (6), `java/util/List`
 (2), `java/lang/Class` (2), `NetworkUtils` (2). None of the 24 appear.
 
@@ -738,7 +738,7 @@ settle it has to be a join.
 
 Asked as "where is the plugin". It is at `plugins/discord-presence/` —
 `plugin.json` declaring `lifecycle.read`, `presence.set` and `log`, plus
-`main.ts`. The host side is `crates/cordial-plugins/src/presence.rs`, ADR-007's
+`main.ts`. The host side is `crates/vanta-plugins/src/presence.rs`, ADR-007's
 worked example.
 
 It is not a sketch. Four tests pass, including an end-to-end one that runs the
@@ -760,7 +760,7 @@ filed as "fully implement Discord RPC" — the misfiling is the bug.
 ## WebView: the protocol is engine-side and self-describing
 
 The highest-value thing the mocktail comparison produced. mocktail answers
-`com/roblox/protocols/webview/WebViewProtocol`; **Cordial answers none of it**,
+`com/roblox/protocols/webview/WebViewProtocol`; **Vanta answers none of it**,
 which is why account settings, Robux purchase and anything else that opens a web
 window do nothing.
 
@@ -794,19 +794,19 @@ its own `main()` and is launched by a separate launcher — with a JS bridge nam
 `executeRoblox` and an origin check on every message
 (`rejected executeRoblox from untrusted origin`).
 
-Both properties are right and both match decisions Cordial has already made.
+Both properties are right and both match decisions Vanta has already made.
 Out-of-process isolation is ADR-003's reasoning applied to a browser engine: a
 WebKit crash or a hostile page cannot reach the Roblox process. And origin
 validation is not optional — this window is where the user signs in and where
 payment happens, so a page that can post arbitrary commands to the engine is the
 whole security boundary.
 
-Cordial already links WebKitGTK for the cookie path, so the dependency is
+Vanta already links WebKitGTK for the cookie path, so the dependency is
 present. What is missing is the protocol side and the window.
 
 - **Touches:** new `native/webview.cpp` for the protocol surface, a new
   out-of-process helper binary, the cookie module for the shared session.
-- **Scope:** major, and the largest single feature gap Cordial has.
+- **Scope:** major, and the largest single feature gap Vanta has.
 - **Isolated?** Mostly. The cookie/session sharing is the one piece that touches
   existing state.
 - **Do not transcribe.** mocktail's helper is 45 KB of WebKitGTK plumbing under
@@ -825,11 +825,11 @@ supporting it.
 
 ---
 
-## Input: Cordial answers 7 of the engine's 22 entry points
+## Input: Vanta answers 7 of the engine's 22 entry points
 
 Counted against `libroblox.so`'s exports, not guessed.
 
-**Cordial calls:** `nativePassKeyEvent`, `nativePassText`, `nativePassMouse`,
+**Vanta calls:** `nativePassKeyEvent`, `nativePassText`, `nativePassMouse`,
 `nativePassMouseButton`, `nativePassMouseMove`, `nativePassMousePan`,
 `nativePassMouseWheel`.
 
@@ -850,12 +850,12 @@ Counted against `libroblox.so`'s exports, not guessed.
 `nativePassCurrentDisplayRefreshRate` and `nativePassSupportedRefreshRates` tell
 the engine what the display can do. AGENTS.md records that with input flowing the
 frame rate is a hard FIFO vsync lock to the output's refresh — 60 Hz gives 60, a
-50 Hz monitor gives 49.4 even in fullscreen at four times the pixels. **Cordial
+50 Hz monitor gives 49.4 even in fullscreen at four times the pixels. **Vanta
 has never told the engine what refresh rates exist.** Whether that is why the
 lock is so rigid is untested, but it is the one place a client can say something
-about refresh and Cordial says nothing.
+about refresh and Vanta says nothing.
 
-- **Touches:** the input path in `crates/cordial-runtime/src/android/`, plus
+- **Touches:** the input path in `crates/vanta-runtime/src/android/`, plus
   whatever reads the Wayland output mode.
 - **Scope:** small. Isolated PR. Measure with input flowing, per AGENTS.md, and
   report the input rate beside the frame rate.
@@ -869,20 +869,20 @@ Instead it carries `roblox_text_editor.cc` (788 lines),
 `roblox_text_display_state.cc` (305) and two input routers — **3840 lines**
 reimplementing text editing above the engine.
 
-Cordial drives `syncTextboxTextAndCursorPosition2` per keystroke, which fills
+Vanta drives `syncTextboxTextAndCursorPosition2` per keystroke, which fills
 whichever box has focus, and keeps `nativePassText` for the finish — on Android
 that is the soft keyboard delivering final text and dismissing itself. Driving
 both per character was tried and produced "type one letter, box blurs", which is
 in `input.rs`'s own comment with the trace that showed it.
 
 **Corrected after this was first written: mocktail does not show text as you type
-either.** So its 3840 lines are not a working implementation Cordial is missing,
+either.** So its 3840 lines are not a working implementation Vanta is missing,
 they are a different unfinished attempt at the same problem. There is nothing to
 borrow, and text entry is a shared gap rather than a comparative one — the same
 shape as `AppRtcDeviceWrapper` and voice.
 
 Which means whatever is wrong with typing in a Roblox text box has to be found
-here, from a trace, rather than read off their tree. `CORDIAL_TRACE_TEXT=1` prints
+here, from a trace, rather than read off their tree. `VANTA_TRACE_TEXT=1` prints
 the focus handle and the text sync per keystroke, and the three failures it
 distinguishes — the box never focuses, it focuses and blurs immediately, or it
 holds focus and the characters do not arrive — want different fixes.
@@ -898,7 +898,7 @@ Read-only comparison of `native/opensles.cpp`, `pipewire_backend.cpp` and
 `audio_classes.cpp` against mocktail's `src/audio/`. **No bugs found, and nothing
 missing relative to theirs.** Recorded so the next person does not repeat it.
 
-**Cordial is ahead here, in two ways worth protecting from a later "cleanup":**
+**Vanta is ahead here, in two ways worth protecting from a later "cleanup":**
 
 *The OpenSL recorder is real.* `native/opensles.cpp` implements the full
 `SLRecordItf` over PipeWire, opening and closing a capture stream on the actual
@@ -906,25 +906,25 @@ missing relative to theirs.** Recorded so the next person does not repeat it.
 `EngineCreateAudioRecorder` unconditionally returns
 `kResultFeatureUnsupported` — recording through OpenSL is simply refused there.
 
-*The Android audio classes are answered.* Cordial implements
+*The Android audio classes are answered.* Vanta implements
 `android/media/AudioManager`, `AudioRecord`, `AudioDeviceInfo`,
 `WebRtcAudioManager` and `WebRtcAudioRecord` with real PipeWire-backed device
 data. mocktail registers `AudioManager` with **zero method hooks** and has none of
 the others. A build that calls `AudioManager.getDevices()` gets a real answer from
-Cordial and jnivm's untyped fallback from mocktail.
+Vanta and jnivm's untyped fallback from mocktail.
 
 ### A correction
 
 `AppRtcDeviceWrapper` has been described in this backlog as the real voice path
-that Cordial implements none of, with the implication that mocktail does.
+that Vanta implements none of, with the implication that mocktail does.
 **It does not.** `grep -r AppRtcDeviceWrapper` returns nothing in mocktail's tree.
 The class is real — `libroblox.so` exports
 `Java_com_roblox_audio_AppRtcDeviceWrapper_nativeAudioDeviceChanged` — but it is
 unimplemented in *both* projects. Voice chat is dead on both for the same reason,
-and it is a shared gap rather than a comparative one. (Cordial has since
+and it is a shared gap rather than a comparative one. (Vanta has since
 implemented it, and voice still does not join; see the voice section above.)
 
-### One feature they have that Cordial cannot have
+### One feature they have that Vanta cannot have
 
 mocktail feeds Roblox's own in-game audio-output picker a live device list by
 **vtable-patching `FmodAudioDevice` inside the mapped `libroblox.so` image** —
@@ -937,7 +937,7 @@ hooking, no memory patching of the Roblox process, *absent* rather than disabled
 
 So the user-visible difference is real and will not be closed by implementing
 something. A mocktail user who opens Roblox's audio-output menu sees it
-populated; a Cordial user does not. Cordial's output follows the host default
+populated; a Vanta user does not. Vanta's output follows the host default
 through PipeWire's `PW_ID_ANY` and autoconnect instead, so switching devices
 works — through the system mixer rather than from inside Roblox's settings.
 
@@ -984,7 +984,7 @@ through unchanged overruns the caller's object. The proposal is libm and libz
 only, where the ABI is IEEE arithmetic and byte buffers and there is nothing to
 translate.
 
-- **Touches:** `crates/cordial-runtime/src/symtab.rs`. Optionally `build.rs` if
+- **Touches:** `crates/vanta-runtime/src/symtab.rs`. Optionally `build.rs` if
   the tsv is regenerated from a readelf diff in CI instead.
 - **Scope:** moderate. Isolated.
 - **Verified, not assumed:** `lookup`'s body and the `SYMBOLS` loop were both read.
@@ -992,7 +992,7 @@ translate.
 ### U2. Nothing validates a new Roblox build before adopting it, and there is no way back
 
 `justfile` re-extracts `libroblox.so` whenever the APK changes and overwrites the
-cache. `cordial-update`'s `cache.rs` is stamp bookkeeping and holds no verdict.
+cache. `vanta-update`'s `cache.rs` is stamp bookkeeping and holds no verdict.
 So a build that does not load replaces one that did, and the previous engine is
 gone.
 
@@ -1004,26 +1004,26 @@ That is exactly this week's failure: the client silently stopped loading until a
 human noticed and hand-patched a symbol. With U1 fixed the specific cause goes
 away; the shape does not.
 
-- **Touches:** `crates/cordial-update/src/cache.rs` (a verified gate), the
+- **Touches:** `crates/vanta-update/src/cache.rs` (a verified gate), the
   `justfile`'s extraction (keep the prior copy on failure).
 - **Scope:** moderate.
 
 ### U3. The APK's signature is never checked
 
-`cordial-update/src/apk.rs` treats the archive as a hostile zip — path traversal,
-symlinks, mode bits — and never asks who signed it. Cordial then executes
+`vanta-update/src/apk.rs` treats the archive as a hostile zip — path traversal,
+symlinks, mode bits — and never asks who signed it. Vanta then executes
 whatever `lib/x86_64/libroblox.so` is inside a file the user pointed at.
 
 mocktail verifies APK Signature Scheme v2/v3 against pinned signer fingerprints
 before trusting an extraction. This is not vendoring anything; it is validating a
 file already on the user's disk.
 
-- **Touches:** `crates/cordial-update/src/apk.rs`. **Scope:** moderate.
+- **Touches:** `crates/vanta-update/src/apk.rs`. **Scope:** moderate.
 
 ### U4. Packaging reach
 
 mocktail ships AppImage, DEB, RPM, pacman and three AUR variants alongside
-Flatpak. Cordial has Flatpak. No breakage, narrower reach. **Scope:** major.
+Flatpak. Vanta has Flatpak. No breakage, narrower reach. **Scope:** major.
 
 ### Deliberate divergences, no action
 
@@ -1052,9 +1052,9 @@ mocktail's `0b8cbef` added a dialog when Roblox answers 401 to a saved cookie.
 Before it, the session died and the client fell back to guest sign-in with only a
 line on stdout.
 
-**Cordial has the same hole.** `cookies.rs` restores saved cookies mechanically
+**Vanta has the same hole.** `cookies.rs` restores saved cookies mechanically
 and has no rejection handling; the only mention of 401 in the whole file is a
-comment at line 578 about ordering. Nothing in `cordial-shell` surfaces an
+comment at line 578 about ordering. Nothing in `vanta-shell` surfaces an
 expired session. So a user whose `.ROBLOSECURITY` has aged out is quietly signed
 out and finds out by noticing they are a guest.
 
@@ -1062,15 +1062,15 @@ The shell already has somewhere to put this — `window.rs` and `updater.rs` bot
 raise user-visible notices.
 
 **One caveat that makes this harder than mocktail's version, and it should be
-settled before anyone starts:** Cordial does not make the request that gets the
+settled before anyone starts:** Vanta does not make the request that gets the
 401. The engine does its own HTTP, so there is no response for the cookie module
 to inspect. Either the signal comes from the engine's own log, or it comes from
-the web view once that path carries sign-in, or Cordial observes it somewhere not
+the web view once that path carries sign-in, or Vanta observes it somewhere not
 yet identified. **Find the observation point first.** Wiring a dialog to a
 condition nothing can detect is worse than the silence.
 
-- **Touches:** `crates/cordial-runtime/src/cookies.rs`, plus a notice in
-  `cordial-shell`. **Scope:** moderate, once the detection point is known.
+- **Touches:** `crates/vanta-runtime/src/cookies.rs`, plus a notice in
+  `vanta-shell`. **Scope:** moderate, once the detection point is known.
 
 ### C2. A landmine for whoever implements `pthread_create`
 
@@ -1078,7 +1078,7 @@ mocktail's `23fe2ee` fixes glibc's static TLS eating into a guest thread's
 requested stack — a thread asks for N bytes and gets meaningfully less, and the
 overflow lands somewhere unrelated.
 
-**Not reachable in Cordial today**: `pthread_create` is not in
+**Not reachable in Vanta today**: `pthread_create` is not in
 `bionic::pthread::overrides()` at all — grepped, zero occurrences. So this is not
 a live bug. It is the first thing to get wrong when guest thread creation is
 implemented, and it is recorded here so that person does not discover it the
@@ -1088,22 +1088,22 @@ expensive way. `INFERRED`: taken from their fix, not reproduced here.
 
 - **`dlmopen` namespace collision** (`6aa22c2`). Theirs happened because a host
   `dlopen`'d library bound to the executable's own exported bionic-compat
-  symbols. Cordial exports none — `readelf --dyn-syms` on both binaries shows no
+  symbols. Vanta exports none — `readelf --dyn-syms` on both binaries shows no
   libc-name collisions, and Roblox's imports resolve through a private in-process
   table rather than the loader's global scope.
 - **LTO folding FORTIFY wrappers into self-recursion** (`52721bf`). Theirs
-  redefines `__memcpy_chk`-style names that collide with glibc's. Cordial's
+  redefines `__memcpy_chk`-style names that collide with glibc's. Vanta's
   equivalents are plain Rust that never carry a `__*_chk` symbol name and call the
   unfortified host function. No name for LTO to collide on.
 - **Canary and first-install approval bugs** (`3ce39c1`, `63070b6`). Bugs inside a
-  build-approval system Cordial does not have. The adjacent real gap is already
+  build-approval system Vanta does not have. The adjacent real gap is already
   U2 above.
 
 ### Already ahead
 
-The low-quality-texture flag (adopted), user-editable FastFlag overrides (Cordial
+The low-quality-texture flag (adopted), user-editable FastFlag overrides (Vanta
 has layered ones with user-wins, predating theirs), and the Discord join-button
-fix (nothing to attach it to — Cordial's presence plugin has no party-secret
+fix (nothing to attach it to — Vanta's presence plugin has no party-secret
 concept).
 
 ### Not applicable
@@ -1157,7 +1157,7 @@ the other. So either the handle is zero for a different reason on that path, or
 the mechanism is elsewhere. **Do not change the input code on this until the
 trace says which.**
 
-    CORDIAL_TRACE_TEXT=1 tools/join-run.sh input 2>&1 | grep 'wayland key'
+    VANTA_TRACE_TEXT=1 tools/join-run.sh input 2>&1 | grep 'wayland key'
 
 Every line ends with `focus=…`. Run it once reproducing the bug and once not, and
 compare — whether keys arrive at all, whether `focus` differs, and whether the
@@ -1183,7 +1183,7 @@ boundary is most likely crossed.
 **Not measured.** The confirmation is two `nativePassMouseMove` calls for one
 movement during the spike:
 
-    CORDIAL_TRACE_MOUSE=1 tools/join-run.sh camera 2>&1 | grep nativePassMouseMove
+    VANTA_TRACE_MOUSE=1 tools/join-run.sh camera 2>&1 | grep nativePassMouseMove
 
 If they appear in pairs while the sensitivity is wrong, that is it. Worth having
 before touching the lock logic — this file has a history of fixes that addressed
@@ -1214,10 +1214,10 @@ Not textures at all:
       Error parsing batch thumbnail request
 
 **`id=` is empty**, and the first reading of that here was wrong. It was filed as
-an identity-propagation bug in Cordial on the strength of the empty field alone.
+an identity-propagation bug in Vanta on the strength of the empty field alone.
 
 It is not. Reported by the account's owner: Roblox's own servers lost that
-avatar's head-shot, and it renders blank on *every* client, Cordial or otherwise.
+avatar's head-shot, and it renders blank on *every* client, Vanta or otherwise.
 So the empty id is Roblox asking for a thumbnail that no longer exists, and the
 parse failure is the honest downstream consequence.
 

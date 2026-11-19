@@ -1,6 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "cordial-issues",
+  "name": "vanta-issues",
   "main": "worker.ts",
   "compatibility_date": "2026-09-03",
   // The bridge is Web Crypto, `fetch` and nothing else -- no Node built-ins --

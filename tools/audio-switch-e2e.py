@@ -12,7 +12,7 @@ It creates two null sinks of its own, never touches the default sink, plays at
 -54 dBFS (and at zero for the step that returns to the system default, so
 nothing is ever sent to the desktop's real output), and unloads what it made.
 
-    clang++ -std=c++17 -DCORDIAL_HAVE_PIPEWIRE=1 -I/usr/include/pipewire-0.3 \\
+    clang++ -std=c++17 -DVANTA_HAVE_PIPEWIRE=1 -I/usr/include/pipewire-0.3 \\
         -I/usr/include/spa-0.2 native/opensles.cpp native/pipewire_backend.cpp \\
         native/aaudio.cpp native/alsa_backend.cpp native/pulse_backend.cpp \\
         native/oss_backend.cpp native/aaudio_input_callback.cpp \\
@@ -25,7 +25,7 @@ import os
 import subprocess
 import sys
 
-A, B = "cordial-e2e-a", "cordial-e2e-b"
+A, B = "vanta-e2e-a", "vanta-e2e-b"
 
 
 def run(*cmd):
@@ -55,7 +55,7 @@ def linked_sink(stream_prefix):
 
 def one_run(probe, api, prefix, steps, seconds, hold_still=False):
     """Returns a list of (label, expected, observed) and the probe's exit code."""
-    env = dict(os.environ, CORDIAL_AUDIO_SINK=A)
+    env = dict(os.environ, VANTA_AUDIO_SINK=A)
     # A control run plays for the same time with nothing asked of it.
     cmd = [probe, api, "--seconds", str(seconds)]
     for s in steps:
@@ -89,8 +89,8 @@ def main():
                                f"sink_properties=device.description={name}"))
         failures = 0
         for api, prefix, steps in (
-            ("aaudio-play", "cordial-aaudio-", [B, A, ""]),
-            ("play", "cordial-audioplayer-", [B, A, ""]),
+            ("aaudio-play", "vanta-aaudio-", [B, A, ""]),
+            ("play", "vanta-audioplayer-", [B, A, ""]),
         ):
             print(f"== {api}: A -> B -> A -> default")
             results, code = one_run(probe, api, prefix, steps, 3)
@@ -109,7 +109,7 @@ def main():
         # is. The stream must stay on A, or the observations above say nothing
         # about the change having caused them.
         print("== control: aaudio-play, sink 'changed' to A while on A")
-        results, code = one_run(probe, "aaudio-play", "cordial-aaudio-", [A], 3, hold_still=True)
+        results, code = one_run(probe, "aaudio-play", "vanta-aaudio-", [A], 3, hold_still=True)
         for label, want, got in results:
             ok = got == {A}
             failures += 0 if ok else 1

@@ -10,27 +10,27 @@ does -- but it does rule out the 116 `PatchCode` sites that sit beside it there.
 Written for one question `docs/analysis/flag-init.md` §22.1 could not answer: is
 the engine's flags-loaded state reachable through the interface Roblox exposes to
 its host application, or does every implementation that reaches it force it?
-Cordial cannot reach it, after fifteen eliminated candidates. Sober reaches it.
+Vanta cannot reach it, after fifteen eliminated candidates. Sober reaches it.
 
 **"mocktail forces it" was wrong on this build, and this docstring said so for
 months.** `ForceNativeFlagsLoadedForTaskScheduler` is gated behind
 `MOCKTAIL_PATCH_NATIVE_FLAGS_LOADED`, which `IsEnabled` refuses unless
 `g_allow_legacy_binary_patches` is set, and that comes from a per-Build-ID
 profile enabling it for 2.721.1108 only. On 2.734.917 -- the build in
-`~/.cache/cordial/lib/x86_64`, byte-identical Build ID -- mocktail prints
+`~/.cache/vanta/lib/x86_64`, byte-identical Build ID -- mocktail prints
 `legacy binary patches: disabled` and its store comes up anyway. So there are
 three implementations reaching this state legitimately, not two, and mocktail
-is a *better* control than Sober for Cordial's purposes: same Build ID, same
+is a *better* control than Sober for Vanta's purposes: same Build ID, same
 host, not an Android environment. See `docs/analysis/flag-init.md` §45.
 
 Usage:
 
     tools/engine-text-diff.py [--pid PID] [--lib /path/to/libroblox.so]
 
-Cordial is its own control: run it against a live `cordial-run` and it must
-report zero differing bytes, because Cordial does no patching -- ADR-001 makes
-the primitive absent rather than disabled. **A non-zero reading against Cordial
-means this script is wrong, not that Cordial is.** Run that control before
+Vanta is its own control: run it against a live `vanta-run` and it must
+report zero differing bytes, because Vanta does no patching -- ADR-001 makes
+the primitive absent rather than disabled. **A non-zero reading against Vanta
+means this script is wrong, not that Vanta is.** Run that control before
 believing any reading taken against anything else.
 
 **Sober needs root and a namespace hop**, because it is a Flatpak and its engine
@@ -47,8 +47,8 @@ mapping names.
 
 ## Naming, and a correction
 
-An earlier version of this docstring said Cordial maps the engine anonymously.
-**That is wrong** -- running the tool shows Cordial's mapping does name its file,
+An earlier version of this docstring said Vanta maps the engine anonymously.
+**That is wrong** -- running the tool shows Vanta's mapping does name its file,
 and the tool now prefers that name as its own reference, which removes any
 question of whether the process loaded the same build as `--lib`. The claim came
 from the mapping being invisible in a host-side scan while Sober was running,
@@ -67,7 +67,7 @@ import os
 import struct
 import sys
 
-DEFAULT_LIB = os.path.expanduser("~/.cache/cordial/lib/x86_64/libroblox.so")
+DEFAULT_LIB = os.path.expanduser("~/.cache/vanta/lib/x86_64/libroblox.so")
 
 
 def exec_segment(path):
@@ -142,7 +142,7 @@ def main():
 
     # A named mapping is its own reference and is preferred: it removes any
     # question of whether the process loaded the same build as `--lib`. Sober
-    # and Cordial both map anonymously, so this is the unusual case, but when it
+    # and Vanta both map anonymously, so this is the unusual case, but when it
     # happens the file is read through /proc/<pid>/root so a sandboxed path
     # still resolves.
     found = None

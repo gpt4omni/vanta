@@ -6,9 +6,9 @@ name. This is evidence from a *particular settings document*, not a complete
 catalogue of declarations in Roblox's binary. Unknown channels remain unknown.
 
 Typical use:
-    python3 tools/flog_channel_shapes.py --settings ~/.cache/cordial/clientsettings.json
+    python3 tools/flog_channel_shapes.py --settings ~/.cache/vanta/clientsettings.json
     python3 tools/flog_channel_shapes.py --settings /tmp/clientsettings.json \
-        --channel FLogAudio --flags ~/.config/cordial/flags.json
+        --channel FLogAudio --flags ~/.config/vanta/flags.json
 """
 
 import argparse
@@ -78,7 +78,7 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--settings", type=Path,
-        default=Path.home() / ".cache/cordial/clientsettings.json",
+        default=Path.home() / ".cache/vanta/clientsettings.json",
         help="cached Roblox settings JSON or applicationSettings JSON from the CDN",
     )
     parser.add_argument("--channel", action="append", default=[],

@@ -3,7 +3,7 @@
 # executable named in the desktop file, with the mounted (or extracted)
 # AppDir as the working directory.
 #
-# Everything here exists to answer one question: once cordial-shell is moved
+# Everything here exists to answer one question: once vanta-shell is moved
 # off the machine it was built on, how does it find the things it needs that
 # are not DT_NEEDED entries and so were not swept up by linuxdeploy's
 # dependency walk in build-appimage.sh? Each export below is one such thing.
@@ -25,7 +25,7 @@ export LD_LIBRARY_PATH="${APPDIR}/usr/lib:${LD_LIBRARY_PATH:-}"
 
 # GSettings schemas are found by path lookup through GIO, not through a
 # symbol linuxdeploy's ELF dependency walk can see -- nothing in
-# cordial-shell references the schema directory by name, so nothing about it
+# vanta-shell references the schema directory by name, so nothing about it
 # survives an ordinary --executable bundling pass. build-appimage.sh compiles
 # a copy into usr/share/glib-2.0/schemas for exactly this reason.
 export GSETTINGS_SCHEMA_DIR="${APPDIR}/usr/share/glib-2.0/schemas"
@@ -36,7 +36,7 @@ export XDG_DATA_DIRS="${APPDIR}/usr/share:${XDG_DATA_DIRS:-/usr/local/share:/usr
 # WebKitGTK's four absolute paths, and why an environment variable cannot fix
 # any of them
 #
-# WebKitGTK does not link its helper processes into cordial-run. It spawns
+# WebKitGTK does not link its helper processes into vanta-run. It spawns
 # WebKitWebProcess, WebKitNetworkProcess and WebKitGPUProcess as separate
 # executables, loads its injected bundle as a separate .so, and shells out to
 # bwrap and xdg-dbus-proxy for its own sandbox -- five things, at four paths
@@ -94,7 +94,7 @@ export WEBKIT_INJECTED_BUNDLE_PATH="${APPDIR}/usr/lib/webkitgtk-6.0/injected-bun
 # one that has never installed WebKitGTK -- /usr/libexec replaced by an empty
 # tmpfs, and /usr/bin replaced by a copy of itself with bwrap and
 # xdg-dbus-proxy removed -- with a GTK4 window and a WebKitWebView run in
-# place of cordial-shell out of the extracted image, on gtk4-broadwayd so that
+# place of vanta-shell out of the extracted image, on gtk4-broadwayd so that
 # nothing appeared on the developer's screen:
 #
 #   with the wrap    WebKitNetworkProcess and WebKitWebProcess both ran from
@@ -105,19 +105,19 @@ export WEBKIT_INJECTED_BUNDLE_PATH="${APPDIR}/usr/lib/webkitgtk-6.0/injected-bun
 #                    xdg-dbus-proxy were planted and the sandbox engaged (the
 #                    WebProcess took a "...Sandboxed.WebProcess" bus name); and
 #                    a page reached load-changed FINISHED.
-#   without it       the same image on the same host, CORDIAL_APPIMAGE_NO_WRAP=1:
+#   without it       the same image on the same host, VANTA_APPIMAGE_NO_WRAP=1:
 #                    `Unable to spawn a new child process: Failed to spawn child
 #                    process "/usr/libexec/webkitgtk-6.0/WebKitNetworkProcess"
 #                    (No such file or directory)` -- the reported error, verbatim.
 #
 # The namespace itself was checked separately in the same session: the real uid
-# stays put, the pid namespace stays shared (so `pidof cordial-run`, lldb and
+# stays put, the pid namespace stays shared (so `pidof vanta-run`, lldb and
 # the development MCP still reach the client from outside), /usr/libexec keeps
 # its other contents through the overlay's lower layer (301 entries became 302,
 # gvfsd still there -- a plain --tmpfs would have hidden it), and /dev/dri, the
 # Wayland socket, the session bus and flock all still work.
 #
-# **What is still unexercised**: cordial-shell's own sign-in view and the
+# **What is still unexercised**: vanta-shell's own sign-in view and the
 # in-experience web view -- the probe was a WebKitWebView, not the shell, and
 # the binaries inside the tested image came from the installed rpm because this
 # host cannot compile the webview feature; any distribution other than Fedora;
@@ -127,7 +127,7 @@ export WEBKIT_INJECTED_BUNDLE_PATH="${APPDIR}/usr/lib/webkitgtk-6.0/injected-bun
 # inside it, so a host with something mounted under /usr/libexec takes the
 # fallback.
 #
-# CORDIAL_APPIMAGE_NO_WRAP=1 skips it entirely; CORDIAL_APPIMAGE_WRAPPED is
+# VANTA_APPIMAGE_NO_WRAP=1 skips it entirely; VANTA_APPIMAGE_WRAPPED is
 # the recursion guard and is set by the re-exec, not by a user.
 #
 # **Everything up to this comment was measured against a Fedora-built
@@ -158,8 +158,8 @@ export WEBKIT_INJECTED_BUNDLE_PATH="${APPDIR}/usr/lib/webkitgtk-6.0/injected-bun
 # ruled out either. Treat the path-bind defect this block fixes as fixed,
 # and the web view as still not verified end-to-end, until this is chased
 # on a host that actually has the directory.
-if [ -z "${CORDIAL_APPIMAGE_WRAPPED:-}" ] \
-   && [ -z "${CORDIAL_APPIMAGE_NO_WRAP:-}" ] \
+if [ -z "${VANTA_APPIMAGE_WRAPPED:-}" ] \
+   && [ -z "${VANTA_APPIMAGE_NO_WRAP:-}" ] \
    && [ -d "${APPDIR}/usr/libexec/webkitgtk-6.0" ] \
    && [ -d /usr/libexec ]; then
     for bwrap in "${APPDIR}/usr/bin/bwrap" /usr/bin/bwrap; do
@@ -231,7 +231,7 @@ if [ -z "${CORDIAL_APPIMAGE_WRAPPED:-}" ] \
         # falls through to the warning, instead of aborting the launch.
         "$bwrap" "${args[@]}" -- /bin/true >/dev/null 2>&1 || continue
 
-        export CORDIAL_APPIMAGE_WRAPPED=1
+        export VANTA_APPIMAGE_WRAPPED=1
         exec "$bwrap" "${args[@]}" -- "${APPDIR}/AppRun" "$@"
     done
 
@@ -239,13 +239,13 @@ if [ -z "${CORDIAL_APPIMAGE_WRAPPED:-}" ] \
     # a blank sign-in window is otherwise read as a Roblox problem, a network
     # problem, or the URL policy refusing something, and it is none of those.
     if [ ! -x /usr/libexec/webkitgtk-6.0/WebKitNetworkProcess ]; then
-        echo "cordial: could not set up a mount namespace (no usable bwrap, or" >&2
+        echo "vanta: could not set up a mount namespace (no usable bwrap, or" >&2
         echo "  unprivileged overlayfs refused), and this host has no WebKitGTK" >&2
         echo "  helper at /usr/libexec/webkitgtk-6.0. Sign-in will open a blank" >&2
-        echo "  window. Install a distribution package of Cordial instead, or" >&2
+        echo "  window. Install a distribution package of Vanta instead, or" >&2
         echo "  install WebKitGTK 6.0 -- on Fedora that puts the helpers at the" >&2
         echo "  path above; elsewhere it does not, and will not help." >&2
     fi
 fi
 
-exec "${APPDIR}/usr/bin/cordial-shell" "$@"
+exec "${APPDIR}/usr/bin/vanta-shell" "$@"

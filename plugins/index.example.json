@@ -10,7 +10,7 @@
         "log"
       ],
       "dependencies": {},
-      "url": "https://example.invalid/cordial/flag-inspector-1.0.0.tar.zst",
+      "url": "https://example.invalid/vanta/flag-inspector-1.0.0.tar.zst",
       "hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
     },
     {
@@ -24,7 +24,7 @@
         "log"
       ],
       "dependencies": {},
-      "url": "https://example.invalid/cordial/discord-presence-1.1.0.tar.zst",
+      "url": "https://example.invalid/vanta/discord-presence-1.1.0.tar.zst",
       "hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
     },
     {
@@ -41,7 +41,7 @@
       "dependencies": {
         "flag-inspector": "^1.0.0"
       },
-      "url": "https://example.invalid/cordial/flag-profiles-0.3.1.tar.zst",
+      "url": "https://example.invalid/vanta/flag-profiles-0.3.1.tar.zst",
       "hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
     }
   ]

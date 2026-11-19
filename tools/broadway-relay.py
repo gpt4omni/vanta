@@ -1,7 +1,7 @@
 """Bridge a filesystem unix socket onto broadwayd's abstract one.
 
 **This does not yet give you a working headless display, and the last step is
-not ours.** It fixes the connection -- with it, GTK opens a display and Cordial
+not ours.** It fixes the connection -- with it, GTK opens a display and Vanta
 gets as far as enumerating a monitor -- and then broadwayd aborts. See
 `docs/analysis/headless-gtk.md` for the whole measurement, including the
 twelve-line GTK control that fails identically.

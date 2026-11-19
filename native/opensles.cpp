@@ -2,7 +2,7 @@
 //
 // `libOpenSLES.so` was listed in `EMPTY_LIBRARIES` on the basis that Roblox
 // consulted it only through `dlsym`, if at all. That was true of the build
-// Cordial was first developed against. It is not true of current builds, which
+// Vanta was first developed against. It is not true of current builds, which
 // reference eight OpenSL symbols directly:
 //
 //     slCreateEngine
@@ -573,7 +573,7 @@ struct AudioPlayerObject {
     std::atomic<SLuint32> state{SL_OBJECT_STATE_UNREALIZED};
     std::atomic<SLuint32> playState{SL_PLAYSTATE_STOPPED};
 
-    cordial::audio::PlaybackStream stream;
+    vanta::audio::PlaybackStream stream;
 
     // Format, captured at CreateAudioPlayer time from the caller's
     // SLDataFormat_PCM and used to open `stream` at Realize.
@@ -627,7 +627,7 @@ SLresult player_Realize(SLObjectItf self, SLboolean) {
     // choice that only applied to two of the three would be a setting that
     // works or does not depending on a decision the user never sees.
     if (!p->stream.open(p->rateHz, p->channels, p->bitsPerSample, p->containerBits, p->bigEndian,
-                         p->numBuffers, cordial::audio::configured_output_device())) {
+                         p->numBuffers, vanta::audio::configured_output_device())) {
         // pipewire_backend.cpp already printed the specific reason (unsupported
         // layout, or the stream failed to connect).
         return SL_RESULT_CONTENT_UNSUPPORTED;
@@ -885,7 +885,7 @@ SLresult androidconfig_SetConfiguration(SLAndroidConfigurationItf, const SLchar*
                 std::memcpy(&value, pConfigValue, sizeof(SLuint32));
             }
             std::fprintf(stderr,
-                "I/Cordial-OpenSLES         SLAndroidConfigurationItf::SetConfiguration('%s', "
+                "I/Vanta-OpenSLES         SLAndroidConfigurationItf::SetConfiguration('%s', "
                 "%u, %u bytes) — accepted and discarded; there is no Android audio path to "
                 "select on this host.\n", key.c_str(), value, valueSize);
         }
@@ -932,7 +932,7 @@ SLresult androidconfig_ReleaseJavaProxy(SLAndroidConfigurationItf, SLuint32) {
 //
 // Pausing destroying the stream rather than deactivating it is the same rule
 // as `CaptureStream::close`'s: a paused-but-connected capture node is still a
-// lit indicator and still shows every other application that Cordial holds the
+// lit indicator and still shows every other application that Vanta holds the
 // device. Samples arriving during a pause are discarded either way, so nothing
 // is lost by not being there for them.
 
@@ -956,7 +956,7 @@ struct AudioRecorderObject {
     std::atomic<SLuint32> state{SL_OBJECT_STATE_UNREALIZED};
     std::atomic<SLuint32> recordState{SL_RECORDSTATE_STOPPED};
 
-    cordial::audio::CaptureStream capture;
+    vanta::audio::CaptureStream capture;
 
     uint32_t rateHz = 0;
     uint32_t channels = 0;
@@ -1043,13 +1043,13 @@ struct AudioRecorderObject {
     bool start_capture() {
         if (capture.is_open()) return true;
         // Empty target unless the user chose a microphone
-        // (`CORDIAL_AUDIO_SOURCE`): `CaptureStream::open` then connects to
+        // (`VANTA_AUDIO_SOURCE`): `CaptureStream::open` then connects to
         // whatever PipeWire calls the default source, read at this moment
         // rather than cached, so changing the desktop's default microphone
         // between two recordings is picked up without restarting the client.
         if (!capture.open(rateHz, channels,
-                          cordial::audio::resolve_input_target(
-                              cordial::audio::configured_input_device()))) {
+                          vanta::audio::resolve_input_target(
+                              vanta::audio::configured_input_device()))) {
             return false;
         }
         pumping.store(true);
@@ -1146,7 +1146,7 @@ SLresult record_SetRecordState(SLRecordItf self, SLuint32 state) {
                 // paying for: the engine would sit on a buffer queue that never
                 // drains, with nothing to say why.
                 std::fprintf(stderr,
-                    "E/Cordial-OpenSLES         SetRecordState(RECORDING) could not open a "
+                    "E/Vanta-OpenSLES         SetRecordState(RECORDING) could not open a "
                     "capture stream; staying STOPPED rather than reporting a recording that "
                     "is not happening.\n");
                 r->recordState.store(SL_RECORDSTATE_STOPPED);
@@ -1450,7 +1450,7 @@ SLresult engine_CreateAudioRecorder(SLEngineItf, SLObjectItf* pRecorder, SLDataS
     if (srcLocator->deviceType != SL_IODEVICE_AUDIOINPUT) return SL_RESULT_CONTENT_UNSUPPORTED;
     if (srcLocator->deviceID != SL_DEFAULTDEVICEID_AUDIOINPUT) {
         std::fprintf(stderr,
-            "E/Cordial-OpenSLES         CreateAudioRecorder asked for input device id 0x%08X; "
+            "E/Vanta-OpenSLES         CreateAudioRecorder asked for input device id 0x%08X; "
             "only SL_DEFAULTDEVICEID_AUDIOINPUT is implemented, and serving a different "
             "microphone than the one asked for would be worse than refusing.\n",
             srcLocator->deviceID);
@@ -1474,7 +1474,7 @@ SLresult engine_CreateAudioRecorder(SLEngineItf, SLObjectItf* pRecorder, SLDataS
     if (fmt->bitsPerSample != 16 || fmt->containerSize != 16 ||
         fmt->endianness == SL_BYTEORDER_BIGENDIAN) {
         std::fprintf(stderr,
-            "E/Cordial-OpenSLES         CreateAudioRecorder asked for %u-bit samples in a "
+            "E/Vanta-OpenSLES         CreateAudioRecorder asked for %u-bit samples in a "
             "%u-bit container; this backend records signed 16-bit native-endian PCM only.\n",
             fmt->bitsPerSample, fmt->containerSize);
         return SL_RESULT_CONTENT_UNSUPPORTED;
@@ -1503,7 +1503,7 @@ SLresult engine_CreateAudioRecorder(SLEngineItf, SLObjectItf* pRecorder, SLDataS
     // records through OpenSL ES becomes distinguishable from one that does not,
     // and nobody has yet observed it happen. No microphone is opened here.
     std::fprintf(stderr,
-        "I/Cordial-OpenSLES         CreateAudioRecorder(%u Hz, %u channel(s), %u buffers) — "
+        "I/Vanta-OpenSLES         CreateAudioRecorder(%u Hz, %u channel(s), %u buffers) — "
         "recorder created; no capture stream exists until SetRecordState(RECORDING).\n",
         recorder->rateHz, recorder->channels, recorder->numBuffers);
 
@@ -1602,14 +1602,14 @@ uint32_t slCreateEngine(void** engine, uint32_t numOptions, const void* pEngineO
     (void)pEngineOptions;
 
     // Announced on entry, before anything can decline. Whether the engine calls
-    // this at all is the first question about Cordial's audio and it has been
+    // this at all is the first question about Vanta's audio and it has been
     // answered "not at the Landing screen" only — with no line printed on the
     // way in, an absent engine and a refused one looked identical in a log, and
     // the PipeWire "session reachable" line below is not a substitute because
     // it is also printed by device enumeration and by `supportsAAudio()` --
     // which is why that line no longer claims anything about OpenSL ES.
     std::fprintf(stderr,
-        "I/Cordial-OpenSLES         slCreateEngine called by the engine (%u option(s), %u "
+        "I/Vanta-OpenSLES         slCreateEngine called by the engine (%u option(s), %u "
         "interface(s) requested).\n", numOptions, numInterfaces);
 
     if (engine) *engine = nullptr;
@@ -1622,7 +1622,7 @@ uint32_t slCreateEngine(void** engine, uint32_t numOptions, const void* pEngineO
         if (required && id != SL_IID_ENGINE) return SL_RESULT_FEATURE_UNSUPPORTED;
     }
 
-    if (!cordial::audio::pipewire_available()) {
+    if (!vanta::audio::pipewire_available()) {
         return SL_RESULT_FEATURE_UNSUPPORTED;
     }
     if (!engine) return SL_RESULT_PARAMETER_INVALID;
@@ -1634,12 +1634,12 @@ uint32_t slCreateEngine(void** engine, uint32_t numOptions, const void* pEngineO
     return SL_RESULT_SUCCESS;
 }
 
-struct CordialSymbol {
+struct VantaSymbol {
     const char* name;
     void* address;
 };
 
-static const CordialSymbol kSymbols[] = {
+static const VantaSymbol kSymbols[] = {
     {"slCreateEngine", reinterpret_cast<void*>(&slCreateEngine)},
     {"SL_IID_ENGINE", &SL_IID_ENGINE},
     {"SL_IID_PLAY", &SL_IID_PLAY},
@@ -1650,7 +1650,7 @@ static const CordialSymbol kSymbols[] = {
     {"SL_IID_ANDROIDCONFIGURATION", &SL_IID_ANDROIDCONFIGURATION},
 };
 
-const CordialSymbol* cordial_opensles_symbols(size_t* count) {
+const VantaSymbol* vanta_opensles_symbols(size_t* count) {
     if (count) *count = sizeof(kSymbols) / sizeof(kSymbols[0]);
     return kSymbols;
 }

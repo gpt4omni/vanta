@@ -1,8 +1,15 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/luohoa97/cordial/main/packaging/banner.svg" alt="Cordial" width="460">
+  <img src="https://raw.githubusercontent.com/gpt4omni/vanta/main/packaging/banner.svg" alt="Vanta" width="460">
 </p>
 
-# Cordial
+# Vanta
+
+Vanta is a fork of Cordial (https://github.com/luohoa97/cordial)
+
+The application, binaries, MCP tools and `VANTA_` environment variables use the
+Vanta name. Configuration and profiles live under `vanta` in the XDG directories;
+existing Cordial profiles are not migrated automatically. Historical records and
+the original artwork retain their upstream names.
 
 Runs Roblox's official Android build natively on Linux, with no emulator,
 container or virtual machine, on x86-64 or aarch64. GPL-3.0-or-later.
@@ -10,43 +17,43 @@ container or virtual machine, on x86-64 or aarch64. GPL-3.0-or-later.
 <p align="center">
   <a href="https://discord.gg/qJzU3Xfr9b">
     <img src="https://img.shields.io/badge/Discord-join%20the%20server-5865F2?style=for-the-badge&logo=discord&logoColor=white"
-         alt="Join the Cordial Discord">
+         alt="Join the Vanta Discord">
   </a>
-  <a href="https://cordial.mintlify.app">
-    <img src="https://img.shields.io/badge/Docs-cordial.mintlify.app-FF1B6B?style=for-the-badge&logo=readthedocs&logoColor=white"
-         alt="Read the Cordial documentation">
+  <a href="https://vanta.mintlify.app">
+    <img src="https://img.shields.io/badge/Docs-vanta.mintlify.app-FF1B6B?style=for-the-badge&logo=readthedocs&logoColor=white"
+         alt="Read the Vanta documentation">
   </a>
 </p>
 
-Documentation: **[cordial.mintlify.app](https://cordial.mintlify.app)**, built
+Documentation: **[vanta.mintlify.app](https://vanta.mintlify.app)**, built
 from [`docs/`](docs/README.md).
 
 ## Demo
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/luohoa97/cordial/main/docs/media/cordial-doors.gif"
-       alt="Roblox DOORS running under Cordial on Linux"
+  <img src="https://raw.githubusercontent.com/gpt4omni/vanta/main/docs/media/cordial-doors.gif"
+       alt="Roblox DOORS running under Vanta on Linux"
        width="560">
 </p>
 
-Roblox **DOORS**, unmodified, on Cordial.
-[Full size](https://raw.githubusercontent.com/luohoa97/cordial/main/docs/media/cordial-doors.mp4),
+Roblox **DOORS**, unmodified, on Vanta.
+[Full size](https://raw.githubusercontent.com/gpt4omni/vanta/main/docs/media/cordial-doors.mp4),
 more in [`docs/media`](docs/media).
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/luohoa97/cordial/main/docs/media/cordial-vr.webp"
+  <img src="https://raw.githubusercontent.com/gpt4omni/vanta/main/docs/media/cordial-vr.webp"
        alt="Roblox's Meta Quest build in VR on Linux, playing TUNNELER"
        width="360">
 </p>
 
 Roblox's **Meta Quest** build in VR on Linux, playing
 [TUNNELER](https://www.roblox.com/games/4635669637/TUNNELER).
-[Full size](https://raw.githubusercontent.com/luohoa97/cordial/main/docs/media/cordial-vr.mp4);
+[Full size](https://raw.githubusercontent.com/gpt4omni/vanta/main/docs/media/cordial-vr.mp4);
 setting it up is in [`docs/vr.md`](docs/vr.md).
 
-## Why Cordial
+## Why Vanta
 
-I used Sober for a year, and it worked really well. Cordial started off as a weekend project because I was bored, and I believe a project like this is something people have the right to read, modify, and learn from.
+I used Sober for a year, and it worked really well. Vanta started off as a weekend project because I was bored, and I believe a project like this is something people have the right to read, modify, and learn from.
 
 Credit to sober for making android Roblox runtimes possible
 
@@ -63,14 +70,14 @@ Servers list, and joining a private server (0.19.0).
 
 | | |
 |---|---|
-| Roblox can stop drawing on the loading screen after sign-in (the launcher restarts it, up to twice) | [#92](https://github.com/luohoa97/cordial/issues/92) |
-| No window on some COSMIC, KWin and wlroots setups (it opens on KWin on a Steam Deck) | [#38](https://github.com/luohoa97/cordial/issues/38) |
+| Roblox can stop drawing on the loading screen after sign-in (the launcher restarts it, up to twice) | [#92](https://github.com/gpt4omni/vanta/issues/92) |
+| No window on some COSMIC, KWin and wlroots setups (it opens on KWin on a Steam Deck) | [#38](https://github.com/gpt4omni/vanta/issues/38) |
 
 Controller buttons and sticks work on common pads; the brand of glyph Roblox
 draws may be wrong, and a pad with an unusual layout may have a stick misread
 ([`docs/controllers.md`](docs/controllers.md)). No force feedback.
 
-Roblox's own Record Video button does nothing on Android. Cordial can record
+Roblox's own Record Video button does nothing on Android. Vanta can record
 the session itself, with `ffmpeg`, with or without the game's own sound. Press
 F9 in the game window to start and stop ([`docs/recording.md`](docs/recording.md)).
 
@@ -85,9 +92,9 @@ working or broken through issues, not verified here.
 
 ## How it works
 
-Cordial mmaps and relocates Roblox's unmodified `libroblox.so` with a ported
+Vanta mmaps and relocates Roblox's unmodified `libroblox.so` with a ported
 AOSP bionic linker rather than the system one. Every symbol the engine imports
-resolves as **cordial** (an Android behaviour implemented here), **host**
+resolves as **vanta** (an Android behaviour implemented here), **host**
 (forwarded to glibc), or **stub** — and a stub reports failure rather than
 faking success, so a gap stays visible instead of surfacing later as an
 unrelated bug. `libjnivm` stands in for Android's ART, and a framework layer
@@ -109,22 +116,22 @@ aarch64 is new and untested on real ARM64 hardware — see
 checked. The Arch package is x86-64 only; Arch Linux itself does not build for
 aarch64.
 
-You also need Roblox's Android build. Cordial does not ship it. First run has a
+You also need Roblox's Android build. Vanta does not ship it. First run has a
 **Download Roblox** button that fetches it from APKPure, refuses anything not
 signed by Roblox's own certificate, and keeps its own copy. If
 [Sober](https://sober.vinegarhq.org/) is installed, you can copy its build in
-instead; Cordial does not follow Sober's updates afterwards. Details in
+instead; Vanta does not follow Sober's updates afterwards. Details in
 [`docs/install.md`](docs/install.md).
 
 **Flatpak (recommended):** it runs on the same GNOME 50 runtime everywhere, with
-the GTK, WebKit, Vulkan loader and audio libraries Cordial is built and tested
+the GTK, WebKit, Vulkan loader and audio libraries Vanta is built and tested
 against. Most compatibility problems reported with the other packages, from a
 distribution's own versions of those libraries, do not happen in it.
 
 ```bash
-flatpak remote-add --if-not-exists cordial https://luohoa97.github.io/cordial/cordial.flatpakrepo
-flatpak install cordial io.github.luohoa97.Cordial
-flatpak run io.github.luohoa97.Cordial
+flatpak remote-add --if-not-exists vanta https://gpt4omni.github.io/vanta/vanta.flatpakrepo
+flatpak install vanta io.github.gpt4omni.Vanta
+flatpak run io.github.gpt4omni.Vanta
 ```
 
 The remote is signed. Its key fingerprint, and what to do if you added it before
@@ -135,43 +142,43 @@ A plain install lands on `stable`, which moves only when a release is tagged.
 `master` follows every commit to `main`:
 
 ```bash
-flatpak install cordial io.github.luohoa97.Cordial//master
+flatpak install vanta io.github.gpt4omni.Vanta//master
 ```
 
-**AppImage**, from the [releases page](https://github.com/luohoa97/cordial/releases).
+**AppImage**, from the [releases page](https://github.com/gpt4omni/vanta/releases).
 Newer and less proven than the Flatpak; its web-view path fix has been measured
 on a stand-in, not on a real machine without WebKitGTK, and not outside Fedora
 ([`docs/install.md`](docs/install.md#appimage)):
 
 ```bash
-chmod +x Cordial-*.AppImage && ./Cordial-*.AppImage   # -x86_64 or -aarch64
+chmod +x Vanta-*.AppImage && ./Vanta-*.AppImage   # -x86_64 or -aarch64
 ```
 
 **Packages** on the releases page, each with a cosign signature:
 
 ```bash
-sudo apt install ./cordial_*_amd64.deb      # or _arm64.deb
-sudo dnf install ./cordial-*.x86_64.rpm     # or .aarch64.rpm; Fedora 44 only
-sudo pacman -U cordial-*-x86_64.pkg.tar.zst # x86-64 only -- see above
+sudo apt install ./vanta_*_amd64.deb      # or _arm64.deb
+sudo dnf install ./vanta-*.x86_64.rpm     # or .aarch64.rpm; Fedora 44 only
+sudo pacman -U vanta-*-x86_64.pkg.tar.zst # x86-64 only -- see above
 ```
 
 Signed apt, dnf and pacman repositories are published too; the setup commands
-are in [`docs/install.md`](docs/install.md). The `cordial`,
-`cordial-bin` and `cordial-git` packages on the AUR are maintained by someone
+are in [`docs/install.md`](docs/install.md). The `vanta`,
+`vanta-bin` and `vanta-git` packages on the AUR are maintained by someone
 outside this project and were last updated at 0.17.0.
 
 **From source:**
 
 ```bash
-git clone --recursive https://github.com/luohoa97/cordial
-cd cordial
+git clone --recursive https://github.com/gpt4omni/vanta
+cd vanta
 cargo build --release
 ```
 
 Needs Clang — AOSP bionic uses C11 `_Atomic` in C++ headers and GCC rejects it
 — plus GTK4 >= 4.12 and libadwaita >= 1.5 development packages. PipeWire and
 WebKitGTK-6.0 headers are optional and probed at build time; without them the
-binary is quietly less capable. Play in VR needs `--features cordial-runtime/vr`
+binary is quietly less capable. Play in VR needs `--features vanta-runtime/vr`
 and Boost's headers. The Nix flake's package builds and runs
 `--help` and `--diagnostics`, but has never run a game
 ([CONTRIBUTING.md](CONTRIBUTING.md#or-use-the-flake)). Full list:
@@ -179,21 +186,21 @@ and Boost's headers. The Nix flake's package builds and runs
 
 ## Configuration
 
-**FastFlags** live in `~/.local/share/cordial/profiles/<profile>/flags.json`, or
-wherever `CORDIAL_FLAGS` points. Settings → FastFlags → Import reads a
-Bloxstrap, Fishstrap or Sober list (`cordial --import-flags` does it from a
+**FastFlags** live in `~/.local/share/vanta/profiles/<profile>/flags.json`, or
+wherever `VANTA_FLAGS` points. Settings → FastFlags → Import reads a
+Bloxstrap, Fishstrap or Sober list (`vanta --import-flags` does it from a
 terminal). Layering, syntax and import: [`docs/fastflags.md`](docs/fastflags.md).
 
 **VR (experimental, x86-64).** Settings → VR → Play in VR runs the Meta Quest build of Roblox,
 copied from your own headset, through an OpenXR runtime such as WiVRn. See
 [`docs/vr.md`](docs/vr.md).
 
-**Something not working?** `cordial --doctor` checks the display, GPU and
+**Something not working?** `vanta --doctor` checks the display, GPU and
 Vulkan, sound, keyring and the Roblox build, with what to do about each; Report
 a Problem in the main menu shows the same. [`docs/doctor.md`](docs/doctor.md).
 
 **Mouse acceleration** is a Settings control — cursor and camera (the
-default), or cursor only for raw camera movement — stored in `$XDG_CONFIG_HOME/cordial/shell.json`.
+default), or cursor only for raw camera movement — stored in `$XDG_CONFIG_HOME/vanta/shell.json`.
 
 **Shaders**, sharpening and anti-aliasing over the game through
 [vkBasalt](https://github.com/DadSchoorse/vkBasalt)'s Vulkan layer, are a
@@ -206,10 +213,10 @@ MangoHud's Vulkan layer is installed. Install routes and what it shows:
 [`docs/mangohud.md`](docs/mangohud.md).
 
 **PartyDeck and gamescope.** Several windows side by side, one profile each,
-started with `cordial --profile P1 --play`: [`docs/partydeck.md`](docs/partydeck.md).
+started with `vanta --profile P1 --play`: [`docs/partydeck.md`](docs/partydeck.md).
 
 **NVIDIA graphics** have not been tested on NVIDIA hardware. What is known from
-people running the same engine, what Cordial does about it, and the Flatpak
+people running the same engine, what Vanta does about it, and the Flatpak
 driver-extension trap: [`docs/nvidia.md`](docs/nvidia.md).
 
 **Profiles** are picked from the button at the left of the header bar. Its menu also holds New Profile… and
@@ -220,13 +227,13 @@ game; Display refresh (the default) follows your monitor's rate above 60 Hz. Any
 two-minute settings refresh. Details: [`docs/fastflags.md`](docs/fastflags.md).
 
 **Separate data roots** per instance come from `XDG_DATA_HOME`, which moves both
-the profile root and the client's data directory. `CORDIAL_PROFILE_ROOT` moves
+the profile root and the client's data directory. `VANTA_PROFILE_ROOT` moves
 only the profile root and not the client.
 
 **Plugins** install from a `.tar.zst` archive through **Settings → Plugins →
-Install from a file** and unpack to `~/.local/share/cordial/plugins/<id>/`.
+Install from a file** and unpack to `~/.local/share/vanta/plugins/<id>/`.
 They run as separate processes on Deno with named capabilities, default-deny,
-granted per profile in `plugin-grants.json`. Four ship with Cordial; only FPS
+granted per profile in `plugin-grants.json`. Four ship with Vanta; only FPS
 Flex starts switched off.
 Installing, updating, removing, enabling, disabling or granting one reaches an
 already-running client within a second or two, no restart needed.
@@ -238,7 +245,7 @@ Runtime knobs — monitor, resolution, DPI scale, frame pacing, pointer lock,
 controller glyphs — are environment variables listed in
 [`docs/install.md`](docs/install.md).
 
-## What Cordial is not
+## What Vanta is not
 
 **Not affiliated with Roblox Corporation**, not endorsed by it, and not
 approved by it. Roblox does not support third-party clients and bans accounts
@@ -252,7 +259,7 @@ hooking and no memory access into the Roblox process — absent from the API
 rather than disabled, so there is no primitive to re-enable in a fork
 ([`docs/adr/ADR-001-in-process-hooking.md`](docs/adr/ADR-001-in-process-hooking.md),
 [`docs/adr/ADR-003-plugin-isolation.md`](docs/adr/ADR-003-plugin-isolation.md)).
-Requests for it are declined. Plugins extend Cordial, not Roblox.
+Requests for it are declined. Plugins extend Vanta, not Roblox.
 
 Also permanently out of scope: client-side integrity flags, watermarks, and
 obfuscation-as-security.
@@ -265,18 +272,18 @@ the ones that were reversed, are written down in [`docs/adr/`](docs/adr).
 ## Contributing
 
 [`CONTRIBUTING.md`](CONTRIBUTING.md). Bugs and feature requests go on
-[GitHub](https://github.com/luohoa97/cordial/issues/new/choose), not Discord —
+[GitHub](https://github.com/gpt4omni/vanta/issues/new/choose), not Discord —
 every template needs a Diagnostics block from the main menu's **Report a
-Problem** or `cordial --diagnostics`, and the bug templates want its **Save
+Problem** or `vanta --diagnostics`, and the bug templates want its **Save
 logs…** archive attached. Security issues go through
-[a private advisory](https://github.com/luohoa97/cordial/security/advisories/new).
+[a private advisory](https://github.com/gpt4omni/vanta/security/advisories/new).
 
 Questions and help: [Discord](https://discord.gg/qJzU3Xfr9b).
 
 ## Licence
 
 GPL-3.0-or-later. See [`LICENSE`](LICENSE). The one exception is
-[`crates/cordial-protocol`](crates/cordial-protocol), the wire protocol other
+[`crates/vanta-protocol`](crates/vanta-protocol), the wire protocol other
 launchers and runtimes implement, which is `MIT OR Apache-2.0`.
 
 Third-party components keep their own licences, reproduced in

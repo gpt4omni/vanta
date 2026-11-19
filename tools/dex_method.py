@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Look up method signatures in a dex file.
 
-Every Java method Cordial implements has to match Roblox's descriptor exactly —
+Every Java method Vanta implements has to match Roblox's descriptor exactly —
 libjnivm binds hooks by descriptor, and a mismatch is silent (the hook registers
 and is simply never called). Guessing signatures from the AGDK source is close
 enough to be dangerous, because they change between versions and Roblox ships

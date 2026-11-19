@@ -10,7 +10,7 @@
 // **What `localstorageplatforminterface` is, and what it is not.**
 // `docs/analysis/flag-init.md` §12 already separates two things the dex and
 // the engine both call "storage": `RbxStorage`, the content cache that gates
-// on `LocalStorageManager.getAllocatableBytes` and that Cordial has never
+// on `LocalStorageManager.getAllocatableBytes` and that Vanta has never
 // found a way to construct directly, and *this* -- `ILocalStorageHandlerCore`
 // and `IPlatformLocalStorageHandler` -- which is a small per-user key/value
 // store the engine asks the platform to hold on its behalf. The two are
@@ -29,7 +29,7 @@
 // implementing `IPlatformLocalStorageHandler` and hands it to this static, and
 // the engine then calls straight back into that object's own methods --
 // `getSecureValue`, `setCurrentUser` and the rest -- whenever it wants to read
-// or write something. Cordial has no Java side to build that object, so this
+// or write something. Vanta has no Java side to build that object, so this
 // file is it: `PlatformLocalStorageHandler` below is a libjnivm `Object`
 // subclass whose hooked methods answer exactly the calls the interface
 // declares, in the same idiom `init_params.cpp`'s `AndroidActivity` and
@@ -54,12 +54,12 @@
 // attempt at the secrecy the method names claim, which is a design this
 // project has an explicit rule against repeating (see `secrets.rs`'s own
 // header, and the note below). What is reused is the fact of the call and its
-// argument shapes; the storage behind it is Cordial's own.
+// argument shapes; the storage behind it is Vanta's own.
 //
 // **This handles secrets, named as such.** `getSecureValue`/`setSecureValue`
 // and their `ForUser`/`ForCurrentUser` twins carry per-account credentials --
 // the dex's own vocabulary, not a guess. AGENTS.md's rule and
-// `crates/cordial-runtime/src/secrets.rs`'s own header apply here exactly as
+// `crates/vanta-runtime/src/secrets.rs`'s own header apply here exactly as
 // they do to the cookie jar and the identity mirror: nothing below prints a
 // value or a user id at any verbosity. The user id is logged nowhere, not even
 // at trace level; only key names and byte counts are, the same restraint
@@ -72,10 +72,10 @@
 // only has two members, `Cookies` and `Identity`, each holding exactly one
 // document per profile; a per-user, arbitrary-key store does not fit that
 // shape, and the task that added this file left `secrets.rs` off limits to
-// edit. So `crates/cordial-runtime/src/bin/load.rs` carries a second, small
+// edit. So `crates/vanta-runtime/src/bin/load.rs` carries a second, small
 // implementation of the same *reasoning* -- keyring first, honest fallback,
 // nothing ever printed -- under its own schema, reachable from here only
-// through the four `cordial_local_storage_*` externs below. That module's own
+// through the four `vanta_local_storage_*` externs below. That module's own
 // header says why it is not simply a third `Kind`.
 //
 // **Never make a stub lie.** A value that was never stored, or that the
@@ -97,7 +97,7 @@
 #include <string>
 #include <vector>
 
-namespace cordial {
+namespace vanta {
 
 using jnivm::Class;
 using jnivm::ENV;
@@ -122,7 +122,7 @@ std::shared_ptr<String> S(const char* v) {
 }
 } // namespace
 
-/// `CORDIAL_TRACE_LOCAL_STORAGE=1` -- did the engine ever call this interface?
+/// `VANTA_TRACE_LOCAL_STORAGE=1` -- did the engine ever call this interface?
 ///
 /// `docs/analysis/flag-init.md` §40 established that handing the platform
 /// implementation over stops the engine's "Not available on the current
@@ -137,7 +137,7 @@ std::shared_ptr<String> S(const char* v) {
 /// `secrets.rs`'s. Key names and byte counts only, which is the same line the
 /// Rust side draws.
 static bool trace_local_storage() {
-    static const bool on = getenv("CORDIAL_TRACE_LOCAL_STORAGE") != nullptr;
+    static const bool on = getenv("VANTA_TRACE_LOCAL_STORAGE") != nullptr;
     return on;
 }
 
@@ -146,9 +146,9 @@ static void note_call(const char* method, const char* key) {
         return;
     }
     if (key) {
-        fprintf(stderr, "[cordial] local storage: %s key=%s\n", method, key);
+        fprintf(stderr, "[vanta] local storage: %s key=%s\n", method, key);
     } else {
-        fprintf(stderr, "[cordial] local storage: %s\n", method);
+        fprintf(stderr, "[vanta] local storage: %s\n", method);
     }
 }
 
@@ -162,24 +162,24 @@ bool identity_known();
 
 // The Rust side of the secure store. Declared here rather than pulled from a
 // generated header for the reason every cross-language boundary in this
-// directory is: `cordial-linker-sys`, which owns the usual generated bindings
+// directory is: `vanta-linker-sys`, which owns the usual generated bindings
 // for `native/`, was off limits to the task that added this file, so these
 // four symbols are declared directly against what
-// `crates/cordial-runtime/src/bin/load.rs` exports with `#[no_mangle]`.
+// `crates/vanta-runtime/src/bin/load.rs` exports with `#[no_mangle]`.
 //
 // Return codes, shared by all four: `0` succeeded (a "not found" read is a
 // success that found nothing, not a failure); anything negative is a reason
-// to answer the engine honestly rather than to guess. `cordial_local_storage_get`
+// to answer the engine honestly rather than to guess. `vanta_local_storage_get`
 // additionally distinguishes "absent" (`1` not set) from "present" (`1` set,
 // `*out_len` gives the length written) so the caller never has to infer one
 // from the other.
 extern "C" {
-int cordial_local_storage_get(long long user_id, const char* key, char* out, size_t out_cap,
+int vanta_local_storage_get(long long user_id, const char* key, char* out, size_t out_cap,
                                int* found, size_t* out_len);
-int cordial_local_storage_set(long long user_id, const char* key, const char* value,
+int vanta_local_storage_set(long long user_id, const char* key, const char* value,
                               size_t value_len);
-int cordial_local_storage_delete(long long user_id, const char* key);
-int cordial_local_storage_delete_user(long long user_id);
+int vanta_local_storage_delete(long long user_id, const char* key);
+int vanta_local_storage_delete_user(long long user_id);
 } // extern "C"
 
 // ---------------------------------------------------------------------------
@@ -218,7 +218,7 @@ jlong current_user_locked() {
 /// `setPlatformImpl` crashed the process for as long as it was enabled.
 /// `docs/analysis/flag-init.md` §39 inferred that libjnivm's own
 /// `NewWeakGlobalRef` was returning null and djinni was asserting on that.
-/// **That inference is wrong and §40 retracts it.** A `CORDIAL_JNI_TRACE=ON`
+/// **That inference is wrong and §40 retracts it.** A `VANTA_JNI_TRACE=ON`
 /// run with a print added to `NewWeakGlobalRef` shows it is never called at
 /// all -- not once, in a run that throws `djinni (djinni_support.cpp:529):
 /// weakRef` thirteen times. What the trace shows instead, in the last dozen
@@ -317,7 +317,7 @@ public:
 /// desktop keyring holds for this profile and reading each one's attributes
 /// back, which is a second, heavier D-Bus round trip this call has never been
 /// measured to need. What it reports instead is honest on its own narrower
-/// terms -- the users Cordial has actually seen this run, seeded from the
+/// terms -- the users Vanta has actually seen this run, seeded from the
 /// signed-in identity and grown by `setCurrentUser`/`setSecureValueForUser` --
 /// which for the account-per-profile shape this project runs is the same set
 /// either way. `size()`/`isEmpty()` only, matching `JavaMap`'s and
@@ -340,7 +340,7 @@ public:
 
 /// `com.roblox.protocols.localstorageplatforminterface.generated.IPlatformLocalStorageHandler`
 ///
-/// One instance, constructed once by `cordial_local_storage_set_platform_impl`
+/// One instance, constructed once by `vanta_local_storage_set_platform_impl`
 /// below and held by the engine for the life of the process -- the same
 /// lifetime `cookies.cpp`'s `g_handler` documents for the same reason: the
 /// engine calls back into this from its own thread, long after the call that
@@ -408,13 +408,13 @@ public:
         }
         jlong user = current_user();
         std::string k(*key);
-        int rc = cordial_local_storage_delete(static_cast<long long>(user), k.c_str());
+        int rc = vanta_local_storage_delete(static_cast<long long>(user), k.c_str());
         return rc == 0 ? JNI_TRUE : JNI_FALSE;
     }
 
     jboolean deleteUserValues(ENV*, jlong userId) {
         note_call("deleteUserValues", nullptr);
-        int rc = cordial_local_storage_delete_user(static_cast<long long>(userId));
+        int rc = vanta_local_storage_delete_user(static_cast<long long>(userId));
         std::lock_guard<std::mutex> lock(g_users_mutex);
         g_known_users.erase(userId);
         return rc == 0 ? JNI_TRUE : JNI_FALSE;
@@ -474,12 +474,12 @@ private:
         std::vector<char> buf(kMaxValue);
         int found = 0;
         size_t len = 0;
-        int rc = cordial_local_storage_get(static_cast<long long>(userId), k.c_str(), buf.data(),
+        int rc = vanta_local_storage_get(static_cast<long long>(userId), k.c_str(), buf.data(),
                                            buf.size(), &found, &len);
         if (rc != 0 || !found) {
             // Absent, a locked keyring, a value too large for `kMaxValue`, or
             // any other reason the store could not answer -- all of them are
-            // "nothing stored" to the engine. `crates/cordial-runtime/src/bin/
+            // "nothing stored" to the engine. `crates/vanta-runtime/src/bin/
             // load.rs` is where the distinction is logged; nothing here lies
             // about which one happened by returning "" for any of them.
             return nullptr;
@@ -500,14 +500,14 @@ private:
         if (v.size() > kMaxValue) {
             return JNI_FALSE;
         }
-        int rc = cordial_local_storage_set(static_cast<long long>(userId), k.c_str(), v.c_str(),
+        int rc = vanta_local_storage_set(static_cast<long long>(userId), k.c_str(), v.c_str(),
                                            v.size());
         return rc == 0 ? JNI_TRUE : JNI_FALSE;
     }
 };
 
 /// The descriptors this file actually registered, printed under
-/// `CORDIAL_TRACE_LOCAL_STORAGE=1`.
+/// `VANTA_TRACE_LOCAL_STORAGE=1`.
 ///
 /// Not decoration. libjnivm derives every hook's signature from the C++ types
 /// of the function it is handed, by way of a `typeid`-keyed map that any other
@@ -525,11 +525,11 @@ static void dump_registered(ENV* env, const char* name) {
     }
     auto c = env->GetClass(name);
     if (!c) {
-        fprintf(stderr, "[cordial] local storage: no class %s\n", name);
+        fprintf(stderr, "[vanta] local storage: no class %s\n", name);
         return;
     }
     for (auto& m : c->methods) {
-        fprintf(stderr, "[cordial] local storage: registered %s.%s%s%s\n", name, m->name.data(),
+        fprintf(stderr, "[vanta] local storage: registered %s.%s%s%s\n", name, m->name.data(),
                 m->signature.data(), m->_static ? "  (static)" : "");
     }
 }
@@ -538,7 +538,7 @@ static void dump_registered(ENV* env, const char* name) {
 ///
 /// **The reverse direction of the djinni scaffolding, registered only so a
 /// null answer can be read.** `setPlatformImpl` returns an
-/// `ILocalStorageHandlerCore`, and under Cordial it returns null every run --
+/// `ILocalStorageHandlerCore`, and under Vanta it returns null every run --
 /// measured, with the return value printed rather than discarded as it was
 /// until now. Two things produce that null and they mean opposite things:
 /// djinni's `fromCpp` hands back `nullptr` without touching JNI when the C++
@@ -560,7 +560,7 @@ public:
         p->nativeRef = ref;
         to_jni(env, p);
         if (trace_local_storage()) {
-            fprintf(stderr, "[cordial] local storage: ILocalStorageHandlerCore$CppProxy built\n");
+            fprintf(stderr, "[vanta] local storage: ILocalStorageHandlerCore$CppProxy built\n");
         }
         return p;
     }
@@ -590,7 +590,7 @@ void register_local_storage_classes(ENV* env) {
     dump_registered(env, "java/util/HashSet");
 }
 
-} // namespace cordial
+} // namespace vanta
 
 extern "C" {
 
@@ -600,7 +600,7 @@ extern "C" {
 /// A static native -- confirmed by mocktail's own call, which passes the
 /// *class* object as the receiver rather than constructing a core instance
 /// first (`ConfigureLocalStorage` in `legacy_runtime.cc`; see this file's
-/// header for what "confirmed" means here). Cordial builds the one argument
+/// header for what "confirmed" means here). Vanta builds the one argument
 /// the engine actually reads from and discards the `ILocalStorageHandlerCore`
 /// this returns -- nothing here has found a reason to call anything on it.
 ///
@@ -619,9 +619,9 @@ extern "C" {
 /// rather than merely failing quietly. §40 records it.
 ///
 /// It does not produce an `rbx-storage.db`; see §40's closing note.
-int cordial_local_storage_set_platform_impl(void* fn, char* err, size_t err_len) {
+int vanta_local_storage_set_platform_impl(void* fn, char* err, size_t err_len) {
     using Call = jobject (*)(JNIEnv*, jclass, jobject);
-    auto* env = cordial::process_env();
+    auto* env = vanta::process_env();
     if (!fn || !env) {
         snprintf(err, err_len, "no JavaVM, or setPlatformImpl is not exported");
         return -1;
@@ -629,11 +629,11 @@ int cordial_local_storage_set_platform_impl(void* fn, char* err, size_t err_len)
     try {
         auto cls = env->GetClass(
             "com/roblox/protocols/localstorageplatforminterface/generated/ILocalStorageHandlerCore");
-        auto handler = std::make_shared<cordial::PlatformLocalStorageHandler>();
-        cordial::to_jni(env, handler);
+        auto handler = std::make_shared<vanta::PlatformLocalStorageHandler>();
+        vanta::to_jni(env, handler);
         jobject core = reinterpret_cast<Call>(fn)(env->GetJNIEnv(),
-                                                  (jclass)cordial::to_jni(env, cls),
-                                                  (jobject)cordial::to_jni(env, handler));
+                                                  (jclass)vanta::to_jni(env, cls),
+                                                  (jobject)vanta::to_jni(env, handler));
         // The return was discarded until now and the discard hid a fact worth
         // having: djinni's `setPlatformImpl` returns the core it built, so a
         // null here means the engine declined to build one and everything
@@ -650,8 +650,8 @@ int cordial_local_storage_set_platform_impl(void* fn, char* err, size_t err_len)
             jni->ExceptionDescribe();
             jni->ExceptionClear();
         }
-        if (getenv("CORDIAL_TRACE_LOCAL_STORAGE")) {
-            fprintf(stderr, "[cordial] local storage: setPlatformImpl returned %s%s\n",
+        if (getenv("VANTA_TRACE_LOCAL_STORAGE")) {
+            fprintf(stderr, "[vanta] local storage: setPlatformImpl returned %s%s\n",
                     core ? "a core" : "null", pending ? ", exception pending" : "");
         }
         return 0;
@@ -669,7 +669,7 @@ int cordial_local_storage_set_platform_impl(void* fn, char* err, size_t err_len)
 /// The descriptor is read from the dex with `dexproto.py`, not guessed --
 /// `docs/analysis/flag-init.md` §16 records the class as the one call
 /// mocktail makes between `initializeNativeCode` and the settings handshake
-/// that Cordial did not. It is otherwise unrelated to the storage classes
+/// that Vanta did not. It is otherwise unrelated to the storage classes
 /// above; both live here because the task that added them could only create
 /// one new `.cpp` file (see the header).
 ///
@@ -679,11 +679,11 @@ int cordial_local_storage_set_platform_impl(void* fn, char* err, size_t err_len)
 /// same width/height comparison. Duplicated here rather than shared through a
 /// header, which is this directory's usual reason: one header for two
 /// constants would be the only one in `native/`.
-int cordial_update_screen_orientation(void* fn, int width, int height, char* err, size_t err_len) {
+int vanta_update_screen_orientation(void* fn, int width, int height, char* err, size_t err_len) {
     constexpr jint kOrientationPortrait = 1;
     constexpr jint kOrientationLandscape = 2;
     using Call = void (*)(JNIEnv*, jclass, jint);
-    auto* env = cordial::process_env();
+    auto* env = vanta::process_env();
     if (!fn || !env) {
         snprintf(err, err_len, "no JavaVM, or nativeUpdateScreenOrientation is not exported");
         return -1;
@@ -691,7 +691,7 @@ int cordial_update_screen_orientation(void* fn, int width, int height, char* err
     try {
         auto cls = env->GetClass("com/roblox/engine/jni/NativeInputInterface");
         jint orientation = width >= height ? kOrientationLandscape : kOrientationPortrait;
-        reinterpret_cast<Call>(fn)(env->GetJNIEnv(), (jclass)cordial::to_jni(env, cls), orientation);
+        reinterpret_cast<Call>(fn)(env->GetJNIEnv(), (jclass)vanta::to_jni(env, cls), orientation);
         return 0;
     } catch (const std::exception& e) {
         snprintf(err, err_len, "%s", e.what());

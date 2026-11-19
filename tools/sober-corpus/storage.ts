@@ -3,7 +3,7 @@
  *
  * Data lands in `tools/sober-corpus/data/` (gitignored — see the repo
  * `.gitignore` entry and ADR-017). It must never be committed: these are
- * third-party GitHub users' bug reports with no license grant to Cordial,
+ * third-party GitHub users' bug reports with no license grant to Vanta,
  * kept strictly as a local triage aid, never a redistributed artefact.
  *
  * Both `raw.jsonl` and `checkpoint.json` are written via write-to-temp-then-

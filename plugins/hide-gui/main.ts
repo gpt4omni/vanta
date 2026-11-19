@@ -30,7 +30,7 @@ const pending = new Map<number, (r: any) => void>();
 
 // A push is not a reply. A reply carries `status` and the `id` it answers; a
 // push carries `event` and no id, so a dispatcher that only looks up `id`
-// drops every push in silence -- which is how the `cordial/init` handshake
+// drops every push in silence -- which is how the `vanta/init` handshake
 // used to vanish in the other plugins. Copy this shape, not the lookup-only one.
 let onPush: (p: { event: string; payload: any }) => void = () => {};
 
@@ -66,14 +66,14 @@ const log = (message: string) => call("log.write", { message });
 /// Bloxstrap's group. Public entry, so joining is one click.
 const DEFAULT_GROUP = "32380007";
 
-// Cordial pushes `cordial/init` with this plugin's preference answers before
+// Vanta pushes `vanta/init` with this plugin's preference answers before
 // the plugin asks for anything. Waiting costs no round trip; waiting forever
 // would turn a host that stopped sending it into a plugin that never speaks.
 function waitForInit(ms: number): Promise<any | null> {
   return new Promise((resolve) => {
     const timer = setTimeout(() => resolve(null), ms);
     onPush = (p) => {
-      if (p.event !== "cordial/init") return;
+      if (p.event !== "vanta/init") return;
       clearTimeout(timer);
       onPush = () => {};
       resolve(p.payload ?? null);
@@ -136,7 +136,7 @@ if (set.status !== "ok") {
 } else {
   await log(
     `interface hiding will use group ${group} from the next launch. The shortcuts ` +
-      `only work if your account is in that group -- Cordial cannot check, so if ` +
+      `only work if your account is in that group -- Vanta cannot check, so if ` +
       `nothing happens, check that first. Ctrl+Shift+G hides the Roblox menus and ` +
       `top bar, Ctrl+Shift+C game-defined screen GUIs, Ctrl+Shift+N names and tags, ` +
       `Ctrl+F+B 3D-space GUIs.`,

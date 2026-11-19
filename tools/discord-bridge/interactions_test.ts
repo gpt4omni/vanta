@@ -57,12 +57,12 @@ Deno.test("pressing a form's button opens that form's modal, and does not defer"
   const { response, after } = await handle(context, {
     type: InteractionType.MESSAGE_COMPONENT,
     token: "t",
-    data: { custom_id: "cordial-issue-open:bug_report" },
+    data: { custom_id: "vanta-issue-open:bug_report" },
     ...user,
   });
   const body = response as { type: number; data: { custom_id: string } };
   assertEquals(body.type, ResponseType.MODAL);
-  assertEquals(body.data.custom_id, "cordial-issue:bug_report:main");
+  assertEquals(body.data.custom_id, "vanta-issue:bug_report:main");
   assertEquals(after, undefined);
 });
 
@@ -72,10 +72,10 @@ Deno.test("submitting the form defers, then files the issue and pairs the thread
     type: InteractionType.MODAL_SUBMIT,
     token: "tok",
     data: {
-      custom_id: "cordial-issue:bug_report:main",
+      custom_id: "vanta-issue:bug_report:main",
       components: [
         { type: 18, component: { custom_id: "what-happened", value: "Black window." } },
-        { type: 18, component: { custom_id: "diagnostics", value: "Cordial 0.13.2" } },
+        { type: 18, component: { custom_id: "diagnostics", value: "Vanta 0.13.2" } },
       ],
     },
     ...user,
@@ -111,7 +111,7 @@ Deno.test("a form with leftovers offers them, and a form without does not", asyn
       type: InteractionType.MODAL_SUBMIT,
       token: "tok",
       data: {
-        custom_id: `cordial-issue:${slug}:main`,
+        custom_id: `vanta-issue:${slug}:main`,
         components: [{ type: 18, component: { custom_id: "diagnostics", value: "d" } }],
       },
       ...user,
@@ -132,7 +132,7 @@ Deno.test("a select's chosen option is read out of the submission, not only text
     type: InteractionType.MODAL_SUBMIT,
     token: "tok",
     data: {
-      custom_id: "cordial-issue:finding:main",
+      custom_id: "vanta-issue:finding:main",
       components: [
         { type: 18, component: { custom_id: "what-you-established", value: "It parks." } },
         { type: 18, component: { custom_id: "confidence", values: ["Measured, with a control"] } },
@@ -150,7 +150,7 @@ Deno.test("a comment from the thread is posted with the Discord name against it"
     type: InteractionType.MODAL_SUBMIT,
     token: "tok",
     data: {
-      custom_id: "cordial-comment:12",
+      custom_id: "vanta-comment:12",
       components: [{ type: 18, component: { custom_id: "comment", value: "Still broken." } }],
     },
     ...user,
@@ -169,7 +169,7 @@ Deno.test("a button for a form that no longer exists says so instead of failing"
   const { response } = await handle(context, {
     type: InteractionType.MESSAGE_COMPONENT,
     token: "t",
-    data: { custom_id: "cordial-issue-open:no_such_form" },
+    data: { custom_id: "vanta-issue-open:no_such_form" },
     ...user,
   });
   const body = response as { type: number; data: { content: string; flags: number } };
@@ -265,7 +265,7 @@ Deno.test("a follow-up that throws tells the reporter instead of hanging", async
     type: InteractionType.MODAL_SUBMIT,
     token: "tok",
     data: {
-      custom_id: "cordial-issue:bug_report:main",
+      custom_id: "vanta-issue:bug_report:main",
       components: [{ type: 18, component: { custom_id: "diagnostics", value: "d" } }],
     },
     ...user,
@@ -285,7 +285,7 @@ function issueOwnedBy(reporterId: string | null, state = "open") {
     state,
     title: "[Bug]: x",
     body: reporterId
-      ? `text\n\n<!-- cordial-bridge thread=777 reporter=${reporterId} -->`
+      ? `text\n\n<!-- vanta-bridge thread=777 reporter=${reporterId} -->`
       : "filed on the web, no marker",
   };
 }
@@ -318,7 +318,7 @@ const press = (customId: string, extra: Record<string, unknown> = {}) => ({
 
 Deno.test("the reporter can close their own issue, and the thread follows it", async () => {
   const f = withIssue(issueOwnedBy("9"));
-  const { after } = await handle(f.context, press("cordial-close:31"));
+  const { after } = await handle(f.context, press("vanta-close:31"));
   await after!();
 
   const [closed] = f.of("setIssueOpen");
@@ -331,7 +331,7 @@ Deno.test("somebody else pressing close changes nothing", async () => {
   // The custom_id is client-supplied and anyone who can see the message can
   // press it, so the check has to be against the issue, not the button.
   const f = withIssue(issueOwnedBy("1234567890"));
-  const { after } = await handle(f.context, press("cordial-close:31"));
+  const { after } = await handle(f.context, press("vanta-close:31"));
   await after!();
 
   assertEquals(f.of("setIssueOpen").length, 0, "the issue must not move");
@@ -344,7 +344,7 @@ Deno.test("somebody else pressing close changes nothing", async () => {
 
 Deno.test("an issue filed on the web cannot be closed from Discord at all", async () => {
   const f = withIssue(issueOwnedBy(null));
-  const { after } = await handle(f.context, press("cordial-close:31"));
+  const { after } = await handle(f.context, press("vanta-close:31"));
   await after!();
   assertEquals(f.of("setIssueOpen").length, 0);
   assertStringIncludes(
@@ -357,7 +357,7 @@ Deno.test("marking completed needs a permission the reporter does not have", asy
   // "This is fixed" is a claim about the project; "I do not need this" is the
   // reporter's own. They must not be the same button or the same permission.
   const f = withIssue(issueOwnedBy("9"));
-  const { response, after } = await handle(f.context, press("cordial-fixed:31"));
+  const { response, after } = await handle(f.context, press("vanta-fixed:31"));
   assertEquals(after, undefined, "it must not even defer");
   const body = response as { type: number; data: { content: string; flags: number } };
   assertEquals(body.data.flags, 1 << 6);
@@ -368,7 +368,7 @@ Deno.test("a maintainer marks it completed, and that is a different close", asyn
   const f = withIssue(issueOwnedBy("1234567890"));
   const { after } = await handle(
     f.context,
-    press("cordial-fixed:31", {
+    press("vanta-fixed:31", {
       // Manage Messages. Not the reporter -- deliberately, because a
       // maintainer may close an issue they did not file.
       member: { user: { id: "maint", username: "m" }, permissions: String(1n << 13n) },
@@ -380,7 +380,7 @@ Deno.test("a maintainer marks it completed, and that is a different close", asyn
 
 Deno.test("reopening puts the issue and the thread back", async () => {
   const f = withIssue(issueOwnedBy("9", "closed"));
-  const { after } = await handle(f.context, press("cordial-reopen:31"));
+  const { after } = await handle(f.context, press("vanta-reopen:31"));
   await after!();
   assertEquals(f.of("setIssueOpen")[0].args, [31, true, false]);
   assertEquals(f.of("setArchived")[0].args, ["777", false], "unarchived before posting into it");
@@ -388,7 +388,7 @@ Deno.test("reopening puts the issue and the thread back", async () => {
 
 Deno.test("pressing close on an already-closed issue says so and does nothing", async () => {
   const f = withIssue(issueOwnedBy("9", "closed"));
-  const { after } = await handle(f.context, press("cordial-close:31"));
+  const { after } = await handle(f.context, press("vanta-close:31"));
   await after!();
   assertEquals(f.of("setIssueOpen").length, 0);
   assertStringIncludes(
@@ -403,7 +403,7 @@ Deno.test("the thread's first message carries every control", async () => {
     type: InteractionType.MODAL_SUBMIT,
     token: "tok",
     data: {
-      custom_id: "cordial-issue:bug_report:main",
+      custom_id: "vanta-issue:bug_report:main",
       components: [{ type: 18, component: { custom_id: "diagnostics", value: "d" } }],
     },
     ...user,
@@ -419,11 +419,11 @@ Deno.test("the thread's first message carries every control", async () => {
   const ids = (rows[0] as { components: { custom_id: string }[] }).components
     .map((c) => c.custom_id);
   assertEquals(ids, [
-    "cordial-comment:12",
-    "cordial-fixed:12",
-    "cordial-close:12",
-    "cordial-reopen:12",
-    "cordial-edit-open:12",
+    "vanta-comment:12",
+    "vanta-fixed:12",
+    "vanta-close:12",
+    "vanta-reopen:12",
+    "vanta-edit-open:12",
   ]);
 });
 
@@ -466,7 +466,7 @@ function tracker(
     "what-happened": "The window opens and stays black.",
     "what-expected": "The Roblox home screen.",
     "repro": "Launch it.",
-    "diagnostics": "Cordial 0.13.2 (91f8ee9)\nInstall rpm",
+    "diagnostics": "Vanta 0.13.2 (91f8ee9)\nInstall rpm",
   };
   const filer = options.filer === undefined ? "9" : options.filer;
   const issue = {
@@ -561,7 +561,7 @@ const said = (calls: { what: string; args: unknown[] }[]) =>
 
 Deno.test("the report form offers a reporter the allowed labels, in the fifth slot", async () => {
   const t = tracker();
-  const { response } = await handle(t.context, press("cordial-issue-open:bug_report"));
+  const { response } = await handle(t.context, press("vanta-issue-open:bug_report"));
   const modal = modalOf(response);
   assertEquals((response as { type: number }).type, ResponseType.MODAL);
   assert(modal.components.length <= 5, "a modal never holds more than five");
@@ -570,7 +570,7 @@ Deno.test("the report form offers a reporter the allowed labels, in the fifth sl
   for (const required of ["what-happened", "what-expected", "repro", "diagnostics"]) {
     assert(ids.includes(required), `${required} must survive the picker`);
   }
-  assertEquals(ids.at(-1), "cordial-labels");
+  assertEquals(ids.at(-1), "vanta-labels");
   assert(modal.custom_id.endsWith(":main:l"), modal.custom_id);
 
   const picker = modal.components.at(-1)!.component as { options: { value: string }[] };
@@ -583,7 +583,7 @@ Deno.test("the report form offers a reporter the allowed labels, in the fifth sl
 
 Deno.test("a moderator's form offers every label except the ones the template applies", async () => {
   const t = tracker();
-  const { response } = await handle(t.context, press("cordial-issue-open:bug_report", MOD));
+  const { response } = await handle(t.context, press("vanta-issue-open:bug_report", MOD));
   const picker = modalOf(response).components.at(-1)!.component as {
     options: { value: string }[];
   };
@@ -594,34 +594,34 @@ Deno.test("a moderator's form offers every label except the ones the template ap
 
 Deno.test("with no label the reporter may pick, the form is exactly what it was", async () => {
   const t = tracker({ known: L("bug", "confirmed") });
-  const { response } = await handle(t.context, press("cordial-issue-open:bug_report"));
+  const { response } = await handle(t.context, press("vanta-issue-open:bug_report"));
   const modal = modalOf(response);
-  assert(!inputs(modal).includes("cordial-labels"));
-  assertEquals(modal.custom_id, "cordial-issue:bug_report:main");
+  assert(!inputs(modal).includes("vanta-labels"));
+  assertEquals(modal.custom_id, "vanta-issue:bug_report:main");
   assertEquals(modal.components.length, 5);
 });
 
 Deno.test("if the label list cannot be had, the form opens without a picker", async () => {
   const t = tracker({ known: null });
-  const { response } = await handle(t.context, press("cordial-issue-open:bug_report"));
-  assert(!inputs(modalOf(response)).includes("cordial-labels"));
-  assertEquals(modalOf(response).custom_id, "cordial-issue:bug_report:main");
+  const { response } = await handle(t.context, press("vanta-issue-open:bug_report"));
+  assert(!inputs(modalOf(response)).includes("vanta-labels"));
+  assertEquals(modalOf(response).custom_id, "vanta-issue:bug_report:main");
 });
 
 function L(...names: string[]): Label[] {
   return names.map((name) => ({ name }));
 }
 
-const fileWithPicks = (picks: string[], custom = "cordial-issue:bug_report:main:l") =>
+const fileWithPicks = (picks: string[], custom = "vanta-issue:bug_report:main:l") =>
   submission(
     { custom_id: custom },
     {
       "what-happened": "Black window.",
       "what-expected": "Home.",
       "repro": "Launch.",
-      "diagnostics": "Cordial 0.13.2",
+      "diagnostics": "Vanta 0.13.2",
     },
-    { "cordial-labels": picks },
+    { "vanta-labels": picks },
   );
 
 Deno.test("the chosen labels are applied when the issue is created", async () => {
@@ -675,7 +675,7 @@ Deno.test("the optional field the picker displaced is offered in the follow-up",
     components: { components: { custom_id: string }[] }[];
   };
   const button = reply.components[0].components[0].custom_id;
-  assertEquals(button, "cordial-issue-extra:bug_report:12:l");
+  assertEquals(button, "vanta-issue-extra:bug_report:12:l");
 
   const { response } = await handle(t.context, press(button));
   const extra = modalOf(response);
@@ -703,7 +703,7 @@ Deno.test("Mark as completed also accepts a configured moderator role", async ()
   (t.context.discord as unknown as Json).setArchived = () => Promise.resolve();
   const { after } = await handle(
     t.context,
-    pressAs("cordial-fixed:12", asUser("r", { roles: ["555"] })),
+    pressAs("vanta-fixed:12", asUser("r", { roles: ["555"] })),
   );
   await after!();
   assertEquals(t.of("setIssueOpen")[0].args, [12, false, true]);
@@ -712,7 +712,7 @@ Deno.test("Mark as completed also accepts a configured moderator role", async ()
 // ---- Edit ---------------------------------------------------------------
 
 const openEditor = async (t: ReturnType<typeof tracker>, who: Json = asUser("9"), id = "12") => {
-  const { response, after } = await handle(t.context, pressAs(`cordial-edit-open:${id}`, who));
+  const { response, after } = await handle(t.context, pressAs(`vanta-edit-open:${id}`, who));
   return { response, after };
 };
 
@@ -725,11 +725,11 @@ Deno.test("the original poster gets a dialog pre-filled with the report", async 
   assertEquals(modal.title, "Edit #12 (1 of 2)");
   assert(modal.components.length <= 5);
   assertEquals(inputs(modal), [
-    "cordial-title",
+    "vanta-title",
     "what-happened",
     "what-expected",
     "repro",
-    "cordial-labels",
+    "vanta-labels",
   ]);
   const title = modal.components[0].component as Json;
   assertEquals(title.value, "[Bug]: The window opens and stays black.");
@@ -788,16 +788,16 @@ Deno.test("a field the issue never had is not made mandatory by editing it", asy
 Deno.test("text the bridge cannot make sense of offers title and labels only", async () => {
   const t = tracker({
     filer: "9",
-    body: "just some words, no headings\n\n<!-- cordial-bridge thread=777 reporter=9 -->",
+    body: "just some words, no headings\n\n<!-- vanta-bridge thread=777 reporter=9 -->",
   });
   const { response } = await openEditor(t);
-  assertEquals(inputs(modalOf(response)), ["cordial-title", "cordial-labels"]);
+  assertEquals(inputs(modalOf(response)), ["vanta-title", "vanta-labels"]);
 });
 
 Deno.test("the dialog opens without labels if the label list is not there in time", async () => {
   const t = tracker({ known: null });
   const { response } = await openEditor(t);
-  assert(!inputs(modalOf(response)).includes("cordial-labels"));
+  assert(!inputs(modalOf(response)).includes("vanta-labels"));
   assert(!modalOf(response).custom_id.endsWith(":l"));
 });
 
@@ -810,7 +810,7 @@ async function openAndSubmit(
 ) {
   const { response } = await handle(
     t.context,
-    pressAs(`cordial-edit-open:12${part ? `:${part}` : ""}`, who),
+    pressAs(`vanta-edit-open:12${part ? `:${part}` : ""}`, who),
   );
   const modal = modalOf(response);
   const { response: ack, after } = await handle(
@@ -827,12 +827,12 @@ Deno.test("an edit is logged on the issue first, then applied, then logged in th
   await openAndSubmit(
     t,
     {
-      "cordial-title": "[Bug]: Black window on Sway",
+      "vanta-title": "[Bug]: Black window on Sway",
       "what-happened": "The window is black on Sway 1.10.",
       "what-expected": "The Roblox home screen.",
       "repro": "Launch it.",
     },
-    { "cordial-labels": [] },
+    { "vanta-labels": [] },
   );
 
   const order = t.calls.map((c) => c.what).filter((w) =>
@@ -855,11 +855,11 @@ Deno.test("an edit is logged on the issue first, then applied, then logged in th
   assertStringIncludes(fields.body, "The window is black on Sway 1.10.");
   // The reporter's other words, the diagnostics, the credit and the pairing are intact.
   assertStringIncludes(fields.body, "The Roblox home screen.");
-  assertStringIncludes(fields.body, "Cordial 0.13.2 (91f8ee9)\nInstall rpm");
+  assertStringIncludes(fields.body, "Vanta 0.13.2 (91f8ee9)\nInstall rpm");
   assertStringIncludes(fields.body, "Filed by **Someone** (`9`)");
   assertStringIncludes(
     fields.body,
-    "<!-- cordial-bridge thread=777 reporter=9 form=bug_report -->",
+    "<!-- vanta-bridge thread=777 reporter=9 form=bug_report -->",
   );
   assertEquals(fields.labels, undefined, "labels were not touched, so they are not sent");
 
@@ -876,8 +876,8 @@ Deno.test("a moderator's edit of somebody else's report says so in the audit com
   const t = tracker();
   await openAndSubmit(
     t,
-    { "cordial-title": "[Bug]: tidied", "what-happened": "The window opens and stays black." },
-    { "cordial-labels": ["bug"] },
+    { "vanta-title": "[Bug]: tidied", "what-happened": "The window opens and stays black." },
+    { "vanta-labels": ["bug"] },
     MOD,
   );
   assertStringIncludes(t.of("comment")[0].args[1] as string, "(`mod`, as a moderator)");
@@ -887,10 +887,10 @@ Deno.test("a moderator's edit of somebody else's report says so in the audit com
 Deno.test("a stranger who forges the submit changes nothing", async () => {
   const t = tracker();
   // The dialog as the reporter was shown it, submitted by somebody who was not.
-  const { response } = await handle(t.context, pressAs("cordial-edit-open:12"));
+  const { response } = await handle(t.context, pressAs("vanta-edit-open:12"));
   const { after } = await handle(
     t.context,
-    submission(modalOf(response), { "cordial-title": "[Bug]: vandalised" }, {}, asUser("666")),
+    submission(modalOf(response), { "vanta-title": "[Bug]: vandalised" }, {}, asUser("666")),
   );
   await after!();
   assertEquals(t.of("comment").length, 0);
@@ -900,13 +900,13 @@ Deno.test("a stranger who forges the submit changes nothing", async () => {
 
 Deno.test("an edit from a dialog that has gone stale is refused and nothing is overwritten", async () => {
   const t = tracker();
-  const { response } = await handle(t.context, pressAs("cordial-edit-open:12"));
+  const { response } = await handle(t.context, pressAs("vanta-edit-open:12"));
   const modal = modalOf(response);
   // A maintainer retitles it while the dialog is open.
   t.issue.title = "[Bug]: a maintainer's better title";
   const { after } = await handle(
     t.context,
-    submission(modal, { "cordial-title": "[Bug]: mine" }, { "cordial-labels": [] }),
+    submission(modal, { "vanta-title": "[Bug]: mine" }, { "vanta-labels": [] }),
   );
   await after!();
   assertEquals(t.of("updateIssue").length, 0);
@@ -919,7 +919,7 @@ Deno.test("if the audit comment cannot be written the edit does not happen", asy
   const t = tracker();
   (t.context.github as unknown as Json).comment = () =>
     Promise.reject(new Error("comment refused"));
-  await openAndSubmit(t, { "cordial-title": "[Bug]: silent?" }, { "cordial-labels": [] });
+  await openAndSubmit(t, { "vanta-title": "[Bug]: silent?" }, { "vanta-labels": [] });
   assertEquals(t.of("updateIssue").length, 0, "never silently overwrite");
   assertStringIncludes(said(t.calls), "nothing was changed");
   assertStringIncludes(said(t.calls), "comment refused");
@@ -928,7 +928,7 @@ Deno.test("if the audit comment cannot be written the edit does not happen", asy
 Deno.test("if GitHub refuses the edit, the audit comment is amended to say it did not happen", async () => {
   const t = tracker();
   (t.context.github as unknown as Json).updateIssue = () => Promise.reject(new Error("422"));
-  await openAndSubmit(t, { "cordial-title": "[Bug]: refused" }, { "cordial-labels": [] });
+  await openAndSubmit(t, { "vanta-title": "[Bug]: refused" }, { "vanta-labels": [] });
   const [amended] = t.of("editComment");
   assertEquals(amended.args[0], 55);
   assertStringIncludes(amended.args[1] as string, "This edit was not applied");
@@ -941,12 +941,12 @@ Deno.test("saving without changing anything writes nothing at all", async () => 
   await openAndSubmit(
     t,
     {
-      "cordial-title": "[Bug]: The window opens and stays black.",
+      "vanta-title": "[Bug]: The window opens and stays black.",
       "what-happened": "The window opens and stays black.",
       "what-expected": "The Roblox home screen.",
       "repro": "Launch it.",
     },
-    { "cordial-labels": [] },
+    { "vanta-labels": [] },
   );
   assertEquals(t.of("comment").length, 0);
   assertEquals(t.of("updateIssue").length, 0);
@@ -955,7 +955,7 @@ Deno.test("saving without changing anything writes nothing at all", async () => 
 
 Deno.test("a required field cannot be emptied by an edit", async () => {
   const t = tracker();
-  await openAndSubmit(t, { "cordial-title": "[Bug]: x", "repro": "   " }, { "cordial-labels": [] });
+  await openAndSubmit(t, { "vanta-title": "[Bug]: x", "repro": "   " }, { "vanta-labels": [] });
   assertEquals(t.of("updateIssue").length, 0);
   assertStringIncludes(said(t.calls), "How to reproduce");
   assertStringIncludes(said(t.calls), "required");
@@ -963,18 +963,18 @@ Deno.test("a required field cannot be emptied by an edit", async () => {
 
 Deno.test("a field the submission leaves out is left alone, not emptied", async () => {
   const t = tracker();
-  await openAndSubmit(t, { "cordial-title": "[Bug]: retitled" }, { "cordial-labels": [] });
+  await openAndSubmit(t, { "vanta-title": "[Bug]: retitled" }, { "vanta-labels": [] });
   const body = (t.of("updateIssue")[0].args[1] as { body?: string }).body;
   assertEquals(body, undefined, "the body was not rewritten at all");
 });
 
 Deno.test("the reply offers the next part, and that dialog edits the later fields", async () => {
   const t = tracker();
-  await openAndSubmit(t, { "cordial-title": "[Bug]: retitled" }, { "cordial-labels": [] });
+  await openAndSubmit(t, { "vanta-title": "[Bug]: retitled" }, { "vanta-labels": [] });
   const reply = t.of("editOriginal").at(-1)!.args[1] as {
     components: { components: { custom_id: string }[] }[];
   };
-  assertEquals(reply.components[0].components[0].custom_id, "cordial-edit-open:12:1");
+  assertEquals(reply.components[0].components[0].custom_id, "vanta-edit-open:12:1");
 
   const modal = await openAndSubmit(
     t,
@@ -984,7 +984,7 @@ Deno.test("the reply offers the next part, and that dialog edits the later field
     1,
   );
   assert(modal.components.length <= 5);
-  assert(!inputs(modal).includes("cordial-title"), "later parts carry no title");
+  assert(!inputs(modal).includes("vanta-title"), "later parts carry no title");
   const second = t.of("updateIssue").at(-1)!.args[1] as { body: string };
   assertStringIncludes(
     second.body,
@@ -1001,7 +1001,7 @@ Deno.test("a reporter editing labels cannot add a triage label or strip the proj
     t,
     {},
     // area:input deselected, gpu:nvidia added, and a forged `wontfix` and `confirmed`.
-    { "cordial-labels": ["gpu:nvidia", "wontfix", "priority: high"] },
+    { "vanta-labels": ["gpu:nvidia", "wontfix", "priority: high"] },
   );
   const [update] = t.of("updateIssue");
   assertEquals((update.args[1] as { labels: string[] }).labels, ["bug", "confirmed", "gpu:nvidia"]);
@@ -1011,7 +1011,7 @@ Deno.test("a reporter editing labels cannot add a triage label or strip the proj
 
 Deno.test("a moderator editing labels may add any label, and it is logged the same way", async () => {
   const t = tracker({ labelsOnIssue: ["bug"] });
-  await openAndSubmit(t, {}, { "cordial-labels": ["bug", "confirmed", "priority: high"] }, MOD);
+  await openAndSubmit(t, {}, { "vanta-labels": ["bug", "confirmed", "priority: high"] }, MOD);
   const [update] = t.of("updateIssue");
   assertEquals((update.args[1] as { labels: string[] }).labels, [
     "bug",
@@ -1026,13 +1026,13 @@ Deno.test("a moderator editing labels may add any label, and it is logged the sa
 
 Deno.test("a label change when the list has gone is skipped, not guessed", async () => {
   const t = tracker();
-  const { response } = await handle(t.context, pressAs("cordial-edit-open:12"));
+  const { response } = await handle(t.context, pressAs("vanta-edit-open:12"));
   // The list vanishes between the dialog opening and being submitted.
   t.context.labels = { get: () => Promise.resolve(null) };
   const { after } = await handle(
     t.context,
-    submission(modalOf(response), { "cordial-title": "[Bug]: kept" }, {
-      "cordial-labels": ["gpu:nvidia"],
+    submission(modalOf(response), { "vanta-title": "[Bug]: kept" }, {
+      "vanta-labels": ["gpu:nvidia"],
     }),
   );
   await after!();
@@ -1044,8 +1044,8 @@ Deno.test("a label change when the list has gone is skipped, not guessed", async
 Deno.test("an issue whose body was reflowed on GitHub can still have its title and labels edited", async () => {
   const t = tracker();
   t.issue.body = t.issue.body.replace("\n\n### What you expected", "\n### What you expected");
-  const { response } = await handle(t.context, pressAs("cordial-edit-open:12"));
-  assertEquals(inputs(modalOf(response)), ["cordial-title", "cordial-labels"]);
+  const { response } = await handle(t.context, pressAs("vanta-edit-open:12"));
+  assertEquals(inputs(modalOf(response)), ["vanta-title", "vanta-labels"]);
   assertEquals(modalOf(response).title, "Edit #12", "one part only");
 });
 
@@ -1056,21 +1056,21 @@ Deno.test("with the picker off, every report dialog is exactly what it was befor
     const t = tracker({ picker: false });
     let fetched = 0;
     t.context.labels = { get: () => (fetched++, Promise.resolve(repoLabels)) };
-    const { response } = await handle(t.context, press(`cordial-issue-open:${form.slug}`, MOD));
+    const { response } = await handle(t.context, press(`vanta-issue-open:${form.slug}`, MOD));
     const modal = modalOf(response);
     // Same dialog as the plain generator: same id (no `:l`), same fields in
     // the same slots, and the optional fields that did not fit are the ones
     // that never did.
     assertEquals(modal, modalFor(form, "main") as Modal, form.slug);
     assertEquals(inputs(modal), form.placed.map((b) => b.id), form.slug);
-    assertEquals(modal.custom_id, `cordial-issue:${form.slug}:main`);
+    assertEquals(modal.custom_id, `vanta-issue:${form.slug}:main`);
     assertEquals(fetched, 0, "no label fetch is made for a dialog that has no picker");
   }
 });
 
 Deno.test("with the picker off, bug_report keeps its original five fields and four leftovers", async () => {
   const t = tracker({ picker: false });
-  const { response } = await handle(t.context, press("cordial-issue-open:bug_report"));
+  const { response } = await handle(t.context, press("vanta-issue-open:bug_report"));
   assertEquals(inputs(modalOf(response)), [
     "what-happened",
     "what-expected",
@@ -1081,7 +1081,7 @@ Deno.test("with the picker off, bug_report keeps its original five fields and fo
   const { after } = await handle(
     t.context,
     submission(
-      { custom_id: "cordial-issue:bug_report:main" },
+      { custom_id: "vanta-issue:bug_report:main" },
       { "what-happened": "x", "what-expected": "y", "repro": "z", "diagnostics": "d" },
     ),
   );
@@ -1089,7 +1089,7 @@ Deno.test("with the picker off, bug_report keeps its original five fields and fo
   const reply = t.of("editOriginal")[0].args[1] as {
     components: { components: { custom_id: string }[] }[];
   };
-  assertEquals(reply.components[0].components[0].custom_id, "cordial-issue-extra:bug_report:12");
+  assertEquals(reply.components[0].components[0].custom_id, "vanta-issue-extra:bug_report:12");
   assertEquals(t.of("createIssue")[0].args[2], ["bug"]);
 });
 
@@ -1105,16 +1105,16 @@ Deno.test("with the picker off, Edit changes title and text only", async () => {
   const t = tracker({ picker: false, labelsOnIssue: ["bug", "area:input"] });
   let fetched = 0;
   t.context.labels = { get: () => (fetched++, Promise.resolve(repoLabels)) };
-  const { response } = await handle(t.context, pressAs("cordial-edit-open:12"));
+  const { response } = await handle(t.context, pressAs("vanta-edit-open:12"));
   const modal = modalOf(response);
-  assertEquals(inputs(modal), ["cordial-title", "what-happened", "what-expected", "repro"]);
+  assertEquals(inputs(modal), ["vanta-title", "what-happened", "what-expected", "repro"]);
   assert(!modal.custom_id.endsWith(":l"));
   assertEquals(fetched, 0);
 
   // A forged label selection on that dialog changes no labels.
   const { after } = await handle(
     t.context,
-    submission(modal, { "cordial-title": "[Bug]: retitled" }, { "cordial-labels": ["gpu:nvidia"] }),
+    submission(modal, { "vanta-title": "[Bug]: retitled" }, { "vanta-labels": ["gpu:nvidia"] }),
   );
   await after!();
   const [update] = t.of("updateIssue");
@@ -1142,8 +1142,8 @@ Deno.test("an attachment-only message is carried to the issue as a link, with th
               author: { global_name: "Reporter" },
               attachments: [
                 {
-                  filename: "cordial-logs.zip",
-                  url: "https://cdn.discordapp.com/attachments/1/2/cordial-logs.zip?ex=abc",
+                  filename: "vanta-logs.zip",
+                  url: "https://cdn.discordapp.com/attachments/1/2/vanta-logs.zip?ex=abc",
                   size: 20480,
                 },
                 { filename: "evil.zip", url: "javascript:alert(1)" },
@@ -1159,7 +1159,7 @@ Deno.test("an attachment-only message is carried to the issue as a link, with th
   const text = posted.args[1] as string;
   assertStringIncludes(
     text,
-    "[cordial-logs.zip](https://cdn.discordapp.com/attachments/1/2/cordial-logs.zip?ex=abc) (20 KiB)",
+    "[vanta-logs.zip](https://cdn.discordapp.com/attachments/1/2/vanta-logs.zip?ex=abc) (20 KiB)",
   );
   assertStringIncludes(text, "expire");
   assert(!text.includes("javascript:"), "only https links are carried");

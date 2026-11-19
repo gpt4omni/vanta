@@ -1,13 +1,13 @@
 # Browser account routing
 
 Clicking Play on Roblox's website checks the browser account and launches its
-matching saved Cordial profile automatically. Routing uses Cordial's configured
+matching saved Vanta profile automatically. Routing uses Vanta's configured
 secret backend: the default `auto` prefers the desktop Secret Service and falls
 back to the profile's `0600` file; explicit `keyring` and `file` choices are
 honoured.
 The profile picker and its starting dialog stay hidden during a successful
-automatic launch. Opening Cordial from its desktop icon still shows the picker.
-No browser extension is required. Sign into each account in its Cordial profile
+automatic launch. Opening Vanta from its desktop icon still shows the picker.
+No browser extension is required. Sign into each account in its Vanta profile
 once so its identity and session are saved.
 
 If lookup fails, no saved profile matches, or several profiles hold that account,
@@ -15,7 +15,7 @@ the launcher opens with the link waiting. Choose a profile and press Roblox. A p
 already running uses the existing busy-profile dialog; routing does not close it.
 Launch errors also open the launcher so their recovery controls remain reachable.
 A locked or unavailable keyring in explicit `keyring` mode retains manual
-selection because there is no saved session Cordial may read.
+selection because there is no saved session Vanta may read.
 
 The launcher redeems `gameinfo` once with Roblox, uses the resulting session to
 request the authenticated user ID, then drops that session. Before automatic
@@ -32,9 +32,9 @@ private-server parameters continue through the existing join path.
 
 Discarding or replacing the queued join invalidates its pending lookup. Changing
 the selected profile during lookup also prevents automatic launch if that choice
-differs when lookup completes. Set `CORDIAL_BROWSER_ACCOUNT_ROUTING=0` to retain
+differs when lookup completes. Set `VANTA_BROWSER_ACCOUNT_ROUTING=0` to retain
 the original manual-selection behaviour, including ticket forwarding settings.
-After the profile lock is acquired, Cordial compares the exact snapshot again
+After the profile lock is acquired, Vanta compares the exact snapshot again
 and pins that backend for the child process. A changed session or changed `auto`
 result cannot silently turn the match into a launch from another store.
 
@@ -50,4 +50,4 @@ The release binary was also run with an isolated data root and a synthetic
 invalid ticket: it reported `browser account routing needs a profile choice`.
 The full workspace tests and webview-enabled release build passed. Clippy is
 blocked by existing `clippy::not_unsafe_ptr_arg_deref` errors in
-`cordial-linker-sys/src/lib.rs`, outside the routing change.
+`vanta-linker-sys/src/lib.rs`, outside the routing change.

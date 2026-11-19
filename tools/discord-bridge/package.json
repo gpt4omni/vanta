@@ -1,5 +1,5 @@
 {
-  "name": "cordial-issue-bridge",
+  "name": "vanta-issue-bridge",
   "private": true,
   "type": "module",
   "//": "For wrangler only. Deno resolves the same dependency through deno.json's import map, so the two must name the same version -- there is a test that pins it.",

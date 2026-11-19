@@ -8,30 +8,30 @@
 //
 // Note what it does not do. It never learns where Discord's IPC socket is,
 // never opens it, and cannot send anything down it except the presence
-// payload built below — Cordial owns the connection (ADR-007). It also runs
+// payload built below — Vanta owns the connection (ADR-007). It also runs
 // with no Deno permissions at all, the same as every other plugin, so none of
 // that containment depends on this file behaving.
 //
-// The application id is Cordial's own by default, and the user may substitute
+// The application id is Vanta's own by default, and the user may substitute
 // their own through the preferences page this plugin declares. An id is not a
 // secret -- it only selects whose name and icon Discord shows beside the
 // activity -- which is why it can live in a manifest and in a text field
 // rather than anywhere more careful.
 //
 // One honest limitation, stated rather than hidden: `push_lifecycle`'s payload
-// is currently empty (see host.rs), because Cordial does not yet thread which
+// is currently empty (see host.rs), because Vanta does not yet thread which
 // game or place is running through to the lifecycle push -- that lives in
-// cordial-runtime and this plugin was built without touching it. The
-// `details`/`state` text below is therefore generic ("Using Cordial") rather
-// than naming the game. `cordial_runtime::bloxstrap_rpc` now parses the
+// vanta-runtime and this plugin was built without touching it. The
+// `details`/`state` text below is therefore generic ("Using Vanta") rather
+// than naming the game. `vanta_runtime::bloxstrap_rpc` now parses the
 // protocol games use to say what they are, so the missing piece is the core
 // event carrying it, not the parsing.
 
-// What a running experience asked for, through BloxstrapRPC. Cordial parses
+// What a running experience asked for, through BloxstrapRPC. Vanta parses
 // the game's `print` output, folds the partial updates, and pushes the merged
-// picture here -- see `cordial_runtime::game_log`. An empty payload means the
+// picture here -- see `vanta_runtime::game_log`. An empty payload means the
 // player left and the game's presence goes with it.
-const GAME_PRESENCE = "cordial/game.presence";
+const GAME_PRESENCE = "vanta/game.presence";
 let fromGame: {
   details?: string;
   state?: string;
@@ -39,7 +39,7 @@ let fromGame: {
   end?: number;
   place_id?: number;
   job_id?: string;
-  // Cordial's own image keys. An empty string is the game clearing the slot,
+  // Vanta's own image keys. An empty string is the game clearing the slot,
   // which is not the same as never setting one -- the broker reads the
   // difference, so this must not collapse them into `undefined`.
   large_image_key?: string;
@@ -51,13 +51,13 @@ let fromGame: {
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 
-// Cordial's registered Discord application. Used unless the user has put their
+// Vanta's registered Discord application. Used unless the user has put their
 // own id in the preferences page, which `plugin.json` declares.
 const DEFAULT_CLIENT_ID = "1543200871767212062";
 
 // Discord's own ids are snowflakes: 17 to 20 digits today, and the range is
 // widened here rather than pinned so a future one is not refused by us before
-// Discord ever sees it. `presence.set` validates digits again on Cordial's side
+// Discord ever sees it. `presence.set` validates digits again on Vanta's side
 // (presence.rs), so this check exists to give the user a reason rather than to
 // be the guard.
 function usableClientId(value: unknown): value is string {
@@ -67,9 +67,9 @@ function usableClientId(value: unknown): value is string {
 let clientId = DEFAULT_CLIENT_ID;
 
 // Called once, from the handshake. A blank answer is the documented way to say
-// "use Cordial's", so it is not a complaint; anything non-blank that cannot
+// "use Vanta's", so it is not a complaint; anything non-blank that cannot
 // work is, because a user who typed an id and silently kept appearing as
-// Cordial would have no way to tell it had been ignored.
+// Vanta would have no way to tell it had been ignored.
 function adoptPreferences(preferences: Record<string, unknown> | null) {
   // `null` means settings.read was refused rather than that nothing was set.
   // Nothing to say about it: refusing the capability is a legitimate choice and
@@ -83,7 +83,7 @@ function adoptPreferences(preferences: Record<string, unknown> | null) {
   } else {
     log(
       `ignoring the configured Discord application id ${JSON.stringify(chosen)}: ` +
-        `it is not 17 to 20 digits, so Discord would refuse it. Appearing as Cordial instead.`,
+        `it is not 17 to 20 digits, so Discord would refuse it. Appearing as Vanta instead.`,
     );
   }
 }
@@ -101,7 +101,7 @@ const pending = new Map<number, (r: any) => void>();
       buf = buf.slice(i + 1);
       if (!line.trim()) continue;
       const msg = JSON.parse(line);
-      // A push (a lifecycle event Cordial sends unasked) has no id; a reply
+      // A push (a lifecycle event Vanta sends unasked) has no id; a reply
       // to one of our own calls always does. See protocol.rs's Push type.
       //
       // Deliberately not awaited: onLifecycleEvent makes its own calls back
@@ -110,7 +110,7 @@ const pending = new Map<number, (r: any) => void>();
       // reading those replies, so it would deadlock against itself on the
       // first lifecycle event.
       if (msg.id === undefined) {
-        // `cordial/init` is the handshake every plugin is sent before it has
+        // `vanta/init` is the handshake every plugin is sent before it has
         // asked for anything, carrying its saved settings and the user's
         // answers to the preferences it declared. Taking the application id
         // from here rather than calling `preferences.get` costs no round trip,
@@ -119,7 +119,7 @@ const pending = new Map<number, (r: any) => void>();
         // to exist at all so the handshake is not mistaken for a lifecycle
         // event — which it was, and was reported as an unrecognised one, until
         // it did.
-        if (msg.event === "cordial/init") {
+        if (msg.event === "vanta/init") {
           adoptPreferences(msg.payload?.preferences ?? null);
         } else if (msg.event === GAME_PRESENCE) {
           onGamePresence(msg.payload);
@@ -143,23 +143,23 @@ function call(method: string, params: unknown = {}): Promise<any> {
 
 const log = (message: string) => call("log.write", { message });
 
-// Core events are namespaced `cordial/...` (ADR-026). The prefix is reserved
+// Core events are namespaced `vanta/...` (ADR-026). The prefix is reserved
 // and cannot be declared by a plugin, so a name that arrives with it is one
-// Cordial published -- which is the point of carrying it. These used to arrive
+// Vanta published -- which is the point of carrying it. These used to arrive
 // as bare "launch"/"ready"/"shutdown"; anything still matching those is looking
 // for events that no longer exist.
-const LAUNCH = "cordial/client.launch";
-const READY = "cordial/client.ready";
-const SHUTDOWN = "cordial/client.shutdown";
+const LAUNCH = "vanta/client.launch";
+const READY = "vanta/client.ready";
+const SHUTDOWN = "vanta/client.shutdown";
 
 // **The presence has to be re-sent, and this is the whole of why.**
 //
-// Reported as "on discord Cordial isnt automatically detected as Rich RPC and
+// Reported as "on discord Vanta isnt automatically detected as Rich RPC and
 // added, its broken", and asked precisely: "what if discord isnt open then the
 // user opens discord after a while?"
 //
 // This plugin used to call `presence.set` exactly twice -- once on launch, once
-// on ready -- and then nothing until shutdown. Cordial's broker reconnects to
+// on ready -- and then nothing until shutdown. Vanta's broker reconnects to
 // Discord's socket on *every* `presence.set` (see `presence.rs`'s
 // `ensure_connected`, which deliberately has no retry loop of its own because
 // the caller is expected to be the retry). So the retry existed on one side and
@@ -177,7 +177,7 @@ const RESEND_MS = 20_000;
 // Fixed at the first event rather than recomputed per send, so Discord's
 // "elapsed" counter keeps counting instead of resetting to zero every twenty
 // seconds -- which is what re-sending a fresh `start` would do, and it would
-// look like a bug in Cordial rather than in this line.
+// look like a bug in Vanta rather than in this line.
 let startedAt: number | null = null;
 // Whether a session is up at all. This was a state string, which no longer
 // exists; it is a flag now because the only thing the heartbeat needs to know
@@ -193,25 +193,25 @@ async function pushPresence(reason: string) {
   if (!running || startedAt === null) return;
   // **No `details` and no `state`, deliberately.**
   //
-  // These used to be "Using Cordial" and "Starting up"/"In session", and it
+  // These used to be "Using Vanta" and "Starting up"/"In session", and it
   // was reported stuck: "its stuck on starting up". Two separate faults, one
   // fix. The state only advanced on `client.ready`, so if that event does not
   // arrive the presence says "Starting up" for the whole session -- a status
   // line that can be wrong is worse than no status line. And Discord already
-  // renders "Playing Cordial" from the application itself, so both fields were
+  // renders "Playing Vanta" from the application itself, so both fields were
   // saying, less reliably, something the header said anyway.
   //
   // What is left is the application name, the icon, the elapsed timer, and the
-  // button the broker adds. "Playing Cordial", which is what was asked for and
+  // button the broker adds. "Playing Vanta", which is what was asked for and
   // is the only claim here that cannot go stale.
-  // **The game wins where it said something, and only there.** Cordial's own
-  // presence is "Playing Cordial" and an elapsed timer; an experience using
+  // **The game wins where it said something, and only there.** Vanta's own
+  // presence is "Playing Vanta" and an elapsed timer; an experience using
   // BloxstrapRPC replaces the lines it sets and leaves the rest alone, which
   // is what makes a game's own presence look like the game's rather than like
-  // Cordial's with a subtitle.
+  // Vanta's with a subtitle.
   //
   // `start` is the game's when it gave one, because an experience timing a
-  // round means that, and Cordial's session clock would be wrong for it.
+  // round means that, and Vanta's session clock would be wrong for it.
   const res = await call("presence.set", {
     client_id: clientId,
     ...(fromGame.details !== undefined ? { details: fromGame.details } : {}),
@@ -219,12 +219,12 @@ async function pushPresence(reason: string) {
     ...(fromGame.end !== undefined ? { end: fromGame.end } : {}),
     // The broker turns these into the buttons; this plugin never builds a URL.
     // A plugin that could would be publishing an arbitrary link under
-    // Cordial's name and icon, which is not what `presence.set` grants.
+    // Vanta's name and icon, which is not what `presence.set` grants.
     ...(fromGame.place_id !== undefined ? { place_id: fromGame.place_id } : {}),
     ...(fromGame.job_id !== undefined ? { job_id: fromGame.job_id } : {}),
-    // **The game's picture instead of Cordial's icon, when it set one.** With
+    // **The game's picture instead of Vanta's icon, when it set one.** With
     // no assets on the activity Discord falls back to the application's own
-    // icon, so a game that asked for cover art got Cordial's logo -- which is
+    // icon, so a game that asked for cover art got Vanta's logo -- which is
     // the same "the game wins where it said something" rule the text fields
     // already follow, applied to the one field that was not carrying it.
     ...(fromGame.large_image_key !== undefined ? { large_image_key: fromGame.large_image_key } : {}),
@@ -258,9 +258,9 @@ async function onGamePresence(payload: unknown) {
     end: typeof p.end === "number" ? p.end : undefined,
     place_id: typeof p.place_id === "number" ? p.place_id : undefined,
     job_id: typeof p.job_id === "string" ? p.job_id : undefined,
-    // Opaque keys Cordial issued, not ids and not URLs. It resolves the
+    // Opaque keys Vanta issued, not ids and not URLs. It resolves the
     // picture itself and this only echoes the key back; a plugin that could
-    // compose the string would be publishing an arbitrary link under Cordial's
+    // compose the string would be publishing an arbitrary link under Vanta's
     // name, which is the same reason the buttons are the broker's job.
     large_image_key: typeof p.large_image_key === "string" ? p.large_image_key : undefined,
     large_text: typeof p.large_text === "string" ? p.large_text : undefined,

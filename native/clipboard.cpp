@@ -6,7 +6,7 @@
 // framework class to implement. It is not one, for the same reason
 // `docs/analysis/webview-surface.md` §1 gives about `WebView`: that file is the
 // dex's referenced-type table, so it says Roblox's *Java* code uses those
-// classes, not that `libroblox.so` reaches for them. Cordial does not run
+// classes, not that `libroblox.so` reaches for them. Vanta does not run
 // Roblox's Java code — it stands in for it.
 //
 // What the engine actually does was read out of the shipping build rather than
@@ -25,7 +25,7 @@
 //
 // A name that exists as a string on both sides and as a method on neither is a
 // message-bus message id. So this is the same shape as the cookie jar and the
-// deep link: the engine publishes, Roblox's Java subscribes, and Cordial has to
+// deep link: the engine publishes, Roblox's Java subscribes, and Vanta has to
 // be the subscriber. `native/cookies.cpp` and `native/deeplink.cpp` set out the
 // same reasoning for their own surfaces.
 //
@@ -37,16 +37,16 @@
 // The other direction — pasting *into* Roblox — has no engine-side ask at all,
 // and that is not an omission here. On Android a focused TextBox is edited by a
 // real `android.widget.EditText` laid over the GL surface (see
-// `CordialTextBoxInfo` in `android_classes.cpp`), so Android's own editor
+// `VantaTextBoxInfo` in `android_classes.cpp`), so Android's own editor
 // handles the paste and the engine only ever sees the resulting text arrive
-// through `gametextinput`. Cordial's equivalent of that editor is
+// through `gametextinput`. Vanta's equivalent of that editor is
 // `android::input`, so the paste path is `android::clipboard::paste_into_engine`
 // and involves no JNI at all.
 //
 // **Nothing in this file prints a clipboard value.** The payload is a JSON
 // document that came from whatever the user copied inside an experience; it is
 // counted and handed on, never logged. The trace switch reports the message id
-// and a byte count. `crates/cordial-runtime/src/android/clipboard.rs` carries
+// and a byte count. `crates/vanta-runtime/src/android/clipboard.rs` carries
 // the rest of that rule, and is the only place the text is looked at.
 //
 // This file also carries the message-bus *subscribe* machinery, and that part
@@ -58,7 +58,7 @@
 // `openWindow`, and a second subscriber going through those same three
 // globals would not add a subscription, it would silently overwrite
 // clipboard's, exactly the way registering a class twice under this same
-// engine already did once. `cordial_messagebus_subscribe` below is keyed by
+// engine already did once. `vanta_messagebus_subscribe` below is keyed by
 // message id — a callback and a `Connection` per id, in a map, so clipboard's
 // subscription and any other module's live independently. Nothing about
 // clipboard's own behaviour changes; it is now one caller of a shared
@@ -78,7 +78,7 @@
 
 #include "permissions_transport.h"
 
-namespace cordial {
+namespace vanta {
 
 using jnivm::Class;
 using jnivm::ENV;
@@ -106,7 +106,7 @@ struct Subscription {
     std::atomic<long long> connection_ptr{0};
 };
 
-/// One entry per message id ever passed to `cordial_messagebus_subscribe`.
+/// One entry per message id ever passed to `vanta_messagebus_subscribe`.
 ///
 /// A map rather than a single slot: see the file comment for the bug a single
 /// slot causes as soon as a second subscriber exists. Guarded by a mutex
@@ -137,7 +137,7 @@ Subscription& subscription_for(const std::string& message_id) {
 }
 
 bool trace() {
-    return getenv("CORDIAL_TRACE_CLIPBOARD") != nullptr;
+    return getenv("VANTA_TRACE_CLIPBOARD") != nullptr;
 }
 
 } // namespace
@@ -157,7 +157,7 @@ bool trace() {
 ///
 /// One instance of this class exists per subscription, not per class — that
 /// is what makes the map above unnecessary on the delivery path. `sink` and
-/// `message_id` are set once, on the instance `cordial_messagebus_subscribe`
+/// `message_id` are set once, on the instance `vanta_messagebus_subscribe`
 /// creates, before that instance is ever handed to `doSubscribeRaw`; `run` is
 /// hooked once for the class and reads them back off whichever instance the
 /// bus calls it on, which is `self` below because
@@ -402,7 +402,7 @@ static std::vector<std::shared_ptr<MessageBusRequestHandlerAsyncRaw>>& async_req
 /// overwrites the first registration, which is the exact mistake this file's
 /// header describes happening once already. Every subscriber, clipboard
 /// included, shares this one registration and gets its own `Subscription`
-/// through `cordial_messagebus_subscribe` instead.
+/// through `vanta_messagebus_subscribe` instead.
 void register_clipboard_classes(jnivm::ENV* env) {
     MessageBusRawCallback::Register(env);
     MessageBusConnection::Register(env);
@@ -410,16 +410,16 @@ void register_clipboard_classes(jnivm::ENV* env) {
     MessageBusRequestHandlerAsyncRaw::Register(env);
 }
 
-} // namespace cordial
+} // namespace vanta
 
 extern "C" {
 
 /// `MessageBus.doSubscribeRaw(String messageId, RawCallback cb, boolean) -> Connection`
 ///
 /// One callback object and one `Connection` are created and kept alive per
-/// `message_id`, looked up through `cordial::subscription_for`, rather than in
+/// `message_id`, looked up through `vanta::subscription_for`, rather than in
 /// the single set of globals this file used to hold. `sink` may be null: that
-/// is the control case a run with `CORDIAL_SKIP_CLIPBOARD=1` still exercises —
+/// is the control case a run with `VANTA_SKIP_CLIPBOARD=1` still exercises —
 /// registration and the subscribe call both still happen, and only whether
 /// anything acts on what comes back differs. Installed on the callback object
 /// before the subscribing call, not after: the bus may deliver a message
@@ -436,33 +436,33 @@ extern "C" {
 /// The class is passed where a receiver would go, which is what
 /// `deeplink.cpp`'s `publishRaw` caller already does for this same class and
 /// what works there.
-int cordial_messagebus_subscribe(void* fn, const char* message_id, void (*sink)(const char*),
+int vanta_messagebus_subscribe(void* fn, const char* message_id, void (*sink)(const char*),
                                  char* err, size_t err_len) {
     using Call = jobject (*)(JNIEnv*, jobject, jstring, jobject, jboolean);
-    auto* env = cordial::process_env();
+    auto* env = vanta::process_env();
     if (!fn || !env || !message_id) {
         snprintf(err, err_len, "no JavaVM, or doSubscribeRaw is not exported");
         return -1;
     }
     const std::string id(message_id);
-    auto& sub = cordial::subscription_for(id);
+    auto& sub = vanta::subscription_for(id);
     try {
         auto cls = env->GetClass("com/roblox/universalapp/messagebus/MessageBus");
-        auto cb = std::make_shared<cordial::MessageBusRawCallback>();
+        auto cb = std::make_shared<vanta::MessageBusRawCallback>();
         cb->sink = sink;
         cb->message_id = id;
-        auto jid = std::make_shared<cordial::String>(id);
+        auto jid = std::make_shared<vanta::String>(id);
         // Parked before the call, not after: the bus may deliver a message
         // synchronously from inside this very call, and a callback owned only
         // by a local would already be a candidate for collection.
         sub.callback = cb;
         jobject r = reinterpret_cast<Call>(fn)(env->GetJNIEnv(),
-                                               (jobject)cordial::to_jni(env, cls),
-                                               (jstring)cordial::to_jni(env, jid),
-                                               (jobject)cordial::to_jni(env, cb),
+                                               (jobject)vanta::to_jni(env, cls),
+                                               (jstring)vanta::to_jni(env, jid),
+                                               (jobject)vanta::to_jni(env, cb),
                                                (jboolean) false);
-        auto* conn = dynamic_cast<cordial::MessageBusConnection*>(
-            reinterpret_cast<cordial::Object*>(r));
+        auto* conn = dynamic_cast<vanta::MessageBusConnection*>(
+            reinterpret_cast<vanta::Object*>(r));
         if (conn) {
             sub.connection_ptr.store(static_cast<long long>(conn->ptr),
                                      std::memory_order_release);
@@ -494,36 +494,36 @@ int cordial_messagebus_subscribe(void* fn, const char* message_id, void (*sink)(
 ///
 /// `fn` is `Java_com_roblox_universalapp_messagebus_MessageBus_setRequestHandlerRaw`.
 /// Note the arity: five, not four. The second parameter is the receiver, and
-/// the class goes there -- the same trick `cordial_messagebus_subscribe` and
+/// the class goes there -- the same trick `vanta_messagebus_subscribe` and
 /// `deeplink.cpp`'s `publishRaw` caller already rely on against this engine.
 ///
 /// Unlike a subscription this returns nothing, so there is no `Connection` to
 /// confirm it with. "Did not throw" is the whole of the available evidence,
 /// and the only real confirmation is a request arriving.
-extern "C" int cordial_messagebus_set_request_handler(
+extern "C" int vanta_messagebus_set_request_handler(
     void* fn, const char* protocol, const char* method,
     int (*sink)(const char*, char*, size_t), char* err, size_t err_len) {
     using Call = void (*)(JNIEnv*, jobject, jstring, jstring, jobject);
-    auto* env = cordial::process_env();
+    auto* env = vanta::process_env();
     if (!fn || !env || !protocol || !method) {
         snprintf(err, err_len, "no JavaVM, or setRequestHandlerRaw is not exported");
         return -1;
     }
     try {
         auto cls = env->GetClass("com/roblox/universalapp/messagebus/MessageBus");
-        auto handler = std::make_shared<cordial::MessageBusRequestHandlerRaw>();
+        auto handler = std::make_shared<vanta::MessageBusRequestHandlerRaw>();
         handler->sink = sink;
         handler->method_id = std::string(protocol) + "." + method;
-        auto jproto = std::make_shared<cordial::String>(std::string(protocol));
-        auto jmethod = std::make_shared<cordial::String>(std::string(method));
+        auto jproto = std::make_shared<vanta::String>(std::string(protocol));
+        auto jmethod = std::make_shared<vanta::String>(std::string(method));
         // Held before the call: the bus may deliver a request synchronously
         // from inside it, exactly as the subscribe path may deliver a message.
-        cordial::request_handlers().push_back(handler);
+        vanta::request_handlers().push_back(handler);
         reinterpret_cast<Call>(fn)(env->GetJNIEnv(),
-                                   (jobject)cordial::to_jni(env, cls),
-                                   (jstring)cordial::to_jni(env, jproto),
-                                   (jstring)cordial::to_jni(env, jmethod),
-                                   (jobject)cordial::to_jni(env, handler));
+                                   (jobject)vanta::to_jni(env, cls),
+                                   (jstring)vanta::to_jni(env, jproto),
+                                   (jstring)vanta::to_jni(env, jmethod),
+                                   (jobject)vanta::to_jni(env, handler));
         return 0;
     } catch (const std::exception& e) {
         snprintf(err, err_len, "%s", e.what());
@@ -540,43 +540,43 @@ extern "C" int cordial_messagebus_set_request_handler(
 /// `set_fn` is `setRequestHandlerAsyncRaw`, `publish_fn` is
 /// `publishProtocolMethodResponseRaw`, and `respond_fn` is
 /// `callResponseHandlerRaw`. All are exported natives on `MessageBus` and take
-/// the class as their receiver, like `cordial_messagebus_set_request_handler`.
+/// the class as their receiver, like `vanta_messagebus_set_request_handler`.
 /// The publish prototype is `(JNIEnv*, jobject, protocol, method, response,
 /// code, telemetry)`, matching Mocktail's public PermissionsProtocol bridge.
 /// "Did not throw" is again the whole of the evidence until a request arrives.
-extern "C" int cordial_messagebus_set_request_handler_async(
+extern "C" int vanta_messagebus_set_request_handler_async(
     void* set_fn, void* publish_fn, void* respond_fn, int dual_response,
     const char* protocol, const char* method,
     int (*sink)(const char*, char*, size_t), char* err, size_t err_len) {
     using Call = void (*)(JNIEnv*, jobject, jstring, jstring, jobject);
-    auto* env = cordial::process_env();
+    auto* env = vanta::process_env();
     if (!set_fn || !respond_fn || !env || !protocol || !method) {
         snprintf(err, err_len, "no JavaVM, or setRequestHandlerAsyncRaw/callResponseHandlerRaw is not exported");
         return -1;
     }
-    if (cordial::permissions::uses_dual_response(dual_response != 0, protocol) && !publish_fn) {
+    if (vanta::permissions::uses_dual_response(dual_response != 0, protocol) && !publish_fn) {
         snprintf(err, err_len, "publishProtocolMethodResponseRaw is not exported");
         return -1;
     }
     try {
         auto cls = env->GetClass("com/roblox/universalapp/messagebus/MessageBus");
-        auto handler = std::make_shared<cordial::MessageBusRequestHandlerAsyncRaw>();
+        auto handler = std::make_shared<vanta::MessageBusRequestHandlerAsyncRaw>();
         handler->sink = sink;
-        handler->publish = reinterpret_cast<cordial::permissions::PublishProtocolMethodResponseRaw>(
+        handler->publish = reinterpret_cast<vanta::permissions::PublishProtocolMethodResponseRaw>(
             publish_fn);
         handler->respond =
-            reinterpret_cast<cordial::permissions::CallResponseHandlerRaw>(respond_fn);
+            reinterpret_cast<vanta::permissions::CallResponseHandlerRaw>(respond_fn);
         handler->dual_response = dual_response != 0;
         handler->protocol = protocol;
         handler->method = method;
-        auto jproto = std::make_shared<cordial::String>(std::string(protocol));
-        auto jmethod = std::make_shared<cordial::String>(std::string(method));
-        cordial::async_request_handlers().push_back(handler);
+        auto jproto = std::make_shared<vanta::String>(std::string(protocol));
+        auto jmethod = std::make_shared<vanta::String>(std::string(method));
+        vanta::async_request_handlers().push_back(handler);
         reinterpret_cast<Call>(set_fn)(env->GetJNIEnv(),
-                                       (jobject)cordial::to_jni(env, cls),
-                                       (jstring)cordial::to_jni(env, jproto),
-                                       (jstring)cordial::to_jni(env, jmethod),
-                                       (jobject)cordial::to_jni(env, handler));
+                                       (jobject)vanta::to_jni(env, cls),
+                                       (jstring)vanta::to_jni(env, jproto),
+                                       (jstring)vanta::to_jni(env, jmethod),
+                                       (jobject)vanta::to_jni(env, handler));
         return 0;
     } catch (const std::exception& e) {
         snprintf(err, err_len, "%s", e.what());
@@ -587,18 +587,18 @@ extern "C" int cordial_messagebus_set_request_handler_async(
     }
 }
 
-/// The `long` inside the `Connection` a prior `cordial_messagebus_subscribe`
+/// The `long` inside the `Connection` a prior `vanta_messagebus_subscribe`
 /// for `message_id` returned, or 0 when that id was never subscribed or the
 /// engine handed back something this side could not read as a `Connection`.
-/// Feeds `cordial_messagebus_is_connected`; on its own it means only that a
+/// Feeds `vanta_messagebus_is_connected`; on its own it means only that a
 /// `Connection` came back at all.
-long long cordial_messagebus_connection_ptr(const char* message_id) {
+long long vanta_messagebus_connection_ptr(const char* message_id) {
     if (!message_id) {
         return 0;
     }
-    std::lock_guard<std::mutex> lock(cordial::g_subscriptions_mutex);
-    auto it = cordial::g_subscriptions.find(message_id);
-    if (it == cordial::g_subscriptions.end() || !it->second) {
+    std::lock_guard<std::mutex> lock(vanta::g_subscriptions_mutex);
+    auto it = vanta::g_subscriptions.find(message_id);
+    if (it == vanta::g_subscriptions.end() || !it->second) {
         return 0;
     }
     return it->second->connection_ptr.load(std::memory_order_acquire);
@@ -608,10 +608,10 @@ long long cordial_messagebus_connection_ptr(const char* message_id) {
 /// address. Writes 1 or 0 into `*out_connected`. Unchanged in shape from
 /// clipboard's original version: the address alone is what the native wants,
 /// so this does not need to know which message id it came from.
-int cordial_messagebus_is_connected(void* fn, long long ptr, int* out_connected, char* err,
+int vanta_messagebus_is_connected(void* fn, long long ptr, int* out_connected, char* err,
                                     size_t err_len) {
     using Call = jboolean (*)(JNIEnv*, jobject, jlong);
-    auto* env = cordial::process_env();
+    auto* env = vanta::process_env();
     if (!fn || !env) {
         snprintf(err, err_len, "no JavaVM, or isConnected is not exported");
         return -1;
@@ -623,7 +623,7 @@ int cordial_messagebus_is_connected(void* fn, long long ptr, int* out_connected,
     try {
         auto cls = env->GetClass("com/roblox/universalapp/messagebus/Connection");
         jboolean r = reinterpret_cast<Call>(fn)(env->GetJNIEnv(),
-                                                (jobject)cordial::to_jni(env, cls),
+                                                (jobject)vanta::to_jni(env, cls),
                                                 static_cast<jlong>(ptr));
         if (out_connected) {
             *out_connected = r ? 1 : 0;

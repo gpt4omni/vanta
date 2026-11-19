@@ -1,5 +1,5 @@
-# Java methods the engine asked for and Cordial did not answer.
-# Observed, not derived: one CORDIAL_JNI_TRACE=ON run that joined a game and
+# Java methods the engine asked for and Vanta did not answer.
+# Observed, not derived: one VANTA_JNI_TRACE=ON run that joined a game and
 # played until the 304, on 2026-08-06. Only what was reached that run is here,
 # so absence from this list is not evidence a method is answered.
 # Supersedes nothing -- unresolved-jni.tsv is a different (and staler) list, and

@@ -3,7 +3,7 @@
 **Status:** analysis. Nothing here is a plan, nothing here was built, and the one
 code change this document actually recommends is a comment correction plus a
 one-line caching fix in a diagnostic that is off by default. Three of the four
-techniques are already answered in Cordial's tree and the fourth should not be
+techniques are already answered in Vanta's tree and the fourth should not be
 adopted.
 
 The source material is mocktail pull request #73 by `glook9001`, branch
@@ -17,7 +17,7 @@ this from that commit will find a different patch than the one described below.
 
 ## Why this document contains no code, when copying would have been legal
 
-mocktail is Apache-2.0 and Cordial is GPL-3.0. Apache-2.0 is one-way compatible
+mocktail is Apache-2.0 and Vanta is GPL-3.0. Apache-2.0 is one-way compatible
 with GPL-3.0, so adapting mocktail's implementation with attribution is
 *permitted* — that is the arrangement CLAUDE.md already records, and it is why
 `third_party/mocktail-webview` exists at all. If the licence chain ended there,
@@ -113,12 +113,12 @@ about eleven names that its guest-facing stubs reach for through
 own process boundary", not "cache the platform API". That distinction is what
 decides whether it transfers.
 
-### Does it apply to Cordial
+### Does it apply to Vanta
 
 Almost entirely no — and the reason usually given for saying so is not quite the
 right one.
 
-Cordial has no host-boundary upcall to cache. `crates/cordial-runtime/src/symtab.rs`
+Vanta has no host-boundary upcall to cache. `crates/vanta-runtime/src/symtab.rs`
 builds the whole `{soname -> {symbol -> address}}` table once, at load
 (`symtab.rs:172`). Each candidate host library is `dlopen`ed once
 (`symtab.rs:354`), each symbol `dlsym`ed once, and each result checked with
@@ -129,14 +129,14 @@ succeeds and would otherwise attribute four hundred libc symbols to libm. The
 table is then handed to the linker, and the guest's relocations bind to
 addresses. There is no name in the hot path to look up.
 
-The entry points the technique names are Cordial's own Rust functions.
+The entry points the technique names are Vanta's own Rust functions.
 `ANativeWindow_*` and the backend's EGL overrides are registered by
 `wayland::overrides()` or `window::overrides()` at `android/mod.rs:374`, so
 nothing resolves them at all — they are the answer, not a forwarding stub in
 front of one.
 
 **And here is the correction that matters, because the usual account of this gets
-the conclusion right and the reason wrong.** `crates/cordial-runtime/src/android/glcount.rs` does
+the conclusion right and the reason wrong.** `crates/vanta-runtime/src/android/glcount.rs` does
 *not* resolve once. Its module header says the wrappers "cost a counter increment
 per call and change nothing else" (`glcount.rs:9`), and the doc comment on the
 host-resolution helper says "resolved once" (`glcount.rs:40`). Neither is true.
@@ -149,7 +149,7 @@ allocation, a global symbol lookup, and a free. Among the wrapped calls are
 Two things follow, and they point in opposite directions.
 
 The shipped client is unaffected. The counting wrappers are registered only when
-`CORDIAL_COUNT_GL` is set (`android/mod.rs:378`), so in normal use there is no
+`VANTA_COUNT_GL` is set (`android/mod.rs:378`), so in normal use there is no
 per-call lookup anywhere on the hot path. The familiar arithmetic — ten calls a
 frame at 116 ns is about a microsecond, a rounding error at 240 Hz — is right
 about the client anybody actually runs.
@@ -160,7 +160,7 @@ lookups and two thousand malloc/free pairs per frame, which is a wholly differen
 number from a microsecond, and it is paid precisely when somebody is trying to
 measure the renderer. AGENTS.md's opening rule is about measurements taken with
 broken instruments; a counter whose documentation says it costs an increment and
-which in fact costs the dynamic loader is that failure inside Cordial's own
+which in fact costs the dynamic loader is that failure inside Vanta's own
 diagnostics. The comment that lies costs more than no comment.
 
 The same lookup-per-call pattern appears in the cold-path EGL forwarders —
@@ -181,7 +181,7 @@ end-to-end measurement anywhere in that pull request — no frame time, no
 percentile, no before-and-after in a running client, for this or any of its
 techniques.
 
-### What Cordial would build
+### What Vanta would build
 
 Nothing new. Fix `glcount.rs` so each wrapper resolves its host function once,
 holding the address in a per-wrapper one-time initialisation populated on first
@@ -197,8 +197,8 @@ that **the counting instrument no longer perturbs what it counts.**
 
 Run `tools/frame-pacing-check.py`, which drives the pointer for the whole
 measurement and reads the percentiles out of the ring in
-`crates/cordial-runtime/src/android/frame_pacing.rs`. Take a pair: one run with
-`CORDIAL_COUNT_GL=1`, one with it unset, same session, same input rate. Then take
+`crates/vanta-runtime/src/android/frame_pacing.rs`. Take a pair: one run with
+`VANTA_COUNT_GL=1`, one with it unset, same session, same input rate. Then take
 the same pair after the change. What would show the fix working is the p95 and p99
 gap between the counted and uncounted runs closing, with the uncounted arm
 unmoved.
@@ -208,7 +208,7 @@ the whole run: an idle client presents at exactly 1.0 a second and its p99 sits
 near 1000 ms, and every startup-freeze survey that recorded such a tail was
 recording the idle throttle rather than a stall (`docs/NEXT.md`, "Frame pacing,
 measured properly"). And take it on the GLES backend: the Vulkan path presents
-through Cordial's own `vkQueuePresentKHR` (`android/vulkan.rs:533`) rather than a
+through Vanta's own `vkQueuePresentKHR` (`android/vulkan.rs:533`) rather than a
 counting forwarder, so a Vulkan session cannot show the effect at all and a null
 result there would mean nothing.
 
@@ -250,11 +250,11 @@ are per-thread, and `ALooper_forThread` returns the caller's or null.
 implementation as remembered, but no copy of AOSP's `Looper.cpp` was available on
 this host to check it against. The rest is the header's documented contract.*
 
-### Does it apply to Cordial
+### Does it apply to Vanta
 
-Cordial already has the real thing, so the only live question is the gap.
+Vanta already has the real thing, so the only live question is the gap.
 
-`crates/cordial-runtime/src/android/looper.rs` creates an `epoll` instance and an
+`crates/vanta-runtime/src/android/looper.rs` creates an `epoll` instance and an
 `eventfd` per looper and registers the wake descriptor on the set
 (`looper.rs:511`, `looper.rs:547`). `ALooper_addFd` performs a real `epoll_ctl`
 and records a registration (`looper.rs:1428`); removal deregisters
@@ -271,7 +271,7 @@ caller "I dispatched a callback for you", on every poll, forever. That is a
 stub that lies in the precise sense AGENTS.md means, and the comment beside it
 lied about which lie it was telling.
 
-**The gap in Cordial is real.** The dispatch loop
+**The gap in Vanta is real.** The dispatch loop
 (`looper.rs:1545` onward, the batch walk beginning after the `epoll_wait` return)
 iterates the ready set and returns from inside the loop on the first descriptor it
 can act on — the wake value for the wake descriptor, the callback value after one
@@ -304,20 +304,20 @@ descriptors — the comment there says so and names the panic that would otherwi
 occur.
 
 **A second correction, on the symbol count.** The engine imports
-seven `ALooper_*` symbols and Cordial exports eight. Verified with `readelf` on
+seven `ALooper_*` symbols and Vanta exports eight. Verified with `readelf` on
 this build's `libroblox.so`: the undefined list holds `ALooper_acquire`,
 `ALooper_addFd`, `ALooper_forThread`, `ALooper_pollOnce`, `ALooper_prepare`,
 `ALooper_release` and `ALooper_removeFd`. `ALooper_pollAll` and
 `ALooper_isPolling` are absent, as expected — and so is **`ALooper_wake`**,
-which Cordial exports (`looper.rs:1738`) and uses itself to break its own pump out
-of a blocking poll. That eighth export is not dead code; it is Cordial's, not the
+which Vanta exports (`looper.rs:1738`) and uses itself to break its own pump out
+of a blocking poll. That eighth export is not dead code; it is Vanta's, not the
 engine's. A report that says "all seven" should say "the seven it imports, plus
 wake, which it does not". Incidentally `ALooper_isPolling` is not an NDK-exported
 symbol in the first place — it is a method on the C++ `Looper` in libutils — so
 mocktail's version of it is an addition beyond the NDK surface rather than a gap
 being filled.
 
-### What Cordial would build if the gap were worth closing
+### What Vanta would build if the gap were worth closing
 
 Keep the responses from one `epoll_wait`; dispatch every callback-bearing one
 before returning; hand the identifier-bearing ones out one per subsequent
@@ -337,7 +337,7 @@ inside a single batch.** A callback that closes a descriptor and opens another c
 alias a later entry in the same remembered batch, and the re-lookup will find the
 new registration under the old number and dispatch to it.
 
-Anything touching this loop has to be measured against two behaviours Cordial's
+Anything touching this loop has to be measured against two behaviours Vanta's
 looper carries and mocktail's cannot, because both are in tension with batching
 and both are what the shipped client runs. The zero-timeout coalescer
 (`looper.rs:257` onward, `looper.rs:332`) answers an idle spin from memory for up
@@ -359,7 +359,7 @@ poll, and the extra state is not worth having. Nobody in this repository has eve
 read that number. It is one command against a running client and it may end the
 question.
 
-If it does not, the instrument is `CORDIAL_INSTR=1`, which turns on the per-thread
+If it does not, the instrument is `VANTA_INSTR=1`, which turns on the per-thread
 poll census (`looper.rs:95`). It reports, per polling thread and per second, the
 requested-timeout mix and what each poll returned — empty, wake, callback,
 identifier, unclaimed — with a sampled `epoll_wait` duration taken on one call in
@@ -431,12 +431,12 @@ the opposite of SMT isolation. `core_id` is also unique only within a package, s
 on a multi-socket or multi-die machine the foreground mask spans sockets and the
 "isolation" is across NUMA nodes.
 
-### Does it apply to Cordial
+### Does it apply to Vanta
 
 Two of the three preconditions are already here, which is worth knowing because it
 means the reason not to do this is not "it would be hard".
 
-The topology walk exists. `crates/cordial-runtime/src/flags.rs:571`
+The topology walk exists. `crates/vanta-runtime/src/flags.rs:571`
 (`physical_cores`) already reads `physical_package_id` and `core_id` for every
 CPU, counts distinct package-and-core pairs, and falls back to the thread count
 when sysfs is unreadable. It is the correct walk — the one mocktail's version
@@ -453,14 +453,14 @@ repository has already got it wrong once.
 The interception point exists in outline. The engine imports `pthread_setname_np`
 — verified in this build's undefined-symbol list — so the engine does name its
 threads, and `native/thread_trace.cpp` already wraps `pthread_create` behind
-`CORDIAL_TRACE_THREADS`. **But `pthread_create` is the wrong hook for a
+`VANTA_TRACE_THREADS`. **But `pthread_create` is the wrong hook for a
 name-matching policy, because the name does not exist yet when the thread is
 created.** mocktail is right about this: the moment a role becomes knowable is the
-rename. That wrapper does not exist in Cordial.
+rename. That wrapper does not exist in Vanta.
 
-What does not exist is any reason to believe the policy wins. Cordial has never
+What does not exist is any reason to believe the policy wins. Vanta has never
 recorded the engine's thread inventory. The nearest thing to evidence is that the
-engine renames its main thread to `Main` — which is how `pgrep -x cordial-run`
+engine renames its main thread to `Main` — which is how `pgrep -x vanta-run`
 came to report nothing for a client that was plainly running, and which
 `docs/analysis/crash-trace.md:388` records from the other side. One name is not a
 table.
@@ -509,7 +509,7 @@ and `taskset` all narrow the affinity mask a process may set, while
 `/sys/devices/system/cpu/*` continues to enumerate every host CPU. So the computed
 mask can name CPUs the process may not use, `sched_setaffinity` fails with
 `EINVAL`, and mocktail explicitly discards the return value — no log, no fallback,
-no cross-check against the affinity the process already had. Cordial ships as a
+no cross-check against the affinity the process already had. Vanta ships as a
 Flatpak. This is the common case here, not the exotic one.
 
 **With no SMT the scheme reduces to something strictly worse than the kernel.**
@@ -526,9 +526,9 @@ obviously that thing.
 The order matters, because the first step usually ends it.
 
 First, inventory. Run a real session and read the thread names — either from
-`/proc/<pid>/task/*/comm` directly, or from `CORDIAL_INSTR=1`, whose poll census
+`/proc/<pid>/task/*/comm` directly, or from `VANTA_INSTR=1`, whose poll census
 already prints each polling thread's name beside its tid, or from
-`CORDIAL_TRACE_THREADS=1` for creation. **If no thread is named anything the table
+`VANTA_TRACE_THREADS=1` for creation. **If no thread is named anything the table
 would match, stop.**
 
 Second, establish that the bad pairing actually happens. Sample which CPU each
@@ -592,12 +592,12 @@ avoidance is implied by the flag and never argued. There are no benchmark number
 for it at all; the only claim is a qualitative table entry naming three
 instructions.
 
-### Does it apply to Cordial
+### Does it apply to Vanta
 
 No, and there are three independent reasons, any one of which is sufficient.
 
-**Cordial cannot remove the guest's indirection.** `libroblox.so`'s calls into libm
-go through its own PLT and GOT, resolved by Cordial's ported linker. Whoever is on
+**Vanta cannot remove the guest's indirection.** `libroblox.so`'s calls into libm
+go through its own PLT and GOT, resolved by Vanta's ported linker. Whoever is on
 the far side, the guest still executes an indirect branch. Removing it means
 editing the guest's code, which ADR-001 puts permanently out of scope. The PLT half
 of the claim is not available here at any price, and it is worth noticing that it
@@ -605,7 +605,7 @@ is barely available to mocktail either — a shim exporting these symbols with d
 visibility is reached through a PLT by anything that calls it.
 
 **The functions where a builtin substitutes an instruction are not the functions
-this engine imports.** Checked against the build in `~/.cache/cordial/lib/x86_64`:
+this engine imports.** Checked against the build in `~/.cache/vanta/lib/x86_64`:
 of the sixty-odd libm symbols in `libroblox.so`'s undefined list — the inverse
 trigonometric family, the trigonometric family, the hyperbolics, `exp`, `exp2`,
 `expm1`, `log`, `log2`, `log10`, `pow`, `powl`, `cbrt`, `hypot`, `fmod`,
@@ -617,7 +617,7 @@ single-instruction x86-64 form, and their absence is the evidence that Roblox's 
 compiler already inlined them when it built the shared object. What remains is the
 transcendental set, which has no instruction form on x86-64 that is both fast and
 accurate. A shim compiled with builtins emits a call to *some* libm for every one
-of them. The best available outcome is that Cordial's shim becomes a slower way of
+of them. The best available outcome is that Vanta's shim becomes a slower way of
 reaching the same glibc code.
 
 **A faster libm is a different libm, and that is a correctness decision.**
@@ -693,7 +693,7 @@ stderr. The advertised saving is the cost of work no longer performed at all, no
 the same work performed faster. For a project that debugs by reading engine output
 this is a diagnostic regression presented as an optimisation, and the flag is
 opt-in, so the default posture is blind. `docs/analysis/startup-and-idle-cost.md`
-§4 already records that Cordial emits no engine log and treats that as a defect to
+§4 already records that Vanta emits no engine log and treats that as a defect to
 fix rather than a saving to bank.
 
 **An asset-resolution cache that memoises failures and never invalidates.**
@@ -720,14 +720,14 @@ creation. No measurement accompanies it.
 layer, tracing predicates and proxy configuration. The behavioural consequence is
 uniform and worth stating as an invariant for anyone tempted by the same sweep
 here: runtime toggling stops working, and the first read must happen after the
-environment is final. Cordial already does this in places and for good reason —
+environment is final. Vanta already does this in places and for good reason —
 `looper.rs`'s census flag and coalescing window are both read once — but it is a
 behaviour change, not a free optimisation.
 
 **No tests were added,** for any of the four techniques, including the looper
 rewrite, which is the change most amenable to a unit test and the one where a
 return-value or dispatch-ordering error would stay invisible until something in the
-engine starved. Cordial's own looper carries unit tests asserting, among other
+engine starved. Vanta's own looper carries unit tests asserting, among other
 things, that an expired infinite wait reports a timeout rather than a fabricated
 wake.
 
@@ -737,13 +737,13 @@ wake.
 
 | Technique | Verdict | Reasoning |
 |---|---|---|
-| Cache symbol resolution across a host boundary | **Already have** | `symtab.rs` resolves every host symbol once at load and hands the linker addresses, so no name is looked up on the hot path; `ANativeWindow_*` and the EGL overrides are Cordial's own functions, not forwarding stubs. There is no host-boundary upcall here to cache. |
-| Resolve once in `glcount.rs` | **Adopt — as an instrument fix, not a speed fix** | It resolves per call and allocates per call, contradicting both its own comments, and it wraps `glDrawElements`. Gated off by `CORDIAL_COUNT_GL`, so the shipped client is unaffected; what is affected is anything timed with the counters on, which is the broken instrument AGENTS.md's opening rule is about. |
+| Cache symbol resolution across a host boundary | **Already have** | `symtab.rs` resolves every host symbol once at load and hands the linker addresses, so no name is looked up on the hot path; `ANativeWindow_*` and the EGL overrides are Vanta's own functions, not forwarding stubs. There is no host-boundary upcall here to cache. |
+| Resolve once in `glcount.rs` | **Adopt — as an instrument fix, not a speed fix** | It resolves per call and allocates per call, contradicting both its own comments, and it wraps `glDrawElements`. Gated off by `VANTA_COUNT_GL`, so the shipped client is unaffected; what is affected is anything timed with the counters on, which is the broken instrument AGENTS.md's opening rule is about. |
 | `epoll` + `eventfd` `ALooper` | **Already have** | `android/looper.rs` is a real per-thread epoll looper with a wake eventfd, ident and callback registrations, callback-driven removal, and no borrow held across a callback. It is not the stub the pull request replaces — and that stub was returning the callback value, not the timeout value, so it was claiming dispatches it never made. |
 | Batch-draining `pollOnce` | **Do not adopt yet — read `loopers` first** | The gap is real against the NDK contract's "invokes the callbacks of every descriptor on which an event occurred". Level-triggered epoll means nothing is lost, only a syscall per ready descriptor, and the engine polls in a tight loop so it is not a latency cost. If `LooperStats.registered` shows one or two descriptors on the engine's looper, there is nothing to batch and the state is not worth carrying. |
-| SMT physical-core affinity | **Do not adopt** | No measurement supports it and the "Measured Improvement" column contains a restatement of the mechanism. The topology walk reads only `core_id`, so it co-locates the render threads on one core's hyperthreads rather than isolating them, and breaks outright on multi-socket. Six foreground roles do not fit two hyperthreads, "core 0" is the wrong core on a hybrid part, a Flatpak cpuset makes the call fail with the return value discarded, and Cordial has never even recorded the engine's thread names. |
-| Wrap `pthread_setname_np` | **Adopt only as instrumentation, if at all** | It is the right hook for anything name-based, because the name does not exist at `pthread_create` — but the thing to do with it first is record the inventory Cordial lacks, not bind anything. |
-| Math builtins in a libm shim | **Do not adopt** | Cordial cannot remove the guest's PLT without editing the guest, which ADR-001 forbids; the engine imports no math function with a single-instruction form, so there is no builtin to substitute; changing which libm answers is an unbounded correctness change; and the pattern carries a plausible self-recursion fault that has never been compiled. |
+| SMT physical-core affinity | **Do not adopt** | No measurement supports it and the "Measured Improvement" column contains a restatement of the mechanism. The topology walk reads only `core_id`, so it co-locates the render threads on one core's hyperthreads rather than isolating them, and breaks outright on multi-socket. Six foreground roles do not fit two hyperthreads, "core 0" is the wrong core on a hybrid part, a Flatpak cpuset makes the call fail with the return value discarded, and Vanta has never even recorded the engine's thread names. |
+| Wrap `pthread_setname_np` | **Adopt only as instrumentation, if at all** | It is the right hook for anything name-based, because the name does not exist at `pthread_create` — but the thing to do with it first is record the inventory Vanta lacks, not bind anything. |
+| Math builtins in a libm shim | **Do not adopt** | Vanta cannot remove the guest's PLT without editing the guest, which ADR-001 forbids; the engine imports no math function with a single-instruction form, so there is no builtin to substitute; changing which libm answers is an unbounded correctness change; and the pattern carries a plausible self-recursion fault that has never been compiled. |
 | Silencing Android logging, memoising asset misses, `MADV_FREE` rewriting | **Do not adopt** | Two regressions and a stub that lies, travelling in the same branch under the performance heading. |
 
 ## Notes moved from docs/status.md (2026-10-02)

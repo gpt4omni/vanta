@@ -31,7 +31,7 @@ fork nobody knows about.
 
 ## Where this stands
 
-Cordial loads Roblox's official Android x86-64 `libroblox.so` natively on Linux
+Vanta loads Roblox's official Android x86-64 `libroblox.so` natively on Linux
 — ported AOSP bionic linker, bionic/glibc shim, libjnivm in place of ART, and a
 framework layer answering the platform calls the client makes.
 
@@ -70,7 +70,7 @@ without an account can settle any of it, and no automated agent should try.
   way its idle heuristic counts, with pointer capture as the likely fix. It was
   the developer's own machine under memory pressure from unrelated applications,
   and the same session on a quiet machine was "buttery smooth" on an Intel iGPU.
-  Nothing in Cordial was at fault. Two coincidences did the damage — the number
+  Nothing in Vanta was at fault. Two coincidences did the damage — the number
   matched a real documented behaviour exactly, and the throttle was fresh in
   everyone's mind. **Ask what else was running before believing a performance
   report, including your own.**
@@ -91,7 +91,7 @@ sharing an address. The risk is collateral rather than causal.
 
 *Corrected 2026-10-01:* the five routes were measured on the x86-64 phone build and
 were negative for it. VR now runs through Roblox's Meta Quest build instead: the x86-64
-`cordial-run` links its arm64 engine, runs it under dynarmic and bridges its OpenXR and
+`vanta-run` links its arm64 engine, runs it under dynarmic and bridges its OpenXR and
 Vulkan calls to the host (`--guest-arm64 --app-bridge`). The engine constructs its VR
 device through ordinary OpenXR once a runtime is present, with nothing written into it,
 and reached `FOCUSED` at 89.95 to 90.00 `xrEndFrame`/s at 90 Hz on Monado's simulated
@@ -122,7 +122,7 @@ per-build address, which [ADR-001](adr/ADR-001-in-process-hooking.md) and
 [ADR-003](adr/ADR-003-plugin-isolation.md) make *absent, not disabled*. It would
 also break on every Roblox update.
 
-What does work and is reusable: Cordial's OpenXR path was proven end to end
+What does work and is reusable: Vanta's OpenXR path was proven end to end
 against Monado's simulated headset — `XR_KHR_vulkan_enable2`, device creation
 through `xrCreateVulkanDeviceKHR`, stereo swapchains, a `STAGE` reference space
 for room-scale, real per-eye disparity in a captured frame, plus emulated hand
@@ -135,13 +135,13 @@ at all today.
 *Corrected 2026-10-01:* the paragraph above had no code behind it. No branch
 contained any OpenXR code when it was written: `git log --all -S` for
 `xrCreateVulkanDeviceKHR` finds only the commit that added this paragraph
-(`89e46ce`, which changed this file alone) and the cordial-vr fork's bridge
+(`89e46ce`, which changed this file alone) and the vanta-vr fork's bridge
 (`b038aaa`, 2026-09-30), and `XR_REFERENCE_SPACE_TYPE_STAGE` and `openxr/openxr.h`
 appear in nothing earlier than the fork. "The only demonstrated way to construct a
 device" above is also no longer true. What now exists is the fork's: the Quest engine
 itself creates its Vulkan device through `xrCreateVulkanDeviceKHR`, which
-`guest_xr.rs` passes to the host runtime with Cordial's own `vkGetInstanceProcAddr`,
-rather than Cordial taking device creation over from the engine. Hand tracking and
+`guest_xr.rs` passes to the host runtime with Vanta's own `vkGetInstanceProcAddr`,
+rather than Vanta taking device creation over from the engine. Hand tracking and
 scripted poses over Monado's `remote` driver have not been done.
 
 ## Releases, and how they reach people
@@ -154,8 +154,8 @@ stops at 0.6.0 by design.
 
 | Route | State | Follows |
 |---|---|---|
-| Flatpak remote (`cordial`, on GitHub Pages) | Signed. `stable` exists and is the default, for x86_64 and aarch64. | `stable` moves only on a release commit; `master` moves on every push to `main` |
-| apt, dnf (Fedora 44 only), pacman repositories | Published and signed, on the same Pages site under `/apt/`, `/rpm/`, `/arch/`. At 0.20.1 on 2026-09-30: the apt `Packages` file, the dnf `repomd.xml` (with its `.asc`) and the pacman `cordial.db` (with its `.sig`) were fetched and read; no package was installed from them. | Tags only |
+| Flatpak remote (`vanta`, on GitHub Pages) | Signed. `stable` exists and is the default, for x86_64 and aarch64. | `stable` moves only on a release commit; `master` moves on every push to `main` |
+| apt, dnf (Fedora 44 only), pacman repositories | Published and signed, on the same Pages site under `/apt/`, `/rpm/`, `/arch/`. At 0.20.1 on 2026-09-30: the apt `Packages` file, the dnf `repomd.xml` (with its `.asc`) and the pacman `vanta.db` (with its `.sig`) were fetched and read; no package was installed from them. | Tags only |
 | GitHub release assets | AppImage, `.deb`, `.rpm`, `.pkg.tar.zst` and the Flatpak bundle, each with a keyless Sigstore `.cosign.bundle` | Tags only |
 | AUR | Not ours. See below. | Nobody in this project |
 
@@ -164,16 +164,16 @@ stops at 0.6.0 by design.
 [`docs/releases/README.md`](releases/README.md) is the procedure and it is
 accurate. The parts that matter to a new maintainer:
 
-- **The version lives in six files.** 40a42a5 ("Cordial 0.20.1") is the worked
+- **The version lives in six files.** 40a42a5 ("Vanta 0.20.1") is the worked
   example: `Cargo.toml`, `Cargo.lock`, `docs/releases/v0.20.1.md`,
-  `packaging/aur/cordial/PKGBUILD`, its `.SRCINFO`, and the newest `<release>`
-  in `packaging/io.github.luohoa97.Cordial.metainfo.xml`. CI checks two of
+  `packaging/aur/vanta/PKGBUILD`, its `.SRCINFO`, and the newest `<release>`
+  in `packaging/io.github.gpt4omni.Vanta.metainfo.xml`. CI checks two of
   them; v0.15.1 was tagged with four done and went red.
 - **`docs/releases/vX.Y.Z.md` is the body of the GitHub release page.**
   `.github/workflows/attach-to-release.yml` creates the release from that file
   (`--notes-file`) if nothing has created it yet, and refuses rather than fall
   back to a list of commit subjects. So the notes must exist before the tag.
-- **`packaging/aur/cordial-bin/` is bumped afterwards, in its own commit**,
+- **`packaging/aur/vanta-bin/` is bumped afterwards, in its own commit**,
   because its PKGBUILD pins the release asset's URL and sha256 and neither
   exists until CI has built the package. 1ba36ba is the example: the hash came
   from `sha256sum` on the attached `.pkg.tar.zst`, and the commit says it was
@@ -219,7 +219,7 @@ the release channel. It used to happen in `build` at the start of a run, and on
 Two failures on 2026-09-29, both fixed on `main` and both worth knowing because
 neither showed as a code problem:
 
-- **fc04d22.** 0.19.0's `cordial-debug` pacman package was over Pages' 100 MB
+- **fc04d22.** 0.19.0's `vanta-debug` pacman package was over Pages' 100 MB
   per-file limit, so the payload check failed on every run from 2026-09-28 and
   the remote stopped updating. Users saw `flatpak update` find nothing until
   0.20.1. `pacman.yml` now leaves `-debug` packages out of the repository
@@ -233,7 +233,7 @@ neither showed as a code problem:
   and not yet in CI; main runs since then have passed, apart from the flake described next.
 
 One more, found afterwards. Run 36518320870 (the commit that bumped
-`cordial-bin`) failed in `merge`, step "Report the payload size": a diagnostic
+`vanta-bin`) failed in `merge`, step "Report the payload size": a diagnostic
 `find | sort -rn | head -5` under `set -o pipefail` printed `sort: fflush
 failed: Broken pipe` and exited 2, because `head` closed the pipe early. Runs
 36555156089 and 36563959547 passed on the same tree, so it is an intermittent
@@ -271,10 +271,10 @@ time before the keys existed; their "The key" sections are current.
 
 ### The AUR
 
-`cordial`, `cordial-bin` and `cordial-git` exist on the AUR, and **they belong
+`vanta`, `vanta-bin` and `vanta-git` exist on the AUR, and **they belong
 to a third party, `taxin-404`, not to the maintainer** (20c23ff;
 `packaging/aur/PUBLISHING.md`). On 2026-09-30 all three were at 0.17.0, last
-modified 2026-09-20, with `cordial-bin`'s sha256 matching the official v0.17.0
+modified 2026-09-20, with `vanta-bin`'s sha256 matching the official v0.17.0
 asset. They are copies of `packaging/aur/` fetching only from this repository.
 What that account pushes next is not reviewed by anyone here. The project has
 never published to the AUR itself; `PUBLISHING.md` is the procedure for whoever
@@ -285,13 +285,13 @@ renamed. Which of those the maintainer wants is an open question.
 
 A profile's `network.json` can now say `"mode": "vpn-required"`, which refuses
 to start the client at all unless the profile's own `check` command exits zero and reports traffic actually
-passing — checked at both the shell's `launch.rs` and `cordial-run`'s own
+passing — checked at both the shell's `launch.rs` and `vanta-run`'s own
 `main`, so starting the client directly cannot skip it. Read ADR-016 before
 touching any of this; the short version is below, with what to trust and what
 not to.
 
 **What this actually guarantees, and does not.** A `vpn-required` profile will
-never make even Cordial's own client-settings request on the machine's
+never make even Vanta's own client-settings request on the machine's
 ordinary route while believing itself protected. It does **not** isolate two
 profiles running at once from each other — a machine-wide tunnel is one, global,
 machine-wide route, and ADR-012's own two-windows-at-once case means a second
@@ -305,7 +305,7 @@ which brings its tunnel up as a NetworkManager connection — confirmed by
 reading that client, not assumed. NetworkManager is a
 system service in the host's own network namespace, so the interface it
 creates lands there regardless of which namespace the command that asked for
-it was run inside. bringing such a tunnel up under `ip netns exec cordial-<profile>` would not produce
+it was run inside. bringing such a tunnel up under `ip netns exec vanta-<profile>` would not produce
 a namespace-scoped tunnel; it would produce the same machine-wide one such a
 client always produces. A real per-profile tunnel needs a client (or something
 alongside it) to hand over the WireGuard parameters an established connection
@@ -320,7 +320,7 @@ definition out of a NetworkManager-managed Proton connection is.
 **`unshare --net -- ip link` fails with `Operation not permitted` in an
 ordinary unprivileged shell** — measured directly, on the machine this was
 written on, not assumed from `CAP_NET_ADMIN` documentation. Building the
-namespace path also means deciding how Cordial's packaging (Flatpak in
+namespace path also means deciding how Vanta's packaging (Flatpak in
 particular) gets that capability at all, which ADR-007's existing argument
 against broad sandbox permissions bears on directly.
 
@@ -334,17 +334,17 @@ decision not to ship an `http_proxy`-shaped setting rests on `RtcIoRna` (the
 real-time game transport) not being HTTP at all, which holds regardless.
 
 **A measurement trap this work tripped over and is worth adding to the list
-above:** `CORDIAL_PROFILE_ROOT` was being guarded by three *different*,
+above:** `VANTA_PROFILE_ROOT` was being guarded by three *different*,
 mutually unaware mutexes — one each in `profile.rs`, `profile_switcher.rs`,
 and (new, in this change) `launch.rs`. Each looked correct in isolation and
 none of them stopped a different file's tests setting the same process-wide
 variable at the same moment. It surfaced as one failure in several runs of
-`cargo test -p cordial-shell`, reading another test's scratch directory back
+`cargo test -p vanta-shell`, reading another test's scratch directory back
 mid-assertion — exactly the "passed anyway on the first run" shape
 `profile.rs`'s own tests already warn about. Fixed by sharing one mutex
 (`crate::PROFILE_ROOT_ENV`, declared in `main.rs`) across every file in that
 binary that touches the variable. If a future file needs to point
-`CORDIAL_PROFILE_ROOT` at a scratch directory in a test, use that one rather
+`VANTA_PROFILE_ROOT` at a scratch directory in a test, use that one rather
 than adding a fourth private mutex that looks like it works.
 
 ## A local Sober issue corpus for triage (ADR-017)
@@ -354,7 +354,7 @@ engine — worth saying plainly because everything else in this file does.
 It pulls vinegarhq/sober's issue tracker (another Roblox-on-Linux project,
 closed source, so its GitHub repo is purely an issue tracker) into a local,
 gitignored, PII-redacted corpus. Sober's tracker is prior art: real users
-hitting real problems on the same engine Cordial loads, with a
+hitting real problems on the same engine Vanta loads, with a
 maintainer's actual answer attached. `just sober-corpus-fetch` pulls it;
 `just sober-corpus-derive` filters it down to the cases with a substantive
 maintainer reply. Read `tools/sober-corpus/README.md` for day-to-day use
@@ -380,7 +380,7 @@ this fetcher uses does not leak pull requests the way REST's `/issues`
 endpoint would.
 
 **Dropped on purpose:** an LLM-scoring harness (`evaluate.ts`, `model.ts`,
-`sampling.ts`, a Cordial-context builder) existed alongside the fetcher in
+`sampling.ts`, a Vanta-context builder) existed alongside the fetcher in
 the project this was ported from. It called an external LLM API to
 auto-judge diagnoses against the derived set, and the founder explicitly
 cancelled it ("No openrouter"). It is not in this tree and nothing here
@@ -401,7 +401,7 @@ and the maintainer counts that one as a 1.0 blocker.*
 comes from `wayland::current().geometry()`, that geometry is written only by
 `apply_resize`, and that `apply_resize` early-returns when the size is unchanged
 — so the thing to measure was whether it fires with the fullscreen size at all.
-It does. Measured 2026-08-06 with `CORDIAL_INSTR=1` and temporary logging added
+It does. Measured 2026-08-06 with `VANTA_INSTR=1` and temporary logging added
 around the early return:
 
 ```text
@@ -427,17 +427,17 @@ a complete red herring, and this investigation has produced three of the latter
 in one evening.
 
 The measurement to take next is what the *compositor* configured versus what
-Cordial applied: log the `xdg_toplevel::configure` width and height alongside
+Vanta applied: log the `xdg_toplevel::configure` width and height alongside
 the `apply_resize` call they produce. If those disagree, the fix is in the
 configure handling. If they agree, the offset is downstream of the surface size
 entirely — canvas placement or the engine's own viewport — and neither of those
 is where anyone has been looking.
 
 **Textures and meshes render wrong, and the font is broken until it isn't.**
-Unexplained. The leading suspect is Cordial's own MAILBOX-for-FIFO present-mode
+Unexplained. The leading suspect is Vanta's own MAILBOX-for-FIFO present-mode
 substitution, which is what took the frame rate from a variable 35–50 to a flat
 60 — if the engine's upload path relied on FIFO's pacing, MAILBOX would let it
-sample buffers before their uploads land. `CORDIAL_PRESENT_MODE=fifo` is the
+sample buffers before their uploads land. `VANTA_PRESENT_MODE=fifo` is the
 control and it has not been run. Ruled out already: ASTC support (this
 developer's Intel iGPU has it) and a fall back to the software rasteriser
 (`intel_icd` and `libvulkan_intel.so` are both installed).
@@ -447,7 +447,7 @@ or refuted since it was written.*
 
 **Typing into text fields draws nothing** until the field loses focus. The
 per-keystroke sync path is understood; what is missing is an EditText-equivalent
-overlay. `CORDIAL_TRACE_TEXT=1`.
+overlay. `VANTA_TRACE_TEXT=1`.
 
 *Status 2026-09-30: the headline is out of date. Typing has drawn in the box
 since 0.7.0, whose release page says a focused TextBox gets a `gtk::Text` with
@@ -482,19 +482,19 @@ no file. Sober does not fetch from Roblox either; it routes users through Google
 Play. Aptoide is deliberately not wired — a mirror offering only a hash it
 supplied itself is verification theatre.
 
-*Status 2026-09-30: out of date. ADR-025 (accepted) lets Cordial fetch the build
+*Status 2026-09-30: out of date. ADR-025 (accepted) lets Vanta fetch the build
 from APKPure when it can prove Roblox signed it, and the first-run
 **Download Roblox** button does that (README, `docs/install.md`). The paragraph
 above is the state before that decision; the ADR is where the reasoning for the
 change is.*
 
-## The application ID, and why it is not org.cordial.Cordial
+## The application ID, and why it is not org.vanta.Vanta
 
 **It was, until 2026-08-05, and that was a claim on a domain this project does
-not own.** `cordial.org` was registered on 1999-04-16, is held through InterNetX
+not own.** `vanta.org` was registered on 1999-04-16, is held through InterNetX
 GmbH with `clientTransferProhibited` set, resolves to 185.148.170.48 behind
 iwelt.de nameservers and does not expire until 2027-04-16. It is a
-twenty-seven-year-old domain in active use. **"Just register cordial.org" is not
+twenty-seven-year-old domain in active use. **"Just register vanta.org" is not
 on the table**, and anyone who assumes it is will spend an afternoon finding that
 out — which is the only reason this section still exists now that the rename is
 done.
@@ -504,7 +504,7 @@ account you demonstrably control**, and rejects a submission claiming one it doe
 not. It is not a formality: the ID is what a user's machine trusts for the
 lifetime of the install.
 
-The ID is now **`io.github.luohoa97.Cordial`**, which needs no domain, matches
+The ID is now **`io.github.gpt4omni.Vanta`**, which needs no domain, matches
 the homepage, and is what `<developer id="io.github.luohoa97">` in the metainfo
 had been saying all along.
 
@@ -520,10 +520,10 @@ above.
 - the manifest, desktop, metainfo and **both** icon filenames — all of which must
   match the ID, and one of which is the README banner rather than the app icon
 - `<id>` and `<launchable>` in the metainfo
-- `const APP_ID` in `crates/cordial-shell/src/main.rs`, which is also what makes
-  Cordial single-instance
+- `const APP_ID` in `crates/vanta-shell/src/main.rs`, which is also what makes
+  Vanta single-instance
 - two `include_str!` paths that pin the desktop file's contents from tests
-- the `Icon=` URL in `packaging/cordial.flatpakrepo`
+- the `Icon=` URL in `packaging/vanta.flatpakrepo`
 - the README's install, uninstall and plugin-directory paths
 - **user data**, which is the one that bites. A Flatpak's data lives at
   `~/.var/app/<app-id>/`, so a rename orphans every profile, sign-in and
@@ -547,12 +547,12 @@ build scripts and every review comment on it must not be LLM-generated either.
 Submissions that violate it can be rejected without further review, and repeat
 violations can earn a permanent ban.
 
-**Cordial is squarely inside that.** Large parts of the tree, this document
+**Vanta is squarely inside that.** Large parts of the tree, this document
 included, were written with an LLM, and the git history says so in
 `Co-Authored-By` trailers on dozens of commits. That was recorded deliberately
 and it should stay recorded.
 
-So the honest position is: **the GitHub Pages remote is Cordial's distribution
+So the honest position is: **the GitHub Pages remote is Vanta's distribution
 channel**, not a waiting room. Anything in the tree that reads as "until we get
 on Flathub" is wrong and should be corrected where you find it.
 
@@ -568,7 +568,7 @@ the way and are worth fixing regardless, because they are what a self-hosted
 remote wants anyway:
 
 1. ~~**The build needs the network**~~ **Done**
-   ([issue #3](https://github.com/luohoa97/cordial/issues/3)). Both halves are
+   ([issue #3](https://github.com/gpt4omni/vanta/issues/3)). Both halves are
    pinned now: `libjnivm` and `mcpelauncher-linker` as `git` sources by commit,
    and all 212 crates as `archive` sources carrying the sha256 that was already
    in `Cargo.lock`, generated into `packaging/cargo-sources.json` by
@@ -587,7 +587,7 @@ remote wants anyway:
    would make it exit rather than emit a list quietly missing that crate.
    A CI step regenerates the list and fails on a diff, which is the guard
    against the one way this arrangement breaks.
-2. ~~**The application ID.**~~ **Done** — `io.github.luohoa97.Cordial`, see the
+2. ~~**The application ID.**~~ **Done** — `io.github.gpt4omni.Vanta`, see the
    section above.
 3. **No screenshots.** The metainfo has none, and Flathub's linter requires at
    least one. Cheap, and worth having for the software-centre listing on the
@@ -595,7 +595,7 @@ remote wants anyway:
 
 **What would not have stopped you, for the record:** being a third-party Roblox
 client is not itself disqualifying — Sober ships on Flathub as
-`org.vinegarhq.Sober` — and Cordial's case is the easier one, since it ships no
+`org.vinegarhq.Sober` — and Vanta's case is the easier one, since it ships no
 Roblox code, asset or APK at all and the user supplies the client where Sober
 fetches it. That was never the obstacle. The AI policy is.
 
@@ -618,7 +618,7 @@ worth re-verifying rather than trusting the paragraph above on faith:
   Sober does not smuggle Roblox in at build time through the one Flathub
   mechanism built for non-redistributable content (`extra-data`) — it fetches
   the proprietary APK itself, over the network, after install, at runtime,
-  exactly the shape `crates/cordial-update` uses. This is the strongest
+  exactly the shape `crates/vanta-update` uses. This is the strongest
   available evidence that the runtime-download shape is not what Flathub's
   build-from-source rule is policing, because a project doing precisely that
   has been live on the store throughout. It does not settle every question a
@@ -630,24 +630,24 @@ worth re-verifying rather than trusting the paragraph above on faith:
 Open, and the most-asked question about this project. What follows is what has
 been **established**, so nobody spends the afternoon twice.
 
-**Play Integrity is not reachable from Cordial, and is not what differs from
+**Play Integrity is not reachable from Vanta, and is not what differs from
 Sober.** `docs/traces/` shows the real Android client calling Google Play
 Services during startup — `requestIntegrityToken(IntegrityTokenRequest{nonce=…,
 cloudProjectNumber=676451317595})` for `com.roblox.client`, binding to
 `com.android.vending/…finsky.integrityservice.IntegrityService`, and Finsky
 answering `Integrity key attestation record generated successfully`.
 
-That happens in **the APK's Java layer, not in `libroblox.so`**. Cordial runs the
+That happens in **the APK's Java layer, not in `libroblox.so`**. Vanta runs the
 native engine and provides the platform beneath it; it never runs the app's Java
 code, so the call is not made and cannot be. Measured rather than reasoned:
-`--dump-classes` reports **3249** classes the engine asked Cordial for and **not
+`--dump-classes` reports **3249** classes the engine asked Vanta for and **not
 one** is Play-Integrity shaped. Sober is in exactly the same position and shows
 no integrity error, so whatever differs, it is not this.
 
 **Do not try to produce that token.** It is a device and app attestation from
 Google, and the only ways to make one appear are forging it or relaying one from
 a real device. Both are circumventing an anti-tamper control rather than making
-Cordial an honest client, and both are out of scope here for the same reason
+Vanta an honest client, and both are out of scope here for the same reason
 in-process hooking is ([ADR-001](adr/ADR-001-in-process-hooking.md)).
 
 **What was actually different, and is now fixed.** Sober's own log on this
@@ -658,7 +658,7 @@ rbx.JNIRobloxSettings: Setting default app policy file:
   content/guac/defaultConfigs/GuacDefaultPolicy-GlobalDist.json
 ```
 
-Cordial never called `nativeSetDefaultAppPolicyFile`, so the engine came up with
+Vanta never called `nativeSetDefaultAppPolicyFile`, so the engine came up with
 no app policy at all. That was issue #5. It is wired now, relative rather than
 absolute because both the capture and Sober log it that way, and the engine
 emits the identical line and still reaches `APP_READY Landing`.
@@ -669,12 +669,12 @@ evidence it is the gap that broke anything.
 
 ### What 304 actually looks like, with a Sober control beside it
 
-Captured 2026-08-06 on the `CordialTest` profile, joining place 17625359962,
+Captured 2026-08-06 on the `VantaTest` profile, joining place 17625359962,
 against a Sober run from 2026-08-05 that played for seventeen minutes. Both
 lines are from the engine's own log, times are seconds since process start.
 
 ```text
-CORDIAL  248.658  Transport selection: useRbxTransportEnabled=false,
+VANTA  248.658  Transport selection: useRbxTransportEnabled=false,
                   selectedTransport=RakNet, rccPort=52398
          248.973  Connection accepted from 128.116.51.33|52398
          253.672  Error RbxTransportDummyClient: Failed to establish
@@ -711,17 +711,17 @@ SOBER    54.616  DummyClient will connect to 128.116.51.33:57479
         306.058  Disconnection Notification. Reason: 285 — the player left
                  no 304, four minutes in the place
 
-CORDIAL   4.121  DummyClient will connect to 128.116.51.33:41297
+VANTA   4.121  DummyClient will connect to 128.116.51.33:41297
           4.156  Connection accepted from 128.116.51.33|52398   (RakNet, fine)
           9.122  Error: Failed to establish connection, reason NoResponse
                  — a five second timeout, no connection, no threads
          64.292  Disconnect reason received: 304
 ```
 
-**Sober connects that socket in 38 milliseconds. Cordial times out after five
+**Sober connects that socket in 38 milliseconds. Vanta times out after five
 seconds and is disconnected 60.1 seconds after its RakNet accept.** RakNet
 itself — also UDP — connects fine in both, so this is not "UDP does not work".
-Something specific to the `RtcIoRna` path fails only under Cordial.
+Something specific to the `RtcIoRna` path fails only under Vanta.
 
 The ping thread and the time sync thread are the shape to keep in mind: a
 liveness channel that never opens, and a kick almost exactly sixty seconds
@@ -730,15 +730,15 @@ later. That is a hypothesis and not yet a mechanism — nobody has established
 
 **What the control does establish.** The two clients are indistinguishable
 through connection: same transport selection, same RakNet accept, same
-harmless probe failure. The join *succeeds*. Cordial is then disconnected
+harmless probe failure. The join *succeeds*. Vanta is then disconnected
 **60.5 seconds after the connection was accepted** — `connectionTime 248689`
 against `timeMS 309172` — while Sober is never disconnected at all.
 
 So 304 is not a handshake or an integrity check at load. **It is something
-periodic that Cordial fails roughly a minute into replication**, at which point
+periodic that Vanta fails roughly a minute into replication**, at which point
 the server sends a disconnect whose text talks about missing or corrupted files.
 The message is worth reading as a category rather than a diagnosis: nothing in
-Cordial's install is missing, and the same binary reaches the same server the
+Vanta's install is missing, and the same binary reaches the same server the
 same way that Sober does.
 
 **One behavioural difference worth the next look, and no more than that.** On
@@ -750,7 +750,7 @@ RbxTransportDummyClient  Started ping thread (interval: 1000 ms, payload: 64 byt
 RbxTransportDummyClient  Started time sync thread (interval: 5000 ms, …)
 ```
 
-Cordial has never reached that on any join observed so far. Whether it matters,
+Vanta has never reached that on any join observed so far. Whether it matters,
 or is simply which server answered on the day, is **unestablished** — it is
 recorded because it is the only place the two logs diverge, not because it is
 believed to be the cause. A ping thread and a time-sync thread failing to exist
@@ -764,7 +764,7 @@ never read" and blamed `RtcIoRna`'s event loop. That was wrong, and the very
 capture proposed to test it is what disproved it.** The retraction stays visible:
 this is the third lead in this investigation to dissolve, and all three dissolved
 the same way — a real observation from one run, generalised into a property of
-Cordial.
+Vanta.
 
 What was observed, across three joins on 2026-08-06:
 
@@ -782,10 +782,10 @@ fd 140 (DummyClient)   epoll_ctl registrations: 1     recv: yes
 ```
 
 **The socket is epoll-registered and the event loop works.** The failing runs are
-not Cordial failing to poll; two of three joins simply got no answer from one
+not Vanta failing to poll; two of three joins simply got no answer from one
 particular server while a third answered in 432 ms.
 
-**What is established.** Cordial can connect that socket — nothing structural
+**What is established.** Vanta can connect that socket — nothing structural
 prevents it. Sober's own logs contain a `NoResponse` too, on a join it abandoned
 1.2 seconds later for a different server.
 
@@ -812,8 +812,8 @@ server, it was a session that ended at 15.6 s and never reached the deadline.
 The variable is elapsed time on a connection, not which edge answered.
 
 The reproduction that produced the newest row was not scripted and had nothing
-driving it — a plain `cordial-shell` with `CORDIAL_INSTR=1` and no
-`CORDIAL_SCRIPT`, with the join made by hand. The engine's own words are
+driving it — a plain `vanta-shell` with `VANTA_INSTR=1` and no
+`VANTA_SCRIPT`, with the join made by hand. The engine's own words are
 `Disconnect reason received: 304` and `connectMode: Peer Disconnected`, with
 `AckTimeout 0, IsOutgoingDataWaiting 0`: **the server sent it, and RakNet's own
 health was fine at the moment it arrived.** Nothing was stalled or backed up.
@@ -826,7 +826,7 @@ universal, and if it was mis-transcribed the rule is clean.
 
 #### 2026-08-06, later: 304 reproduces on demand, and four more leads are dead
 
-**The join no longer needs a person.** `cordial-run --join-url
+**The join no longer needs a person.** `vanta-run --join-url
 'roblox://experiences/start?placeId=<id>'` joins directly, with the same
 `--profile` the shell passes, so the session and cookie store are the real ones.
 The shell's own deep-link path holds a link "until you press Roblox" and cannot
@@ -859,8 +859,8 @@ entry here was blocked on.
 
 | lead | how it died |
 |---|---|
-| the server address | Sober connected to `128.116.51.33` — the exact server Cordial dies on — and ran **256 s clean** |
-| the websocket to `10.110.101.222:5052` | **Sober hits the identical timeout**, same 59998 ms, same URL, and survives. In one Cordial run it fired 89 s *before* the 304 |
+| the server address | Sober connected to `128.116.51.33` — the exact server Vanta dies on — and ran **256 s clean** |
+| the websocket to `10.110.101.222:5052` | **Sober hits the identical timeout**, same 59998 ms, same URL, and survives. In one Vanta run it fired 89 s *before* the 304 |
 | a missing JNI answer during play | JNI-trace build: `Constructed Unresolved symbol` appears only at `JNI_OnLoad` and at shutdown. **Nothing unresolved during the session** |
 | `NetworkUtils.getPublicIPv4Addresseses` | unresolved, yes — and **never invoked**, 0 calls in 17,749 traced lines. Implementing it would change nothing |
 | client settings not reaching the engine | `nativeInitClientSettings -> 0`, and **0 is documented success** in `client_settings.rs`. The 1.27 MB document is fetched, cached and delivered |
@@ -877,7 +877,7 @@ sendmsg(146, 1231 bytes) x10                            = 1231 each
 (no reply ever arrives; no recvmsg on 146 at all)
 ```
 
-**Cordial sends.** Ten 1231-byte datagrams leave the socket successfully and the
+**Vanta sends.** Ten 1231-byte datagrams leave the socket successfully and the
 server answers none of them. Sober's equivalent connects in **28 ms** to the same
 address. So "the socket is epoll-registered and the event loop works" was right
 and remains right — the packets go out and nothing comes back.
@@ -898,7 +898,7 @@ purpose is to report failure is a poor candidate for *causing* a disconnect.
 
 **The control for that is written and it did not work — say so.** Setting
 `FStringRbxTransportDummyClientEnabledMinorVersions_PlaceFilter` to `"0"` and
-`DFFlagReportDummyClientConnectionAttemptResult` to `false` via `CORDIAL_FLAGS`
+`DFFlagReportDummyClientConnectionAttemptResult` to `false` via `VANTA_FLAGS`
 applied cleanly (`flags: 2 override(s) applied`) and **the DummyClient ran
 anyway** and failed identically. So whether the probe causes the 304 is still
 **not established**; those two flags simply are not its gate. Finding the real
@@ -925,7 +925,7 @@ evidence the deadline is per-connection and not per-session or per-place.
 `FStringRbxTransportDummyClientEnabledMinorVersions_PlaceFilter`,
 `DFFlagReportDummyClientConnectionAttemptResult` and
 `DFFlagClientReceiveNetStackPortAndToken` were each overridden through
-`CORDIAL_FLAGS`, all applied cleanly, and **the probe ran every time**. That is
+`VANTA_FLAGS`, all applied cleanly, and **the probe ran every time**. That is
 consistent with where the instruction comes from: the target arrives in the join
 payload — `RbxTransport DummyClient will connect to server 128.116.51.33:35731
 ... rccAddr = 10.60.2.74:35731` — and the flags that decide whether a server
@@ -934,8 +934,8 @@ hands one out are RCC-side (`DFFlagRccReportNetStackPort`,
 a port and naming it. **Guessing further flag names is not worth more joins**;
 if the probe is to be suppressed the lever is not in this document.
 
-**There is nothing for Cordial to implement in the transport.** Cordial does not
-speak this protocol — the engine does, through Cordial's socket calls, and the
+**There is nothing for Vanta to implement in the transport.** Vanta does not
+speak this protocol — the engine does, through Vanta's socket calls, and the
 strace shows those are ordinary and correct: `socket(AF_INET, SOCK_DGRAM,
 IPPROTO_UDP)`, `connect`, `SO_RCVBUF`/`SO_SNDBUF`, no `bind` (ephemeral source
 port, which is normal), then ten good `sendmsg`. The framing that leaves
@@ -946,7 +946,7 @@ is why the server ignores those datagrams, and **that cannot be answered from
 this side of the connection.**
 
 **The experiment that would answer it, and why it has not been run:** strace
-Sober's probe and diff the first datagram against Cordial's. That needs Sober
+Sober's probe and diff the first datagram against Vanta's. That needs Sober
 launched into a game, which is the *main* account — deliberately kept separate
 from the test account for ban-correlation reasons. Automated joins on it are not
 something to do unattended.
@@ -956,7 +956,7 @@ something to do unattended.
 **"304 has never been observed on a run where the DummyClient connected" is
 false**, and it was false the whole time — the sample was too small and nobody
 had tabulated the probe's outcome against the disconnect. Doing that across every
-Cordial capture:
+Vanta capture:
 
 ```text
 probe outcome          alive     reason
@@ -970,7 +970,7 @@ Failed to establish       -       no 304   (session ended before 60 s)
 Failed to establish       -       no 304   (session ended before 60 s)
 ```
 
-**Cordial's probe connects sometimes, and the 304 arrives at 60 seconds either
+**Vanta's probe connects sometimes, and the 304 arrives at 60 seconds either
 way.** The probe is irrelevant to the disconnect, which also means Sober's
 advantage was never that its probe connects. Every "DummyClient NoResponse"
 entry above this line is describing a coincidence.
@@ -1005,16 +1005,16 @@ Sober     1.176  Entered app session
          49.427  Sent play session success    <- play session ENDS here
          49.427  Entered app session          <- back to the app
 
-Cordial   1.330  Entered app session
+Vanta   1.330  Entered app session
           2.032  Sent app session success     <- same pattern, works fine
           2.033  Entered play session
                  (kicked at 62 s -> IASPE)
 ```
 
 Sober logged the play report because somebody **left the game** at 49.4 s and
-went back to the app. Cordial never logs it because Cordial is *disconnected*
+went back to the app. Vanta never logs it because Vanta is *disconnected*
 rather than leaving — the FSM goes to `E` instead of reporting a clean exit.
-Cordial's `Sent app session success` proves the mechanism works: the same
+Vanta's `Sent app session success` proves the mechanism works: the same
 reporting path fires correctly for the session that did end normally, one second
 into the run.
 
@@ -1031,7 +1031,7 @@ hour instead of a day.
 
 **Also checked and clean:** the engine never asks for `getPackageCodePath`,
 `sourceDir`, `getApplicationInfo`, package signatures or any hash over JNI. There
-is **no client-side file integrity check reaching Cordial**, so "Roblox has
+is **no client-side file integrity check reaching Vanta**, so "Roblox has
 detected missing or corrupted files" is a reused generic code and not a
 description of what the server actually objected to. Do not go looking for a
 checksum to satisfy.
@@ -1041,7 +1041,7 @@ checksum to satisfy.
 on to call `edit()` and `putString()` on the `Invalid` class it gets back. The
 engine is trying to persist key/value state and every write is going nowhere.
 
-#### WRONG — kept for the record: Cordial never sends the play session report
+#### WRONG — kept for the record: Vanta never sends the play session report
 
 `SessionTransitionFSM` runs the same way in both up to the last step, and then
 diverges:
@@ -1049,11 +1049,11 @@ diverges:
 ```text
 Sober     Initialized -> Entered app session -> Sent app session success
           -> Entered play session -> Sent play session success
-Cordial   Initialized -> Entered app session -> Sent app session success
+Vanta   Initialized -> Entered app session -> Sent app session success
           -> Entered play session -> (nothing)
 ```
 
-**Cordial logs `Sent app session success` but never `Sent play session
+**Vanta logs `Sent app session success` but never `Sent play session
 success`.** The `E` in its `Session history: IASPE` arrives at 62.065 s, in the
 same breath as the 304 — so the error state is the *consequence* of the
 disconnect, not its cause, and the real gap is the missing report in the 60
@@ -1074,7 +1074,7 @@ unresolved — `NativeHelper.gameActivity_onExperienceStart`,
 `gameActivity_onGameLoaded`, `gameActivity_onDidLogInReceived`,
 `gameActivity_onScreenOrientationChanged` and
 `NativeGLJavaInterface.gameLoadedCallback`. The engine announces the experience
-starting and the game loading, Cordial was listening to none of it, and Sober's
+starting and the game loading, Vanta was listening to none of it, and Sober's
 bridge answers the game-loaded one. Implementing them was the obvious first
 attempt at unblocking the report. **They fire — six calls in a run — and the 304
 is unchanged**: 60.2 s, and `SessionTransitionFSM` still goes `Entered play
@@ -1084,7 +1084,7 @@ the callbacks are answered now, which is worth having on its own, and they are
 
 **One run in the middle of that looked like a fix and was not.** A 100-second run
 showed no 304 at all, the FSM reached `Teleported.` and a `Session history: IASPJ`
-— a `J` state Cordial had never produced. It was three connections of 42 s, 45 s
+— a `J` state Vanta had never produced. It was three connections of 42 s, 45 s
 and 10 s: the place teleports roughly every 45 seconds, **and every teleport
 starts a new connection with a fresh 60-second deadline**. Nothing survived long
 enough to be disconnected. Run for 240 s instead, it teleports less and the 304
@@ -1096,9 +1096,9 @@ exceeded 60 seconds.** Check `Connection accepted from` against the following
 `connectMode` line before reading anything into a clean run. A place that does
 not teleport would make a better test rig.
 
-Also: **do not run Sober and Cordial at once on a 16 GB machine.** Both were up
-during one attempt and the kernel killed Cordial (exit 137) and then Sober (134),
-which reads as a Cordial crash and is not one.
+Also: **do not run Sober and Vanta at once on a 16 GB machine.** Both were up
+during one attempt and the kernel killed Vanta (exit 137) and then Sober (134),
+which reads as a Vanta crash and is not one.
 
 **Causality is still open, and both stories fit the evidence.** Either the RCC
 allocates a netstack port, waits for the probe, and drops the client at 60 s when
@@ -1131,8 +1131,8 @@ that fd against the good run above. One failing capture against one known-good
 capture answers it. Guessing in between does not.
 
 **Still unchecked, and the obvious next candidates.** Comparing Sober's
-`appData` with Cordial's, Sober has `ClientSettings/` and `rbx-storage.db`;
-Cordial has neither. And [issue #2](https://github.com/luohoa97/cordial/issues/2)
+`appData` with Vanta's, Sober has `ClientSettings/` and `rbx-storage.db`;
+Vanta has neither. And [issue #2](https://github.com/gpt4omni/vanta/issues/2)
 — User-Agent and base URL not matching what the real client sends — is still
 open, with the exact string sitting in the capture:
 
@@ -1143,7 +1143,7 @@ Mozilla/5.0 (…; 13) AppleWebKit/537.36 (KHTML, like Gecko)  ROBLOX Android App
 ```
 
 Matching that is honest self-description — it is what the official Android
-client sends, and Cordial *is* running that client. Forging an attestation is
+client sends, and Vanta *is* running that client. Forging an attestation is
 not the same kind of thing, and the line between them is the one to hold.
 
 ## Traps that have already caught people
@@ -1155,7 +1155,7 @@ as evidence.
 **Do not measure timing under `WAYLAND_DEBUG=1`.** Three findings taken that way
 vanished on untraced repeats minutes later.
 
-**`CORDIAL_TRACE=1` aborts the engine.** It wraps variadic functions ABI-unsafely.
+**`VANTA_TRACE=1` aborts the engine.** It wraps variadic functions ABI-unsafely.
 
 **`/proc/locks` names the wrong process.** Its PID column is whoever *acquired*
 the lock, which `Claim::hand_to` makes the launcher — and the launcher has
@@ -1166,19 +1166,19 @@ that no longer existed while a live process held the descriptor.
 since boot; reading one as a rate produced a confident and wrong diagnosis of
 system-wide thrashing in this very project's history. Sample twice.
 
-**`mutter --headless` segfaults** within a second of Cordial's window mapping,
+**`mutter --headless` segfaults** within a second of Vanta's window mapping,
 on unmodified HEAD, with and without GPU rendering, while `gtk4-demo` in the
 same nested compositor runs indefinitely. AGENTS.md offers nesting a headless
-compositor as the way to drive Cordial's own window without touching the
+compositor as the way to drive Vanta's own window without touching the
 developer's session, and it does not currently work. That is why
-`crates/cordial-runtime/examples/pointer_capture_probe.rs` exists.
+`crates/vanta-runtime/examples/pointer_capture_probe.rs` exists.
 
 **Never synthesise input at the compositor.** `XTestFake*`, `ydotool`,
 `wlr-virtual-keyboard`, the RemoteDesktop portal — all land on whatever has
 focus, which is the developer's session. This has hijacked a developer's cursor
 once already, mid-session.
 
-**`CORDIAL_TRACE_PATHS=1` does not trace `dlopen`.** It wraps nine filesystem
+**`VANTA_TRACE_PATHS=1` does not trace `dlopen`.** It wraps nine filesystem
 calls — `stat`, `lstat`, `access`, `opendir`, `realpath`, `readlink`, `fopen`,
 `open`, `statvfs` — and nothing else. A VR investigation used its silence as
 proof the engine never tried to open a VR runtime library; it was never capable
@@ -1190,7 +1190,7 @@ times in one day a task reported success while the captured `BUILD_EXIT` was
 
 **A subagent's pasted build output is not proof it built.** One reported success
 with real pasted output that was a cached replay from before it created a file
-it then forgot to declare; `cordial-runtime` did not compile at all. The check
+it then forgot to declare; `vanta-runtime` did not compile at all. The check
 that works is `grep "Compiling <crate>"` in the log — a `Finished` line with no
 `Compiling` line above it is not a build.
 
@@ -1213,11 +1213,11 @@ Re-run before believing that one.
 
 ## Layout
 
-    crates/cordial-linker-sys  builds the C++ side: bionic linker port, shims
-    crates/cordial-runtime   the loader, bionic shim, Android framework layer
-    crates/cordial-shell     the launcher; also owns the shared window definition
-    crates/cordial-plugins   registry, dependency resolution, unpacking
-    crates/cordial-update    version check, download, verification, metered
+    crates/vanta-linker-sys  builds the C++ side: bionic linker port, shims
+    crates/vanta-runtime   the loader, bionic shim, Android framework layer
+    crates/vanta-shell     the launcher; also owns the shared window definition
+    crates/vanta-plugins   registry, dependency resolution, unpacking
+    crates/vanta-update    version check, download, verification, metered
     native/                  C++ shims: OpenSL ES, PipeWire, Java classes
     third_party/             the AOSP bionic linker port
     docs/adr/                decisions, including the reversed ones
@@ -1230,10 +1230,10 @@ evidence of absence.
 
 ## The two profile modules
 
-`cordial_shell::profile` and `cordial_runtime::profile` implement the same
-contract twice. That is not a design; `cordial-runtime` depends on
-`cordial-shell` for `host_window`, so the dependency cannot be inverted without
-a cycle. The shell's copy is the live one — `cordial-run` never calls its own.
+`vanta_shell::profile` and `vanta_runtime::profile` implement the same
+contract twice. That is not a design; `vanta-runtime` depends on
+`vanta-shell` for `host_window`, so the dependency cannot be inverted without
+a cycle. The shell's copy is the live one — `vanta-run` never calls its own.
 Unifying them is a genuinely good first contribution.
 
 ## House style
@@ -1261,31 +1261,31 @@ superseded by 024, which restores X11).
 |---|---|---|
 | [ADR-001](adr/ADR-001-in-process-hooking.md) | In-process hooking of the Roblox process | Rejected |
 | [ADR-002](adr/ADR-002-core-shell-and-ui-handoff.md) | Core shell, UI handoff, and the cold-start ordering | Accepted |
-| [ADR-003](adr/ADR-003-plugin-isolation.md) | Plugins have no memory access to Cordial | Accepted |
+| [ADR-003](adr/ADR-003-plugin-isolation.md) | Plugins have no memory access to Vanta | Accepted |
 | [ADR-004](adr/ADR-004-plugin-asset-overrides.md) | Plugins do not override Roblox's assets | Superseded by ADR-010 |
 | [ADR-005](adr/ADR-005-flag-service.md) | The flag service has two surfaces, because flags have two lifetimes | Accepted |
-| [ADR-006](adr/ADR-006-plugin-events-and-first-party.md) | Plugins may declare their own events, and some plugins ship with Cordial | Accepted |
-| [ADR-007](adr/ADR-007-host-resources-are-brokered.md) | Plugins never hold host permissions; Cordial brokers them | Accepted |
+| [ADR-006](adr/ADR-006-plugin-events-and-first-party.md) | Plugins may declare their own events, and some plugins ship with Vanta | Accepted |
+| [ADR-007](adr/ADR-007-host-resources-are-brokered.md) | Plugins never hold host permissions; Vanta brokers them | Accepted |
 | [ADR-008](adr/ADR-008-plugins-are-typescript-on-deno.md) | Plugins are TypeScript on Deno | Accepted |
-| [ADR-009](adr/ADR-009-capture-yes-overlay-injection-no.md) | Cordial is capturable, and ships no overlay injection point | Accepted |
+| [ADR-009](adr/ADR-009-capture-yes-overlay-injection-no.md) | Vanta is capturable, and ships no overlay injection point | Accepted |
 | [ADR-010](adr/ADR-010-plugin-asset-overlays.md) | Plugins may overlay Roblox's assets, non-destructively | Accepted |
 | [ADR-011](adr/ADR-011-wayland-and-libadwaita.md) | Wayland is the display backend, and the window is libadwaita | Superseded in part by ADR-024 (restores X11); the rest stands |
 | [ADR-012](adr/ADR-012-profiles-and-instances.md) | A profile is storage; an instance is a window | Accepted |
 | [ADR-013](adr/ADR-013-per-profile-configuration.md) | Configuration belongs to the profile; code belongs to the machine | Accepted |
 | [ADR-014](adr/ADR-014-plugin-registry-and-unpacking.md) | Plugins are published through a signed static index, and unpacked as hostile | Accepted |
-| [ADR-015](adr/ADR-015-fetching-the-roblox-build.md) | Cordial may fetch the Roblox build, and may never ship one | Accepted |
+| [ADR-015](adr/ADR-015-fetching-the-roblox-build.md) | Vanta may fetch the Roblox build, and may never ship one | Accepted |
 | [ADR-016](adr/ADR-016-per-profile-network-egress.md) | A profile can refuse to run without a VPN, checked by a command it names | Accepted, amended 2026-09-08 |
 | [ADR-017](adr/ADR-017-sober-issue-corpus.md) | A local, incremental corpus of Sober's issue tracker | Accepted |
 | [ADR-018](adr/ADR-018-plugin-sub-sandboxing.md) | Plugins get an OS sandbox under Deno, and it does not replace the broker | Accepted |
 | [ADR-019](adr/ADR-019-development-control-surface.md) | A development control surface, in coordinates and pixels | Accepted |
-| [ADR-020](adr/ADR-020-declarative-plugin-preferences.md) | A plugin declares its preferences; Cordial draws them | Proposed |
+| [ADR-020](adr/ADR-020-declarative-plugin-preferences.md) | A plugin declares its preferences; Vanta draws them | Proposed |
 | [ADR-021](adr/ADR-021-everything-is-a-plugin.md) | Everything is a plugin; code is a property, not a category | Proposed |
 | [ADR-022](adr/ADR-022-plugins-observe-decide-act.md) | A plugin observes, decides and acts; that is what justifies a runtime | Proposed |
 | [ADR-023](adr/ADR-023-host-audio-backends.md) | PipeWire is the primary audio backend, and the others go behind a seam | Accepted |
 | [ADR-024](adr/ADR-024-x11-is-supported-again.md) | X11 is supported again, and it gets the editor | Accepted |
-| [ADR-025](adr/ADR-025-fetching-from-a-third-party-mirror.md) | Cordial may fetch the build from a third-party mirror, if it can prove Roblox signed it | Accepted |
-| [ADR-026](adr/ADR-026-the-core-event-bus.md) | Cordial publishes what it observes, and plugins may never veto it | Accepted |
-| [ADR-027](adr/ADR-027-plugin-overlays.md) | Plugins describe an overlay; Cordial draws it | Proposed |
+| [ADR-025](adr/ADR-025-fetching-from-a-third-party-mirror.md) | Vanta may fetch the build from a third-party mirror, if it can prove Roblox signed it | Accepted |
+| [ADR-026](adr/ADR-026-the-core-event-bus.md) | Vanta publishes what it observes, and plugins may never veto it | Accepted |
+| [ADR-027](adr/ADR-027-plugin-overlays.md) | Plugins describe an overlay; Vanta draws it | Proposed |
 | [ADR-028](adr/ADR-028-x11-input-comes-from-xinput2.md) | X11 input comes from XInput2, with the warp as the fallback | Accepted |
 | [ADR-029](adr/ADR-029-overlays-are-three-decisions.md) | An overlay is three decisions, and every overlay makes all three | Accepted |
 | [ADR-030](adr/ADR-030-reports-arrive-from-discord.md) | Reports arrive from Discord, as forms rather than as messages | Accepted |
@@ -1340,7 +1340,7 @@ like a total fix and means the opposite.
 the C++ return type has to *be* that class. `Object` is not a wildcard, and
 nothing warns you.
 
-## What Cordial does not answer, measured rather than derived
+## What Vanta does not answer, measured rather than derived
 
 `docs/analysis/unanswered-jni-observed.tsv` — 19 distinct methods across 9
 classes, from one traced run that joined a game and played to the 304. Notable:
@@ -1371,7 +1371,7 @@ Five things ruled out, so nobody repeats them:
   `{"FFlagExample": true}`. Whatever brings up its 167 MB `rbx-storage.db` is
   platform-layer completeness, not configuration, so there is nothing to copy.
 
-**And the measurement that reframes it:** under `CORDIAL_TRACE_PATHS=1`, across a
+**And the measurement that reframes it:** under `VANTA_TRACE_PATHS=1`, across a
 whole run, the engine **never touches a path containing `rbx-storage` at all**.
 It is not failing to open the database. It never tries. So the question is not
 "why does the open fail" but "what never asks for the store to exist", and the
@@ -1404,7 +1404,7 @@ Three things confirm it, and all three were already in this repository:
   `nm -D` on the shipping `libroblox.so` shows only
   `Java_com_google_androidgamesdk_GameActivity_initializeNativeCode` among its
   defined symbols. It is one of the 24 natives AGDK registers dynamically
-  through `RegisterNatives`". Cordial looks those up by name in `cls->natives`
+  through `RegisterNatives`". Vanta looks those up by name in `cls->natives`
   and has done for months.
 - `third_party/libjnivm/src/jnivm/vm.cpp`'s `RegisterNatives` stores exactly
   that: `clazz->natives[method->name] = method->fnPtr`. The pointers are kept
@@ -1416,7 +1416,7 @@ Three things confirm it, and all three were already in this repository:
 
 So the downlink half is writable, `WebRtcAudioManager.init()` returns false
 because of its absence rather than because the path is dead, and the seven-
-eighths of this Cordial already has — a real `CaptureStream` with the microphone
+eighths of this Vanta already has — a real `CaptureStream` with the microphone
 lifetime rule, the whole of `WebRtcAudioManager`, the honest parameter answers,
 and the `OutputStream` seam added in `b2837e7` — stops being groundwork for a
 dead path.
@@ -1454,7 +1454,7 @@ bundles Google's WebRTC Java, not because this engine calls into them. Writing
 `WebRtcAudioTrack` would produce a class with nothing on the other side of it.
 
 **The path the engine actually drives is `com.roblox.audio.AppRtcDeviceWrapper`,
-and Cordial implements none of it.** Its native counterpart *is* exported —
+and Vanta implements none of it.** Its native counterpart *is* exported —
 `Java_com_roblox_audio_AppRtcDeviceWrapper_nativeAudioDeviceChanged` — and the
 dex declares the Java side:
 
@@ -1495,14 +1495,14 @@ Sober    0.494  [FLog::AndroidGLView] nativeInitClientSettings
          0.515  [DFLog::RbxStorage] RbxStorage::init [INIT] user: flagLoaded
          0.536  [DFLog::RbxStorage] RbxStorage::init [DONE] dbOpenCount: 69
 
-Cordial         [roblox] flags: engine reported onFlagsFailed
+Vanta         [roblox] flags: engine reported onFlagsFailed
                 (no AndroidGLView line, no RbxStorage line, in any of 31 runs)
 ```
 
 and the live flag set carries `FFlagStartRbxStorageInitRighAfterFlags = True`.
-Storage constructs itself off the *flags-loaded* event. Cordial never produces
+Storage constructs itself off the *flags-loaded* event. Vanta never produces
 that event, so the store is never built — which is why
-`CORDIAL_TRACE_PATHS=1` shows the engine never touching an `rbx-storage` path:
+`VANTA_TRACE_PATHS=1` shows the engine never touching an `rbx-storage` path:
 there is nothing to open because nothing asked for it.
 
 **This retires "why does onFlagsFailed happen" from curiosity to blocking.** It
@@ -1510,22 +1510,22 @@ was investigated with a debugger before and shelved because it appeared to cost
 nothing. It costs the content store, and possibly more.
 
 **A new lead the earlier investigation did not have.** The engine exports *five*
-client-settings entry points, and Cordial calls the plainest:
+client-settings entry points, and Vanta calls the plainest:
 
 ```text
-nativeInitClientSettings(String,String,String)I                        <- Cordial
+nativeInitClientSettings(String,String,String)I                        <- Vanta
 nativeInitClientSettingsCached(String,String,String,String,J)I
 nativeInitClientSettingsCachedCompressed([B,String,String,String,J,Z)I
 nativeInitClientSettingsSigned(String,String,String,String)I
 ```
 
-Cordial's call returns 0, which `client_settings.rs` establishes means the
+Vanta's call returns 0, which `client_settings.rs` establishes means the
 document was accepted. But acceptance is evidently not the same as the engine
 considering its flags *loaded*, and the modern app very likely uses the signed or
-cached-compressed path. Two supporting observations: Cordial's engine later goes
+cached-compressed path. Two supporting observations: Vanta's engine later goes
 and requests `clientsettingscdn.roblox.com/v2/settings-compressed/application/.zst`
 on its own and gets a 403, and the `AndroidGLView` log line Sober emits for this
-call never appears in Cordial even though Cordial's log is open well before the
+call never appears in Vanta even though Vanta's log is open well before the
 call runs (log opens 0.634s; the call is after `initializeNativeCode`).
 
 **Next experiment, and it is cheap:** call the signed or cached-compressed

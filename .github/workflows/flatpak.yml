@@ -1,13 +1,13 @@
 # Build the Flatpak and publish it as an OSTree remote on GitHub Pages, so that
 #
-#     flatpak remote-add --if-not-exists cordial \
-#         https://luohoa97.github.io/cordial/cordial.flatpakrepo
-#     flatpak install cordial io.github.luohoa97.Cordial
+#     flatpak remote-add --if-not-exists vanta \
+#         https://gpt4omni.github.io/vanta/vanta.flatpakrepo
+#     flatpak install vanta io.github.gpt4omni.Vanta
 #
-# installs Cordial without anyone building anything.
+# installs Vanta without anyone building anything.
 #
 # This header used to be marked INFERRED, on the grounds that none of it had run
-# on a GitHub runner and that nobody had compiled Cordial inside the Flatpak SDK
+# on a GitHub runner and that nobody had compiled Vanta inside the Flatpak SDK
 # on any machine. Both are now false, and the correction is worth more than the
 # caveat was: three consecutive green runs on 2026-08-05, and the whole workspace
 # — gtk4, gdk4, gsk4, gdk4-wayland, libadwaita and all five crates — builds
@@ -22,13 +22,13 @@
 # the generated file existed to be added at all.
 #
 # Verified against the deployed remote, not a stand-in: `remote-add` accepted,
-# `remote-ls` returning app/io.github.luohoa97.Cordial/x86_64/master, and
-# `install` placing both cordial-shell and cordial-run in /app/bin.
+# `remote-ls` returning app/io.github.gpt4omni.Vanta/x86_64/master, and
+# `install` placing both vanta-shell and vanta-run in /app/bin.
 #
 # The site and the repository share one Pages deployment:
 #
 #     /                      site/ — the project's web page
-#     /cordial.flatpakrepo   the remote definition
+#     /vanta.flatpakrepo   the remote definition
 #     /repo/                 the OSTree repository
 #
 # A browser hitting the root has to get a web page, which is why the repository
@@ -45,7 +45,7 @@
 #     master   every push to main, exactly as before -- the edge channel
 #     stable   only the commit that carries a v* release tag -- the release channel
 #
-# and a plain `flatpak install cordial io.github.luohoa97.Cordial`, with no
+# and a plain `flatpak install vanta io.github.gpt4omni.Vanta`, with no
 # branch named, now lands on stable rather than master, because "Update the
 # repository summary" below sets xa.default-branch once stable exists. This
 # is why the bug report that started this ("an installed release keeps
@@ -53,7 +53,7 @@
 # default there was ever going to be. Existing master-tracking installs are
 # untouched by any of this -- a remote's default branch only matters to an
 # install naming none -- and are told how to move onto stable in the README
-# and in packaging/cordial.flatpakrepo's own comment.
+# and in packaging/vanta.flatpakrepo's own comment.
 #
 # The one part of this worth writing down at length: **GitHub Pages has no
 # incremental publish, so `stable` has to be re-supplied by every deployment,
@@ -199,23 +199,23 @@ permissions:
 # INFERRED until somebody watches it produce a Pages tree that both an x86_64
 # and an aarch64 `flatpak install` succeed against.
 #
-# The published URL lives in packaging/cordial.flatpakrepo and is deliberately
+# The published URL lives in packaging/vanta.flatpakrepo and is deliberately
 # not derived from github.repository here: the Url a user's flatpak remembers
 # must not change under them because the repository was renamed or forked.
 env:
-  APP_ID: io.github.luohoa97.Cordial
-  MANIFEST: packaging/io.github.luohoa97.Cordial.yml
-  # Must name the same tree as Url in packaging/cordial.flatpakrepo -- see
+  APP_ID: io.github.gpt4omni.Vanta
+  MANIFEST: packaging/io.github.gpt4omni.Vanta.yml
+  # Must name the same tree as Url in packaging/vanta.flatpakrepo -- see
   # that file's own comment for why it is not derived from github.repository.
   # packaging/flatpak-stable.sh reads this exact repository back during the
   # `merge` job, so a rename here with no matching rename there would make
   # that step silently pull from the wrong tree, or from nothing, rather than
   # fail loudly.
-  PAGES_REPO_URL: https://luohoa97.github.io/cordial/repo/
+  PAGES_REPO_URL: https://gpt4omni.github.io/vanta/repo/
   # See release.yml. The Flatpak build cannot see this variable (flatpak-builder
   # gives its build a clean environment; INFERRED, not run), so "Stamp the
   # build" below also writes it to a file build.rs reads.
-  CORDIAL_OFFICIAL_BUILD: ${{ github.repository }}
+  VANTA_OFFICIAL_BUILD: ${{ github.repository }}
 
 jobs:
   build:
@@ -250,7 +250,7 @@ jobs:
       # commit was tagged, and that was the first half of the 2026-10-15 stable
       # race (see the header), because the tag did not exist yet when a
       # branch-push run reached it. `merge` asks the remote instead, late.
-      # What may still read the tags is crates/cordial-shell/build.rs, whose
+      # What may still read the tags is crates/vanta-shell/build.rs, whose
       # `git describe --tags --exact-match` decides whether a release build
       # shows its commit; whether that runs inside the sandboxed build at all
       # is INFERRED, so the setting stays.
@@ -408,7 +408,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .flatpak-builder/downloads
-          key: flatpak-downloads-${{ hashFiles('Cargo.lock', 'packaging/io.github.luohoa97.Cordial.yml', 'packaging/cargo-sources.json') }}
+          key: flatpak-downloads-${{ hashFiles('Cargo.lock', 'packaging/io.github.gpt4omni.Vanta.yml', 'packaging/cargo-sources.json') }}
           restore-keys: flatpak-downloads-
 
       # Absent secret means an unsigned repository, and the README says so in
@@ -437,7 +437,7 @@ jobs:
           echo "gpghome=$home" >> "$GITHUB_OUTPUT"
 
       - name: Stamp the build with the repository that built it
-        run: printf '%s' "$CORDIAL_OFFICIAL_BUILD" > .cordial-official-build
+        run: printf '%s' "$VANTA_OFFICIAL_BUILD" > .vanta-official-build
 
       - name: Build and export
         run: |
@@ -450,8 +450,8 @@ jobs:
           flatpak-builder "${args[@]}" build "$MANIFEST"
 
       # `[profile.release] debug = true`, deliberately — the runtime is useless
-      # to debug without symbols. Measured on a local build: cordial-run is
-      # 178 MB unstripped against 9.5 MB stripped, cordial-shell 161 MB against
+      # to debug without symbols. Measured on a local build: vanta-run is
+      # 178 MB unstripped against 9.5 MB stripped, vanta-shell 161 MB against
       # 5.2 MB. flatpak-builder splits that into a .Debug extension, and
       # publishing it would put roughly 325 MB of symbols into a Pages site with
       # a 1 GB limit and a 100 MB per-file limit, to be downloaded by every user
@@ -493,7 +493,7 @@ jobs:
       # spends four paragraphs warning people about. A single-file bundle is the
       # install with no trust decision in it:
       #
-      #     flatpak install --user ./Cordial-<tag>.flatpak
+      #     flatpak install --user ./Vanta-<tag>.flatpak
       #
       # Built from the same `repo` the remote is published from, after the debug
       # extension has been dropped, so it is byte-for-byte the thing a remote
@@ -505,10 +505,10 @@ jobs:
           # Pull-request refs such as 49/merge must not become directories.
           ref="${ref//\//-}"
           # Arch-suffixed since this leg is one of two now: without it the
-          # x86_64 and aarch64 legs would both write "Cordial-${ref}.flatpak"
+          # x86_64 and aarch64 legs would both write "Vanta-${ref}.flatpak"
           # and the second upload-artifact call below would collide with the
           # first.
-          out="Cordial-${ref}-${ARCH}.flatpak"
+          out="Vanta-${ref}-${ARCH}.flatpak"
           # --arch named explicitly rather than left to build-bundle's own
           # default (the host's `uname -m`, which happens to already be
           # right here) -- this step runs on the same architecture it is
@@ -527,7 +527,7 @@ jobs:
       - name: Upload the bundle as a workflow artefact
         uses: actions/upload-artifact@v4
         with:
-          name: cordial-flatpak-bundle-${{ env.ARCH }}
+          name: vanta-flatpak-bundle-${{ env.ARCH }}
           path: ${{ env.BUNDLE }}
           if-no-files-found: error
 
@@ -618,8 +618,8 @@ jobs:
             site
             packaging/icons
             packaging/banner.svg
-            packaging/cordial.repo
-            packaging/cordial.flatpakrepo
+            packaging/vanta.repo
+            packaging/vanta.flatpakrepo
             packaging/flatpak-stable.sh
           sparse-checkout-cone-mode: false
 
@@ -845,7 +845,7 @@ jobs:
       # skipped rather than failed. A skipped step does not fail a job, so
       # `gh run list --status=success` above will happily return that run
       # long before a maintainer ever adds APT_GPG_PRIVATE_KEY, and
-      # download-artifact then has no "cordial-apt-repo" to fetch from it.
+      # download-artifact then has no "vanta-apt-repo" to fetch from it.
       # That is a hard failure of this step (verified against the action's
       # documented behaviour for a missing artifact name, not run here since
       # it needs a real workflow run), and without continue-on-error it
@@ -858,7 +858,7 @@ jobs:
         continue-on-error: true
         uses: actions/download-artifact@v4
         with:
-          name: cordial-apt-repo
+          name: vanta-apt-repo
           path: apt-repo
           github-token: ${{ github.token }}
           run-id: ${{ steps.aptrepo.outputs.run_id }}
@@ -891,7 +891,7 @@ jobs:
         continue-on-error: true
         uses: actions/download-artifact@v4
         with:
-          name: cordial-rpm-repo
+          name: vanta-rpm-repo
           path: rpm-repo
           github-token: ${{ github.token }}
           run-id: ${{ steps.rpmrepo.outputs.run_id }}
@@ -918,7 +918,7 @@ jobs:
         continue-on-error: true
         uses: actions/download-artifact@v4
         with:
-          name: cordial-pacman-repo
+          name: vanta-pacman-repo
           path: pacman-repo
           github-token: ${{ github.token }}
           run-id: ${{ steps.pacmanrepo.outputs.run_id }}
@@ -956,7 +956,7 @@ jobs:
           # `packaging/banner.svg`. The step failed with `cp: cannot stat` and
           # took the whole Pages deploy with it. Nothing else references the
           # banner but the README, so nothing else caught it.
-          cp packaging/banner.svg pages/cordial.svg
+          cp packaging/banner.svg pages/vanta.svg
           mv merged pages/repo
 
           # The apt repository, downloaded above from apt.yml's latest green
@@ -974,9 +974,9 @@ jobs:
           # run. Absent until a maintainer adds RPM_GPG_PRIVATE_KEY /
           # RPM_GPG_KEY_ID -- see docs/design/rpm-repository.md -- at which
           # point yum.yml starts producing one and this step starts finding
-          # it, with no change needed here. packaging/cordial.repo is a
+          # it, with no change needed here. packaging/vanta.repo is a
           # complete, static file rather than one this step appends a key
-          # line to the way it does for cordial.flatpakrepo below: its
+          # line to the way it does for vanta.flatpakrepo below: its
           # gpgkey= is a URL, not an embedded key blob, so the file is
           # correct whether or not anything is at that URL yet -- it just
           # 404s honestly until yum.yml has actually signed something.
@@ -985,7 +985,7 @@ jobs:
           else
             echo "no dnf repository artifact available; publishing without /rpm/"
           fi
-          cp packaging/cordial.repo pages/cordial.repo
+          cp packaging/vanta.repo pages/vanta.repo
 
           # The pacman repository, downloaded above from pacman.yml's latest
           # green run. Same absent-until-secret shape as /rpm/ above -- see
@@ -1011,12 +1011,12 @@ jobs:
           # OSTree repository is not worth betting on that staying true.
           touch pages/.nojekyll
 
-          cp packaging/cordial.flatpakrepo pages/cordial.flatpakrepo
+          cp packaging/vanta.flatpakrepo pages/vanta.flatpakrepo
           if [ "${{ steps.gpg.outputs.signing }}" = "true" ]; then
             gpg --homedir "${{ steps.gpg.outputs.gpghome }}" \
-                --export "${{ secrets.FLATPAK_GPG_KEY_ID }}" > pages/cordial.gpg
-            printf 'GPGKey=%s\n' "$(base64 -w0 < pages/cordial.gpg)" \
-                >> pages/cordial.flatpakrepo
+                --export "${{ secrets.FLATPAK_GPG_KEY_ID }}" > pages/vanta.gpg
+            printf 'GPGKey=%s\n' "$(base64 -w0 < pages/vanta.gpg)" \
+                >> pages/vanta.flatpakrepo
           else
             # Nothing is appended, and that is not an oversight.
             #
@@ -1031,7 +1031,7 @@ jobs:
             #   GPGKey=      -> error: Invalid gpg key      (remote-add fails)
             #   omitted      -> accepted; gpg-verify=false,
             #                   gpg-verify-summary=false, and
-            #                   app/io.github.luohoa97.Cordial/x86_64/master lists
+            #                   app/io.github.gpt4omni.Vanta/x86_64/master lists
             #
             # So an unsigned remote is expressed by the absence of the line, and
             # the README is where "this remote is unsigned" gets said to a human
@@ -1114,9 +1114,9 @@ jobs:
       actions: write
     uses: ./.github/workflows/attach-to-release.yml
     with:
-      # cordial-flatpak-bundle-* rather than the exact name: `build` is now
+      # vanta-flatpak-bundle-* rather than the exact name: `build` is now
       # matrixed over x86_64 and aarch64 and uploads one bundle artifact per
       # arch, the same reason release.yml's own artifact_pattern is a glob.
-      artifact_pattern: cordial-flatpak-bundle-*
+      artifact_pattern: vanta-flatpak-bundle-*
       file_globs: '*.flatpak'
       expected_count: 2

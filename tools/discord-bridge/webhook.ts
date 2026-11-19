@@ -88,7 +88,7 @@ export interface Relay {
 
 /** The thread id paired to an issue body, or null. */
 function threadOf(body: string | null | undefined): string | null {
-  return (body ?? "").match(/<!--\s*cordial-bridge\s+thread=(\d{1,32})/)?.[1] ?? null;
+  return (body ?? "").match(/<!--\s*vanta-bridge\s+thread=(\d{1,32})/)?.[1] ?? null;
 }
 
 /**

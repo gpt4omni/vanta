@@ -1,10 +1,10 @@
 # Fetching the Roblox build
 
-**Status:** the source, the transport and the verification are implemented -- see `crates/cordial-update/src/provider/` and `apk_signature.rs`, and ADR-025. Section 5's promotion, canary and rollback are **not**: there is no previous-good record and no launch check before a build is adopted. This document was written as a specification and is now half history and half plan; the half that is plan is section 5.
+**Status:** the source, the transport and the verification are implemented -- see `crates/vanta-update/src/provider/` and `apk_signature.rs`, and ADR-025. Section 5's promotion, canary and rollback are **not**: there is no previous-good record and no launch check before a build is adopted. This document was written as a specification and is now half history and half plan; the half that is plan is section 5.
 clean-room exercise: it describes the observable behaviour of mocktail's update
 module — endpoints, headers, byte layouts, orderings, refusals — so that
 somebody who has never seen that source can build the same thing, and build it
-better. mocktail is Apache-2.0 and Cordial credits it in `NOTICE`, as it already
+better. mocktail is Apache-2.0 and Vanta credits it in `NOTICE`, as it already
 does for the web view. **No code, no pseudocode, and no identifier of theirs
 appears below.** What is stated verbatim is protocol: URLs, header names and
 values, block IDs, magic numbers, byte offsets and limits. Those are facts about
@@ -21,7 +21,7 @@ Everything else can be re-tried, re-measured, or replaced.
 
 **Where this sits beside what already exists.** `docs/design/updating-roblox.md`
 is the shipped design for the header-bar button, the settings, the metered-
-connection rule and the changelog, and none of that changes. `crates/cordial-update`
+connection rule and the changelog, and none of that changes. `crates/vanta-update`
 already has the download-with-a-byte-cap, hash-while-streaming, publish-by-rename
 machinery, the engine-version reader, and the cache stamp. What is missing is a
 source for the file and a proof that the file is Roblox's. This document
@@ -79,13 +79,13 @@ version list.
 | `x-gp` | `1` | A flag the client sends; treat it as an opaque constant that must be present. |
 | `x-abis` | `x86_64` | The comma-separated ABI filter. This is the one header whose value varies at runtime. |
 
-Set a truthful `User-Agent` of your own naming Cordial and its version. Do not
+Set a truthful `User-Agent` of your own naming Vanta and its version. Do not
 impersonate the APKPure client; the four headers above are what the service
 keys on, and a borrowed user agent adds nothing but a lie.
 
 ### The ABI retry
 
-`x-abis: x86_64` asks for the index filtered to the architecture Cordial can
+`x-abis: x86_64` asks for the index filtered to the architecture Vanta can
 actually run. That filtered index is **not reliably complete for older
 versions**: APKPure sometimes omits an XAPK bundle from the filtered list even
 though that bundle does contain the x86-64 split.
@@ -258,7 +258,7 @@ a process that has other threads.
   the file afterwards.
 - On completion the file is `fsync`ed, then renamed to its final name. Nothing
   downstream ever sees a partial file under the name it looks for. This is the
-  same rule `crates/cordial-update/src/download.rs` already follows.
+  same rule `crates/vanta-update/src/download.rs` already follows.
 - Zero bytes written with a 2xx status is a failure ("download is empty").
 - Any failure removes the temporary file.
 - Progress is reported every 64 MiB.
@@ -510,7 +510,7 @@ fails closed.
 
 ### The base archive and the split must agree
 
-Roblox's Android build ships as a base APK plus per-architecture splits. Cordial
+Roblox's Android build ships as a base APK plus per-architecture splits. Vanta
 needs two archives: the base, which carries `assets/`, and the `config.x86_64`
 split, which carries `lib/x86_64/libroblox.so`. Some mirrors serve a monolithic
 APK containing both, in which case the base and the split are the same file.
@@ -535,7 +535,7 @@ for both; do not verify a 900 MB archive twice to satisfy the shape of the rule.
 ## 4. What is checked about the payload after extraction
 
 Signature verification says Roblox produced these bytes. It does not say they
-are the bytes Cordial asked for, or that they contain a usable engine. Four
+are the bytes Vanta asked for, or that they contain a usable engine. Four
 further checks follow, and each has its own message.
 
 ### Archive identity
@@ -598,7 +598,7 @@ candidate containing `lib/x86_64/libroblox.so` whose split name is either
 Exactly two things are taken out: `lib/x86_64/libroblox.so` from the split, and
 everything under `assets/` from the base. The extraction refusals in
 [ADR-014](../adr/ADR-014-plugin-registry-and-unpacking.md) apply in full, and
-`crates/cordial-update/src/apk.rs` already implements them. The additional rules
+`crates/vanta-update/src/apk.rs` already implements them. The additional rules
 worth naming:
 
 - An entry name is unsafe if it is empty, begins with `/`, contains a NUL or a
@@ -648,7 +648,7 @@ Java_com_roblox_engine_jni_NativeGLInterface_nativeAppBridgeV2UpdateSurfaceAppWi
 ```
 
 Read them from `.dynsym`, skipping entries with no name or an undefined section
-index. Cordial's own list should be the symbols Cordial's runtime actually calls;
+index. Vanta's own list should be the symbols Vanta's runtime actually calls;
 the list above is what mocktail requires, and it is a reasonable starting set
 because it is the JNI surface any working build must publish.
 
@@ -695,8 +695,8 @@ installed.
 
 The same record — package, version, build ID, the four hashes, the asset count,
 where the archives came from and when — is written beside each installed payload
-and is what the store's integrity check reads back. For Cordial the equivalent
-already exists in `cordial_update::cache`'s stamp; the useful addition is
+and is what the store's integrity check reads back. For Vanta the equivalent
+already exists in `vanta_update::cache`'s stamp; the useful addition is
 recording the four hashes and the build ID beside it, so that "is the installed
 engine still the one that was verified" is answerable without a network.
 
@@ -801,8 +801,8 @@ declines to retry, keeping the current payload and saying so. An explicit,
 user-initiated update is not gated by it.
 
 Keying the marker on the runtime's own build ID is the part that makes it
-correct rather than merely convenient: a rebuilt Cordial has a different build
-ID, so a fix in Cordial automatically re-enables the candidate without anybody
+correct rather than merely convenient: a rebuilt Vanta has a different build
+ID, so a fix in Vanta automatically re-enables the candidate without anybody
 remembering to clear anything. Keying it on the graphics backend does the same
 for a user who switches from Vulkan to GL.
 
@@ -879,10 +879,10 @@ It is careful work and the receipt design is genuinely interesting — immutable
 all the evidence, path validation that refuses anything resolving outside its own
 directory.
 
-**Cordial cannot have the thing it exists to enable.** Deriving RVAs of engine
+**Vanta cannot have the thing it exists to enable.** Deriving RVAs of engine
 internals in order to interpose on them is exactly what
 [ADR-001](../adr/ADR-001-in-process-hooking.md) and
-[ADR-003](../adr/ADR-003-plugin-isolation.md) rule out permanently. Cordial runs
+[ADR-003](../adr/ADR-003-plugin-isolation.md) rule out permanently. Vanta runs
 the build as shipped or does not run it. So the receipt machinery has no job here
 and should not be built; what transfers is the *shape* — evidence recorded
 immutably, re-validated on use, and a promotion that cannot happen without it.
@@ -1091,12 +1091,12 @@ no downgrade protection. **Prefer the highest scheme present, and honour the
 stripping-protection attribute.** This is the one place in the module where a
 change is a security fix rather than a preference.
 
-**The canary is the right idea on the wrong axis for Cordial.** Requiring a real
+**The canary is the right idea on the wrong axis for Vanta.** Requiring a real
 windowed launch with real graphics before promotion is strong evidence, and it
 fails on exactly the machines that most need a working update: headless, remote,
 software-rendered, or simply a compositor having a bad afternoon. The rejection
 marker keyed on runtime build ID and backend is a genuinely good design and it
-does not help a user who never rebuilds Cordial. Nothing ever expires or clears a
+does not help a user who never rebuilds Vanta. Nothing ever expires or clears a
 marker, so one transient failure is remembered permanently for that combination.
 
 **Four candidate archives are downloaded before any is inspected.** With a 1 GiB
@@ -1116,7 +1116,7 @@ but a length-prefixed fold costs nothing and removes the question.
 
 **Progress is an ad-hoc datagram protocol on an inherited file descriptor** — a
 one-byte tag and a human-readable string. It works, and it bakes in the
-assumption that the updater is a separate process. Cordial's updater is a module
+assumption that the updater is a separate process. Vanta's updater is a module
 in the same process with a `glib` timeout already collecting answers off a
 channel; do not import the descriptor.
 
@@ -1135,7 +1135,7 @@ some additions.
 
 ### Try the APK the user already has, before any network at all
 
-**Strongly yes, and this is the highest-value item on the list.** Cordial already
+**Strongly yes, and this is the highest-value item on the list.** Vanta already
 reads Sober's downloaded APK at
 `~/.var/app/org.vinegarhq.Sober/data/sober/packages/x86_64/com.roblox.client/base.apk`,
 and AGENTS.md records that three agents in succession failed to find it. That
@@ -1147,7 +1147,7 @@ It costs no network, no mirror uptime, no undocumented parser, and no trust —
 because it goes through the same signature check as a download. It also converts
 today's awkward dependency into a feature: the README stops saying "install a
 different Roblox client first to obtain a file" and starts saying "if you already
-have Sober, Cordial will use its build and check it".
+have Sober, Vanta will use its build and check it".
 
 The one subtlety: the local APK's version is whatever Sober last fetched, which
 may be older than the newest published. Report that honestly — "using the build
@@ -1159,7 +1159,7 @@ treating a local hit as the end of the question.
 **Yes, and it should be the only trust path.** ADR-025 already requires it and
 says why better than this document can: *"it would be strange to verify the
 convenient path and not the manual one, and the manual one is where the 'modded
-APK' advice actually lands."* Today Cordial trusts a hand-picked file because a
+APK' advice actually lands."* Today Vanta trusts a hand-picked file because a
 person picked it. Once the verifier exists, that is a strictly worse position
 than the download it was meant to be safer than.
 
@@ -1196,7 +1196,7 @@ Each returns bytes; none returns trust.
 
 ### Surface *why* an update failed
 
-**Yes, and Cordial is already most of the way there.** `cordial_update::Unreachable`
+**Yes, and Vanta is already most of the way there.** `vanta_update::Unreachable`
 already distinguishes the three network cases — nothing answered, something
 answered with a refusal, something answered with a body this code cannot read —
 and the third variant exists specifically because a 200 whose shape changed must
@@ -1235,7 +1235,7 @@ The constraint: an additive-only override is still a mechanism by which somebody
 can be talked into trusting the wrong certificate. That is acceptable only
 because the alternative — failing closed until a release ships — is a worse
 outcome the day Roblox rotates. Make the confirmation dialog carry the fingerprint
-being added and the sentence "this tells Cordial to accept builds signed by a key
+being added and the sentence "this tells Vanta to accept builds signed by a key
 it did not previously trust".
 
 ### Additions
@@ -1249,10 +1249,10 @@ verifies.** Instead of downloading up to four candidates and then choosing, take
 them one at a time and stop when a base/split pair verifies. In the common case
 that is one archive rather than four.
 
-**Do not gate promotion on a graphical canary.** Cordial's cheaper equivalents
+**Do not gate promotion on a graphical canary.** Vanta's cheaper equivalents
 already exist and are better instrumented: the engine's version read straight out
-of the ELF (`cordial_update::engine`), and the present counter available through
-`cordial_screenshot`/`cordial_info` on the development control surface
+of the ELF (`vanta_update::engine`), and the present counter available through
+`vanta_screenshot`/`vanta_info` on the development control surface
 ([ADR-019](../adr/ADR-019-development-control-surface.md)). What is worth keeping
 from the canary design is the *structure*: an isolated data root, an environment
 built rather than inherited, a hard timeout with escalation, and evidence read
@@ -1263,7 +1263,7 @@ requiring a real window before an update is allowed at all.
 than overwriting in place, and switch by renaming. That turns "the new build does
 not start" from a re-download into an instant revert, and it is far cheaper than
 canaries for the same outcome. It pairs naturally with the cache stamp
-`cordial_update::cache` already writes.
+`vanta_update::cache` already writes.
 
 **Adopt the quarantine rule.** When a content-named directory already exists with
 different bytes, move it aside under a timestamped name instead of overwriting.
@@ -1271,10 +1271,10 @@ It costs a rename and it preserves the evidence for the one bug where it matters
 
 **Skip the binary XML parser if the pairing can be decided another way.** The
 manifest is parsed for four fields, and three of them are only needed to decide
-which archive is the base and which is the split. If Cordial identifies the split
+which archive is the base and which is the split. If Vanta identifies the split
 by the presence of `lib/x86_64/libroblox.so` and the base by the presence of
 `assets/`, and takes the version from the ELF's own version string (which
-`cordial_update::engine` already reads), then a few hundred lines of hand-written
+`vanta_update::engine` already reads), then a few hundred lines of hand-written
 chunk parsing over an attacker-supplied file disappear. Weigh that against the
 fact that the manifest is the only place the *declared* version code lives; if
 the catalogue keys on build ID rather than version code, it is not needed at all.
@@ -1284,6 +1284,6 @@ between a full rehash and a layout-and-identity inspection is worth keeping.
 Startup should do the cheap one; anything that changes state should do the
 expensive one.
 
-**Say out loud, in the README, that Cordial downloads Roblox from a mirror.**
+**Say out loud, in the README, that Vanta downloads Roblox from a mirror.**
 ADR-025 asks for this in those words. It is a sentence about what this project
 is, and it should appear rather than be discovered.

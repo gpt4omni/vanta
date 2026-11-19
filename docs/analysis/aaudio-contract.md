@@ -45,7 +45,7 @@ becomes structurally impossible rather than avoided by discipline.
 * **No `setSampleRate` and no `setChannelCount`.** The engine does not request
   a format; it opens a stream, then reads back `getSampleRate`,
   `getChannelCount` and `getFormat` and adapts. That is easier for us than the
-  alternative — Cordial picks what PipeWire is already running at and reports
+  alternative — Vanta picks what PipeWire is already running at and reports
   it honestly, and no resampling is needed on either side.
 * **No device selection.** `AAudioStreamBuilder_setDeviceId` is absent, so the
   engine will never ask for a particular output on this path. Roblox's own
@@ -60,24 +60,24 @@ becomes structurally impossible rather than avoided by discipline.
 
 ## Correction, 2026-08-22: the gate is a Java predicate, not `dlopen`
 
-**This document said, above, that Cordial registers fourteen virtual libraries,
+**This document said, above, that Vanta registers fourteen virtual libraries,
 `libaaudio.so` is not among them, and "the engine's `dlopen` fails and it falls
 all the way through". That is wrong, and the error matters because it points
 the work at the wrong place.** There is no failing `dlopen`. There is no
 `dlopen` at all.
 
-Measured on a signed-in run into place 1818 with `CORDIAL_TRACE_DLSYM=1`, which
+Measured on a signed-in run into place 1818 with `VANTA_TRACE_DLSYM=1`, which
 traces every `dlopen` and `dlsym` the guest makes through the virtual
 `libdl.so`. The complete list of libraries Roblox asked for, over a run that
 loaded the place and played audio:
 
 ```text
-[cordial-dlsym-trace] dlopen(libc.so, 2)
-[cordial-dlsym-trace] dlopen(libcamera2ndk.so, 1)
-[cordial-dlsym-trace] dlopen(libmediandk.so, 1)
-[cordial-dlsym-trace] dlopen(libvulkan.so.1, 2)
-[cordial-dlsym-trace] dlopen(libandroid.so, 0)      (three times)
-[cordial-dlsym-trace] dlopen(libandroid.so, 1)
+[vanta-dlsym-trace] dlopen(libc.so, 2)
+[vanta-dlsym-trace] dlopen(libcamera2ndk.so, 1)
+[vanta-dlsym-trace] dlopen(libmediandk.so, 1)
+[vanta-dlsym-trace] dlopen(libvulkan.so.1, 2)
+[vanta-dlsym-trace] dlopen(libandroid.so, 0)      (three times)
+[vanta-dlsym-trace] dlopen(libandroid.so, 1)
 ```
 
 No audio library by any name. Sixteen trace lines for the whole run.
@@ -91,8 +91,8 @@ own would have changed nothing at all, and a run testing it would have looked
 exactly like a run in which AAudio was tried and declined.
 
 The two must therefore be flipped together, and they now are: both read
-`cordial_audio_backend_is_aaudio()` in `native/aaudio.cpp`, which is the only
-thing in the process that parses `CORDIAL_AUDIO`.
+`vanta_audio_backend_is_aaudio()` in `native/aaudio.cpp`, which is the only
+thing in the process that parses `VANTA_AUDIO`.
 
 ## Correction, 2026-08-22: `getXRunCount` cannot be the measurement
 
@@ -103,18 +103,18 @@ PipeWire it is not, and the reason is structural rather than a gap in the
 implementation.
 
 Android's number comes from AudioFlinger, which sees the client miss a
-deadline. Cordial's bridge has no equivalent vantage point: PipeWire pulls, and
+deadline. Vanta's bridge has no equivalent vantage point: PipeWire pulls, and
 the engine's data callback is invoked *synchronously inside that pull*. A late
 callback is therefore a late PipeWire cycle. The glitch is real and audible,
 but it is counted on the server side of the socket, and neither `pw_time` nor
 any other part of `pw_stream`'s API hands that count back to the client. There
-is nothing for `AAudioStream_getXRunCount` to return except a number Cordial
+is nothing for `AAudioStream_getXRunCount` to return except a number Vanta
 made up.
 
-So it returns the one underrun Cordial can honestly see — cycles it had to
+So it returns the one underrun Vanta can honestly see — cycles it had to
 fill with silence because nothing was there to fill them — which is zero in a
 healthy run and stays zero. **A flat zero from it is not evidence of anything.**
-The instrument that does work is `pw-top`'s `ERR` column against Cordial's own
+The instrument that does work is `pw-top`'s `ERR` column against Vanta's own
 node: it is the server's count, it is comparable across the AAudio path and
 the Java one because both appear there as ordinary PipeWire nodes, and it needs
 no code of ours to produce it.
@@ -129,7 +129,7 @@ zero is the purest possible form of that mistake.
 
 Whether FMOD on this build actually prefers AAudio once `supportsAAudio()`
 says yes, and what it does when a stream then refuses to open. Both are
-answerable with `CORDIAL_AUDIO=aaudio-refuse`, which registers the library,
+answerable with `VANTA_AUDIO=aaudio-refuse`, which registers the library,
 answers the predicate true, and reports `AAUDIO_ERROR_UNAVAILABLE` from every
 `openStream` — the same shape as `native/opensles.cpp` returning
 `SL_RESULT_FEATURE_UNSUPPORTED` rather than handing back a dead engine object.
@@ -138,19 +138,19 @@ the working path and the refusing one differ by one environment variable.
 
 ## Measured, 2026-08-22: four runs, one session
 
-All four on the same machine, same build, same profile (`CordialTest`), same
+All four on the same machine, same build, same profile (`VantaTest`), same
 place (`roblox://experiences/start?placeId=1818`), joined by `--join-url` with
-no hand-driving. `ERR` is `pw-top`'s xrun column for Cordial's own node,
+no hand-driving. `ERR` is `pw-top`'s xrun column for Vanta's own node,
 sampled once a second for the whole run. "Peak" is the largest absolute sample
 the engine handed the data callback, as a fraction of full scale, from
-`CORDIAL_TRACE_AUDIO=1`.
+`VANTA_TRACE_AUDIO=1`.
 
-| `CORDIAL_AUDIO` | PipeWire node | negotiated | joined | audio | `ERR` | teardown |
+| `VANTA_AUDIO` | PipeWire node | negotiated | joined | audio | `ERR` | teardown |
 |---|---|---|---|---|---|---|
-| unset (`java`) | `cordial-audioplayer-0` | S16LE 2ch 48000 | yes | yes | 0 of 45 samples | clean |
+| unset (`java`) | `vanta-audioplayer-0` | S16LE 2ch 48000 | yes | yes | 0 of 45 samples | clean |
 | `aaudio-refuse` | **none** | — | yes | **none at all** | no node existed | clean |
-| `aaudio` | `cordial-aaudio-2` | F32LE 2ch 48000 | yes | peak 0.637 | 0 of 243 samples | clean |
-| `aaudio` (repeat) | `cordial-aaudio-2` | F32LE 2ch 48000 | yes | peak 0.735 | 0 of 183 samples | clean |
+| `aaudio` | `vanta-aaudio-2` | F32LE 2ch 48000 | yes | peak 0.637 | 0 of 243 samples | clean |
+| `aaudio` (repeat) | `vanta-aaudio-2` | F32LE 2ch 48000 | yes | peak 0.735 | 0 of 183 samples | clean |
 
 What the two `aaudio` runs agreed on, to the digit: PipeWire negotiated
 **48000 Hz, 2 channels, `AAUDIO_FORMAT_PCM_FLOAT`, 1024 frames per burst**, and
@@ -194,9 +194,9 @@ here:
 ```text
 #3  pthread_cond_wait@@GLIBC_2.3.2 () from /lib64/libc.so.6
 #4  0x00007f47ceee2b9b in ?? ()                       <- inside libroblox.so
-#12 cordial_game_activity_lifecycle ()
-#13 cordial_linker_sys::game_activity::lifecycle (...) at lib.rs:1860
-#14 cordial_runtime::android::looper::teardown (...) at looper.rs:957
+#12 vanta_game_activity_lifecycle ()
+#13 vanta_linker_sys::game_activity::lifecycle (...) at lib.rs:1860
+#14 vanta_runtime::android::looper::teardown (...) at looper.rs:957
 ```
 
 **It did not reproduce.** The later `aaudio-refuse` run reached place 1818 and
@@ -207,12 +207,12 @@ unreproduced hang is still a hang, and because the next person to see this
 backtrace should know it has been seen once before, on a run that had also
 failed to render.
 
-### `pgrep -x cordial-run` cannot see a running client
+### `pgrep -x vanta-run` cannot see a running client
 
 Not an AAudio finding, but it was found here and it matters to anyone
 coordinating runs. **The engine renames the main thread**, so `/proc/<pid>/comm`
-reads `Main`, and `pgrep -x cordial-run` returns nothing for a client that is
-in a game with audio playing. `pidof cordial-run` matches on the executable and
+reads `Main`, and `pgrep -x vanta-run` returns nothing for a client that is
+in a game with audio playing. `pidof vanta-run` matches on the executable and
 works. A safety check that quietly answers "nothing is running" is worse than
 no check.
 
@@ -238,7 +238,7 @@ does not admit that state, so an AAudio input pause is a stop.
 
 Both input delivery shapes are supported. A callback-less stream keeps the
 blocking `AAudioStream_read` path described below. A stream carrying a data
-callback starts a Cordial-owned consumer thread in `requestStart`; that thread
+callback starts a Vanta-owned consumer thread in `requestStart`; that thread
 pulls complete 480-frame S16 mono bursts from the same `CaptureStream` ring and
 invokes the callback away from PipeWire's realtime thread.
 
@@ -252,9 +252,9 @@ AAudio's requirement that another thread close the stream.
 ### Checked from outside, not asserted
 
 `native/audio_probe.cpp` gained `aaudio-record` and `aaudio-record-never`,
-which reach the bridge through `cordial_aaudio_symbols` — the same table the
+which reach the bridge through `vanta_aaudio_symbols` — the same table the
 bionic linker turns into the virtual `libaaudio.so`, so what runs is the real
-path. `pw-cli ls Node | grep -c cordial-audiorecord`, sampled once a second
+path. `pw-cli ls Node | grep -c vanta-audiorecord`, sampled once a second
 from another process for the whole run:
 
 ```text
@@ -322,7 +322,7 @@ identical everything, and exactly digital silence.
 Against the machine's actual microphone the two recording windows read 0.06644
 and 0.08679 — different from each other, which a constant artefact would not
 be. `xruns` (now `CaptureStream::dropped_bytes` in frames, which unlike the
-output side is a number Cordial can honestly see) was 0 in every run.
+output side is a number Vanta can honestly see) was 0 in every run.
 
 ### Playback, after the capture work, on the same harness
 
@@ -362,25 +362,25 @@ the native tests assert those teardown paths without relying on a live account.
 
 ## How it landed
 
-The plan was: behind `CORDIAL_AUDIO=aaudio`, off by default, measured against
+The plan was: behind `VANTA_AUDIO=aaudio`, off by default, measured against
 the Java path in one session, and only then made default in its own commit
 quoting the numbers. That happened, with one substitution — the measurement is
 `pw-top`'s `ERR` column and a peak meter, not `getXRunCount`, for the reason two
 sections above.
 
-**AAudio is the default; `CORDIAL_AUDIO=java` is the rollback.** The honest
+**AAudio is the default; `VANTA_AUDIO=java` is the rollback.** The honest
 summary is not that AAudio is better. On this machine it is not measurably better: zero `ERR` on both paths,
 same rate, same clean teardown. What it is, is structurally different — no JNI
 hop, no `jbyteArray` copy, no `std::deque`, no mutex between the engine and
 PipeWire's callback, F32 end to end — and, since capture was implemented, the
 only one of the two that can record at all. The Java path is
-`CORDIAL_AUDIO=java` and remains what a host with no PipeWire session gets,
+`VANTA_AUDIO=java` and remains what a host with no PipeWire session gets,
 because `supportsAAudio()` answers false there regardless of this switch.
 
-**`CORDIAL_AUDIO` now exists**, with three values — `aaudio` (the default, and
+**`VANTA_AUDIO` now exists**, with three values — `aaudio` (the default, and
 what an unset variable means), `java`, and `aaudio-refuse` — and it
 announces which one it chose during startup, on the line beginning
-`I/Cordial-AAudio          audio backend:`. It was previously described in
+`I/Vanta-AAudio          audio backend:`. It was previously described in
 conversation as the intended design and then tried on a live run before
 anything read it, which is indistinguishable from a feature that did nothing;
 the startup line exists so that cannot happen again.

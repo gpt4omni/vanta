@@ -12,12 +12,12 @@
 // thinks you're mobile" is really answered — that `isKeyboardDevice`,
 // `isMouseDevice` and `isTouchDevice` decide which input scheme and which UI
 // layout the engine picks. Two thirds of that is false.** Measured with
-// `CORDIAL_TRACE_PARAM_READS=1` on a cold start: the engine reads `isTouchDevice`
+// `VANTA_TRACE_PARAM_READS=1` on a cold start: the engine reads `isTouchDevice`
 // twice and `dpiScale` three times, and reads `isKeyboardDevice` and
 // `isMouseDevice` **not once**. Setting those two to the desktop answer has
 // therefore never told the engine anything. The control in the same run is
 // `DeviceParams.deviceName`, whose getter fired and whose value came back out of
-// the engine as `[FLog::Graphics] Vulkan Android Device: Cordial`, so the probe
+// the engine as `[FLog::Graphics] Vulkan Android Device: Vanta`, so the probe
 // was working when the two peripheral fields stayed silent.
 //
 // What that leaves: the engine is told there is no touchscreen, and behaves as a
@@ -42,17 +42,17 @@
 
 // Defined in android_classes.cpp. Both game-loaded callbacks feed one counter
 // so the join watchdog does not have to know which of them a given build calls.
-extern "C" void cordial_note_game_loaded(long long place_id);
-extern "C" void cordial_note_experience_start(void);
-extern "C" void cordial_note_home_ready(void);
-extern "C" void cordial_note_flags_failed(void);
+extern "C" void vanta_note_game_loaded(long long place_id);
+extern "C" void vanta_note_experience_start(void);
+extern "C" void vanta_note_home_ready(void);
+extern "C" void vanta_note_flags_failed(void);
 
-namespace cordial {
+namespace vanta {
 class Surface;
 
 /// Convert a C++ object into a `jobject` the way libjnivm expects.
 ///
-/// A raw `cordial::to_jni(env, p)` looks right — libjnivm does
+/// A raw `vanta::to_jni(env, p)` looks right — libjnivm does
 /// represent a `jobject` as its own `Object*` — but it skips the two things
 /// `ToJNIType` does on the way:
 ///
@@ -134,9 +134,9 @@ class AndroidActivity;
 std::shared_ptr<Object> make_display_metrics(ENV* env);
 /// Defined below with `Insets`; declared here so game_activity.cpp can
 /// return one without duplicating the class.
-std::shared_ptr<Insets> cordial_make_zero_insets(ENV* env);
+std::shared_ptr<Insets> vanta_make_zero_insets(ENV* env);
 
-/// Which device identity Cordial presents to the engine and to roblox.com.
+/// Which device identity Vanta presents to the engine and to roblox.com.
 ///
 /// Three, not two. **The default is unchanged: `pc-windows-11`.** The third
 /// identity is shipped as a choice, not as a new default -- a tablet identity
@@ -163,7 +163,7 @@ std::shared_ptr<Insets> cordial_make_zero_insets(ENV* env);
 /// in-experience web view gets the site's embedded layout for **every**
 /// identity here, and the full desktop site with its own navigation bar only
 /// for a browser `User-Agent` -- the branch roblox.com makes is app against
-/// browser, not PC against Android. `crates/cordial-shell/src/webview.rs` said
+/// browser, not PC against Android. `crates/vanta-shell/src/webview.rs` said
 /// the right thing about the browser case and was read as though the *PC*
 /// identity were what preserved the in-app layout; it is not, and nothing here
 /// trades the web view for a graphics tier.
@@ -189,8 +189,8 @@ std::shared_ptr<Insets> cordial_make_zero_insets(ENV* env);
 ///
 /// So `roblox-app` claims to be the Roblox app and declines to claim a form
 /// factor at all: no phone, no tablet, no Windows PC, and no device block full
-/// of numbers whose only purpose is to look like hardware Cordial is not. The
-/// channel stays `Cordial` rather than borrowing `GooglePlayStore`, on the same
+/// of numbers whose only purpose is to look like hardware Vanta is not. The
+/// channel stays `Vanta` rather than borrowing `GooglePlayStore`, on the same
 /// rule every other identity field in this file follows.
 ///
 /// **What this does not do, and must not be read as doing.** It is an identity,
@@ -208,16 +208,16 @@ std::shared_ptr<Insets> cordial_make_zero_insets(ENV* env);
 /// refusing Vulkan when it was lowered -- so the identity is not internally
 /// uniform and nobody should read it as a complete disguise.
 ///
-/// The accepted spellings match `crates/cordial-runtime/src/flags.rs`'s
+/// The accepted spellings match `crates/vanta-runtime/src/flags.rs`'s
 /// `DeviceProfile::parse` exactly, **including what an unrecognised value
 /// does**. That agreement is new. This function used to treat anything it did
 /// not recognise as `pc-windows-11` while `flags.rs` treated the same string
 /// as `android-tablet` -- not even its own default -- so
-/// `CORDIAL_DEVICE_PROFILE=tablett` produced a client reporting one identity
+/// `VANTA_DEVICE_PROFILE=tablett` produced a client reporting one identity
 /// in its log while sending the other to the engine, silently. Both sides now
 /// fall back to `pc-windows-11` and both say so.
-/// `MetaQuest` is the Quest build behind an OpenXR session (`cordial-run
-/// --guest-arm64` chooses it unless `CORDIAL_DEVICE_PROFILE` says otherwise).
+/// `MetaQuest` is the Quest build behind an OpenXR session (`vanta-run
+/// --guest-arm64` chooses it unless `VANTA_DEVICE_PROFILE` says otherwise).
 /// Under the PC identity the Quest engine was told it ran on Windows with a
 /// keyboard and mouse beside `isVrDevice`, and a game asking whether VR was
 /// on (`UserInputService.VREnabled`) got false while the headset rendered.
@@ -225,7 +225,7 @@ enum class DeviceIdentity { RobloxApp, AndroidTablet, PcWindows11, MetaQuest };
 
 static DeviceIdentity device_identity() {
     static const DeviceIdentity v = [] {
-        const char* e = getenv("CORDIAL_DEVICE_PROFILE");
+        const char* e = getenv("VANTA_DEVICE_PROFILE");
         if (!e) return DeviceIdentity::PcWindows11;
         std::string s(e);
         for (char& c : s) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
@@ -249,7 +249,7 @@ static DeviceIdentity device_identity() {
         // reaches the engine, so a value it did not understand has to be
         // visible from a run of the client alone.
         fprintf(stderr,
-                "[cordial] CORDIAL_DEVICE_PROFILE=\"%s\" is not a device profile; using "
+                "[vanta] VANTA_DEVICE_PROFILE=\"%s\" is not a device profile; using "
                 "pc-windows-11. Known: roblox-app, android-tablet, pc-windows-11, meta-quest\n",
                 e);
         return DeviceIdentity::PcWindows11;
@@ -293,11 +293,11 @@ const char* device_platform_name() {
 /// Exposed (non-static) the same way `S_pub` is: other translation units link
 /// against one accessor rather than copy the profile table. `BuildInfo` in
 /// `unanswered_classes.cpp` is the first consumer — hooking those getters
-/// against a local table would make `CORDIAL_DEVICE_PROFILE` change InitParams
+/// against a local table would make `VANTA_DEVICE_PROFILE` change InitParams
 /// and the User-Agent while leaving WebRTC's BuildInfo on a stale answer.
 ///
-/// Values stay inside Cordial's own honest vocabulary (manufacturer/device
-/// name already report `"Cordial"`). Only the fields that legitimately differ
+/// Values stay inside Vanta's own honest vocabulary (manufacturer/device
+/// name already report `"Vanta"`). Only the fields that legitimately differ
 /// by profile — model/device/product form factor, and the Android release
 /// string — change with the switch. `sdk_version` stays `"33"` for every
 /// profile: `DeviceParams.osVersion` is load-bearing for Vulkan and is not
@@ -321,32 +321,32 @@ const DeviceProfile& device_profile() {
                 // model matches mocktail's `class=pc model="Windows 11 PC"`
                 // line; device/product keep the PC form factor distinct from
                 // the tablet identity so a BuildInfo read can see the switch.
-                return DeviceProfile{"Cordial", "Cordial", "Windows 11 PC",
-                                     "cordial_pc", "cordial_pc", "cordial", "user",
+                return DeviceProfile{"Vanta", "Vanta", "Windows 11 PC",
+                                     "vanta_pc", "vanta_pc", "vanta", "user",
                                      "11", "33"};
             case DeviceIdentity::AndroidTablet:
-                return DeviceProfile{"Cordial", "Cordial", "Cordial", "cordial",
-                                     "cordial", "cordial", "user", "13", "33"};
+                return DeviceProfile{"Vanta", "Vanta", "Vanta", "vanta",
+                                     "vanta", "vanta", "user", "13", "33"};
             case DeviceIdentity::MetaQuest:
-                // Cordial's own name, not a headset model: the platform name
+                // Vanta's own name, not a headset model: the platform name
                 // says what kind of device this is, and nothing here can say
                 // which headset is on the other end of the runtime.
-                return DeviceProfile{"Cordial", "Cordial", "Cordial VR", "cordial_vr",
-                                     "cordial_vr", "cordial", "user", "13", "33"};
+                return DeviceProfile{"Vanta", "Vanta", "Vanta VR", "vanta_vr",
+                                     "vanta_vr", "vanta", "user", "13", "33"};
             case DeviceIdentity::RobloxApp:
-                // Bare app token: no form-factor claim beyond Cordial's own
+                // Bare app token: no form-factor claim beyond Vanta's own
                 // name, matching the User-Agent arm that drops the device block.
-                return DeviceProfile{"Cordial", "Cordial", "Cordial", "cordial",
-                                     "cordial", "cordial", "user", "13", "33"};
+                return DeviceProfile{"Vanta", "Vanta", "Vanta", "vanta",
+                                     "vanta", "vanta", "user", "13", "33"};
         }
-        return DeviceProfile{"Cordial", "Cordial", "Cordial", "cordial", "cordial",
-                             "cordial", "user", "13", "33"};
+        return DeviceProfile{"Vanta", "Vanta", "Vanta", "vanta", "vanta",
+                             "vanta", "user", "13", "33"};
     }();
     return v;
 }
 
 /// The base URL `InitParams` hands the engine. A constant of its own so the
-/// value can be read back out (`cordial_base_url`) and pinned by a test against
+/// value can be read back out (`vanta_base_url`) and pinned by a test against
 /// the capture, rather than by a grep of this file.
 static constexpr const char kBaseUrl[] = "https://www.roblox.com/";
 
@@ -354,7 +354,7 @@ static constexpr const char kBaseUrl[] = "https://www.roblox.com/";
 ///
 /// **This was `"Roblox/Android"`, and the comment above it was wrong in the most
 /// expensive way available.** It said the string was "Roblox's own client
-/// string, not Cordial's: the service routes and gates on it, and a fabricated
+/// string, not Vanta's: the service routes and gates on it, and a fabricated
 /// one would be both untrue and likely rejected". `Roblox/Android` appears
 /// **zero times** in `libroblox.so`. It was fabricated, by us, and the comment
 /// stated the exact risk of doing so while doing it.
@@ -369,11 +369,11 @@ static constexpr const char kBaseUrl[] = "https://www.roblox.com/";
 ///  GooglePlayStore RobloxApp/2.732.1043 (GlobalDist; GooglePlayStore)
 /// ```
 ///
-/// Built here with the same **shape** and Cordial's own **honest values**: real
+/// Built here with the same **shape** and Vanta's own **honest values**: real
 /// installed memory, the real window size, the density `DisplayMetrics` already
 /// reports, the API level `Build.VERSION.SDK_INT` already answers, and the
 /// engine version already read out of the binary. The device name stays
-/// `Cordial` rather than borrowing a phone's — matching the format is not the
+/// `Vanta` rather than borrowing a phone's — matching the format is not the
 /// same as claiming to be hardware we are not, and every other identity field
 /// in this file makes the same choice for the same reason.
 ///
@@ -389,13 +389,13 @@ static constexpr const char kBaseUrl[] = "https://www.roblox.com/";
 /// `PcWindows11` swaps exactly the two words that would otherwise contradict
 /// `isTablet` below (`Android` and `Tablet`, for `Windows` and `Desktop`),
 /// drops the trailing Android API-level slot rather than filling it with a
-/// guess, and replaces the two `GooglePlayStore` tokens with `Cordial`. Nobody
+/// guess, and replaces the two `GooglePlayStore` tokens with `Vanta`. Nobody
 /// here has captured what Roblox's actual Windows client sends — only
 /// mocktail's own `class=pc model="Windows 11 PC"` line
 /// (`docs/analysis/flag-init.md` §13) — so it invents no Windows build number,
 /// no NT version, and no other syntax nothing here has seen. **It is also the
 /// one identity roblox.com reads as `data-app-type="uwp"`**, i.e. a Microsoft
-/// Store app, which Cordial is not; that is a cost of the shape rather than
+/// Store app, which Vanta is not; that is a cost of the shape rather than
 /// something chosen, and it is part of why it is no longer the default.
 ///
 /// `RobloxApp` is the bare app token and nothing else: no `Mozilla`, no WebKit
@@ -430,7 +430,7 @@ static std::string build_user_agent() {
     // cannot go stale across an APK update the way `nativeSetRobloxVersion`'s
     // literal silently did.
     std::string app = "0.0.0";
-    if (const char* v = getenv("CORDIAL_ENGINE_VERSION")) {
+    if (const char* v = getenv("VANTA_ENGINE_VERSION")) {
         std::string ver(v);
         std::vector<std::string> parts;
         size_t start = 0;
@@ -449,14 +449,14 @@ static std::string build_user_agent() {
     switch (device_identity()) {
         case DeviceIdentity::PcWindows11:
             snprintf(buf, sizeof buf,
-                     "Mozilla/5.0 (%ldMB; %dx%d; 160x160; %dx%d; Cordial) "
+                     "Mozilla/5.0 (%ldMB; %dx%d; 160x160; %dx%d; Vanta) "
                      "AppleWebKit/537.36 (KHTML, like Gecko)  ROBLOX Windows App %s Desktop "
-                     "Hybrid()  Cordial RobloxApp/%s (GlobalDist; Cordial)",
+                     "Hybrid()  Vanta RobloxApp/%s (GlobalDist; Vanta)",
                      ram_mb, g_width, g_height, g_width, g_height, app.c_str(), app.c_str());
             break;
         case DeviceIdentity::AndroidTablet:
             snprintf(buf, sizeof buf,
-                     "Mozilla/5.0 (%ldMB; %dx%d; 160x160; %dx%d; Cordial; 33) "
+                     "Mozilla/5.0 (%ldMB; %dx%d; 160x160; %dx%d; Vanta; 33) "
                      "AppleWebKit/537.36 (KHTML, like Gecko)  ROBLOX Android App %s Tablet "
                      "Hybrid()  GooglePlayStore RobloxApp/%s (GlobalDist; GooglePlayStore)",
                      ram_mb, g_width, g_height, g_width, g_height, app.c_str(), app.c_str());
@@ -480,22 +480,22 @@ static std::string build_user_agent() {
             // here; see the doc above on why the device block is the part
             // worth dropping.
             (void)ram_mb;
-            snprintf(buf, sizeof buf, "RobloxApp/%s(GlobalDist; Cordial)", app.c_str());
+            snprintf(buf, sizeof buf, "RobloxApp/%s(GlobalDist; Vanta)", app.c_str());
             break;
     }
     return std::string(buf);
 }
 
-} // namespace cordial
+} // namespace vanta
 
 /// Hands `build_user_agent`'s exact answer to the Rust side.
 ///
 /// `build_user_agent` has internal linkage (`static`, inside `namespace
-/// cordial`), which is correct for a value nothing outside this translation
+/// vanta`), which is correct for a value nothing outside this translation
 /// unit is supposed to invent independently — but the desktop web view and
 /// `NativeGLInterface.setWebviewUserAgent` both need to present the identical
 /// string `InitParams.userAgent` was built with, and they live in
-/// `crates/cordial-shell` and `crates/cordial-runtime/src/bin/load.rs`. The
+/// `crates/vanta-shell` and `crates/vanta-runtime/src/bin/load.rs`. The
 /// alternative was a second copy of this function in Rust, which is exactly
 /// the failure mode `docs/analysis/platform-identity.md` and this file's own
 /// history warn about: two computations of "what device are we" drifting the
@@ -505,16 +505,16 @@ static std::string build_user_agent() {
 /// copies the same bytes out.
 ///
 /// `buf`/`n` rather than returning a `std::string` across the FFI boundary,
-/// matching every other Rust-facing native in this tree (`cordial_set_display_size`'s
-/// neighbours below, `cordial_messagebus_subscribe` in clipboard.cpp) — none
+/// matching every other Rust-facing native in this tree (`vanta_set_display_size`'s
+/// neighbours below, `vanta_messagebus_subscribe` in clipboard.cpp) — none
 /// of them hand a C++ standard-library object across the boundary, all of
 /// them fill a caller-owned buffer and report how much they needed. Returns
 /// the full length of the User-Agent regardless of whether it fit, the same
 /// convention `snprintf` itself uses, so a caller with too small a buffer can
 /// tell truncation from success rather than silently reading a cut-off
 /// string.
-extern "C" size_t cordial_build_user_agent(char* buf, size_t n) {
-    std::string ua = cordial::build_user_agent();
+extern "C" size_t vanta_build_user_agent(char* buf, size_t n) {
+    std::string ua = vanta::build_user_agent();
     if (buf && n > 0) {
         size_t copy = ua.size() < n - 1 ? ua.size() : n - 1;
         ua.copy(buf, copy);
@@ -525,18 +525,18 @@ extern "C" size_t cordial_build_user_agent(char* buf, size_t n) {
 
 /// The base URL `InitParams.baseURL` is built with, for the test that holds it
 /// to the real client's. Same `snprintf`-style contract as
-/// `cordial_build_user_agent`: the full length is returned whether or not it fit.
-extern "C" size_t cordial_base_url(char* buf, size_t n) {
-    size_t len = std::strlen(cordial::kBaseUrl);
+/// `vanta_build_user_agent`: the full length is returned whether or not it fit.
+extern "C" size_t vanta_base_url(char* buf, size_t n) {
+    size_t len = std::strlen(vanta::kBaseUrl);
     if (buf && n > 0) {
         size_t copy = len < n - 1 ? len : n - 1;
-        std::memcpy(buf, cordial::kBaseUrl, copy);
+        std::memcpy(buf, vanta::kBaseUrl, copy);
         buf[copy] = '\0';
     }
     return len;
 }
 
-namespace cordial {
+namespace vanta {
 
 /// `android.util.DisplayMetrics`
 ///
@@ -606,11 +606,11 @@ public:
 // Both defined at the bottom of this file, beside their setters, and declared
 // here because the fields that use them are built above that point.
 //
-// **Not wrapped in another `namespace cordial {}`, which is what this used to
-// be.** Everything from `namespace cordial {` a few hundred lines up to
-// `} // namespace cordial` well below is already inside it, so the wrapper
-// declared `cordial::cordial::ui_mode_night_bits` -- a different function from
-// the `cordial::ui_mode_night_bits` defined at the bottom, and one nothing
+// **Not wrapped in another `namespace vanta {}`, which is what this used to
+// be.** Everything from `namespace vanta {` a few hundred lines up to
+// `} // namespace vanta` well below is already inside it, so the wrapper
+// declared `vanta::vanta::ui_mode_night_bits` -- a different function from
+// the `vanta::ui_mode_night_bits` defined at the bottom, and one nothing
 // anywhere defines. It never became a link error because `Configuration::Create`
 // has no callers at all and `--gc-sections` discards the reference before the
 // linker looks at it; adding a second function the same way, called from
@@ -619,7 +619,7 @@ public:
 /// The desktop's dark/light preference as `Configuration.uiMode` night bits.
 jint ui_mode_night_bits();
 /// Whether the display backend found a touchscreen on the seat, resolved
-/// against `CORDIAL_INPUT_TOUCH` before it gets here.
+/// against `VANTA_INPUT_TOUCH` before it gets here.
 bool host_has_touchscreen();
 
 class Configuration : public Object {
@@ -659,14 +659,14 @@ public:
     /// reports the real value, which is why the same account renders dark
     /// there after a restart and light here forever.
     ///
-    /// `cordial_set_ui_mode_night` carries the desktop's actual preference in
+    /// `vanta_set_ui_mode_night` carries the desktop's actual preference in
     /// from the Rust side, which reads it from libadwaita's style manager and
     /// therefore from `org.freedesktop.appearance`'s `color-scheme` -- the
     /// same source the rest of the desktop uses, rather than a second opinion
     /// invented here. Unset leaves `kUiModeNightNo`, because a runtime started
     /// without the shell has nothing better to say and guessing dark would be
     /// as wrong as guessing light.
-    jint uiMode = kUiModeTypeNormal | cordial::ui_mode_night_bits();
+    jint uiMode = kUiModeTypeNormal | vanta::ui_mode_night_bits();
     jint colorMode = kColorModeWideCgNo;
     /// `TOUCHSCREEN_FINGER` when the host has a touchscreen, `NOTOUCH` when it
     /// does not.
@@ -674,7 +674,7 @@ public:
     /// Was an unconditional `NOTOUCH` with a comment saying that claiming
     /// otherwise would ask Roblox for touch controls on a machine that cannot
     /// produce a touch event. The reasoning was right and the constant was
-    /// wrong the moment Cordial could produce one: this and
+    /// wrong the moment Vanta could produce one: this and
     /// `PlatformParams.isTouchDevice` are two descriptions of the same fact,
     /// and a client told twice, differently, what kind of machine it is on is
     /// the inconsistency the `kSource*`/`kToolType*` pairing in
@@ -684,7 +684,7 @@ public:
     /// `Configuration::Create` below has no callers anywhere in the tree --
     /// only `Register` does -- so no instance of this class is ever built from
     /// it. The object the engine is actually handed at `initializeNativeCode`
-    /// is a *different* `cordial::Configuration`, the empty one in
+    /// is a *different* `vanta::Configuration`, the empty one in
     /// `native/game_activity.cpp`, which has no fields at all. So this is a
     /// hardcoded answer made honest in a builder nothing runs, not a fix; the
     /// field it keeps consistent with is `isTouchDevice`, which is measured
@@ -706,7 +706,7 @@ public:
     static std::shared_ptr<Configuration> Create(ENV* env, int width, int height) {
         auto p = std::make_shared<Configuration>();
         p->touchscreen =
-            cordial::host_has_touchscreen() ? kTouchscreenFinger : kTouchscreenNoTouch;
+            vanta::host_has_touchscreen() ? kTouchscreenFinger : kTouchscreenNoTouch;
         // density is 1.0 at 160 dpi, so dp and px are the same number. Stated
         // rather than multiplied by 1 so the relationship survives a future
         // change to DisplayMetrics::densityDpi — if that moves, this must too.
@@ -760,7 +760,7 @@ public:
 
 /// `com.roblox.platform.util.DeviceUtils`
 ///
-/// **This is not an Android expectation Cordial fails to answer: no dex in the
+/// **This is not an Android expectation Vanta fails to answer: no dex in the
 /// shipping APK declares the class.** Checked 2026-10-15 against all three dex
 /// files of 2.742.0.1059 -- neither `DeviceUtils` nor
 /// `getScreenPhysicalSizeInMillimeters` occurs in any of them. So the engine's
@@ -814,7 +814,7 @@ public:
     }
 };
 
-std::shared_ptr<Insets> cordial_make_zero_insets(ENV* env) { return Insets::Create(env); }
+std::shared_ptr<Insets> vanta_make_zero_insets(ENV* env) { return Insets::Create(env); }
 
 /// `androidx.core.view.WindowInsetsCompat$Type`
 ///
@@ -825,8 +825,8 @@ std::shared_ptr<Insets> cordial_make_zero_insets(ENV* env) { return Insets::Crea
 /// **The exact bit values do not need to match AndroidX's**, and pretending
 /// otherwise would be the guess. What has to hold is that they are distinct
 /// and stable within one process, because the only consumer of the mask is
-/// Cordial's own `getWindowInsets`, which answers zero insets for every family.
-/// Distinct powers of two satisfy that. If a future change makes Cordial return
+/// Vanta's own `getWindowInsets`, which answers zero insets for every family.
+/// Distinct powers of two satisfy that. If a future change makes Vanta return
 /// real insets per family, these become load-bearing and should be taken from
 /// the capture rather than from here.
 class WindowInsetsCompatType : public Object {
@@ -911,7 +911,7 @@ public:
 /// immediately after this call, so the reading is confirmed twice over.
 ///
 /// It is Android's `ActivityManager.getHistoricalProcessExitReasons()`: what
-/// killed the app last time. Cordial has no such history to report, and an empty
+/// killed the app last time. Vanta has no such history to report, and an empty
 /// list says exactly that — no prior abnormal exit. Inventing entries would be
 /// telling the engine about crashes that did not happen, which is the kind of
 /// stub that lies.
@@ -1165,9 +1165,9 @@ public:
 /// then repeated `add(name, value)`.
 ///
 /// This class was entirely unimplemented, so any attempt at calling
-/// `readLocalFlags` from Cordial would fault or silently do nothing useful —
+/// `readLocalFlags` from Vanta would fault or silently do nothing useful —
 /// nothing in the shipping dex ever called it either (the real app's only
-/// caller is a different, non-`ActivityNativeMain` startup path Cordial does
+/// caller is a different, non-`ActivityNativeMain` startup path Vanta does
 /// not replicate), so this was dead on arrival either way.
 ///
 /// The `<init>` registration uses the same static-factory idiom
@@ -1219,7 +1219,7 @@ public:
 /// `com.roblox.client.startup.NativeHelper`
 ///
 /// The engine's own status channel back into the app. `onFlagsFailed` is the one
-/// Cordial has always gotten, on every launch — this is now investigated to a
+/// Vanta has always gotten, on every launch — this is now investigated to a
 /// conclusion (docs/analysis/flag-init.md, commits e553d85 and bee6c14), not an
 /// open question. Confirmed live, with a debugger: it is written by
 /// `RBX::NativeDataModelManager::getFlagsFromEngine()`'s completion lambda, on a
@@ -1244,7 +1244,7 @@ public:
 ///
 /// The cause of the store never appearing was `nativeSetCacheDirectory` being
 /// called after `GameActivity.initializeNativeCode` instead of before it
-/// (`CORDIAL_EARLY_DIRS`, flag-init.md §46) and had nothing to do with this
+/// (`VANTA_EARLY_DIRS`, flag-init.md §46) and had nothing to do with this
 /// verdict. Naming a second symptom as the consequence of a first, when both
 /// were merely present together, is how this became load-bearing for two
 /// investigations that went nowhere.
@@ -1257,15 +1257,15 @@ public:
 /// `onFlagsFailed` returning is a no-op — but it is exactly the state that a
 /// *separate* engine assertion checks moments later, on the "Main" thread the
 /// engine spawns for itself inside `nativeGameGlobalInit`
-/// (`crates/cordial-runtime/src/bin/load.rs`, `call_globals`), which races
-/// Cordial's own synchronous `nativeAppBridgeStartLuaAppDM` /
+/// (`crates/vanta-runtime/src/bin/load.rs`, `call_globals`), which races
+/// Vanta's own synchronous `nativeAppBridgeStartLuaAppDM` /
 /// `nativeAppBridgeV2StartAppWithParams` calls through the same StartLuaAppDM
 /// machinery. Both reporters' logs die between "app bridge initialised" and
-/// the surface handoff — before `CORDIAL_LATE_POST_MS`'s late
+/// the surface handoff — before `VANTA_LATE_POST_MS`'s late
 /// `nativePostClientSettingsLoadedInitialization3` retry (the thing that
 /// actually produces `areFlagsLoaded:true`, flag-init.md §23) ever gets to run.
 /// Reproduced on this machine too, with the same message and signal, using the
-/// existing `CORDIAL_LATE_SETTINGS=1` knob to bias that same race — confirmed
+/// existing `VANTA_LATE_SETTINGS=1` knob to bias that same race — confirmed
 /// live under gdb, crash on the process's original main thread inside
 /// libroblox.so, no symbols. What could not be reproduced here is the race
 /// losing on the *default*, no-env-var path: nine attempts on this host
@@ -1276,7 +1276,7 @@ public:
 class NativeHelper : public Object {
 public:
     static void onFlagsFailed(ENV*, Object*) {
-        cordial_note_flags_failed();
+        vanta_note_flags_failed();
         fprintf(stderr,
             "[roblox] flags: engine reported onFlagsFailed (the flag data did "
             "load, and this blocks neither startup nor the content store — "
@@ -1300,7 +1300,7 @@ public:
     }
     static void onAppReady(ENV*, Object*, std::shared_ptr<String> s) {
         fprintf(stderr, "[roblox] app ready: %s\n", s ? s->c_str() : "");
-        if (s && std::string(s->c_str()) == "Home") cordial_note_home_ready();
+        if (s && std::string(s->c_str()) == "Home") vanta_note_home_ready();
     }
 
     // The experience lifecycle, which the engine has been announcing to nobody.
@@ -1313,12 +1313,12 @@ public:
     //
     // They are being answered now because of what sits beside them in the log.
     // `SessionTransitionFSM` reaches `Entered play session` in both clients and
-    // then diverges: Sober logs `Sent play session success` and Cordial logs
+    // then diverges: Sober logs `Sent play session success` and Vanta logs
     // nothing, and roughly sixty seconds later the server disconnects with 304.
     // Whether these callbacks are what unblocks that report is **not
     // established** — they are `void` notifications, so it is equally possible
     // the engine tells the app and carries on regardless. What is not in doubt
-    // is that the engine is speaking and Cordial was not listening, which is
+    // is that the engine is speaking and Vanta was not listening, which is
     // the `broken_feature` shape and worth closing on its own.
     //
     // Answering a `void` notification by receiving it is not a stub that lies.
@@ -1327,7 +1327,7 @@ public:
     // announcement is to have received it.
     static void onExperienceStart(ENV*, Object*) {
         fprintf(stderr, "[roblox] experience start\n");
-        cordial_note_experience_start();
+        vanta_note_experience_start();
     }
     static void onGameLoaded(ENV*, Object*, jlong place_id) {
         fprintf(stderr, "[roblox] game loaded: place %lld\n",
@@ -1335,7 +1335,7 @@ public:
         // The same counter `gameLoadedCallback` bumps, for the join watchdog.
         // Both callbacks mean the join completed and different builds have been
         // seen to call different ones, so the watchdog waits on either.
-        cordial_note_game_loaded(static_cast<long long>(place_id));
+        vanta_note_game_loaded(static_cast<long long>(place_id));
     }
     /// The argument is a session identifier, not a credential — but this
     /// boundary is next to the one that carries `.ROBLOSECURITY`, so it is
@@ -1353,7 +1353,7 @@ public:
 
     /// The rest of the channel, which was going into unresolved stubs.
     ///
-    /// The dex declares 23 `gameActivity_*` callbacks on this class and Cordial
+    /// The dex declares 23 `gameActivity_*` callbacks on this class and Vanta
     /// answered seven. The other sixteen were not "unused": libjnivm hands the
     /// engine a placeholder for a name it has no hook for, and §3 records that
     /// the engine's template for these is "call the no-arg NativeHelper callback,
@@ -1385,7 +1385,7 @@ public:
         fprintf(stderr, "[roblox] lua app restart requested\n");
     }
     static void onScanQrCode(ENV*, Object*) {
-        fprintf(stderr, "[roblox] QR scan requested (Cordial has no camera yet)\n");
+        fprintf(stderr, "[roblox] QR scan requested (Vanta has no camera yet)\n");
     }
     /// Counted, not printed, for the same reason as `onDidLogInReceived`: this
     /// carries a sign-up identifier and log files end up in issues.
@@ -1460,7 +1460,7 @@ public:
 /// That matters because RbxStorage gates itself on the answer. The live flag set
 /// carries `DFFlagRbxStorageAvailableSpaceError`,
 /// `DFFlagRbxStorageAvailableSpaceCreatePath` and `DFFlagRbxStorageFixEmptyPath`,
-/// and Cordial's engine reports `RbxStorage is not initialized, cannot access
+/// and Vanta's engine reports `RbxStorage is not initialized, cannot access
 /// storage interface` on every run while Sober's `appData` carries a 167 MB
 /// `rbx-storage.db`. A client that believes it has no disk has no reason to
 /// build a cache.
@@ -1554,8 +1554,8 @@ public:
     }
 };
 
-/// `CORDIAL_TRACE_PARAM_READS=1`: name each `PlatformParams` and `DeviceParams`
-/// field the engine actually reads off Cordial's own object.
+/// `VANTA_TRACE_PARAM_READS=1`: name each `PlatformParams` and `DeviceParams`
+/// field the engine actually reads off Vanta's own object.
 ///
 /// This exists to settle a premise the whole "Roblox thinks you're mobile" line
 /// of work rests on. `isKeyboardDevice`, `isMouseDevice` and `isTouchDevice`
@@ -1565,12 +1565,12 @@ public:
 /// all. `docs/analysis/unresolved-java.md` records a live observation of the
 /// second — `platformParams`, `dpiScale` and `isTouchDevice` being reached
 /// through `GetObjectClass(null)`, so against class `Invalid` rather than
-/// against the object Cordial handed over — and nothing has re-checked it since
+/// against the object Vanta handed over — and nothing has re-checked it since
 /// the bring-up moved to `nativeAppBridgeV2InitWithParams`.
 ///
 /// `DeviceParams` is the control, and it is a real one rather than a hopeful
 /// one: `deviceName` is known to arrive, because the engine echoes it into
-/// `[FLog::Graphics] Vulkan Android Device: Cordial` on every run. So a trace
+/// `[FLog::Graphics] Vulkan Android Device: Vanta` on every run. So a trace
 /// where the `DeviceParams` getters fire and the `PlatformParams` getters do
 /// not is not a broken probe — it is the answer.
 ///
@@ -1578,12 +1578,12 @@ public:
 /// ordinary client keeps the plain field hooks it has always had and the probe
 /// cannot change what it is measuring.
 static bool trace_param_reads() {
-    static const bool on = getenv("CORDIAL_TRACE_PARAM_READS") != nullptr;
+    static const bool on = getenv("VANTA_TRACE_PARAM_READS") != nullptr;
     return on;
 }
 
 static void note_param_read(const char* klass, const char* field) {
-    fprintf(stderr, "[cordial] param read: %s.%s\n", klass, field);
+    fprintf(stderr, "[vanta] param read: %s.%s\n", klass, field);
 }
 
 /// `com.roblox.engine.jni.model.DeviceParams`
@@ -1608,10 +1608,10 @@ public:
         p->appBuildVariant = S("release");
         p->appVersion = S("");
         p->country = S("US");
-        p->deviceName = S("Cordial");
-        p->deviceSku = S("cordial");
-        p->manufacturer = S("Cordial");
-        p->socModel = S("cordial");
+        p->deviceName = S("Vanta");
+        p->deviceSku = S("vanta");
+        p->manufacturer = S("Vanta");
+        p->socModel = S("vanta");
         // The API *level*, not the release name. The engine echoes this field
         // straight into `[FLog::Graphics] Android API <n>` and gates on it: at
         // 15 it refused Vulkan with "Android version is too old". 33 is what the
@@ -1654,7 +1654,7 @@ public:
         if (trace_param_reads()) {
             // The control. `deviceName` is the one parameter field with a
             // standing, independent proof that it reaches the engine — it comes
-            // back out in `[FLog::Graphics] Vulkan Android Device: Cordial` —
+            // back out in `[FLog::Graphics] Vulkan Android Device: Vanta` —
             // so if this getter does not fire either, the probe is broken and
             // the run says nothing about PlatformParams.
             c->HookInstanceGetterFunction(env, "deviceName",
@@ -1721,17 +1721,17 @@ public:
         // Was a hardcoded `false`, which was true of every machine this has
         // been developed on and false of the ones the client is for. It now
         // reports what the display backend found on the seat, with
-        // `CORDIAL_INPUT_TOUCH` overriding it either way — see
+        // `VANTA_INPUT_TOUCH` overriding it either way — see
         // `android::input::report_touchscreen`, which resolves both into the
         // single answer stored here.
-        p->isTouchDevice = cordial::host_has_touchscreen() ? JNI_TRUE : JNI_FALSE;
+        p->isTouchDevice = vanta::host_has_touchscreen() ? JNI_TRUE : JNI_FALSE;
         // Roblox lays its UI out in dp and picks image-asset resolutions from
         // this. At 1.0 it builds the interface for a low-density phone, which
         // is why the app shell looks coarse on a desktop panel. Overridable
         // because the right value depends on the display, and nothing here can
         // measure the display's physical size reliably.
         {
-            const char* v = getenv("CORDIAL_DPI_SCALE");
+            const char* v = getenv("VANTA_DPI_SCALE");
             float scale = 1.0f;
             if (v && *v) {
                 float parsed = strtof(v, nullptr);
@@ -1739,7 +1739,7 @@ public:
                     scale = parsed;
                 } else {
                     fprintf(stderr,
-                            "[android] CORDIAL_DPI_SCALE=%s is not a scale between 0 and 8;"
+                            "[android] VANTA_DPI_SCALE=%s is not a scale between 0 and 8;"
                             " using 1.0\n", v);
                 }
             }
@@ -1833,15 +1833,15 @@ public:
         // gives for doing the same thing there: this is the one line that
         // makes the switch's own doc comment's claim checkable against a run
         // rather than only against the source, and the User-Agent itself
-        // never appears in Cordial's own logs or the engine's FLog output --
+        // never appears in Vanta's own logs or the engine's FLog output --
         // it goes out on the wire, not into anything grep can reach here.
         // The platform name is printed with the rest because it is answered
         // from `android_classes.cpp`, and a run is the only place the two can
-        // be seen to agree; `CORDIAL_PLATFORM_NAME` shows up here too.
+        // be seen to agree; `VANTA_PLATFORM_NAME` shows up here too.
         const char* platform_name();  // native/android_classes.cpp
         std::string ua = build_user_agent();
         fprintf(stderr,
-                "[cordial] device identity: %s (isTablet=%s, platform=%s, User-Agent: %s)\n",
+                "[vanta] device identity: %s (isTablet=%s, platform=%s, User-Agent: %s)\n",
                 device_identity_label(),
                 device_identity() == DeviceIdentity::AndroidTablet ? "true" : "false",
                 platform_name(), ua.c_str());
@@ -1858,7 +1858,7 @@ public:
         // AConfiguration. It is false under `pc-windows-11` because a
         // User-Agent saying `Windows` and `Desktop` beside a field saying
         // tablet is a worse story than either half told alone, and false under
-        // the default `roblox-app` for the plainer reason that Cordial is a
+        // the default `roblox-app` for the plainer reason that Vanta is a
         // window on a desktop with a keyboard and a mouse, and the bare app
         // token deliberately claims no form factor at all.
         //
@@ -1871,14 +1871,14 @@ public:
         // `android-tablet`, and wants to measure it rather than assume it.
         p->isTablet = device_identity() == DeviceIdentity::AndroidTablet;
         // True for the Quest build, which only ever runs here behind an
-        // OpenXR session (`cordial-run --guest-arm64` sets CORDIAL_VR_DEVICE).
+        // OpenXR session (`vanta-run --guest-arm64` sets VANTA_VR_DEVICE).
         // It is what picks the app shell's place: false loads
         // `places/Mobile.rbxl`, whose sky is six faces of a 16x16 white
         // image, so the VR menu floated in a white void; true loads
         // `places/Maquettes.rbxl`, the Quest's own environment. Measured on
         // Monado 2026-09-30, with and without `initMaquettesSDK`, which does
-        // not affect the choice. `CORDIAL_VR_DEVICE=0` is the control.
-        const char* vr = getenv("CORDIAL_VR_DEVICE");
+        // not affect the choice. `VANTA_VR_DEVICE=0` is the control.
+        const char* vr = getenv("VANTA_VR_DEVICE");
         p->isVrDevice = vr && strcmp(vr, "0") != 0;
         p->vrContext = AndroidActivity::Create(env);
         to_jni(env, p);
@@ -1954,13 +1954,13 @@ public:
         // This object is built once, inside
         // `nativeAppBridgeV2StartAppWithParams`, and the engine never asks for
         // these fields again — so the identity has to be restored before that
-        // call, which `crates/cordial-runtime/src/identity.rs` does at startup
+        // call, which `crates/vanta-runtime/src/identity.rs` does at startup
         // rather than anywhere near here.
         p->username = S(identity_username().c_str());
         p->appUserId = identity_user_id();
         p->isUnder13 = identity_is_under13();
         p->membershipType = identity_membership_type();
-        fprintf(stderr, "[cordial] app start as %s\n",
+        fprintf(stderr, "[vanta] app start as %s\n",
                 identity_known() ? "a signed-in user" : "nobody signed in");
         p->vrContext = AndroidActivity::Create(env);
         to_jni(env, p);
@@ -1983,9 +1983,9 @@ public:
     }
 };
 
-/// What `cordial_appbridge_start_game` is handed: the fields of one
+/// What `vanta_appbridge_start_game` is handed: the fields of one
 /// `Game.launch` payload, already parsed on the Rust side
-/// (`crates/cordial-runtime/src/game_launch.rs`). Strings are never null; a
+/// (`crates/vanta-runtime/src/game_launch.rs`). Strings are never null; a
 /// key the payload did not carry arrives as "".
 struct StartGameFields {
     const char* accessCode;
@@ -2033,7 +2033,7 @@ public:
     jint joinRequestType = 0;
     jboolean isUnder13 = false;
 
-#define READ(name) fprintf(stderr, "[cordial] StartGameParams read: %s\n", #name)
+#define READ(name) fprintf(stderr, "[vanta] StartGameParams read: %s\n", #name)
     std::shared_ptr<String> get_accessCode(ENV*) { READ(accessCode); return accessCode; }
     std::shared_ptr<String> get_callId(ENV*) { READ(callId); return callId; }
     std::shared_ptr<String> get_eventId(ENV*) { READ(eventId); return eventId; }
@@ -2087,7 +2087,7 @@ public:
         p->isUnder13 = identity_is_under13();
         p->deviceParams = DeviceParams::Create(env, width, height);
         p->platformParams = PlatformParams::Create(env, assets, width, height);
-        // One surface for both halves: Cordial has one window, and under XR the
+        // One surface for both halves: Vanta has one window, and under XR the
         // engine draws into OpenXR swapchains rather than into this at all.
         p->surface = AppSurface::Create(env);
         p->vrContext = AndroidActivity::Create(env);
@@ -2189,25 +2189,25 @@ void register_init_params_classes(ENV* env) {
     StartGameParams::Register(env);
 }
 
-} // namespace cordial
+} // namespace vanta
 
 extern "C" {
 
 /// Call `MainGameActivity.nativeAppBridgeSetInitParams(InitParams)`.
-int cordial_set_init_params(void* fn, const char* assets, int width, int height, char* err,
+int vanta_set_init_params(void* fn, const char* assets, int width, int height, char* err,
                             size_t err_len) {
     using Call = void (*)(JNIEnv*, jobject, jobject);
-    auto* env = cordial::process_env();
+    auto* env = vanta::process_env();
     if (!fn || !env) {
         snprintf(err, err_len, "no JavaVM, or nativeAppBridgeSetInitParams is not exported");
         return -1;
     }
     try {
-        auto params = cordial::InitParams::Create(env, assets, width, height);
+        auto params = vanta::InitParams::Create(env, assets, width, height);
         auto activity = std::make_shared<jnivm::Object>();
         reinterpret_cast<Call>(fn)(env->GetJNIEnv(),
-                                   cordial::to_jni(env, activity),
-                                   cordial::to_jni(env, params));
+                                   vanta::to_jni(env, activity),
+                                   vanta::to_jni(env, params));
         return 0;
     } catch (const std::exception& e) {
         snprintf(err, err_len, "%s", e.what());
@@ -2228,9 +2228,9 @@ extern "C" {
 /// This is how the engine gets its asset manager. Without it the engine has no
 /// way to read its own content, which is why nothing downstream ever starts:
 /// no assets, no app shell, no reason to open a socket or draw a frame.
-int cordial_asset_manager_init(void* fn, char* err, size_t err_len) {
+int vanta_asset_manager_init(void* fn, char* err, size_t err_len) {
     using Call = void (*)(JNIEnv*, jclass, jobject);
-    auto* env = cordial::process_env();
+    auto* env = vanta::process_env();
     if (!fn || !env) {
         snprintf(err, err_len, "no JavaVM, or initNative is not exported");
         return -1;
@@ -2239,8 +2239,8 @@ int cordial_asset_manager_init(void* fn, char* err, size_t err_len) {
         auto cls = env->GetClass("com/roblox/client/JNIAAssetManagerSetup");
         auto assets = std::make_shared<jnivm::Object>();
         reinterpret_cast<Call>(fn)(env->GetJNIEnv(),
-                                   cordial::to_jni(env, cls),
-                                   cordial::to_jni(env, assets));
+                                   vanta::to_jni(env, cls),
+                                   vanta::to_jni(env, assets));
         return 0;
     } catch (const std::exception& e) {
         snprintf(err, err_len, "%s", e.what());
@@ -2252,9 +2252,9 @@ int cordial_asset_manager_init(void* fn, char* err, size_t err_len) {
 }
 
 /// `LocalStorageManager.initStorageManagerNativeV3(AssetManager, String, String)`
-int cordial_storage_init(void* fn, const char* a, const char* b, char* err, size_t err_len) {
+int vanta_storage_init(void* fn, const char* a, const char* b, char* err, size_t err_len) {
     using Call = void (*)(JNIEnv*, jclass, jobject, jstring, jstring);
-    auto* env = cordial::process_env();
+    auto* env = vanta::process_env();
     if (!fn || !env) {
         snprintf(err, err_len, "no JavaVM, or the storage native is not exported");
         return -1;
@@ -2262,13 +2262,13 @@ int cordial_storage_init(void* fn, const char* a, const char* b, char* err, size
     try {
         auto cls = env->GetClass("com/roblox/client/LocalStorageManager");
         auto assets = std::make_shared<jnivm::Object>();
-        auto s1 = cordial::S_pub(a);
-        auto s2 = cordial::S_pub(b);
+        auto s1 = vanta::S_pub(a);
+        auto s2 = vanta::S_pub(b);
         reinterpret_cast<Call>(fn)(env->GetJNIEnv(),
-                                   cordial::to_jni(env, cls),
-                                   cordial::to_jni(env, assets),
-                                   cordial::to_jni(env, s1),
-                                   cordial::to_jni(env, s2));
+                                   vanta::to_jni(env, cls),
+                                   vanta::to_jni(env, assets),
+                                   vanta::to_jni(env, s1),
+                                   vanta::to_jni(env, s2));
         return 0;
     } catch (const std::exception& e) {
         snprintf(err, err_len, "%s", e.what());
@@ -2283,17 +2283,17 @@ int cordial_storage_init(void* fn, const char* a, const char* b, char* err, size
 ///
 /// `NativeSettingsInterface` is where the app tells the engine which directories
 /// it owns — `nativeSetFilesDirectory`, `nativeSetCacheDirectory`,
-/// `nativeSetExternalDirectory`, `nativeSetBaseDataDirectories`. Cordial called
+/// `nativeSetExternalDirectory`, `nativeSetBaseDataDirectories`. Vanta called
 /// none of them, so the engine ran with those roots unset and resolved every
 /// path it built from them against the working directory: `./appData`, `cache`,
 /// `http`, `sounds`, `ContentProvider_<pid>`. The Waydroid capture shows the
 /// real client using absolute paths under the app's own storage for all of them.
 ///
 /// The signatures come from the shipping APK's own declarations, read out of the
-/// dex — the host app's side of a contract Cordial is reimplementing.
-int cordial_call_static_strings(void* fn, const char* class_name, const char* const* args,
+/// dex — the host app's side of a contract Vanta is reimplementing.
+int vanta_call_static_strings(void* fn, const char* class_name, const char* const* args,
                                 size_t n, char* err, size_t err_len) {
-    auto* env = cordial::process_env();
+    auto* env = vanta::process_env();
     if (!fn || !env || !class_name) {
         snprintf(err, err_len, "no JavaVM, or the native is not exported");
         return -1;
@@ -2305,12 +2305,12 @@ int cordial_call_static_strings(void* fn, const char* class_name, const char* co
     try {
         auto cls = env->GetClass(class_name);
         auto* jenv = env->GetJNIEnv();
-        auto self = (jobject)cordial::to_jni(env, cls);
+        auto self = (jobject)vanta::to_jni(env, cls);
         jstring a[3] = {nullptr, nullptr, nullptr};
-        std::shared_ptr<cordial::String> keep[3];
+        std::shared_ptr<vanta::String> keep[3];
         for (size_t i = 0; i < n; ++i) {
-            keep[i] = cordial::S_pub(args[i] ? args[i] : "");
-            a[i] = (jstring)cordial::to_jni(env, keep[i]);
+            keep[i] = vanta::S_pub(args[i] ? args[i] : "");
+            a[i] = (jstring)vanta::to_jni(env, keep[i]);
         }
         switch (n) {
             case 0:
@@ -2351,21 +2351,21 @@ int cordial_call_static_strings(void* fn, const char* class_name, const char* co
 ///
 /// A task scheduler left in background mode is a scheduler that has been told
 /// not to render.
-int cordial_call_static_bool_string(void* fn, const char* class_name, int flag, const char* text,
+int vanta_call_static_bool_string(void* fn, const char* class_name, int flag, const char* text,
                                     char* err, size_t err_len) {
     using Call = void (*)(JNIEnv*, jobject, jboolean, jstring);
-    auto* env = cordial::process_env();
+    auto* env = vanta::process_env();
     if (!fn || !env || !class_name) {
         snprintf(err, err_len, "no JavaVM, or the native is not exported");
         return -1;
     }
     try {
         auto cls = env->GetClass(class_name);
-        auto s = cordial::S_pub(text ? text : "");
+        auto s = vanta::S_pub(text ? text : "");
         reinterpret_cast<Call>(fn)(env->GetJNIEnv(),
-                                   (jobject)cordial::to_jni(env, cls),
+                                   (jobject)vanta::to_jni(env, cls),
                                    flag ? JNI_TRUE : JNI_FALSE,
-                                   (jstring)cordial::to_jni(env, s));
+                                   (jstring)vanta::to_jni(env, s));
         return 0;
     } catch (const std::exception& e) {
         snprintf(err, err_len, "%s", e.what());
@@ -2378,22 +2378,22 @@ int cordial_call_static_bool_string(void* fn, const char* class_name, int flag, 
 
 /// `NativeSettingsInterface.nativeSetDeviceInfo(DeviceParams)`.
 ///
-/// The dedicated path for telling the engine what it is running on. Cordial only
+/// The dedicated path for telling the engine what it is running on. Vanta only
 /// ever delivered `DeviceParams` nested inside `InitParams`, and never called
 /// this at all.
-int cordial_set_device_info(void* fn, int width, int height, char* err, size_t err_len) {
+int vanta_set_device_info(void* fn, int width, int height, char* err, size_t err_len) {
     using Call = void (*)(JNIEnv*, jobject, jobject);
-    auto* env = cordial::process_env();
+    auto* env = vanta::process_env();
     if (!fn || !env) {
         snprintf(err, err_len, "no JavaVM, or nativeSetDeviceInfo is not exported");
         return -1;
     }
     try {
         auto cls = env->GetClass("com/roblox/engine/jni/NativeSettingsInterface");
-        auto dev = cordial::DeviceParams::Create(env, width, height);
+        auto dev = vanta::DeviceParams::Create(env, width, height);
         reinterpret_cast<Call>(fn)(env->GetJNIEnv(),
-                                   (jobject)cordial::to_jni(env, cls),
-                                   (jobject)cordial::to_jni(env, dev));
+                                   (jobject)vanta::to_jni(env, cls),
+                                   (jobject)vanta::to_jni(env, dev));
         return 0;
     } catch (const std::exception& e) {
         snprintf(err, err_len, "%s", e.what());
@@ -2406,11 +2406,11 @@ int cordial_set_device_info(void* fn, int width, int height, char* err, size_t e
 
 /// `LocalStorageManager.initStorageManagerNativeV3(AssetManager, String, String)`
 ///
-/// The engine's content store, which Cordial has never initialised. Its own log
+/// The engine's content store, which Vanta has never initialised. Its own log
 /// says so on every run -- `RbxStorage is not initialized, cannot access storage
 /// interface`, and `CrashMetricStorage: Failed to initialize storage interface`
 /// -- and the effect is visible on disk: Sober's `appData` carries a 167 MB
-/// `rbx-storage.db` plus `rbx-storage/` and `rbx-storage.id`, and Cordial's
+/// `rbx-storage.db` plus `rbx-storage/` and `rbx-storage.id`, and Vanta's
 /// carries none of the three.
 ///
 /// The prototype is read from the dex with `tools/dex_method.py`, not guessed.
@@ -2418,7 +2418,7 @@ int cordial_set_device_info(void* fn, int width, int height, char* err, size_t e
 ///
 /// The `AssetManager` is the deliberately-empty object from `game_activity.cpp`:
 /// the native side reaches assets through `AAssetManager_fromJava`, which
-/// resolves to Cordial's process-wide manager, so the object only has to exist
+/// resolves to Vanta's process-wide manager, so the object only has to exist
 /// and be of the right class.
 ///
 /// **What the two strings are is not established.** They are passed the files
@@ -2426,10 +2426,10 @@ int cordial_set_device_info(void* fn, int width, int height, char* err, size_t e
 /// engine is already given separately by `nativeSetBaseDataDirectories(files,
 /// cache)` and the shapes match. If that is wrong, the engine's own RbxStorage
 /// logging is what will say so.
-int cordial_init_storage_manager(void* fn, const char* a, const char* b, char* err,
+int vanta_init_storage_manager(void* fn, const char* a, const char* b, char* err,
                                  size_t err_len) {
     using Call = void (*)(JNIEnv*, jobject, jobject, jstring, jstring);
-    auto* env = cordial::process_env();
+    auto* env = vanta::process_env();
     if (!fn || !env) {
         snprintf(err, err_len, "no JavaVM, or initStorageManagerNativeV3 is not exported");
         return -1;
@@ -2442,8 +2442,8 @@ int cordial_init_storage_manager(void* fn, const char* a, const char* b, char* e
         // which is what a *static* native expects and is a different thing
         // entirely from an instance of that class.
         //
-        // Nothing threw, so `cordial_init_storage_manager` returned 0 and
-        // Cordial has been logging `initStorageManagerNativeV3 ok` on every
+        // Nothing threw, so `vanta_init_storage_manager` returned 0 and
+        // Vanta has been logging `initStorageManagerNativeV3 ok` on every
         // run while handing the engine a receiver of the wrong kind. That is
         // the same failure as the static-vs-instance mismatch on
         // `NetworkUtils.getPublicIPv4Addresseses` found hours earlier, and the
@@ -2460,13 +2460,13 @@ int cordial_init_storage_manager(void* fn, const char* a, const char* b, char* e
         auto am_cls = env->GetClass("android/content/res/AssetManager");
         auto am = std::make_shared<jnivm::Object>();
         am->clazz = am_cls;
-        auto sa = cordial::S_pub(a ? a : "");
-        auto sb = cordial::S_pub(b ? b : "");
+        auto sa = vanta::S_pub(a ? a : "");
+        auto sb = vanta::S_pub(b ? b : "");
         reinterpret_cast<Call>(fn)(env->GetJNIEnv(),
-                                   (jobject)cordial::to_jni(env, self),
-                                   (jobject)cordial::to_jni(env, am),
-                                   (jstring)cordial::to_jni(env, sa),
-                                   (jstring)cordial::to_jni(env, sb));
+                                   (jobject)vanta::to_jni(env, self),
+                                   (jobject)vanta::to_jni(env, am),
+                                   (jstring)vanta::to_jni(env, sa),
+                                   (jstring)vanta::to_jni(env, sb));
         return 0;
     } catch (const std::exception& e) {
         snprintf(err, err_len, "%s", e.what());
@@ -2478,16 +2478,16 @@ int cordial_init_storage_manager(void* fn, const char* a, const char* b, char* e
 }
 
 /// A native taking only `(JNIEnv*, jobject)` — `nativeRetryInit`.
-int cordial_call_bare(void* fn, char* err, size_t err_len) {
+int vanta_call_bare(void* fn, char* err, size_t err_len) {
     using Call = void (*)(JNIEnv*, jobject);
-    auto* env = cordial::process_env();
+    auto* env = vanta::process_env();
     if (!fn || !env) {
         snprintf(err, err_len, "no JavaVM, or the native is not exported");
         return -1;
     }
     try {
         auto obj = std::make_shared<jnivm::Object>();
-        reinterpret_cast<Call>(fn)(env->GetJNIEnv(), cordial::to_jni(env, obj));
+        reinterpret_cast<Call>(fn)(env->GetJNIEnv(), vanta::to_jni(env, obj));
         return 0;
     } catch (const std::exception& e) {
         snprintf(err, err_len, "%s", e.what());
@@ -2502,12 +2502,12 @@ int cordial_call_bare(void* fn, char* err, size_t err_len) {
 /// observe `NativeSettingsInterface.nativeIsLuaLoginEnabled()`'s own verdict,
 /// diagnostic-only instrumentation for `docs/design/sign-in.md`. This does not
 /// drive any UI or enter any credentials; it only reads the engine's boolean
-/// answer. Mirrors `cordial_call_static_strings`'s convention: a static
+/// answer. Mirrors `vanta_call_static_strings`'s convention: a static
 /// native's receiver is the `Class` object itself, per JNI.
-int cordial_call_static_bare_bool(void* fn, const char* class_name, int* out_result,
+int vanta_call_static_bare_bool(void* fn, const char* class_name, int* out_result,
                                    char* err, size_t err_len) {
     using Call = jboolean (*)(JNIEnv*, jobject);
-    auto* env = cordial::process_env();
+    auto* env = vanta::process_env();
     if (!fn || !env || !class_name) {
         snprintf(err, err_len, "no JavaVM, or the native is not exported");
         return -1;
@@ -2515,7 +2515,7 @@ int cordial_call_static_bare_bool(void* fn, const char* class_name, int* out_res
     try {
         auto cls = env->GetClass(class_name);
         jboolean r = reinterpret_cast<Call>(fn)(env->GetJNIEnv(),
-                                                 (jobject)cordial::to_jni(env, cls));
+                                                 (jobject)vanta::to_jni(env, cls));
         if (out_result) {
             *out_result = r ? 1 : 0;
         }
@@ -2538,15 +2538,15 @@ extern "C" {
 /// This is what `bootstrapTheApp()` exists to reach. On Android the Kotlin
 /// bootstrap fetches the flag set and passes it here; the engine then reports
 /// back through `NativeHelper.gameActivity_onFlagsLoaded` or, failing that,
-/// `gameActivity_onFlagsFailed` — and the second is what Cordial has been
+/// `gameActivity_onFlagsFailed` — and the second is what Vanta has been
 /// getting, because nothing ever called this.
 ///
 /// An empty array means "no overrides": the engine falls back to the defaults
 /// compiled into it. That is the honest starting point — inventing flag values
 /// would change engine behaviour in ways nothing here could account for.
-int cordial_init_flags(void* fn, const char* settings_json, char* err, size_t err_len) {
+int vanta_init_flags(void* fn, const char* settings_json, char* err, size_t err_len) {
     using Call = jobject (*)(JNIEnv*, jclass, jobjectArray);
-    auto* env = cordial::process_env();
+    auto* env = vanta::process_env();
     if (!fn || !env) {
         snprintf(err, err_len, "no JavaVM, or nativeInitializeNativeFlags is not exported");
         return -1;
@@ -2573,7 +2573,7 @@ int cordial_init_flags(void* fn, const char* settings_json, char* err, size_t er
         //   ... 5: FixAndroidWebDialogPaymentSessionId = true
         //
         // and docs/traces/native-flag-names.txt is that list, in order. An empty
-        // array is what Cordial sent for a long time; it is accepted, but it is
+        // array is what Vanta sent for a long time; it is accepted, but it is
         // not what the client does.
         //
         // `settings_json` is a newline-separated list of names. Blank lines are
@@ -2598,8 +2598,8 @@ int cordial_init_flags(void* fn, const char* settings_json, char* err, size_t er
         }
         reinterpret_cast<Call>(fn)(
             env->GetJNIEnv(),
-            (jclass)cordial::to_jni(env, cls),
-            (jobjectArray)cordial::to_jni(env, arr));
+            (jclass)vanta::to_jni(env, cls),
+            (jobjectArray)vanta::to_jni(env, arr));
         return 0;
     } catch (const std::exception& e) {
         snprintf(err, err_len, "%s", e.what());
@@ -2620,16 +2620,16 @@ extern "C" {
 /// reads whatever bundled/cached flag defaults it has on disk and hands them
 /// back as a `ClientLocalFlags`, built the same `new` + repeated `add(name,
 /// value)` way `nativeInitializeNativeFlags` builds its result. Nothing in
-/// the shipping dex calls this on the `ActivityNativeMain` path Cordial
+/// the shipping dex calls this on the `ActivityNativeMain` path Vanta
 /// drives — its only caller is a different startup path (`com/roblox/client/
-/// startup/a.l`, found by dex xref) that Cordial does not replicate — so it
+/// startup/a.l`, found by dex xref) that Vanta does not replicate — so it
 /// is otherwise dead code here. Calling it directly, with no argument and no
 /// forged network response, is legitimate: it is the engine's own exported
 /// native reading its own bundled state.
 /// `NativeGLInterface.nativePassCurrentDisplayRefreshRate(F)V` and
 /// `nativePassSupportedRefreshRates([F)V`.
 ///
-/// How a client tells the engine what its display can do. Cordial has never
+/// How a client tells the engine what its display can do. Vanta has never
 /// called either, so the engine has been running on whatever it assumes when the
 /// application says nothing — and AGENTS.md records the frame rate as a hard
 /// FIFO vsync lock to the output's refresh whenever input is flowing. Whether
@@ -2637,18 +2637,18 @@ extern "C" {
 /// staying silent is worth ending either way.
 ///
 /// The choice of *which* rate, when a window is on two outputs at once, is made
-/// in `crates/cordial-runtime/src/refresh.rs` and tested there. These two only
+/// in `crates/vanta-runtime/src/refresh.rs` and tested there. These two only
 /// carry the answer across.
-int cordial_pass_current_refresh_rate(void* fn, float hz, char* err, size_t err_len) {
+int vanta_pass_current_refresh_rate(void* fn, float hz, char* err, size_t err_len) {
     using Call = void (*)(JNIEnv*, jclass, jfloat);
-    auto* env = cordial::process_env();
+    auto* env = vanta::process_env();
     if (!fn || !env) {
         snprintf(err, err_len, "no JavaVM, or nativePassCurrentDisplayRefreshRate is not exported");
         return -1;
     }
     try {
         auto cls = env->GetClass("com/roblox/engine/jni/NativeGLInterface");
-        reinterpret_cast<Call>(fn)(env->GetJNIEnv(), (jclass)cordial::to_jni(env, cls),
+        reinterpret_cast<Call>(fn)(env->GetJNIEnv(), (jclass)vanta::to_jni(env, cls),
                                    static_cast<jfloat>(hz));
         return 0;
     } catch (const std::exception& e) {
@@ -2660,10 +2660,10 @@ int cordial_pass_current_refresh_rate(void* fn, float hz, char* err, size_t err_
     }
 }
 
-int cordial_pass_supported_refresh_rates(void* fn, const float* rates, size_t count, char* err,
+int vanta_pass_supported_refresh_rates(void* fn, const float* rates, size_t count, char* err,
                                          size_t err_len) {
     using Call = void (*)(JNIEnv*, jclass, jfloatArray);
-    auto* env = cordial::process_env();
+    auto* env = vanta::process_env();
     if (!fn || !env || (!rates && count)) {
         snprintf(err, err_len, "no JavaVM, or nativePassSupportedRefreshRates is not exported");
         return -1;
@@ -2674,8 +2674,8 @@ int cordial_pass_supported_refresh_rates(void* fn, const float* rates, size_t co
         for (size_t i = 0; i < count; ++i) {
             (*arr)[i] = static_cast<jfloat>(rates[i]);
         }
-        reinterpret_cast<Call>(fn)(env->GetJNIEnv(), (jclass)cordial::to_jni(env, cls),
-                                   (jfloatArray)cordial::to_jni(env, arr));
+        reinterpret_cast<Call>(fn)(env->GetJNIEnv(), (jclass)vanta::to_jni(env, cls),
+                                   (jfloatArray)vanta::to_jni(env, arr));
         return 0;
     } catch (const std::exception& e) {
         snprintf(err, err_len, "%s", e.what());
@@ -2686,16 +2686,16 @@ int cordial_pass_supported_refresh_rates(void* fn, const float* rates, size_t co
     }
 }
 
-int cordial_read_local_flags(void* fn, char* err, size_t err_len) {
+int vanta_read_local_flags(void* fn, char* err, size_t err_len) {
     using Call = jobject (*)(JNIEnv*, jclass);
-    auto* env = cordial::process_env();
+    auto* env = vanta::process_env();
     if (!fn || !env) {
         snprintf(err, err_len, "no JavaVM, or readLocalFlags is not exported");
         return -1;
     }
     try {
         auto cls = env->GetClass("com/roblox/engine/jni/NativeGLInterface");
-        reinterpret_cast<Call>(fn)(env->GetJNIEnv(), (jclass)cordial::to_jni(env, cls));
+        reinterpret_cast<Call>(fn)(env->GetJNIEnv(), (jclass)vanta::to_jni(env, cls));
         return 0;
     } catch (const std::exception& e) {
         snprintf(err, err_len, "%s", e.what());
@@ -2717,7 +2717,7 @@ extern "C" {
 /// On Android this is what the app calls once it has fetched
 /// `https://clientsettings.roblox.com/...` itself — the engine does not fetch
 /// its own flags; its *host app* does, and hands the response to the engine
-/// through this native. Cordial *is* the host app in this architecture, so
+/// through this native. Vanta *is* the host app in this architecture, so
 /// calling it directly, with Roblox's own real ClientSettings response body,
 /// is the legitimate interface, not a workaround: no HTTP stub, no forged
 /// server, no impersonation of `clientsettings.roblox.com`.
@@ -2727,25 +2727,25 @@ extern "C" {
 /// wrapper passes them through as given so the caller can supply candidates
 /// and read the `int` back, which is a far more reliable signal than
 /// anything printed to the log.
-int cordial_init_client_settings(void* fn, const char* a, const char* b, const char* c,
+int vanta_init_client_settings(void* fn, const char* a, const char* b, const char* c,
                                  jint* out_result, char* err, size_t err_len) {
     using Call = jint (*)(JNIEnv*, jclass, jstring, jstring, jstring);
-    auto* env = cordial::process_env();
+    auto* env = vanta::process_env();
     if (!fn || !env) {
         snprintf(err, err_len, "no JavaVM, or nativeInitClientSettings is not exported");
         return -1;
     }
     try {
         auto cls = env->GetClass("com/roblox/engine/jni/NativeGLInterface");
-        auto sa = cordial::S_pub(a ? a : "");
-        auto sb = cordial::S_pub(b ? b : "");
-        auto sc = cordial::S_pub(c ? c : "");
+        auto sa = vanta::S_pub(a ? a : "");
+        auto sb = vanta::S_pub(b ? b : "");
+        auto sc = vanta::S_pub(c ? c : "");
         jint result = reinterpret_cast<Call>(fn)(
             env->GetJNIEnv(),
-            (jclass)cordial::to_jni(env, cls),
-            (jstring)cordial::to_jni(env, sa),
-            (jstring)cordial::to_jni(env, sb),
-            (jstring)cordial::to_jni(env, sc));
+            (jclass)vanta::to_jni(env, cls),
+            (jstring)vanta::to_jni(env, sa),
+            (jstring)vanta::to_jni(env, sb),
+            (jstring)vanta::to_jni(env, sc));
         if (out_result) {
             *out_result = result;
         }
@@ -2776,7 +2776,7 @@ int cordial_init_client_settings(void* fn, const char* a, const char* b, const c
 /// 1280x720 by everything that reads these.
 ///
 /// **Whether the engine scales pointer deltas by any of this is `INFERRED`** and
-/// is being chased separately. It is wired regardless, because an answer Cordial
+/// is being chased separately. It is wired regardless, because an answer Vanta
 /// gives the engine should be true whether or not the current bug turns out to
 /// depend on it.
 /// The desktop's dark/light preference, as an `android.content.res.Configuration`
@@ -2787,7 +2787,7 @@ int cordial_init_client_settings(void* fn, const char* a, const char* b, const c
 /// is the honest default rather than a guess.
 static std::atomic<int> g_ui_mode_night{-1};
 
-extern "C" void cordial_set_ui_mode_night(int night) {
+extern "C" void vanta_set_ui_mode_night(int night) {
     g_ui_mode_night.store(night, std::memory_order_relaxed);
 }
 
@@ -2806,27 +2806,27 @@ static std::atomic<int> g_touchscreen_present{-1};
 /// **This is latched for the session in practice, and the reason is ordering
 /// rather than policy.** `android::input::report_touchscreen` runs from the
 /// display backend's `open()`, which `load.rs` calls before
-/// `cordial_appbridge_init`/`cordial_set_init_params`; the engine reads
+/// `vanta_appbridge_init`/`vanta_set_init_params`; the engine reads
 /// `isTouchDevice` during that initialisation and there is no call anywhere in
 /// this build by which a platform revises it afterwards. So a touchscreen
 /// plugged in after startup gets its events routed — `android::input` decides
 /// that per event — but arrives too late to change what the engine was told
 /// about the device. Writing it later is harmless and simply has no reader.
-extern "C" void cordial_set_touchscreen_present(int present) {
+extern "C" void vanta_set_touchscreen_present(int present) {
     g_touchscreen_present.store(present ? 1 : 0, std::memory_order_relaxed);
 }
 
 // `extern "C++"` because this whole region sits inside an `extern "C"` block,
 // and a definition in there acquires C language linkage however deep in a
 // namespace it is: `nm` on the object showed a bare `T ui_mode_night_bits`
-// against a mangled `U cordial::...` at the call site. That is the second half
+// against a mangled `U vanta::...` at the call site. That is the second half
 // of the same latent link failure the declarations near `Configuration`
 // describe -- `ui_mode_night_bits` has had it since it was written and only
 // escaped notice because its one caller is dead code that `--gc-sections`
 // throws away. The linkage specification is the smallest honest fix; splitting
 // the surrounding block would move a dozen unrelated entry points.
 extern "C++" {
-namespace cordial {
+namespace vanta {
 bool host_has_touchscreen() {
     int reported = g_touchscreen_present.load(std::memory_order_relaxed);
     // Once, and only from the first caller, because the two fields that ask are
@@ -2850,12 +2850,12 @@ jint ui_mode_night_bits() {
     // and are not reachable from here; they carry the same two values.
     return g_ui_mode_night.load(std::memory_order_relaxed) > 0 ? 0x20 : 0x10;
 }
-} // namespace cordial
+} // namespace vanta
 } // extern "C++"
 
-extern "C" void cordial_set_display_size(int width, int height) {
+extern "C" void vanta_set_display_size(int width, int height) {
     if (width > 0 && height > 0) {
-        cordial::set_display_size(width, height);
+        vanta::set_display_size(width, height);
     }
 }
 
@@ -2863,15 +2863,15 @@ extern "C" void cordial_set_display_size(int width, int height) {
 /// above which refuses it. The difference is deliberate: a display with no
 /// pixels is a bug, a display with no *reported millimetres* is an ordinary
 /// thing for a compositor to say.
-extern "C" void cordial_set_display_physical_mm(int width_mm, int height_mm) {
-    cordial::set_display_physical_mm(width_mm > 0 ? width_mm : 0,
+extern "C" void vanta_set_display_physical_mm(int width_mm, int height_mm) {
+    vanta::set_display_physical_mm(width_mm > 0 ? width_mm : 0,
                                      height_mm > 0 ? height_mm : 0);
 }
 
 /// `FlagJniInterface.nativeGetFInt(String, int)I` — read a live `FInt` back out
 /// of the engine.
 ///
-/// Read-only, and that is the point. This exists because Cordial had no way to
+/// Read-only, and that is the point. This exists because Vanta had no way to
 /// ask the engine what value a flag actually holds, only to push values in and
 /// infer from behaviour. That inference went wrong: setting `FLogNativeDM` in
 /// `flags.json` *silenced* the channel at every value tried, including 100,
@@ -2882,21 +2882,21 @@ extern "C" void cordial_set_display_physical_mm(int width_mm, int height_mm) {
 /// The second argument is the default the engine returns when the flag is not
 /// registered, so passing a sentinel distinguishes "set to zero" from "not a
 /// flag" — a distinction the log alone cannot make.
-int cordial_get_fint(void* fn, const char* name, jint fallback, jint* out_result,
+int vanta_get_fint(void* fn, const char* name, jint fallback, jint* out_result,
                      char* err, size_t err_len) {
     using Call = jint (*)(JNIEnv*, jclass, jstring, jint);
-    auto* env = cordial::process_env();
+    auto* env = vanta::process_env();
     if (!fn || !env) {
         snprintf(err, err_len, "no JavaVM, or nativeGetFInt is not exported");
         return -1;
     }
     try {
         auto cls = env->GetClass("com/roblox/client/flags/FlagJniInterface");
-        auto sname = cordial::S_pub(name ? name : "");
+        auto sname = vanta::S_pub(name ? name : "");
         jint result = reinterpret_cast<Call>(fn)(
             env->GetJNIEnv(),
-            (jclass)cordial::to_jni(env, cls),
-            (jstring)cordial::to_jni(env, sname),
+            (jclass)vanta::to_jni(env, cls),
+            (jstring)vanta::to_jni(env, sname),
             fallback);
         if (out_result) {
             *out_result = result;
@@ -2917,7 +2917,7 @@ int cordial_get_fint(void* fn, const char* name, jint fallback, jint* out_result
 /// The engine writes its own compressed flag cache -- `flag_cache.dat`, 365 KB
 /// on this machine, produced by `[DFLog::FlagCache] writeFlagCache` -- and
 /// exports three natives that take a cache back in besides the plain
-/// three-string form Cordial has always used. Cordial has never handed one
+/// three-string form Vanta has always used. Vanta has never handed one
 /// back, so every launch has been a cold one from the engine's point of view
 /// even when the cache was sitting on disk beside it.
 ///
@@ -2930,12 +2930,12 @@ int cordial_get_fint(void* fn, const char* name, jint fallback, jint* out_result
 /// The trailing `long` and `boolean` are passed through as given rather than
 /// guessed at, for the same reason the three strings are: the caller can vary
 /// them and read the `int` back, which is a better signal than the log.
-int cordial_init_client_settings_cached_compressed(void* fn, const void* data, size_t len,
+int vanta_init_client_settings_cached_compressed(void* fn, const void* data, size_t len,
                                                    const char* a, const char* b, const char* c,
                                                    long long when, int flag, jint* out_result,
                                                    char* err, size_t err_len) {
     using Call = jint (*)(JNIEnv*, jclass, jbyteArray, jstring, jstring, jstring, jlong, jboolean);
-    auto* env = cordial::process_env();
+    auto* env = vanta::process_env();
     if (!fn || !env) {
         snprintf(err, err_len, "no JavaVM, or nativeInitClientSettingsCachedCompressed is not exported");
         return -1;
@@ -2946,16 +2946,16 @@ int cordial_init_client_settings_cached_compressed(void* fn, const void* data, s
         if (len != 0 && data != nullptr) {
             memcpy(bytes->getArray(), data, len);
         }
-        auto sa = cordial::S_pub(a ? a : "");
-        auto sb = cordial::S_pub(b ? b : "");
-        auto sc = cordial::S_pub(c ? c : "");
+        auto sa = vanta::S_pub(a ? a : "");
+        auto sb = vanta::S_pub(b ? b : "");
+        auto sc = vanta::S_pub(c ? c : "");
         jint result = reinterpret_cast<Call>(fn)(
             env->GetJNIEnv(),
-            (jclass)cordial::to_jni(env, cls),
-            (jbyteArray)cordial::to_jni(env, bytes),
-            (jstring)cordial::to_jni(env, sa),
-            (jstring)cordial::to_jni(env, sb),
-            (jstring)cordial::to_jni(env, sc),
+            (jclass)vanta::to_jni(env, cls),
+            (jbyteArray)vanta::to_jni(env, bytes),
+            (jstring)vanta::to_jni(env, sa),
+            (jstring)vanta::to_jni(env, sb),
+            (jstring)vanta::to_jni(env, sc),
             static_cast<jlong>(when),
             static_cast<jboolean>(flag ? JNI_TRUE : JNI_FALSE));
         if (out_result) {
@@ -2976,20 +2976,20 @@ int cordial_init_client_settings_cached_compressed(void* fn, const void* data, s
 /// The finishing step of the client-settings handshake on the real app's
 /// side. Called with an empty `ArrayList` — the honest starting point, since
 /// nothing here knows what real elements the list would otherwise carry.
-int cordial_post_client_settings_loaded(void* fn, char* err, size_t err_len) {
+int vanta_post_client_settings_loaded(void* fn, char* err, size_t err_len) {
     using Call = void (*)(JNIEnv*, jclass, jobject);
-    auto* env = cordial::process_env();
+    auto* env = vanta::process_env();
     if (!fn || !env) {
         snprintf(err, err_len, "no JavaVM, or nativePostClientSettingsLoadedInitialization3 is not exported");
         return -1;
     }
     try {
         auto cls = env->GetClass("com/roblox/engine/jni/NativeGLInterface");
-        auto list = cordial::JavaList::ctor(env, nullptr);
+        auto list = vanta::JavaList::ctor(env, nullptr);
         reinterpret_cast<Call>(fn)(
             env->GetJNIEnv(),
-            (jclass)cordial::to_jni(env, cls),
-            (jobject)cordial::to_jni(env, list));
+            (jclass)vanta::to_jni(env, cls),
+            (jobject)vanta::to_jni(env, list));
         return 0;
     } catch (const std::exception& e) {
         snprintf(err, err_len, "%s", e.what());
@@ -3013,22 +3013,22 @@ extern "C" {
 /// shapes (a flat `{"FlagName":"value"}` map vs. the doubly-wrapped
 /// `{"applicationSettings":{...}}` shape the real `ClientSettings` endpoint
 /// returns) and compare the resulting JNI trace / flags verdict.
-int cordial_preload_flag_overrides(void* fn, const char* json, char* err, size_t err_len) {
+int vanta_preload_flag_overrides(void* fn, const char* json, char* err, size_t err_len) {
     using Call = void (*)(JNIEnv*, jobject, jstring);
-    auto* env = cordial::process_env();
+    auto* env = vanta::process_env();
     if (!fn || !env) {
         snprintf(err, err_len, "no JavaVM, or nativePreloadFlagOverrides is not exported");
         return -1;
     }
     try {
-        // An instance native (per `cordial_set_init_params`'s precedent just
+        // An instance native (per `vanta_set_init_params`'s precedent just
         // above): the second argument is an Activity instance, not the class.
         auto activity = std::make_shared<jnivm::Object>();
-        auto s = cordial::S_pub(json ? json : "");
+        auto s = vanta::S_pub(json ? json : "");
         reinterpret_cast<Call>(fn)(
             env->GetJNIEnv(),
-            (jobject)cordial::to_jni(env, activity),
-            (jstring)cordial::to_jni(env, s));
+            (jobject)vanta::to_jni(env, activity),
+            (jstring)vanta::to_jni(env, s));
         return 0;
     } catch (const std::exception& e) {
         snprintf(err, err_len, "%s", e.what());
@@ -3050,20 +3050,20 @@ extern "C" {
 /// `MainGameActivity`, which the manifest marks `exported=false`. The chain that
 /// actually brings the client up runs through here, not through
 /// `MainGameActivity.nativeAppBridgeSetInitParams`.
-int cordial_appbridge_init(void* fn, const char* assets, int width, int height, char* err,
+int vanta_appbridge_init(void* fn, const char* assets, int width, int height, char* err,
                            size_t err_len) {
     using Call = void (*)(JNIEnv*, jobject, jobject);
-    auto* env = cordial::process_env();
+    auto* env = vanta::process_env();
     if (!fn || !env) {
         snprintf(err, err_len, "no JavaVM, or the app-bridge native is not exported");
         return -1;
     }
     try {
         auto cls = env->GetClass("com/roblox/engine/jni/NativeGLInterface");
-        auto params = cordial::InitParams::Create(env, assets, width, height);
+        auto params = vanta::InitParams::Create(env, assets, width, height);
         reinterpret_cast<Call>(fn)(env->GetJNIEnv(),
-                                   (jobject)cordial::to_jni(env, cls),
-                                   (jobject)cordial::to_jni(env, params));
+                                   (jobject)vanta::to_jni(env, cls),
+                                   (jobject)vanta::to_jni(env, params));
         return 0;
     } catch (const std::exception& e) {
         snprintf(err, err_len, "%s", e.what());
@@ -3077,18 +3077,18 @@ int cordial_appbridge_init(void* fn, const char* assets, int width, int height, 
 /// A static native taking one `android.app.Activity` on an arbitrary class:
 /// `NativeGLInterface.initMaquettesSDK(Activity)`, which the Quest app runs on
 /// its own executor thread right after `nativeAppBridgeV2StartAppWithParams`.
-int cordial_call_static_activity(void* fn, const char* class_name, char* err, size_t err_len) {
+int vanta_call_static_activity(void* fn, const char* class_name, char* err, size_t err_len) {
     using Call = void (*)(JNIEnv*, jobject, jobject);
-    auto* env = cordial::process_env();
+    auto* env = vanta::process_env();
     if (!fn || !env || !class_name) {
         snprintf(err, err_len, "no JavaVM, or the native is not exported");
         return -1;
     }
     try {
         auto cls = env->GetClass(class_name);
-        auto activity = cordial::AndroidActivity::Create(env);
-        reinterpret_cast<Call>(fn)(env->GetJNIEnv(), (jobject)cordial::to_jni(env, cls),
-                                   (jobject)cordial::to_jni(env, activity));
+        auto activity = vanta::AndroidActivity::Create(env);
+        reinterpret_cast<Call>(fn)(env->GetJNIEnv(), (jobject)vanta::to_jni(env, cls),
+                                   (jobject)vanta::to_jni(env, activity));
         return 0;
     } catch (const std::exception& e) {
         snprintf(err, err_len, "%s", e.what());
@@ -3105,16 +3105,16 @@ int cordial_call_static_activity(void* fn, const char* class_name, char* err, si
 /// `NativeGLInterface` — which is why searching the GL interface for it kept
 /// coming up empty. The Waydroid capture shows the real client calling it first,
 /// before `nativeAppBridgeV2Init`.
-int cordial_appbridge_call_bare_cls(void* fn, const char* class_name, char* err, size_t err_len) {
+int vanta_appbridge_call_bare_cls(void* fn, const char* class_name, char* err, size_t err_len) {
     using Call = void (*)(JNIEnv*, jobject);
-    auto* env = cordial::process_env();
+    auto* env = vanta::process_env();
     if (!fn || !env || !class_name) {
         snprintf(err, err_len, "no JavaVM, or the native is not exported");
         return -1;
     }
     try {
         auto cls = env->GetClass(class_name);
-        reinterpret_cast<Call>(fn)(env->GetJNIEnv(), (jobject)cordial::to_jni(env, cls));
+        reinterpret_cast<Call>(fn)(env->GetJNIEnv(), (jobject)vanta::to_jni(env, cls));
         return 0;
     } catch (const std::exception& e) {
         snprintf(err, err_len, "%s", e.what());
@@ -3130,16 +3130,16 @@ int cordial_appbridge_call_bare_cls(void* fn, const char* class_name, char* err,
 /// "Start Lua App DataModel": the Lua app shell is what Roblox actually renders
 /// on this platform, so this is the call that turns a live engine into a drawing
 /// one.
-int cordial_appbridge_call_bare(void* fn, char* err, size_t err_len) {
+int vanta_appbridge_call_bare(void* fn, char* err, size_t err_len) {
     using Call = void (*)(JNIEnv*, jobject);
-    auto* env = cordial::process_env();
+    auto* env = vanta::process_env();
     if (!fn || !env) {
         snprintf(err, err_len, "no JavaVM, or the native is not exported");
         return -1;
     }
     try {
         auto cls = env->GetClass("com/roblox/engine/jni/NativeGLInterface");
-        reinterpret_cast<Call>(fn)(env->GetJNIEnv(), (jobject)cordial::to_jni(env, cls));
+        reinterpret_cast<Call>(fn)(env->GetJNIEnv(), (jobject)vanta::to_jni(env, cls));
         return 0;
     } catch (const std::exception& e) {
         snprintf(err, err_len, "%s", e.what());
@@ -3157,10 +3157,10 @@ extern "C" {
 /// `NativeGLInterface.nativeAppBridgeV2StartAppWithParams(StartAppParams)`
 ///
 /// The call that hands the engine its window. Everything before it is setup.
-int cordial_appbridge_start_app(void* fn, const char* assets, int width, int height, char* err,
+int vanta_appbridge_start_app(void* fn, const char* assets, int width, int height, char* err,
                                 size_t err_len) {
     using Call = void (*)(JNIEnv*, jobject, jobject);
-    auto* env = cordial::process_env();
+    auto* env = vanta::process_env();
     if (!fn || !env) {
         snprintf(err, err_len, "no JavaVM, or StartAppWithParams is not exported");
         return -1;
@@ -3169,11 +3169,11 @@ int cordial_appbridge_start_app(void* fn, const char* assets, int width, int hei
         auto cls = env->GetClass("com/roblox/engine/jni/NativeGLInterface");
         // Reuses the android/view/Surface type registered in game_activity.cpp —
         // registering a second C++ class for the same Java name makes libjnivm throw.
-        auto surface = cordial::AppSurface::Create(env);
-        auto params = cordial::StartAppParams::Create(env, assets, width, height, surface);
+        auto surface = vanta::AppSurface::Create(env);
+        auto params = vanta::StartAppParams::Create(env, assets, width, height, surface);
         reinterpret_cast<Call>(fn)(env->GetJNIEnv(),
-                                   (jobject)cordial::to_jni(env, cls),
-                                   (jobject)cordial::to_jni(env, params));
+                                   (jobject)vanta::to_jni(env, cls),
+                                   (jobject)vanta::to_jni(env, params));
         return 0;
     } catch (const std::exception& e) {
         snprintf(err, err_len, "%s", e.what());
@@ -3188,20 +3188,20 @@ int cordial_appbridge_start_app(void* fn, const char* assets, int width, int hei
 ///
 /// The Game half's start: what Android's Java calls when the app shell
 /// publishes `Game.launch`. `*out` receives the native's own int result.
-int cordial_appbridge_start_game(void* fn, const char* assets, int width, int height,
-                                 const cordial::StartGameFields* fields, int* out, char* err,
+int vanta_appbridge_start_game(void* fn, const char* assets, int width, int height,
+                                 const vanta::StartGameFields* fields, int* out, char* err,
                                  size_t err_len) {
     using Call = jint (*)(JNIEnv*, jobject, jobject);
-    auto* env = cordial::process_env();
+    auto* env = vanta::process_env();
     if (!fn || !env || !fields) {
         snprintf(err, err_len, "no JavaVM, or StartGameWithParam is not exported");
         return -1;
     }
     try {
         auto cls = env->GetClass("com/roblox/engine/jni/NativeGLInterface");
-        auto params = cordial::StartGameParams::Create(env, assets, width, height, *fields);
-        *out = reinterpret_cast<Call>(fn)(env->GetJNIEnv(), (jobject)cordial::to_jni(env, cls),
-                                          (jobject)cordial::to_jni(env, params));
+        auto params = vanta::StartGameParams::Create(env, assets, width, height, *fields);
+        *out = reinterpret_cast<Call>(fn)(env->GetJNIEnv(), (jobject)vanta::to_jni(env, cls),
+                                          (jobject)vanta::to_jni(env, params));
         return 0;
     } catch (const std::exception& e) {
         snprintf(err, err_len, "%s", e.what());
@@ -3216,16 +3216,16 @@ int cordial_appbridge_start_game(void* fn, const char* assets, int width, int he
 /// leave. On Android `ExperienceSession` calls it (`ih/h0.t` in the Quest
 /// build's dex); here only the development control surface does, since what
 /// the engine publishes when the player leaves is not established.
-int cordial_appbridge_leave_game(void* fn, char* err, size_t err_len) {
+int vanta_appbridge_leave_game(void* fn, char* err, size_t err_len) {
     using Call = void (*)(JNIEnv*, jobject);
-    auto* env = cordial::process_env();
+    auto* env = vanta::process_env();
     if (!fn || !env) {
         snprintf(err, err_len, "no JavaVM, or LeaveGame is not exported");
         return -1;
     }
     try {
         auto cls = env->GetClass("com/roblox/engine/jni/NativeGLInterface");
-        reinterpret_cast<Call>(fn)(env->GetJNIEnv(), (jobject)cordial::to_jni(env, cls));
+        reinterpret_cast<Call>(fn)(env->GetJNIEnv(), (jobject)vanta::to_jni(env, cls));
         return 0;
     } catch (const std::exception& e) {
         snprintf(err, err_len, "%s", e.what());
@@ -3240,7 +3240,7 @@ int cordial_appbridge_leave_game(void* fn, char* err, size_t err_len) {
 /// and `...UpdateSurfaceGameWithPlatformParams(Surface, PlatformParams, Activity)`.
 ///
 /// **Measured gap, 2026-08-04.** Sober makes 87 `FLog::JNIAppBridge` calls in a
-/// session and Cordial made 3; these two were among the ones Cordial never made,
+/// session and Vanta made 3; these two were among the ones Vanta never made,
 /// and neither was referenced anywhere in the tree. Sober calls both at about
 /// 3.79s — before any join — and again at 109s, so they are not a one-shot part
 /// of startup. Everything they need was already built here for
@@ -3257,7 +3257,7 @@ static int update_surface(void* fn, const char* assets, int width, int height, b
                           char* err, size_t err_len) {
     using CallApp = void (*)(JNIEnv*, jobject, jobject, jobject);
     using CallGame = void (*)(JNIEnv*, jobject, jobject, jobject, jobject);
-    auto* env = cordial::process_env();
+    auto* env = vanta::process_env();
     if (!fn || !env) {
         snprintf(err, err_len, "no JavaVM, or the UpdateSurface native is not exported");
         return -1;
@@ -3267,20 +3267,20 @@ static int update_surface(void* fn, const char* assets, int width, int height, b
         // The same Surface and PlatformParams `StartAppWithParams` builds — one
         // registered `android/view/Surface` C++ class for the one Java name, or
         // libjnivm throws on the second registration.
-        auto surface = cordial::AppSurface::Create(env);
-        auto params = cordial::PlatformParams::Create(env, assets, width, height);
+        auto surface = vanta::AppSurface::Create(env);
+        auto params = vanta::PlatformParams::Create(env, assets, width, height);
         if (with_activity) {
-            auto activity = cordial::AndroidActivity::Create(env);
+            auto activity = vanta::AndroidActivity::Create(env);
             reinterpret_cast<CallGame>(fn)(env->GetJNIEnv(),
-                                           (jobject)cordial::to_jni(env, cls),
-                                           (jobject)cordial::to_jni(env, surface),
-                                           (jobject)cordial::to_jni(env, params),
-                                           (jobject)cordial::to_jni(env, activity));
+                                           (jobject)vanta::to_jni(env, cls),
+                                           (jobject)vanta::to_jni(env, surface),
+                                           (jobject)vanta::to_jni(env, params),
+                                           (jobject)vanta::to_jni(env, activity));
         } else {
             reinterpret_cast<CallApp>(fn)(env->GetJNIEnv(),
-                                          (jobject)cordial::to_jni(env, cls),
-                                          (jobject)cordial::to_jni(env, surface),
-                                          (jobject)cordial::to_jni(env, params));
+                                          (jobject)vanta::to_jni(env, cls),
+                                          (jobject)vanta::to_jni(env, surface),
+                                          (jobject)vanta::to_jni(env, params));
         }
         return 0;
     } catch (const std::exception& e) {
@@ -3292,12 +3292,12 @@ static int update_surface(void* fn, const char* assets, int width, int height, b
     }
 }
 
-int cordial_appbridge_update_surface_app(void* fn, const char* assets, int width, int height,
+int vanta_appbridge_update_surface_app(void* fn, const char* assets, int width, int height,
                                          char* err, size_t err_len) {
     return update_surface(fn, assets, width, height, /*with_activity=*/false, err, err_len);
 }
 
-int cordial_appbridge_update_surface_game(void* fn, const char* assets, int width, int height,
+int vanta_appbridge_update_surface_game(void* fn, const char* assets, int width, int height,
                                           char* err, size_t err_len) {
     return update_surface(fn, assets, width, height, /*with_activity=*/true, err, err_len);
 }
@@ -3312,11 +3312,11 @@ extern "C" {
 /// Android's `Application.ActivityLifecycleCallbacks` fires these as the Activity
 /// moves through its states, and the engine stores per-Activity context —
 /// including the JNI environment it later reaches through — when it does.
-/// Nothing in Cordial was driving them, which is why the engine held a null
+/// Nothing in Vanta was driving them, which is why the engine held a null
 /// environment on the game thread and faulted calling FindClass through it.
-int cordial_activity_lifecycle(void* fn, const char* activity, char* err, size_t err_len) {
+int vanta_activity_lifecycle(void* fn, const char* activity, char* err, size_t err_len) {
     using Call = void (*)(JNIEnv*, jobject, jstring);
-    auto* env = cordial::process_env();
+    auto* env = vanta::process_env();
     if (!fn || !env) {
         snprintf(err, err_len, "no JavaVM, or the lifecycle native is not exported");
         return -1;
@@ -3324,10 +3324,10 @@ int cordial_activity_lifecycle(void* fn, const char* activity, char* err, size_t
     try {
         auto cls = env->GetClass(
             "com/roblox/universalapp/activitylifecyclecallbacks/JNIActivityLifecycleCallbacks");
-        auto name = cordial::S_pub(activity);
+        auto name = vanta::S_pub(activity);
         reinterpret_cast<Call>(fn)(env->GetJNIEnv(),
-                                   (jobject)cordial::to_jni(env, cls),
-                                   (jstring)cordial::to_jni(env, name));
+                                   (jobject)vanta::to_jni(env, cls),
+                                   (jstring)vanta::to_jni(env, name));
         return 0;
     } catch (const std::exception& e) {
         snprintf(err, err_len, "%s", e.what());

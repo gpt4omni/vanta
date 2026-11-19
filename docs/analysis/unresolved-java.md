@@ -6,20 +6,20 @@
 cd <repo>
 LIBDIR=<scratchpad>/apk/native/lib/x86_64
 APK=<scratchpad>/apk/base.apk
-CORDIAL_STUB_QUIET=1 CORDIAL_LOG_LEVEL=v timeout 90 ./target/release/cordial-load \
+VANTA_STUB_QUIET=1 VANTA_LOG_LEVEL=v timeout 90 ./target/release/vanta-load \
     --lib-dir "$LIBDIR" --apk "$APK" --host-libc --game-activity --run 10
 ```
 
-plus a second identical run with `CORDIAL_COUNT_GL=1` (no `CORDIAL_LOG_LEVEL=v`) to get thread
+plus a second identical run with `VANTA_COUNT_GL=1` (no `VANTA_LOG_LEVEL=v`) to get thread
 states and a graphics-call tally at the end of the 10s window. Both logs are in the scratchpad,
 not the repo (343 and ~330 lines respectively). Class descriptors were cross-checked against the
 shipping dex with `tools/dex_method.py`. `native/android_classes.cpp`, `native/game_activity.cpp`
-and `native/init_params.cpp` were read to see what Cordial already implements; nothing in them was
+and `native/init_params.cpp` were read to see what Vanta already implements; nothing in them was
 changed. `sober-oss-reference/decompiled/` was not read.
 
 ## 1. The run, phase by phase
 
-`crates/cordial-runtime/src/bin/load.rs` drives a fixed sequence once `JNI_OnLoad` returns:
+`crates/vanta-runtime/src/bin/load.rs` drives a fixed sequence once `JNI_OnLoad` returns:
 `initializeNativeCode` → `JNIAAssetManagerSetup.initNative` → `LocalStorageManager
 .initStorageManagerNativeV3` → `MainGameActivity.nativeAppBridgeSetInitParams` →
 `MainGameActivity.nativeRetryInit` → `GameActivity.{onStartNative,onResumeNative,
@@ -36,7 +36,7 @@ D/GameActivity  ************** mainWorkCallback *********
 D/GameActivity  ************** mainWorkCallback *********
 ```
 — printed twice, then nothing for the remaining ~10 seconds. The second run, with
-`CORDIAL_COUNT_GL=1`, measured this idle window directly:
+`VANTA_COUNT_GL=1`, measured this idle window directly:
 
 ```
   threads:
@@ -89,7 +89,7 @@ class is registered in `android_classes.cpp` or `game_activity.cpp`).
 
 | Method | Signature | Called? | What a correct implementation needs |
 |---|---|---|---|
-| `getResources` | `()Landroid/content/res/Resources;` | called, receiver null | A real `Resources`/`DisplayMetrics` object with `density` — Cordial has none |
+| `getResources` | `()Landroid/content/res/Resources;` | called, receiver null | A real `Resources`/`DisplayMetrics` object with `density` — Vanta has none |
 | `getNativeHelper` (MainGameActivity) | `()Lcom/roblox/client/startup/NativeHelper;` | called, receiver null | — |
 | `bootstrapTheApp` (MainGameActivity) | `()V` | called, receiver null | **Java application logic**, not a getter — see below |
 | `gameActivity_onFlagsFailed` (NativeHelper) | `()V` | called, receiver = `Invalid` (via `GetObjectClass(null)`) | Real notification that FastFlags loading failed; see below |
@@ -105,9 +105,9 @@ com/roblox/client/startup/MainGameActivity`.
 **`bootstrapTheApp()` is Kotlin/Java application logic, not a platform-service accessor.** It is the
 method whose real bytecode would: talk to Roblox's FastFlags service (network), and — on success —
 call native's `nativePreloadFlagOverrides` or — on failure — call `NativeHelper
-.gameActivity_onFlagsFailed()`. Cordial has no JVM, so this method literally cannot execute; there
+.gameActivity_onFlagsFailed()`. Vanta has no JVM, so this method literally cannot execute; there
 is no "correct one-line stub" for it the way there is for `getFilesDir()`. Implementing this
-properly means Cordial's own C++ code has to *replace* this piece of Roblox's own Java startup flow
+properly means Vanta's own C++ code has to *replace* this piece of Roblox's own Java startup flow
 — fetch/skip flags and then explicitly drive whatever native entry point the real Java bootstrap
 would have called next (`nativePreloadFlagOverrides`, or directly proceed with defaults).
 
@@ -117,11 +117,11 @@ would have called next (`nativePreloadFlagOverrides`, or directly proceed with d
 `GetMethodID`/`GetField` with **`GetObjectClass` returning `Invalid` because the `jobject` argument
 itself was null** — confirmed by reading `third_party/libjnivm/src/jnivm/vm.cpp:241`:
 `jo ? … : env->FindClass("Invalid")`. The last group (`baseURL` … `isTouchDevice`) are fields
-Cordial's own `native/init_params.cpp` *does* implement, correctly hooked with both `HookInstance`
+Vanta's own `native/init_params.cpp` *does* implement, correctly hooked with both `HookInstance`
 and `HookInstanceGetterFunction` on the `InitParams`/`PlatformParams` objects it constructs and
 passes to `nativeAppBridgeSetInitParams`. Yet at the point these accessors are invoked, the receiver
-is a null reference, not Cordial's `InitParams` instance — so the engine appears to be re-reading
-these values from some *other*, currently-null, stored reference rather than the object Cordial
+is a null reference, not Vanta's `InitParams` instance — so the engine appears to be re-reading
+these values from some *other*, currently-null, stored reference rather than the object Vanta
 handed it. This was **verified** (the null-jobject code path in libjnivm) but **not diagnosed**
 (which stored reference, and why it's null, would need tracing into Roblox's own compiled
 `initializeNativeCode`/`nativeAppBridgeSetInitParams`, which is out of scope here). Flagging it
@@ -130,19 +130,19 @@ understood.
 
 > **Correction, measured since: the conclusion in the paragraph above no longer holds, and the
 > advice it gives is wrong.** The bring-up moved to `nativeAppBridgeV2InitWithParams`, and on that
-> path the parameter objects *are* read off the instances Cordial constructs. Registering the fields
-> as getter functions and logging each call (`CORDIAL_TRACE_PARAM_READS=1`, `native/init_params.cpp`)
+> path the parameter objects *are* read off the instances Vanta constructs. Registering the fields
+> as getter functions and logging each call (`VANTA_TRACE_PARAM_READS=1`, `native/init_params.cpp`)
 > shows, on one cold start:
 >
 > ```text
-> [cordial] param read: DeviceParams.osVersion
-> [cordial] param read: DeviceParams.deviceName
-> [cordial] param read: PlatformParams.dpiScale
-> [cordial] param read: PlatformParams.isTouchDevice
+> [vanta] param read: DeviceParams.osVersion
+> [vanta] param read: DeviceParams.deviceName
+> [vanta] param read: PlatformParams.dpiScale
+> [vanta] param read: PlatformParams.isTouchDevice
 > ```
 >
-> — with a live receiver each time, returning Cordial's own values, and with the engine echoing the
-> control straight back out as `[FLog::Graphics] Vulkan Android Device: Cordial` in the same run. So
+> — with a live receiver each time, returning Vanta's own values, and with the engine echoing the
+> control straight back out as `[FLog::Graphics] Vulkan Android Device: Vanta` in the same run. So
 > getter-level work on `InitParams`/`PlatformParams` does reach the engine and is worth doing.
 >
 > The same measurement produced a *different* and worse surprise, which is recorded in
@@ -237,7 +237,7 @@ blocking anything.
 ### 2g. `android/view/MotionEvent`, `android/view/KeyEvent` — input accessors, not yet exercised
 
 Pre-registered because `GameActivity`'s native touch/key handlers declare these parameter types;
-never invoked because `cordial-load` injects no synthetic touch or key events in this run.
+never invoked because `vanta-load` injects no synthetic touch or key events in this run.
 
 | Class | Methods |
 |---|---|
@@ -251,7 +251,7 @@ Not currently blocking anything — will matter the moment real input needs to r
 Unlike 2f/2g, these **were** invoked — `native/game_activity.cpp`'s `Configuration` class is
 registered empty ("the native side reads configuration through `AConfiguration_*` rather than this
 object's fields"), and AGDK's own `initializeNativeCode` reads every field off the `Configuration`
-object passed to it immediately, before Cordial's own real screen/config values are relevant to it:
+object passed to it immediately, before Vanta's own real screen/config values are relevant to it:
 
 | Class | Field/Method | Signature |
 |---|---|---|
@@ -260,7 +260,7 @@ object passed to it immediately, before Cordial's own real screen/config values 
 | `android/os/LocaleList` | `size`, `get` | `()I`, `(I)Ljava/util/Locale;` |
 | `java/util/Locale` | `getLanguage, getScript, getCountry, getVariant` | all `()Ljava/lang/String;` |
 
-All return 0/""/empty-list defaults today. Likely low-impact: Cordial's own native config path
+All return 0/""/empty-list defaults today. Likely low-impact: Vanta's own native config path
 (`android::config::set_screen`, per the loader) is the one the comment in `game_activity.cpp`
 documents as authoritative; this Java-side object is probably read once by AGDK's own C++ for a
 value it caches, and 0-valued defaults have not visibly broken anything downstream in this run.
@@ -331,7 +331,7 @@ not yet — see `docs/NEXT.md` §1 for exactly what is and is not verified.
 - The full deduplicated list in §2, extracted by grep from a real run's raw output.
 - All unresolved-symbol lines occur before "surface handed to the engine" (by line position in the
   log).
-- Zero GL calls during the 10s idle window (`CORDIAL_COUNT_GL=1` tally).
+- Zero GL calls during the 10s idle window (`VANTA_COUNT_GL=1` tally).
 - Thread states during the idle window, via `/proc/self/task` (`HttpClient` parked in
   `poll_schedule_timeout`, not blocked on socket I/O; `RBX Worker A` on a futex).
 - `gameActivity_onFlagsFailed`/`gameActivity_onFlagsLoaded` are a real pair, and `bootstrapTheApp`/
@@ -355,7 +355,7 @@ not yet — see `docs/NEXT.md` §1 for exactly what is and is not verified.
 - What `NativeHelper.gameActivity_onFlagsFailed()`'s real (Kotlin) implementation does — would
   require reading decompiled Roblox code, which this task was told not to do.
 - Whether the flags fetch failed at the network layer (DNS, TLS, sandboxing) or never actually
-  reached a socket call — `CORDIAL_ANDROID_TRACE` doesn't cover libc socket calls, so this wasn't
+  reached a socket call — `VANTA_ANDROID_TRACE` doesn't cover libc socket calls, so this wasn't
   directly observed in this session, only inferred from the `HttpClient` thread's state.
 - Whether fixing `LocalStorageManager.getAllocatableBytes` or the `NativeGLJavaInterface` extras
   would change observable behavior at all before #1/#2 are addressed — they're prioritized on

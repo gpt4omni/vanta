@@ -4,7 +4,7 @@
 // `stat("")` calls to a freshly spawned thread — a real tid, never seen in the
 // log before that line, bottoming out at `start_thread`/`__clone3` rather than
 // at `do_dlopen`. Nobody had asked who creates that thread or what it runs
-// first, because Cordial did not intercept `pthread_create` at all: it is
+// first, because Vanta did not intercept `pthread_create` at all: it is
 // fixed-arity and the bionic/glibc layouts agree on x86_64 (`pthread.rs`'s
 // own size table), so forwarding it untouched has always been correct there.
 //
@@ -13,7 +13,7 @@
 // 2026-09-23, `pthread.rs`'s own doc comment — so an `attr` built by the
 // engine's own bionic-compiled code and forwarded straight to the host's
 // `pthread_create` would have glibc read 8 bytes past what the engine
-// allocated. `cordial_pthread_attr_real` below resolves `attr` to the real,
+// allocated. `vanta_pthread_attr_real` below resolves `attr` to the real,
 // correctly-sized object behind `pthread.rs`'s own wrapper before it reaches
 // `::pthread_create`; on x86_64 that function does not exist and this file
 // changes nothing.
@@ -28,8 +28,8 @@
 // what it was actually asked to do, so it is also an answer to "what does it
 // do first" in every trace this produces.
 //
-// Gated behind `CORDIAL_TRACE_THREADS=1`, matching `CORDIAL_TRACE_PATHS` and
-// `CORDIAL_TRACE_PROPS`: off by default, and a plain `fprintf(stderr, …)` per
+// Gated behind `VANTA_TRACE_THREADS=1`, matching `VANTA_TRACE_PATHS` and
+// `VANTA_TRACE_PROPS`: off by default, and a plain `fprintf(stderr, …)` per
 // creation, not the `printf`-to-stdout libjnivm uses — §29's own instrument
 // warning about the two streams buffering differently under redirection
 // applies here as much as it did there.
@@ -45,7 +45,7 @@ namespace {
 
 bool g_trace = false;
 
-// libroblox.so is loaded by Cordial's own bionic linker, not the host
+// libroblox.so is loaded by Vanta's own bionic linker, not the host
 // dynamic loader, so the host's `dladdr` has never heard of it and cannot
 // resolve an address inside it. `/proc/self/maps` is the one place that
 // mapping is recorded regardless of which loader made it. Found once, on
@@ -121,16 +121,16 @@ void* trampoline(void* raw) {
 } // namespace
 
 #if defined(__aarch64__)
-// Defined in crates/cordial-runtime/src/bionic/pthread.rs, aarch64 only —
-// see that file's own comment on `cordial_pthread_attr_real` for why this
+// Defined in crates/vanta-runtime/src/bionic/pthread.rs, aarch64 only —
+// see that file's own comment on `vanta_pthread_attr_real` for why this
 // call exists and what it would silently overrun without it.
-extern "C" const void* cordial_pthread_attr_real(const void* attr);
+extern "C" const void* vanta_pthread_attr_real(const void* attr);
 #endif
 
-extern "C" int cordial_pthread_create(pthread_t* thread, const pthread_attr_t* attr,
+extern "C" int vanta_pthread_create(pthread_t* thread, const pthread_attr_t* attr,
                                        void* (*start_routine)(void*), void* arg) {
 #if defined(__aarch64__)
-    attr = reinterpret_cast<const pthread_attr_t*>(cordial_pthread_attr_real(attr));
+    attr = reinterpret_cast<const pthread_attr_t*>(vanta_pthread_attr_real(attr));
 #endif
     if (!g_trace) {
         return ::pthread_create(thread, attr, start_routine, arg);
@@ -152,21 +152,21 @@ extern "C" int cordial_pthread_create(pthread_t* thread, const pthread_attr_t* a
     return rc;
 }
 
-/// Turn on the thread-creation log. `CORDIAL_TRACE_THREADS=1` — see the file
-/// comment for why this is a separate flag from `CORDIAL_TRACE_PATHS` rather
+/// Turn on the thread-creation log. `VANTA_TRACE_THREADS=1` — see the file
+/// comment for why this is a separate flag from `VANTA_TRACE_PATHS` rather
 /// than folding into it.
-extern "C" void cordial_set_thread_trace(int on) {
+extern "C" void vanta_set_thread_trace(int on) {
     g_trace = on != 0;
 }
 
-extern "C" struct CordialThreadSymbol {
+extern "C" struct VantaThreadSymbol {
     const char* name;
     void* addr;
 };
 
-extern "C" const CordialThreadSymbol* cordial_thread_symbols(size_t* count) {
-    static const CordialThreadSymbol table[] = {
-        {"pthread_create", (void*)&cordial_pthread_create},
+extern "C" const VantaThreadSymbol* vanta_thread_symbols(size_t* count) {
+    static const VantaThreadSymbol table[] = {
+        {"pthread_create", (void*)&vanta_pthread_create},
     };
     *count = sizeof(table) / sizeof(table[0]);
     return table;

@@ -8,7 +8,7 @@
 // under lldb, on `realpath(path, NULL)`; this file is the same fix for the other
 // two imports that have the shape.
 //
-// There is no buffer Cordial can hand back in their place: the engine's
+// There is no buffer Vanta can hand back in their place: the engine's
 // allocator is not exported, so nothing here can obtain a block it will accept.
 // The only safe move is the one `s_realpath` makes, never to produce the host
 // allocation, and to report the failure each function is documented to report
@@ -70,7 +70,7 @@ extern "C" {
 ///
 /// The format is logged and the arguments are not: the arguments are whatever
 /// the engine was formatting, and a log line is the wrong place for them.
-int cordial_vasprintf(char** strp, const char* fmt, va_list ap) {
+int vanta_vasprintf(char** strp, const char* fmt, va_list ap) {
     (void)ap;
     if (strp) {
         *strp = nullptr;
@@ -97,7 +97,7 @@ int cordial_vasprintf(char** strp, const char* fmt, va_list ap) {
 /// allocate the buffer for this form, so a caller that inspects it reads the
 /// truth about what did not happen. A non-null buffer keeps every glibc result,
 /// including `EINVAL` for a zero size and `ERANGE` for one that is too small.
-char* cordial_getcwd(char* buf, size_t size) {
+char* vanta_getcwd(char* buf, size_t size) {
     if (!buf) {
         if (may_log(g_getcwd_logged)) {
             std::fprintf(stderr,
@@ -112,15 +112,15 @@ char* cordial_getcwd(char* buf, size_t size) {
     return ::getcwd(buf, size);
 }
 
-struct CordialAllocSymbol {
+struct VantaAllocSymbol {
     const char* name;
     void* addr;
 };
 
-const CordialAllocSymbol* cordial_alloc_symbols(size_t* count) {
-    static const CordialAllocSymbol table[] = {
-        {"vasprintf", reinterpret_cast<void*>(&cordial_vasprintf)},
-        {"getcwd", reinterpret_cast<void*>(&cordial_getcwd)},
+const VantaAllocSymbol* vanta_alloc_symbols(size_t* count) {
+    static const VantaAllocSymbol table[] = {
+        {"vasprintf", reinterpret_cast<void*>(&vanta_vasprintf)},
+        {"getcwd", reinterpret_cast<void*>(&vanta_getcwd)},
     };
     *count = sizeof(table) / sizeof(table[0]);
     return table;

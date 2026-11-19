@@ -1,8 +1,8 @@
-package.nix: draft of pkgs/by-name/co/cordial/package.nix for nixpkgs.
+package.nix: draft of pkgs/by-name/co/vanta/package.nix for nixpkgs.
 It is not submitted anywhere. Written 2026-10-01.
 
 What was run
-  Built with nixpkgs b4fd65b198c5 (the revision in the cordial repo's flake.lock)
+  Built with nixpkgs b4fd65b198c5 (the revision in the vanta repo's flake.lock)
   as `callPackage ./package.nix { }`, on x86_64-linux, in a store under
   $HOME because /nix is read-only on the developer's host. src hash and
   cargoHash in the file are the ones that build reported. Not run: a game, a rebuild after the final one-line fix that adds LICENSE to the installed notices (the other 24 files matched the build),
@@ -19,7 +19,7 @@ What reviewers will ask
    them as separate fetchFromGitHub inputs with the tree assembled in postUnpack;
    upstream has no preference recorded.
 
-2. The vendored C/C++ build. crates/cordial-linker-sys/build.rs compiles the
+2. The vendored C/C++ build. crates/vanta-linker-sys/build.rs compiles the
    ported AOSP bionic linker, libjnivm and native/ with CMake, and all of it is
    statically linked into the two Rust binaries (the generated stub count is
    printed as a cargo warning; that is normal). AOSP bionic does not compile with GCC
@@ -32,16 +32,16 @@ What reviewers will ask
    WebKitGTK headers and silently compiles an "unavailable" stub when they are
    missing, so they are buildInputs and not optional. `buildFeatures` enables
    the web view in both crates, and postInstall fails the build if
-   cordial-run does not link WebKitGTK.
+   vanta-run does not link WebKitGTK.
 
-3. Licence. Cordial is GPL-3.0-or-later (Cargo.toml, LICENSE). Statically
+3. Licence. Vanta is GPL-3.0-or-later (Cargo.toml, LICENSE). Statically
    linked third-party code: mcpelauncher-linker, libjnivm and libbadcpu are MIT,
    third_party/mcpelauncher-linker/core carries an AOSP NOTICE, and
    third_party/mocktail-webview is Apache-2.0 (see NOTICE and
    THIRD-PARTY-NOTICES.md in the repository). meta.license lists gpl3Plus, mit
    and asl20; a reviewer may want it narrowed, or the AOSP code
    (see third_party/mcpelauncher-linker/core/NOTICE) spelled out. The notices are installed under
-   share/licenses/cordial. NOTICE says libbadcpu may not reach a shipped binary
+   share/licenses/vanta. NOTICE says libbadcpu may not reach a shipped binary
    ("UNVERIFIED" in the file itself); it is installed anyway.
 
 4. No Roblox code. The package contains none and the build fetches none: the
@@ -62,14 +62,14 @@ What reviewers will ask
      Co-Authored-By trailers. Check nixpkgs' current policy before submitting.
    - Tests: doCheck = false. Upstream skips three tests that need a session
      bus; the others were not run here.
-   - Plugins: first-party plugins are Deno programs and Cordial bundles no
+   - Plugins: first-party plugins are Deno programs and Vanta bundles no
      runtime, so deno is put on the wrapper PATH.
    - Version stamp: observed from this build, with no .git and no
-     CORDIAL_GIT_SHA, `cordial --help` and `--diagnostics` print the bare
-     version ("0.23.2"). The cordial repo's own flake instead passes the git
-     revision through CORDIAL_GIT_SHA; this package does not.
-   - `cordial --diagnostics` reports "Install unknown" under Nix, because
-     nothing in crates/cordial-shell recognises a /nix/store path.
+     VANTA_GIT_SHA, `vanta --help` and `--diagnostics` print the bare
+     version ("0.23.2"). The vanta repo's own flake instead passes the git
+     revision through VANTA_GIT_SHA; this package does not.
+   - `vanta --diagnostics` reports "Install unknown" under Nix, because
+     nothing in crates/vanta-shell recognises a /nix/store path.
    - platforms is x86_64-linux only: the engine is Roblox's x86-64 Android
      build, run without emulation.
    - The wrapper puts vulkan-loader, pipewire, libpulseaudio and alsa-lib on

@@ -64,7 +64,7 @@ const PLACEHOLDER_MAX = 100;
  * more is an error rather than a line nobody notices.
  */
 const SHORT_DESCRIPTIONS: Record<string, string> = {
-  // **The button, not a command.** This named `cordial --diagnostics`, which
+  // **The button, not a command.** This named `vanta --diagnostics`, which
   // does not exist on a Flatpak install -- the largest group of people filing
   // through Discord. Issue #32's reporter ran it, got "command not found", and
   // said so in the field this description was meant to help them fill in. The
@@ -75,8 +75,8 @@ const SHORT_DESCRIPTIONS: Record<string, string> = {
     'What you tried, and what happened instead. "Nothing happened" is a good answer.',
   "engine-log": "The client's own output, if you have it. Trim it to the interesting part.",
   "runs-attempted": "How many times you tried, if it does not happen every time.",
-  "whose-job": "Is this Cordial's to do, a plugin's, or the engine's?",
-  "narrowest-effect": "The smallest thing Cordial could do for you, not the channel it would use.",
+  "whose-job": "Is this Vanta's to do, a plugin's, or the engine's?",
+  "narrowest-effect": "The smallest thing Vanta could do for you, not the channel it would use.",
   "how-you-established-it": "What you ran, and what it printed. Paste the output.",
   "contradicts": "Name the comment, ADR or document this disagrees with, if any.",
   "build-number": "The Roblox version, e.g. 2.736.0.1408.",
@@ -126,7 +126,7 @@ export interface IssueForm {
 export class FormError extends Error {}
 
 /** The `custom_id` of the label picker, which no template field can share. */
-export const LABEL_SELECT_ID = "cordial-labels";
+export const LABEL_SELECT_ID = "vanta-labels";
 
 /** Shorten with an ellipsis, so a cut is legible as a cut. */
 function clip(text: string | undefined, limit: number): string {
@@ -325,7 +325,7 @@ export function modalFor(
   const components = blocks.map(fieldToComponent);
   if (part === "main" && withPicker) components.push(labelPicker);
   return {
-    custom_id: `cordial-issue:${form.slug}:${part}${withPicker ? ":l" : ""}`,
+    custom_id: `vanta-issue:${form.slug}:${part}${withPicker ? ":l" : ""}`,
     title: clip(part === "main" ? form.name : `More about: ${form.name}`, MODAL_TITLE_MAX),
     components,
   };

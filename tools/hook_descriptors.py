@@ -111,7 +111,7 @@ def cpp_type_to_jni(t, cpp_to_java):
     t = re.sub(r'^(const|static)\s+', '', t).strip()
     if t in PRIMITIVES:
         return PRIMITIVES[t]
-    m = re.match(r'std::shared_ptr<\s*(?:cordial::)?(\w+)\s*>', t)
+    m = re.match(r'std::shared_ptr<\s*(?:vanta::)?(\w+)\s*>', t)
     if m:
         name = m.group(1)
         if name == 'String':

@@ -17,7 +17,7 @@
 #include <string>
 #include <vector>
 
-namespace cordial::audio {
+namespace vanta::audio {
 
 /// True once a PipeWire session has been confirmed reachable: the library
 /// loaded, `pw_init` ran, and a core connection completed a round trip. The
@@ -82,11 +82,11 @@ struct DeviceInfo {
 /// as "no devices" rather than substituting a plausible-looking one.
 std::vector<DeviceInfo> enumerate_devices();
 
-/// The PipeWire sink Cordial has been asked to play into, as a stable
+/// The PipeWire sink Vanta has been asked to play into, as a stable
 /// `node.name` — `alsa_output.pci-0000_00_1f.3-...`, not an index and not a
 /// description.
 ///
-/// Seeded from `CORDIAL_AUDIO_SINK` (which the shell sets from the Audio row in
+/// Seeded from `VANTA_AUDIO_SINK` (which the shell sets from the Audio row in
 /// its settings) the first time it is asked, and replaced by
 /// [`set_output_device`] thereafter. Returned by value: it can change under the
 /// caller. Empty is the ordinary state and means "follow
@@ -104,7 +104,7 @@ std::vector<DeviceInfo> enumerate_devices();
 /// rename a device. `node.name` is the routing target `PW_KEY_TARGET_OBJECT`
 /// takes and the only one of the three that is meant to be persisted.
 ///
-/// One reader, here, on the same argument `aaudio.h` makes for `CORDIAL_AUDIO`:
+/// One reader, here, on the same argument `aaudio.h` makes for `VANTA_AUDIO`:
 /// each file calling `getenv` for itself is how a switch comes to mean two
 /// different things in one process.
 std::string configured_output_device();
@@ -136,16 +136,16 @@ struct OutputSwitch {
 /// first design for this (and the obvious one) moved nothing.
 ///
 /// Streams opened after this call use the new value. `configured_output_device`
-/// is seeded from `CORDIAL_AUDIO_SINK` at first use, so a client launched with
+/// is seeded from `VANTA_AUDIO_SINK` at first use, so a client launched with
 /// the variable behaves as before.
 OutputSwitch set_output_device(const std::string& name);
 
-/// The PipeWire source Cordial has been asked to record from, as a
+/// The PipeWire source Vanta has been asked to record from, as a
 /// `node.name`; empty is the ordinary state and means "follow the session's
 /// default source", the behaviour before there was a microphone picker.
 ///
 /// The input twin of [`configured_output_device`], with the same reasons: seeded
-/// once from `CORDIAL_AUDIO_SOURCE`, replaced by [`set_input_device`], one
+/// once from `VANTA_AUDIO_SOURCE`, replaced by [`set_input_device`], one
 /// reader so a switch cannot come to mean two things in one process, and a
 /// `node.name` rather than an index or a description because it is the only one
 /// of the three that survives a replug and a rename.
@@ -200,7 +200,7 @@ std::string resolve_output_target(const std::string& requested);
 /// `audio_classes.cpp` logs this when the engine stops recording, and the
 /// test binary reads it to prove enumeration left it at zero. `pw-top` and
 /// the desktop's own microphone indicator are the independent checks; this
-/// is the one Cordial can make about itself.
+/// is the one Vanta can make about itself.
 uint32_t active_capture_streams();
 
 /// One playback stream, backed by one `pw_stream`. `opensles.cpp` owns one of
@@ -321,11 +321,11 @@ public:
     virtual uint64_t silence_cycles() const = 0;
 };
 
-/// The host backend this run will use, named the way `CORDIAL_AUDIO_HOST`
+/// The host backend this run will use, named the way `VANTA_AUDIO_HOST`
 /// spells it. Read once, from one place, and announced at startup -- which was written here before it was true and became true on 2026-08-28, after a user set the variable, got silence, and had nothing to read that would tell them whether it had been seen.
 ///
-/// **A separate variable from `CORDIAL_AUDIO`, and ADR-023 says why.** That one
-/// selects which *Android* API FMOD reaches Cordial through — AAudio, OpenSL,
+/// **A separate variable from `VANTA_AUDIO`, and ADR-023 says why.** That one
+/// selects which *Android* API FMOD reaches Vanta through — AAudio, OpenSL,
 /// or FMOD's Java path — and every combination of those with a host backend is
 /// meaningful. One variable for two orthogonal axes is a variable nobody can
 /// document.
@@ -340,7 +340,7 @@ const char* effective_backend_name();
 /// Whether sound can come out on this host, by whichever backend was resolved.
 ///
 /// **The predicate a one-way door must ask.** Asking `pipewire_available()`
-/// instead is what made `CORDIAL_AUDIO_HOST` inert on the machines that needed
+/// instead is what made `VANTA_AUDIO_HOST` inert on the machines that needed
 /// it: the door closed on PipeWire's absence before the selector ever ran.
 bool host_backend_available();
 
@@ -370,11 +370,11 @@ bool alsa_available();
 /// An ALSA stream, or null on a build without the headers.
 std::unique_ptr<OutputStream> make_alsa_stream();
 
-/// Whether `/dev/dsp` (or `CORDIAL_AUDIO_DEVICE`) can be opened for playback.
+/// Whether `/dev/dsp` (or `VANTA_AUDIO_DEVICE`) can be opened for playback.
 ///
 /// **The probe opens the device**, which on most OSS drivers is exclusive, so
 /// asking briefly takes sound from whatever holds it. Cached, and only reached
-/// when `CORDIAL_AUDIO_HOST=oss` names it -- see `oss_backend.cpp`.
+/// when `VANTA_AUDIO_HOST=oss` names it -- see `oss_backend.cpp`.
 bool oss_available();
 
 /// An OSS output stream. `/dev/dsp` and three ioctls; no server, no library.
@@ -489,9 +489,9 @@ inline std::atomic<bool>& voice_muted() {
 /// instance holds no PipeWire resource at all until `open()`, and holds none
 /// again the moment `close()` returns. There is no paused state and no muted
 /// state, because neither of those puts the desktop's microphone indicator
-/// out and neither of those stops another application seeing Cordial holding
+/// out and neither of those stops another application seeing Vanta holding
 /// the capture device. A recording that has stopped must be indistinguishable
-/// from a Cordial that never recorded, and the only way to be
+/// from a Vanta that never recorded, and the only way to be
 /// indistinguishable is to actually not be there.
 ///
 /// That is why the read side is a ring buffer owned by this object rather
@@ -511,7 +511,7 @@ public:
     /// `channels`, from `target_node_name` if it is non-empty and from
     /// whatever PipeWire calls the default source otherwise.
     ///
-    /// **This is the only function in Cordial that opens the microphone.**
+    /// **This is the only function in Vanta that opens the microphone.**
     /// Every caller of it must be on a path the engine explicitly asked to
     /// record on: `AudioRecord.startRecording`, `WebRtcAudioRecord.startRecording`,
     /// OpenSL's recorder transition, or `AAudioStream_requestStart`.
@@ -538,7 +538,7 @@ public:
 
     /// Bytes the ring had to drop because the reader was too slow, since
     /// `open`. This is the capture side's *real* overrun count, and unlike
-    /// the playback side's it is one Cordial can see for itself: the ring is
+    /// the playback side's it is one Vanta can see for itself: the ring is
     /// ours, the reader is ours, and a reader that falls half a second behind
     /// loses samples here rather than at the server.
     ///
@@ -651,7 +651,7 @@ uint32_t fill_pcm(std::deque<PendingBuffer>& pending, uint8_t* dst, uint32_t wan
 
 } // namespace testing
 
-} // namespace cordial::audio
+} // namespace vanta::audio
 
 // ------------------------------------------------------- the picker's window
 //
@@ -671,9 +671,9 @@ extern "C" {
 
 /// One sink, as the shell shows it. Both pointers are NUL-terminated UTF-8
 /// owned by the array they came in, and are valid until it is freed.
-struct CordialAudioSink {
+struct VantaAudioSink {
     /// `node.name` — what gets stored in `shell.json` and handed back as
-    /// `CORDIAL_AUDIO_SINK`. Stable across replug; never shown to a user.
+    /// `VANTA_AUDIO_SINK`. Stable across replug; never shown to a user.
     const char* node_name;
     /// `node.description`, or `node.name` when the session gave no
     /// description. What the row displays.
@@ -691,25 +691,25 @@ struct CordialAudioSink {
 /// `enumerate_devices` gives.
 ///
 /// The caller owns the array and must hand it back to
-/// `cordial_audio_sinks_free`.
-size_t cordial_audio_sinks(CordialAudioSink** out);
+/// `vanta_audio_sinks_free`.
+size_t vanta_audio_sinks(VantaAudioSink** out);
 
-void cordial_audio_sinks_free(CordialAudioSink* sinks, size_t count);
+void vanta_audio_sinks_free(VantaAudioSink* sinks, size_t count);
 
 /// Re-aims the running process's playback at `name` (a `node.name`; null or
 /// empty for the system default). Returns how many streams moved. `note`
 /// receives a NUL-terminated explanation when the answer is not a plain "all of
 /// them moved" and an empty string otherwise; it is always written when
-/// `note_len` is non-zero. See `cordial::audio::set_output_device`.
+/// `note_len` is non-zero. See `vanta::audio::set_output_device`.
 ///
-/// Called from `cordial-runtime`'s live-settings socket (ADR-044), on a thread
+/// Called from `vanta-runtime`'s live-settings socket (ADR-044), on a thread
 /// that is neither the engine's nor PipeWire's.
-size_t cordial_audio_set_output(const char* name, char* note, size_t note_len);
+size_t vanta_audio_set_output(const char* name, char* note, size_t note_len);
 
 /// Fills `*out` with a freshly allocated array of every audio source the
 /// session has that a person would call a microphone or line input, and
-/// returns how many; the shape and ownership rules are `cordial_audio_sinks`'s,
-/// and the array goes back to `cordial_audio_sinks_free`. `is_default` marks the
+/// returns how many; the shape and ownership rules are `vanta_audio_sinks`'s,
+/// and the array goes back to `vanta_audio_sinks_free`. `is_default` marks the
 /// session's current `default.audio.source`.
 ///
 /// **This opens no stream.** It is a projection of `enumerate_devices`, which
@@ -719,27 +719,27 @@ size_t cordial_audio_set_output(const char* name, char* note, size_t note_len);
 /// monitor as a port on its sink and not as an `Audio/Source` node, so
 /// "listening to what the speakers play" is not reachable from here, which is
 /// the intended answer for a microphone row.
-size_t cordial_audio_sources(CordialAudioSink** out);
+size_t vanta_audio_sources(VantaAudioSink** out);
 
 /// How many capture streams this process holds open right now. Exposed so the
 /// shell's own tests can pin that listing sources opened none; see
-/// `cordial::audio::active_capture_streams`.
-unsigned cordial_audio_capture_streams(void);
+/// `vanta::audio::active_capture_streams`.
+unsigned vanta_audio_capture_streams(void);
 
-/// The microphone twin of `cordial_audio_set_output`: re-aims an open capture
+/// The microphone twin of `vanta_audio_set_output`: re-aims an open capture
 /// stream at `name` (null or empty for the system default), returns how many
 /// moved, and writes any explanation to `note`. With none open it moves nothing
 /// and opens nothing; the choice applies when Roblox next starts recording.
-size_t cordial_audio_set_input(const char* name, char* note, size_t note_len);
+size_t vanta_audio_set_input(const char* name, char* note, size_t note_len);
 
-/// The microphone twin of `cordial_audio_output`.
-size_t cordial_audio_input(char* out, size_t out_len);
+/// The microphone twin of `vanta_audio_output`.
+size_t vanta_audio_input(char* out, size_t out_len);
 
 
 /// Copies the sink currently asked for (empty for the system default) into
 /// `out` as a NUL-terminated string, truncated to `out_len - 1` bytes, and
 /// returns its full length. What the live-settings socket reports back, so the
 /// shell sees what is in force and not what it asked for.
-size_t cordial_audio_output(char* out, size_t out_len);
+size_t vanta_audio_output(char* out, size_t out_len);
 
 } // extern "C"

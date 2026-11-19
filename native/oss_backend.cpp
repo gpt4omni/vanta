@@ -3,7 +3,7 @@
 //! ADR-023 scheduled OSS behind PulseAudio and ALSA and said, at the time
 //! honestly, that it was "an answer to nothing" -- Linux has not shipped OSS as
 //! its sound layer since ALSA replaced it, and the surviving users are on
-//! FreeBSD, which Cordial does not run on. It was written up as the thing to
+//! FreeBSD, which Vanta does not run on. It was written up as the thing to
 //! build if somebody arrived with the hardware and the appetite.
 //!
 //! Somebody asked. So it exists, and the reasoning that deferred it is left in
@@ -19,10 +19,10 @@
 //! serve -- PipeWire and PulseAudio both need something running, and ALSA needs
 //! a configured `default` PCM.
 //!
-//! It also means the device is **exclusive on most drivers**: while Cordial
+//! It also means the device is **exclusive on most drivers**: while Vanta
 //! holds `/dev/dsp`, nothing else on the machine gets sound. That is not a bug
 //! to work around, it is what the interface is, and it is why this is opt-in
-//! behind `CORDIAL_AUDIO_HOST=oss` and will not be selected for anybody who did
+//! behind `VANTA_AUDIO_HOST=oss` and will not be selected for anybody who did
 //! not ask.
 //!
 //! ## The write is the clock
@@ -50,26 +50,26 @@
 #include <thread>
 #include <vector>
 
-#if defined(CORDIAL_HAVE_OSS)
+#if defined(VANTA_HAVE_OSS)
 
 #include <fcntl.h>
 #include <sys/ioctl.h>
 #include <sys/soundcard.h>
 #include <unistd.h>
 
-namespace cordial::audio {
+namespace vanta::audio {
 namespace {
 
-/// What the engine is given, and what Cordial converts from.
+/// What the engine is given, and what Vanta converts from.
 constexpr uint32_t kChannels = 2;
 constexpr uint32_t kRate = 48000;
 /// Frames per write. About 10 ms at 48 kHz -- small enough that stopping is
 /// responsive, large enough that the syscall rate is unremarkable.
 constexpr uint32_t kPeriod = 480;
 
-/// `CORDIAL_AUDIO_DEVICE`, or the conventional node.
+/// `VANTA_AUDIO_DEVICE`, or the conventional node.
 const char* device_path() {
-    const char* env = std::getenv("CORDIAL_AUDIO_DEVICE");
+    const char* env = std::getenv("VANTA_AUDIO_DEVICE");
     if (env && env[0] != '\0') return env;
     return "/dev/dsp";
 }
@@ -150,7 +150,7 @@ void OssStream::writer() {
                 // retrying into it would spin. Reported once, then the stream
                 // stops -- a gap that says so beats one that busy-loops.
                 std::fprintf(stderr,
-                    "E/Cordial-OSS             write to %s failed: %s; the stream is stopping.\n",
+                    "E/Vanta-OSS             write to %s failed: %s; the stream is stopping.\n",
                     device_path(), std::strerror(errno));
                 return;
             }
@@ -164,7 +164,7 @@ bool OssStream::open(uint32_t, bool, const char*, const char*, FillCallback cb, 
     const char* path = device_path();
     fd_ = ::open(path, O_WRONLY | O_CLOEXEC);
     if (fd_ < 0) {
-        std::fprintf(stderr, "W/Cordial-OSS             cannot open %s: %s\n", path,
+        std::fprintf(stderr, "W/Vanta-OSS             cannot open %s: %s\n", path,
                      std::strerror(errno));
         return false;
     }
@@ -176,20 +176,20 @@ bool OssStream::open(uint32_t, bool, const char*, const char*, FillCallback cb, 
     int fmt = AFMT_S16_NE;
     if (::ioctl(fd_, SNDCTL_DSP_SETFMT, &fmt) < 0 || fmt != AFMT_S16_NE) {
         std::fprintf(stderr,
-            "W/Cordial-OSS             %s will not take 16-bit native-endian PCM.\n", path);
+            "W/Vanta-OSS             %s will not take 16-bit native-endian PCM.\n", path);
         close();
         return false;
     }
     int ch = static_cast<int>(kChannels);
     if (::ioctl(fd_, SNDCTL_DSP_CHANNELS, &ch) < 0) {
-        std::fprintf(stderr, "W/Cordial-OSS             %s refused %u channels.\n", path,
+        std::fprintf(stderr, "W/Vanta-OSS             %s refused %u channels.\n", path,
                      kChannels);
         close();
         return false;
     }
     int rate = static_cast<int>(kRate);
     if (::ioctl(fd_, SNDCTL_DSP_SPEED, &rate) < 0) {
-        std::fprintf(stderr, "W/Cordial-OSS             %s refused %u Hz.\n", path, kRate);
+        std::fprintf(stderr, "W/Vanta-OSS             %s refused %u Hz.\n", path, kRate);
         close();
         return false;
     }
@@ -208,7 +208,7 @@ bool OssStream::open(uint32_t, bool, const char*, const char*, FillCallback cb, 
     user_ = user;
     quit_.store(false, std::memory_order_relaxed);
 
-    std::fprintf(stderr, "I/Cordial-OSS             %s at %u Hz, %u channels, %u-frame periods\n",
+    std::fprintf(stderr, "I/Vanta-OSS             %s at %u Hz, %u channels, %u-frame periods\n",
                  path, rate_, channels_, period_);
     thread_ = std::thread([this] { writer(); });
     return true;
@@ -252,11 +252,11 @@ bool oss_available() {
 
 std::unique_ptr<OutputStream> make_oss_stream() { return std::make_unique<OssStream>(); }
 
-} // namespace cordial::audio
+} // namespace vanta::audio
 
-#else // !CORDIAL_HAVE_OSS
+#else // !VANTA_HAVE_OSS
 
-namespace cordial::audio {
+namespace vanta::audio {
 
 // Built without <sys/soundcard.h>. Honest rather than absent, so the selector
 // can tell a run that asked for OSS that it did not get it.
@@ -264,6 +264,6 @@ bool oss_available() { return false; }
 
 std::unique_ptr<OutputStream> make_oss_stream() { return nullptr; }
 
-} // namespace cordial::audio
+} // namespace vanta::audio
 
 #endif

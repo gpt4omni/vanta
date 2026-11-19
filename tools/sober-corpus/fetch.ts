@@ -4,8 +4,8 @@
  * `vinegarhq/sober` — another project running Roblox on Linux, whose GitHub
  * repo is purely an issue tracker (Sober is closed-source; there is no code
  * here to read, only real users hitting real problems on the same engine
- * Cordial loads, with maintainer answers attached). Builds a local corpus
- * (`tools/sober-corpus/data/raw.jsonl`, gitignored) a Cordial maintainer can
+ * Vanta loads, with maintainer answers attached). Builds a local corpus
+ * (`tools/sober-corpus/data/raw.jsonl`, gitignored) a Vanta maintainer can
  * search when triaging a new issue: has someone already hit this, and what
  * did Sober's maintainer say. See ADR-017.
  *

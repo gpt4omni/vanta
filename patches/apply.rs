@@ -1,7 +1,7 @@
 // Builds a patched view of a submodule for the compiler, leaving the
-// submodule itself untouched. `include!`d by crates/cordial-linker-sys/build.rs
+// submodule itself untouched. `include!`d by crates/vanta-linker-sys/build.rs
 // (0005 and 0006, on mcpelauncher-linker's nested bionic) and
-// crates/cordial-guest/build.rs (0007 and 0008, on dynarmic), so every route
+// crates/vanta-guest/build.rs (0007 and 0008, on dynarmic), so every route
 // that runs `cargo build` -- a checkout, `just`, CI, the Flatpak, the
 // AppImage, the AUR, rpm, deb and Nix builds -- compiles the same loader and
 // translator. Until this existed only tools/vr/build-aarch64.sh applied them,
@@ -11,7 +11,7 @@
 // **Not in place.** The first version of this patched the submodules' own
 // working trees, as the script had. Every build then left
 // `third_party/dynarmic` and `third_party/mcpelauncher-linker` modified, and
-// crates/cordial-shell/build.rs stamps `-dirty` on any tree whose `git status`
+// crates/vanta-shell/build.rs stamps `-dirty` on any tree whose `git status`
 // is non-empty, so every x86-64 build from a clean checkout would have called
 // itself dirty -- the provenance AGENTS.md relies on, lost to the build's own
 // bookkeeping. So the overlay is a directory under OUT_DIR mirroring the

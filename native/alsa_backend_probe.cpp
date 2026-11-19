@@ -24,7 +24,7 @@
 // Build and run it by hand; it needs a live PulseAudio server, which
 // `pipewire-pulse` also provides:
 //
-//     clang++ -std=c++20 -O1 -DCORDIAL_HAVE_ALSA=1 -I native \
+//     clang++ -std=c++20 -O1 -DVANTA_HAVE_ALSA=1 -I native \
 //       native/alsa_backend_probe.cpp native/alsa_backend.cpp -ldl -lpthread -o /tmp/alsa-probe
 #include "pipewire_backend.h"
 #include <cmath>
@@ -51,11 +51,11 @@ static bool fill(void* dst, uint32_t frames, void*) {
 }
 
 int main() {
-    std::printf("alsa_available(): %s\n", cordial::audio::alsa_available() ? "yes" : "NO");
-    if (!cordial::audio::alsa_available()) return 1;
-    auto stream = cordial::audio::make_alsa_stream();
+    std::printf("alsa_available(): %s\n", vanta::audio::alsa_available() ? "yes" : "NO");
+    if (!vanta::audio::alsa_available()) return 1;
+    auto stream = vanta::audio::make_alsa_stream();
     if (!stream) { std::printf("make_alsa_stream returned null\n"); return 1; }
-    if (!stream->open(0, false, "Cordial (alsa probe)", nullptr, fill, nullptr)) {
+    if (!stream->open(0, false, "Vanta (alsa probe)", nullptr, fill, nullptr)) {
         std::printf("open failed\n");
         return 1;
     }

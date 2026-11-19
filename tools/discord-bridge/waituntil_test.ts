@@ -5,7 +5,7 @@ import { build } from "./main.ts";
  * **The bug this pins killed the first real bug report filed through the
  * bridge.** On Cloudflare a promise still running when the fetch handler
  * returns is cancelled, so the deferred follow-up -- file the issue, open the
- * thread, edit the reply -- never ran, and the reporter sat on "Cordial Issues
+ * thread, edit the reply -- never ran, and the reporter sat on "Vanta Issues
  * is thinking" for ever with no issue created. Under Deno the same code is
  * correct, because the process outlives the response, so nothing local caught
  * it and nothing could have.

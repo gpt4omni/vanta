@@ -3,7 +3,7 @@
 # release on every tag.
 #
 # Why this exists at all, in one sentence: seven releases and zero downloadable
-# assets, because the only install route Cordial had was
+# assets, because the only install route Vanta had was
 # `flatpak remote-add` against an unsigned custom remote. mocktail, a
 # comparable project started ten days later, ships five kinds of artefact on
 # its releases and gets used because of it. Flatpak already has its own
@@ -16,8 +16,8 @@
 # one.
 #
 # None of the four jobs below fetch, embed or reference any Roblox material.
-# Every one of them builds Cordial's own source (plus the same third-party OSS
-# Cordial always depends on -- libbadcpu, mcpelauncher-linker, libjnivm,
+# Every one of them builds Vanta's own source (plus the same third-party OSS
+# Vanta always depends on -- libbadcpu, mcpelauncher-linker, libjnivm,
 # mocktail-webview, and on x86-64 dynarmic with its externals) and nothing else; the resulting packages start, find no
 # Roblox build, and say so, exactly like every other packaging format already
 # does. See AGENTS.md, "Permanently out of scope".
@@ -78,11 +78,11 @@ on:
       - 'packaging/appimage/**'
       - 'packaging/deb/**'
       - 'packaging/rpm/**'
-      - 'packaging/aur/cordial/**'
+      - 'packaging/aur/vanta/**'
       - 'packaging/version.sh'
       - 'packaging/icons/**'
-      - 'packaging/io.github.luohoa97.Cordial.desktop'
-      - 'packaging/io.github.luohoa97.Cordial.metainfo.xml'
+      - 'packaging/io.github.gpt4omni.Vanta.desktop'
+      - 'packaging/io.github.gpt4omni.Vanta.metainfo.xml'
       - '.github/workflows/release.yml'
   pull_request:
     paths:
@@ -94,11 +94,11 @@ on:
       - 'packaging/appimage/**'
       - 'packaging/deb/**'
       - 'packaging/rpm/**'
-      - 'packaging/aur/cordial/**'
+      - 'packaging/aur/vanta/**'
       - 'packaging/version.sh'
       - 'packaging/icons/**'
-      - 'packaging/io.github.luohoa97.Cordial.desktop'
-      - 'packaging/io.github.luohoa97.Cordial.metainfo.xml'
+      - 'packaging/io.github.gpt4omni.Vanta.desktop'
+      - 'packaging/io.github.gpt4omni.Vanta.metainfo.xml'
       - '.github/workflows/release.yml'
   # **The way to start a release build by hand, and it is needed.** `paths`
   # above applies to tag pushes as well as branch pushes, and a tag pointing at
@@ -138,11 +138,11 @@ concurrency:
 # Stamps every binary built here with the repository that ran the workflow, so
 # a bug report can say "Official build". A fork's own run stamps the fork's
 # name and is reported as that fork's. Triage only, and trivially spoofed:
-# crates/cordial-shell/build.rs and version::Origin say why nothing may ever
+# crates/vanta-shell/build.rs and version::Origin say why nothing may ever
 # read it back. The AppImage, deb and rpm scripts and makepkg inherit it; the
 # rpm and makepkg legs are INFERRED to pass it through to cargo.
 env:
-  CORDIAL_OFFICIAL_BUILD: ${{ github.repository }}
+  VANTA_OFFICIAL_BUILD: ${{ github.repository }}
 
 jobs:
   appimage:
@@ -231,7 +231,7 @@ jobs:
       - name: Refuse a tag that disagrees with Cargo.toml
         # **The one thing that actually bites when the manifest is the version.**
         # `Cargo.toml` is now the only source of the version -- see
-        # crates/cordial-shell/src/version.rs -- so a `v0.11.0` tag cut against a
+        # crates/vanta-shell/src/version.rs -- so a `v0.11.0` tag cut against a
         # tree whose manifest still says 0.10.0 produces a release whose binaries
         # announce the wrong number, and nothing else would notice. Package
         # filenames come from the tag and the binary comes from the manifest, so
@@ -266,14 +266,14 @@ jobs:
         # machine is newer than every user. A container's glibc moving forward
         # changes no line in this repository, so it needs a check rather than a
         # habit.
-        run: ./packaging/check-glibc-floor.sh target/release/cordial-run target/release/cordial-shell
+        run: ./packaging/check-glibc-floor.sh target/release/vanta-run target/release/vanta-shell
       - name: Upload the AppImage
         uses: actions/upload-artifact@v4
         with:
           # Arch-suffixed so the two matrix legs' uploads do not collide --
           # upload-artifact@v4 refuses a second upload under a name already
           # used in this run, unlike v3's silent merge.
-          name: cordial-appimage-${{ matrix.arch }}
+          name: vanta-appimage-${{ matrix.arch }}
           path: dist/appimage/*.AppImage
           if-no-files-found: error
 
@@ -306,7 +306,7 @@ jobs:
     steps:
       - name: Install build dependencies
         # The same package names README.md §3 already documents for building
-        # Cordial on Debian/Ubuntu from source, plus the audio backends'
+        # Vanta on Debian/Ubuntu from source, plus the audio backends'
         # headers and the packaging tools this job needs on top of that.
         # rustup rather than apt's own rustc/cargo: Ubuntu's packaged Rust
         # trails upstream stable and this workspace pins rust-version = 1.75
@@ -345,7 +345,7 @@ jobs:
         # the one validation this job is confident is installed, rather than
         # guess a package name and risk failing the whole job on tooling that
         # was never the point.
-        run: desktop-file-validate packaging/io.github.luohoa97.Cordial.desktop
+        run: desktop-file-validate packaging/io.github.gpt4omni.Vanta.desktop
       - name: Build the .deb
         run: packaging/deb/build-deb.sh --outdir dist/deb
       - name: Refuse a binary that needs a newer glibc than the floor
@@ -356,11 +356,11 @@ jobs:
         # machine is newer than every user. A container's glibc moving forward
         # changes no line in this repository, so it needs a check rather than a
         # habit.
-        run: ./packaging/check-glibc-floor.sh target/release/cordial-run target/release/cordial-shell
+        run: ./packaging/check-glibc-floor.sh target/release/vanta-run target/release/vanta-shell
       - name: Upload the .deb
         uses: actions/upload-artifact@v4
         with:
-          name: cordial-deb-${{ matrix.arch }}
+          name: vanta-deb-${{ matrix.arch }}
           path: dist/deb/*.deb
           if-no-files-found: error
 
@@ -377,14 +377,14 @@ jobs:
     runs-on: ${{ matrix.runner }}
     container: registry.fedoraproject.org/fedora:44
     # %check runs the workspace's test suite once inside this job (with the
-    # same three session-bus-dependent skips packaging/rpm/cordial.spec
+    # same three session-bus-dependent skips packaging/rpm/vanta.spec
     # documents), on top of %build's own compile -- more than the deb and
     # arch jobs, close to what the arch job's check() also repeats.
     timeout-minutes: 75
     steps:
       - name: Install the tools make-srpm.sh itself needs
         # Not the project's own build dependencies -- those are declared once,
-        # in packaging/rpm/cordial.spec's BuildRequires, and installed below
+        # in packaging/rpm/vanta.spec's BuildRequires, and installed below
         # via `dnf builddep` against the SRPM once it exists. This step only
         # has to get as far as running make-srpm.sh, which needs git, cargo
         # (for `cargo vendor`), rpmbuild and zstd -- see that script's header.
@@ -413,12 +413,12 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           # rpmbuild names the file after the host's own %{_arch} already
-          # (e.g. cordial-0.17.0-1.fc44.aarch64.rpm), so the *filename* needed
+          # (e.g. vanta-0.17.0-1.fc44.aarch64.rpm), so the *filename* needed
           # no change for this -- packaging/rpm/build-repo.sh already sorts by
           # the arch it reads out of that name. Only the artifact name needs
           # it, for the same upload-artifact@v4 collision reason the appimage
           # and deb jobs give.
-          name: cordial-rpm-${{ matrix.arch }}
+          name: vanta-rpm-${{ matrix.arch }}
           path: dist/rpm/**/*.rpm
           if-no-files-found: error
 
@@ -448,23 +448,24 @@ jobs:
       - uses: actions/checkout@v4
         with:
           # Whole history and tags: off a tag the package is built from this
-          # checkout, and pkgver() runs `git describe --tags` on it.
+          # checkout, and pkgver() uses packaging/version.sh on it (including
+          # its manifest-version fallback when the fork has no tags).
           fetch-depth: 0
           submodules: false
       - name: Install the PKGBUILD's own depends() and makedepends()
-        # Read out of packaging/aur/cordial/PKGBUILD by sourcing it rather
+        # Read out of packaging/aur/vanta/PKGBUILD by sourcing it rather
         # than copied into this file, for the same reason the .rpm job uses
         # `dnf builddep` instead of a hand-written package list: one place to
         # keep in step rather than two that can silently drift apart. Sourcing
         # a PKGBUILD to read its arrays is the ordinary way to do this without
         # a full makepkg run; it does execute the file's top-level code, which
-        # is accepted here because this is Cordial's own first-party file, not
+        # is accepted here because this is Vanta's own first-party file, not
         # one fetched from elsewhere.
         shell: bash
         run: |
           set -euo pipefail
           mapfile -t pkgs < <(
-            bash -c 'source packaging/aur/cordial/PKGBUILD; printf "%s\n" "${depends[@]}" "${makedepends[@]}"' \
+            bash -c 'source packaging/aur/vanta/PKGBUILD; printf "%s\n" "${depends[@]}" "${makedepends[@]}"' \
               | sed -E 's/[<>=].*$//'
           )
           pacman -Syu --needed --noconfirm git "${pkgs[@]}"
@@ -474,12 +475,12 @@ jobs:
         # and works around the same way.
         env:
           # CI always builds the tag actually being released, or, off a tag,
-          # HEAD of main -- see packaging/aur/cordial/PKGBUILD's own comment
+          # HEAD of main -- see packaging/aur/vanta/PKGBUILD's own comment
           # on why this variable exists: the committed PKGBUILD's pkgver is
           # bumped by hand at each release the way PUBLISHING.md already
           # documents for .SRCINFO, and CI should not depend on that having
           # happened yet.
-          CORDIAL_PKGBUILD_TAG: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || 'main' }}
+          VANTA_PKGBUILD_TAG: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || 'main' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -497,20 +498,20 @@ jobs:
           # the one name Actions guarantees points at the checkout, whatever
           # the container job happens to mount it at.
           chown -R builder:builder "$GITHUB_WORKSPACE"
-          runuser -u builder -- env CORDIAL_PKGBUILD_TAG="$CORDIAL_PKGBUILD_TAG" \
-            CORDIAL_PKGBUILD_SOURCE="$source" \
-            makepkg --dir "$GITHUB_WORKSPACE/packaging/aur/cordial" \
+          runuser -u builder -- env VANTA_PKGBUILD_TAG="$VANTA_PKGBUILD_TAG" \
+            VANTA_PKGBUILD_SOURCE="$source" \
+            makepkg --dir "$GITHUB_WORKSPACE/packaging/aur/vanta" \
               --noconfirm --cleanbuild --force
           install -d dist/arch
-          cp packaging/aur/cordial/*.pkg.tar.zst dist/arch/
+          cp packaging/aur/vanta/*.pkg.tar.zst dist/arch/
           pacman -Qp dist/arch/*.pkg.tar.zst >/dev/null
       - name: Upload the Arch package
         uses: actions/upload-artifact@v4
         with:
-          name: cordial-arch
+          name: vanta-arch
           path: |
             dist/arch/*.pkg.tar.zst
-            packaging/aur/cordial/PKGBUILD
+            packaging/aur/vanta/PKGBUILD
           if-no-files-found: error
 
   publish:
@@ -545,11 +546,11 @@ jobs:
       actions: write
     uses: ./.github/workflows/attach-to-release.yml
     with:
-      # cordial-* rather than the four names spelled out: this workflow is
+      # vanta-* rather than the four names spelled out: this workflow is
       # the only thing that uploads artifacts under that prefix in a given
       # run, so the glob is exactly the appimage/deb/rpm/arch jobs above and
       # nothing else, however many of them there end up being.
-      artifact_pattern: cordial-*
+      artifact_pattern: vanta-*
       file_globs: '*.AppImage *.deb *.rpm *.pkg.tar.zst'
       # appimage x2 (x86_64, aarch64) + deb x2 + rpm x2 + arch x1 (x86_64
       # only -- see that job's own comment) = 7. Update this arithmetic in the

@@ -1,13 +1,13 @@
 # Review: HaltingMachine's X11 pointer-lock patch
 
 **Reviewed 2026-08-26**, against
-`HaltingMachine/cordial@e2f6f537d1535cf25d2922bcf72670f14413febf`, branch
+`HaltingMachine/vanta@e2f6f537d1535cf25d2922bcf72670f14413febf`, branch
 `x11-pointer-lock-test`. 387 added lines, all in
-`crates/cordial-runtime/src/android/window.rs`. Read from the commit diff; the
+`crates/vanta-runtime/src/android/window.rs`. Read from the commit diff; the
 fork was not cloned.
 
 The patch works — the author reports cursor capture functioning on X11 where
-vanilla Cordial's does not — and every helper it calls (`engine_wants_pointer_
+vanilla Vanta's does not — and every helper it calls (`engine_wants_pointer_
 lock`, `pass_mouse_move_delta`, `reset_mouse_delta`, `trace_mouse`,
 `BUTTON_SECONDARY`, `BUTTON_TERTIARY`) already exists upstream, so it applies
 cleanly and depends on nothing else in the fork.
@@ -101,7 +101,7 @@ event whose serial is below it, instead of matching coordinates.
 ```rust
 if !keys_to_game_while_typing()
     && evdev_is_text_key(evdev_code)
-    && cordial_linker_sys::game_activity::focused_textbox().is_some()
+    && vanta_linker_sys::game_activity::focused_textbox().is_some()
 ```
 
 W, A, S and D are evdev 17, 30, 31 and 32 — all text keys. **On X11 there is no
@@ -112,9 +112,9 @@ anything in the pointer-lock code does, including the "sometimes".
 
 Two commands settle it:
 
-- Run with `CORDIAL_TRACE_TEXT=1` and grep for
+- Run with `VANTA_TRACE_TEXT=1` and grep for
   `pass_key_event suppressed: code=17`. If it is there, this is the guard.
-- Then `CORDIAL_KEYS_TO_GAME_WHILE_TYPING=1` as the control: movement should
+- Then `VANTA_KEYS_TO_GAME_WHILE_TYPING=1` as the control: movement should
   come back while a box is focused, and text should start walking the character.
 
 ## Why the two machines differ
@@ -131,7 +131,7 @@ needs no code change: log every `FocusIn` and `FocusOut` with its `mode` and
 `detail`, run the same session on both machines, and diff. If the desktop emits
 `NotifyGrab` pairs the laptop does not, that is the whole difference.
 
-## What this means for Cordial
+## What this means for Vanta
 
 [ADR-024](../adr/ADR-024-x11-is-supported-again.md) makes X11 supported again,
 so this work has somewhere to land. Two notes for whoever merges it:
@@ -141,9 +141,9 @@ Warp-and-recentre and XInput2 raw motion are not variations on one approach; the
 second deletes the entire class of bug the first spends its filter on. Taking
 the warp version now means the filter gets tuned for months.
 
-**Whatever lands needs a control.** `CORDIAL_NO_POINTER_LOCK`,
-`CORDIAL_FORCE_POINTER_LOCK` and `CORDIAL_NO_DRAG_LOCK` in this patch are good
+**Whatever lands needs a control.** `VANTA_NO_POINTER_LOCK`,
+`VANTA_FORCE_POINTER_LOCK` and `VANTA_NO_DRAG_LOCK` in this patch are good
 instincts and exactly the shape this project asks for. What is missing is a
 reading that distinguishes working from broken: a jerk is visible to a human and
-invisible to every counter Cordial currently has. A trace of raw deltas against
+invisible to every counter Vanta currently has. A trace of raw deltas against
 delivered deltas would show a double count immediately.

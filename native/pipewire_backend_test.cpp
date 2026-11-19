@@ -22,9 +22,9 @@
 #include <cstdio>
 #include <cstring>
 
-using cordial::audio::testing::choose_output_target;
-using cordial::audio::testing::fill_pcm;
-using cordial::audio::testing::PendingBuffer;
+using vanta::audio::testing::choose_output_target;
+using vanta::audio::testing::fill_pcm;
+using vanta::audio::testing::PendingBuffer;
 
 namespace {
 
@@ -132,11 +132,11 @@ void multiple_buffers_are_drained_in_order_within_one_fill() {
 // the invariant that the live case rests on, and it will fail loudly if
 // someone later moves the `open()` call into the constructor.
 void a_capture_stream_holds_nothing_until_it_is_opened() {
-    assert(cordial::audio::active_capture_streams() == 0);
+    assert(vanta::audio::active_capture_streams() == 0);
     {
-        cordial::audio::CaptureStream capture;
+        vanta::audio::CaptureStream capture;
         assert(!capture.is_open());
-        assert(cordial::audio::active_capture_streams() == 0);
+        assert(vanta::audio::active_capture_streams() == 0);
 
         // A read from a stream that was never opened returns no samples
         // rather than blocking for some that will never arrive, and must not
@@ -144,9 +144,9 @@ void a_capture_stream_holds_nothing_until_it_is_opened() {
         uint8_t buf[64];
         std::memset(buf, 0xAA, sizeof(buf));
         assert(capture.read(buf, sizeof(buf)) == 0);
-        assert(cordial::audio::active_capture_streams() == 0);
+        assert(vanta::audio::active_capture_streams() == 0);
     }
-    assert(cordial::audio::active_capture_streams() == 0);
+    assert(vanta::audio::active_capture_streams() == 0);
     std::printf("ok: a_capture_stream_holds_nothing_until_it_is_opened\n");
 }
 
@@ -249,9 +249,9 @@ void a_null_fell_back_pointer_is_allowed() {
 /// that matters about it — that listing devices opens no capture stream — is
 /// what `a_capture_stream_holds_nothing_until_it_is_opened` above pins.
 void the_shells_device_list_survives_being_asked_for_nothing() {
-    assert(cordial_audio_sinks(nullptr) == 0);
-    cordial_audio_sinks_free(nullptr, 0);
-    assert(cordial::audio::active_capture_streams() == 0);
+    assert(vanta_audio_sinks(nullptr) == 0);
+    vanta_audio_sinks_free(nullptr, 0);
+    assert(vanta::audio::active_capture_streams() == 0);
     std::printf("ok: the_shells_device_list_survives_being_asked_for_nothing\n");
 }
 
@@ -263,14 +263,14 @@ void the_shells_device_list_survives_being_asked_for_nothing() {
 /// failure it forecloses is a null dereference on a machine with no PipeWire,
 /// which is the machine least likely to be the one running this test.
 void the_factory_always_returns_a_stream() {
-    auto stream = cordial::audio::make_output_stream();
+    auto stream = vanta::audio::make_output_stream();
     assert(stream != nullptr);
     assert(!stream->is_open());
     assert(!stream->is_running());
     std::printf("ok: the_factory_always_returns_a_stream\n");
 }
 
-/// `CORDIAL_AUDIO_HOST` names a backend, falls back rather than failing, and is
+/// `VANTA_AUDIO_HOST` names a backend, falls back rather than failing, and is
 /// read exactly once.
 ///
 /// The once matters and is not tidiness: `host_backend_name` caches in a
@@ -284,11 +284,11 @@ void the_host_backend_is_read_once() {
     // went unnoticed because this binary was built with NDEBUG and none of its
     // asserts ran. The value is cached on first read, so changing the variable
     // afterwards must change nothing -- that is what is left to check here.
-    const char* first = cordial::audio::host_backend_name();
+    const char* first = vanta::audio::host_backend_name();
     assert(std::strcmp(first, "auto") == 0);
-    ::setenv("CORDIAL_AUDIO_HOST", "something-that-does-not-exist", 1);
-    assert(std::strcmp(cordial::audio::host_backend_name(), first) == 0);
-    ::unsetenv("CORDIAL_AUDIO_HOST");
+    ::setenv("VANTA_AUDIO_HOST", "something-that-does-not-exist", 1);
+    assert(std::strcmp(vanta::audio::host_backend_name(), first) == 0);
+    ::unsetenv("VANTA_AUDIO_HOST");
     std::printf("ok: the_host_backend_is_read_once\n");
 }
 
@@ -296,7 +296,7 @@ void the_host_backend_is_read_once() {
 /// the whole run its audio. The first attempt fails, the daemon comes up, and a
 /// later caller has to get the connection.
 void a_connection_that_failed_is_retried_once_the_wait_has_passed() {
-    using cordial::audio::testing::RetryingSlot;
+    using vanta::audio::testing::RetryingSlot;
     using Clock = std::chrono::steady_clock;
     int session = 0;
     bool daemon_up = false;
@@ -333,7 +333,7 @@ void a_connection_that_failed_is_retried_once_the_wait_has_passed() {
 /// The connector is told which attempt it is, so the repeated failures of a
 /// daemon that never comes up are logged once rather than on every retry.
 void only_the_first_attempt_is_marked_first() {
-    using cordial::audio::testing::RetryingSlot;
+    using vanta::audio::testing::RetryingSlot;
     using Clock = std::chrono::steady_clock;
     Clock::time_point t{};
     auto now = [&] { return t; };
@@ -356,7 +356,7 @@ void only_the_first_attempt_is_marked_first() {
 /// slot configured that way still does. Without the retry above, the previous
 /// test fails here.
 void a_slot_that_never_retries_keeps_its_first_failure() {
-    using cordial::audio::testing::RetryingSlot;
+    using vanta::audio::testing::RetryingSlot;
     using Clock = std::chrono::steady_clock;
     Clock::time_point t{};
     auto now = [&] { return t; };
@@ -379,25 +379,25 @@ void a_slot_that_never_retries_keeps_its_first_failure() {
 void a_live_change_of_sink_is_seen_by_the_next_reader_and_says_what_it_could_not_do() {
     // The seed comes from the environment, once. This is the only reader in this
     // binary, so nothing has consumed it yet.
-    ::setenv("CORDIAL_AUDIO_SINK", "sink-from-the-environment", 1);
-    assert(cordial::audio::configured_output_device() == "sink-from-the-environment");
+    ::setenv("VANTA_AUDIO_SINK", "sink-from-the-environment", 1);
+    assert(vanta::audio::configured_output_device() == "sink-from-the-environment");
 
     // No stream is open, so nothing can be moved and no session is touched. The
     // value still changes, because a stream opened a moment later must use it,
     // and the answer says nothing moved rather than implying it did.
-    cordial::audio::OutputSwitch r = cordial::audio::set_output_device("sink-b");
-    assert(cordial::audio::configured_output_device() == "sink-b");
+    vanta::audio::OutputSwitch r = vanta::audio::set_output_device("sink-b");
+    assert(vanta::audio::configured_output_device() == "sink-b");
     assert(r.moved == 0);
     assert(!r.note.empty());
 
     // Control: the opposite change flips it back, and empty is the default.
-    r = cordial::audio::set_output_device("");
-    assert(cordial::audio::configured_output_device().empty());
+    r = vanta::audio::set_output_device("");
+    assert(vanta::audio::configured_output_device().empty());
     assert(r.moved == 0);
 
     // And the environment is not read a second time: it would undo the above.
-    assert(cordial::audio::configured_output_device().empty());
-    ::unsetenv("CORDIAL_AUDIO_SINK");
+    assert(vanta::audio::configured_output_device().empty());
+    ::unsetenv("VANTA_AUDIO_SINK");
     std::printf("ok: a_live_change_of_sink_is_seen_by_the_next_reader_and_says_what_it_could_not_do\n");
 }
 
@@ -408,7 +408,7 @@ void a_live_change_of_sink_is_seen_by_the_next_reader_and_says_what_it_could_not
 // not open one.
 
 void a_chosen_source_is_the_target_a_missing_one_falls_back_and_none_is_not_a_fallback() {
-    using cordial::audio::testing::choose_input_target;
+    using vanta::audio::testing::choose_input_target;
     const std::vector<std::string> sources = {
         "alsa_input.usb-Headset-00.mono-fallback",
         "alsa_input.pci-0000_00_1f.3.analog-stereo",
@@ -437,35 +437,35 @@ void a_chosen_source_is_the_target_a_missing_one_falls_back_and_none_is_not_a_fa
 /// environment, changing it, reading it back and asking the shell's C ABI for
 /// the source list with a null out-pointer must all leave the process with no
 /// capture stream, and changing it with nothing recording must say there was
-/// nothing to move. `cordial_audio_sources` with a real session is held to the
+/// nothing to move. `vanta_audio_sources` with a real session is held to the
 /// same count from the shell's side in `audio_devices.rs`.
 void choosing_a_microphone_opens_no_microphone() {
-    assert(cordial::audio::active_capture_streams() == 0);
-    ::setenv("CORDIAL_AUDIO_SOURCE", "source-from-the-environment", 1);
-    assert(cordial::audio::configured_input_device() == "source-from-the-environment");
-    assert(cordial::audio::active_capture_streams() == 0);
+    assert(vanta::audio::active_capture_streams() == 0);
+    ::setenv("VANTA_AUDIO_SOURCE", "source-from-the-environment", 1);
+    assert(vanta::audio::configured_input_device() == "source-from-the-environment");
+    assert(vanta::audio::active_capture_streams() == 0);
 
-    cordial::audio::OutputSwitch r = cordial::audio::set_input_device("source-b");
-    assert(cordial::audio::configured_input_device() == "source-b");
+    vanta::audio::OutputSwitch r = vanta::audio::set_input_device("source-b");
+    assert(vanta::audio::configured_input_device() == "source-b");
     assert(r.moved == 0);
     assert(!r.note.empty());
-    assert(cordial::audio::active_capture_streams() == 0);
+    assert(vanta::audio::active_capture_streams() == 0);
 
     // Control: the opposite change flips it back, and empty is the default.
-    r = cordial::audio::set_input_device("");
-    assert(cordial::audio::configured_input_device().empty());
-    assert(cordial::audio::active_capture_streams() == 0);
+    r = vanta::audio::set_input_device("");
+    assert(vanta::audio::configured_input_device().empty());
+    assert(vanta::audio::active_capture_streams() == 0);
 
     // The environment is read once, and the sink's choice is a separate thing.
-    assert(cordial::audio::configured_input_device().empty());
-    assert(cordial::audio::configured_output_device().empty());
-    ::unsetenv("CORDIAL_AUDIO_SOURCE");
+    assert(vanta::audio::configured_input_device().empty());
+    assert(vanta::audio::configured_output_device().empty());
+    ::unsetenv("VANTA_AUDIO_SOURCE");
 
-    assert(cordial_audio_sources(nullptr) == 0);
-    assert(cordial_audio_capture_streams() == 0);
+    assert(vanta_audio_sources(nullptr) == 0);
+    assert(vanta_audio_capture_streams() == 0);
     // Resolving "no choice" walks no registry and opens nothing.
-    assert(cordial::audio::resolve_input_target("").empty());
-    assert(cordial::audio::active_capture_streams() == 0);
+    assert(vanta::audio::resolve_input_target("").empty());
+    assert(vanta::audio::active_capture_streams() == 0);
     std::printf("ok: choosing_a_microphone_opens_no_microphone\n");
 }
 
@@ -474,9 +474,9 @@ void choosing_a_microphone_opens_no_microphone() {
 int main() {
     // These two are read once and cached, so a developer who builds with either
     // set in the shell would otherwise fail a check that is about the code.
-    ::unsetenv("CORDIAL_AUDIO_HOST");
-    ::unsetenv("CORDIAL_AUDIO_SINK");
-    ::unsetenv("CORDIAL_AUDIO_SOURCE");
+    ::unsetenv("VANTA_AUDIO_HOST");
+    ::unsetenv("VANTA_AUDIO_SINK");
+    ::unsetenv("VANTA_AUDIO_SOURCE");
     a_full_queue_fills_the_buffer_exactly();
     an_empty_queue_produces_silence_not_stale_bytes();
     a_short_queue_fills_what_it_has_and_pads_the_rest_with_silence();

@@ -8,7 +8,7 @@ Three things must be true before a call does anything, and they are recorded in 
 |---|---|---|
 | **Request** | `capabilities` in `plugin.json` | The plugin author |
 | **Grant** | `plugin-grants.json` inside the profile | The user |
-| **Check** | `cordial_plugins::broker::Broker`, on every call, before any handler runs | Cordial |
+| **Check** | `vanta_plugins::broker::Broker`, on every call, before any handler runs | Vanta |
 
 If installing a plugin were enough to grant what it asked for, the manifest would be a formality.
 
@@ -19,7 +19,7 @@ A plugin absent from the grants file gets nothing, and a capability it requested
 | Situation | Result |
 |---|---|
 | `plugin-grants.json` is missing | Nothing is granted. |
-| It is malformed | Nothing is granted, and Cordial says so: `plugin grants: <path> is not usable (<error>); granting nothing`. A typo must not become a privilege escalation. |
+| It is malformed | Nothing is granted, and Vanta says so: `plugin grants: <path> is not usable (<error>); granting nothing`. A typo must not become a privilege escalation. |
 | It names an unknown capability, anywhere | **Nothing is granted to anybody.** The first unknown name abandons the whole document: `… (unknown capability "process.spawn" granted to "x"); granting nothing`. |
 | `plugin-enabled.json` is malformed | Every plugin is treated as enabled (`plugins: <path> is not usable (<error>); treating every plugin as enabled`), except ids in `SHIPS_DISABLED`, today `fps-flex`, which stay off. The grants file fails closed; the enablement file does not. Why: [ADR-003](../adr/ADR-003-plugin-isolation.md). |
 
@@ -27,7 +27,7 @@ There is no capability meaning "anything" and no grants entry meaning "all". The
 
 ## The fifteen capabilities
 
-The list is closed and lives in `crates/cordial-plugins/src/capability.rs`. The method-to-capability mapping is a closed table in `protocol.rs::required_capability`, so a typo in a method name fails as unknown rather than falling through to a check that happens to pass.
+The list is closed and lives in `crates/vanta-plugins/src/capability.rs`. The method-to-capability mapping is a closed table in `protocol.rs::required_capability`, so a typo in a method name fails as unknown rather than falling through to a check that happens to pass.
 
 | Capability | What it permits | Methods it gates |
 |---|---|---|
@@ -36,12 +36,12 @@ The list is closed and lives in `crates/cordial-plugins/src/capability.rs`. The 
 | `events.publish` | Broadcast on a type this plugin declared | `events.publish` |
 | `events.subscribe` | Receive events, including ones other plugins declared | `events.subscribe` |
 | `flags.read` | Read the resolved flag set and which layer set each value | `flags.get`, `flags.list` |
-| `flags.write` | Contribute flags that take effect at the next launch, including Cordial's own `Cordial*` settings | `flags.set` |
+| `flags.write` | Contribute flags that take effect at the next launch, including Vanta's own `Vanta*` settings | `flags.set` |
 | `flags.write.dynamic` | Change a `DFFlag`/`DFInt`/`DFString` while the client runs | `flags.setDynamic` (**never works**) |
-| `lifecycle.read` | Hear the core events under `cordial/` | `lifecycle.subscribe` (an acknowledgement) |
-| `log` | Write lines into Cordial's own output | `log.write` |
+| `lifecycle.read` | Hear the core events under `vanta/` | `lifecycle.subscribe` (an acknowledgement) |
+| `log` | Write lines into Vanta's own output | `log.write` |
 | `notify.send` | Post a desktop notification through the portal | `notify.send` |
-| `presence.set` | Publish and clear Discord Rich Presence; also hear `cordial/game.presence` | `presence.set`, `presence.clear` |
+| `presence.set` | Publish and clear Discord Rich Presence; also hear `vanta/game.presence` | `presence.set`, `presence.clear` |
 | `settings.read` | Read this plugin's own settings document and the user's answers to its declared preferences | `settings.get`, `preferences.get` |
 | `settings.write` | Replace this plugin's own settings document | `settings.set` |
 | `state.read` | Read which experience, server and Roblox user id the client is on | `state.get` |
@@ -91,7 +91,7 @@ Passing the broker is not the same as reaching an effect. Refusals that come fro
 | `scheme "file" is refused; only http and https may be opened` | `url.open` with a scheme other than `http`/`https`. |
 | `"../../etc" must be a path inside the plugin's own directory` | `assets.override` with an absolute or `..` path. |
 | `Discord is not running` | `presence.set` with no Discord IPC socket answering. |
-| `no broker wired for "flags.set"` | Only from `cordial_plugins::host::Session`, the test host. The client's own host in `plugin_host.rs` serves it. |
+| `no broker wired for "flags.set"` | Only from `vanta_plugins::host::Session`, the test host. The client's own host in `plugin_host.rs` serves it. |
 
 An `error` is used for an unwired method rather than `denied`, so you are not sent looking for a permission that was never the problem. Each method's own refusals are on its page: [flags](flags.md), [surface](surface.md).
 
@@ -108,8 +108,8 @@ The file is `<profile>/plugin-grants.json`:
 
 Plugin code is installed once for the machine. What a plugin may do belongs to the account, so approving something in a profile you made to try it out does not approve it in the profile you play on ([ADR-013](../adr/ADR-013-per-profile-configuration.md)).
 
-- A pre-existing global `~/.config/cordial/plugin-grants.json` is **moved** into whichever profile first looks for one, in practice `default`. Every other profile starts at default deny. The move is skipped if the profile already has its own file, and a failed move leaves the old file untouched. Why: [ADR-013](../adr/ADR-013-per-profile-configuration.md).
-- `CORDIAL_PLUGIN_GRANTS` overrides the path for every profile at once. It is a development switch.
+- A pre-existing global `~/.config/vanta/plugin-grants.json` is **moved** into whichever profile first looks for one, in practice `default`. Every other profile starts at default deny. The move is skipped if the profile already has its own file, and a failed move leaves the old file untouched. Why: [ADR-013](../adr/ADR-013-per-profile-configuration.md).
+- `VANTA_PLUGIN_GRANTS` overrides the path for every profile at once. It is a development switch.
 
 ## Granting and revoking
 
@@ -144,8 +144,8 @@ Withheld capabilities are named at startup: `plugin <id>: not granted flags.writ
 
 ## Effects, never channels
 
-A plugin never receives a socket, a file descriptor or a D-Bus connection. Cordial holds the permission and performs the effect; the plugin sends a payload. `presence.set` takes a presence structure and Cordial owns the Discord socket. `notify.send` and `url.open` are the same shape over the portal. Why: [ADR-007](../adr/ADR-007-host-resources-are-brokered.md), [ADR-018](../adr/ADR-018-plugin-sub-sandboxing.md).
+A plugin never receives a socket, a file descriptor or a D-Bus connection. Vanta holds the permission and performs the effect; the plugin sends a payload. `presence.set` takes a presence structure and Vanta owns the Discord socket. `notify.send` and `url.open` are the same shape over the portal. Why: [ADR-007](../adr/ADR-007-host-resources-are-brokered.md), [ADR-018](../adr/ADR-018-plugin-sub-sandboxing.md).
 
-**If you need something the capabilities do not cover, open an issue.** A resource Cordial does not already broker needs a change to Cordial, not to your manifest. A broker is a payload type and an effect, which makes adding one small, and that is also the test: if a proposed broker cannot be small, the capability is too broad and wants splitting.
+**If you need something the capabilities do not cover, open an issue.** A resource Vanta does not already broker needs a change to Vanta, not to your manifest. A broker is a payload type and an effect, which makes adding one small, and that is also the test: if a proposed broker cannot be small, the capability is too broad and wants splitting.
 
 [ADR-027](../adr/ADR-027-plugin-overlays.md) proposes `ui.notify`, `ui.hud` and `ui.panel`. Its status is proposed and none of those names exists in `capability.rs`. It is a design under discussion, not something to call.

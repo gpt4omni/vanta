@@ -1,7 +1,7 @@
-# Desktop integration audit — what makes Cordial feel native, and what does not
+# Desktop integration audit — what makes Vanta feel native, and what does not
 
 **Status:** a read-only audit, 2026-08-27, of every file that decides how
-Cordial presents itself to a Linux desktop before the engine is even involved:
+Vanta presents itself to a Linux desktop before the engine is even involved:
 the `.desktop` entry, the icon set, the AppStream metadata, the `GApplication`
 wiring, and the deep-link path from a browser click to the engine's message
 bus. Nothing here was built or run — a frame-rate measurement was in progress
@@ -24,15 +24,15 @@ missing, because a `.desktop` entry that claims a URI scheme and a client that
 drops what it is handed is worse than neither. It is not the case here. Four
 layers, each one read directly rather than inferred:
 
-1. **`packaging/io.github.luohoa97.Cordial.desktop`** declares
+1. **`packaging/io.github.gpt4omni.Vanta.desktop`** declares
    `MimeType=x-scheme-handler/roblox-player;x-scheme-handler/roblox;` and
-   `Exec=cordial-shell %u` — the `%u` is load-bearing, and the file's own
+   `Exec=vanta-shell %u` — the `%u` is load-bearing, and the file's own
    comment records that an earlier version without it exported a handler that
    never received the URL it was invoked for.
-2. **`crates/cordial-shell/src/main.rs`** registers the `GApplication` with
+2. **`crates/vanta-shell/src/main.rs`** registers the `GApplication` with
    `ApplicationFlags::HANDLES_OPEN | ApplicationFlags::HANDLES_COMMAND_LINE`
    and wires both `connect_command_line` and `connect_open`.
-   `crates/cordial-shell/src/deep_link.rs` then validates whatever arrives —
+   `crates/vanta-shell/src/deep_link.rs` then validates whatever arrives —
    scheme, a 2048-byte cap, printable-ASCII-only — before it goes anywhere,
    and reads `argv` rather than the `GFile` the `open` signal hands over,
    because a test in the same file (`gio_reshapes_a_roblox_link_...`) pins
@@ -41,16 +41,16 @@ layers, each one read directly rather than inferred:
    a corrupted link. The scheme list here (`SCHEMES` in `deep_link.rs`) is
    commented as having to stay in step with the `.desktop` file's `MimeType`
    line, and it currently does.
-3. **`crates/cordial-runtime/src/deeplink.rs`** receives the validated link as
-   `cordial-run --join-url <url>`, re-validates it (the same two schemes, the
+3. **`crates/vanta-runtime/src/deeplink.rs`** receives the validated link as
+   `vanta-run --join-url <url>`, re-validates it (the same two schemes, the
    same cap, the same ASCII-only rule — deliberately duplicated rather than
-   shared, because `cordial-shell` does not link the runtime), translates
+   shared, because `vanta-shell` does not link the runtime), translates
    roblox.com's desktop-launcher link shape into the mobile shape the engine's
    own `FStringGameLaunchLinkURL` pattern matches, and publishes it on the
    engine's `MessageBus` as `Linking.detectURL`.
 4. **This was measured against a running engine, not assumed.** The module's
    own doc comment records ten launches producing a `Game.launch` naming the
-   place from the link, with `CORDIAL_DEEPLINK_NO_PUBLISH=1` as the control
+   place from the link, with `VANTA_DEEPLINK_NO_PUBLISH=1` as the control
    (same link, same launch, publish suppressed, `Game.launch` stays empty).
    `docs/analysis/deep-links.md` is the full protocol writeup this rests on.
 
@@ -67,21 +67,21 @@ is the right place for it to live.
 
 ## 2. The `.desktop` entry itself
 
-Read in full at `packaging/io.github.luohoa97.Cordial.desktop`. Present and
+Read in full at `packaging/io.github.gpt4omni.Vanta.desktop`. Present and
 correct: `Type=Application`, `Name`, `GenericName=Roblox Client`,
-`Comment=Run Roblox on Linux`, `Icon=io.github.luohoa97.Cordial`,
+`Comment=Run Roblox on Linux`, `Icon=io.github.gpt4omni.Vanta`,
 `Terminal=false`, `Categories=Game;`, `StartupNotify=true`,
-`StartupWMClass=Cordial`, and the `MimeType` line from §1.
+`StartupWMClass=Vanta`, and the `MimeType` line from §1.
 
 Two things worth knowing that are easy to assume are bugs and are not:
 
-- **`Exec=cordial-shell %u`, not `cordial %u`.** The file's own comment
-  explains this is deliberate — nothing is installed as plain `cordial`, and a
-  shortened `Exec` line produced `bwrap: execvp cordial: No such file or
+- **`Exec=vanta-shell %u`, not `vanta %u`.** The file's own comment
+  explains this is deliberate — nothing is installed as plain `vanta`, and a
+  shortened `Exec` line produced `bwrap: execvp vanta: No such file or
   directory` on every click before this was fixed. If this reads like a typo
   in a future pass, it is not one.
-- **`StartupWMClass=Cordial` is enforced by a compiled-in test**, not just a
-  comment: `crates/cordial-shell/src/host_window.rs` has
+- **`StartupWMClass=Vanta` is enforced by a compiled-in test**, not just a
+  comment: `crates/vanta-shell/src/host_window.rs` has
   `app_id_matches_the_desktop_entry`, which `include_str!`s the `.desktop`
   file at compile time and asserts its `StartupWMClass` equals the
   `host_window::APP_ID` constant GTK actually sets on the toplevel. A drift
@@ -102,18 +102,18 @@ at further, because the right keyword set is a product question, not a
 technical one.
 
 **No `Actions=` group.** A right-click quick action ("New profile", "Settings")
-is a nicety GNOME and KDE both support and Cordial does not use. Not a defect —
+is a nicety GNOME and KDE both support and Vanta does not use. Not a defect —
 most single-window applications do not need one — but worth naming as an
 option rather than an oversight nobody considered.
 
 ## 3. Icons
 
 `packaging/icons/hicolor/scalable/apps/` carries two SVGs, both installed by
-every packaging path checked (`packaging/io.github.luohoa97.Cordial.yml`,
-`packaging/aur/cordial-git/PKGBUILD`, and referenced identically in
-`packaging/rpm/cordial.spec`'s comments): `io.github.luohoa97.Cordial.svg`, the
-real icon, and `io.github.luohoa97.Cordial.Frostbite.svg`, the twice-a-year
-alternate `crates/cordial-shell/src/branding.rs` switches to — installed
+every packaging path checked (`packaging/io.github.gpt4omni.Vanta.yml`,
+`packaging/aur/vanta-git/PKGBUILD`, and referenced identically in
+`packaging/rpm/vanta.spec`'s comments): `io.github.gpt4omni.Vanta.svg`, the
+real icon, and `io.github.gpt4omni.Vanta.Frostbite.svg`, the twice-a-year
+alternate `crates/vanta-shell/src/branding.rs` switches to — installed
 unconditionally, with the reasoning recorded in the Flatpak manifest's own
 comment, because Flatpak only exports files whose names begin with the app ID
 and a name resolving to nothing on the one day nobody is watching for it is
@@ -125,11 +125,11 @@ they need — this is not the same situation as a toolkit that only reads fixed
 PNG sizes from the icon cache, which is what the historical advice to ship
 16/32/48/64/128/256 PNGs alongside the SVG was for.
 
-**One real gap: no symbolic variant.** A `io.github.luohoa97.Cordial-symbolic.svg`
+**One real gap: no symbolic variant.** A `io.github.gpt4omni.Vanta-symbolic.svg`
 (single-colour, following the standard "symbolic" style GNOME's HIG documents)
 is what GNOME Shell prefers for notification icons and what a high-contrast
 theme substitutes for the full-colour icon in some contexts. Its absence is
-not a defect today — Cordial does not currently send desktop notifications
+not a defect today — Vanta does not currently send desktop notifications
 that would show one — but it is the kind of small polish item Flathub's own
 quality guidelines call out, and worth having whenever the icon set is next
 touched. Not fixed here because `packaging/icons/` is out of reach for this
@@ -138,29 +138,29 @@ an actual drawing, not a generated stand-in.
 
 ## 4. MIME registration beyond the two URI schemes
 
-Cordial registers no file-extension MIME type, and that is correct rather than
+Vanta registers no file-extension MIME type, and that is correct rather than
 missing. The one file type a user interacts with directly — a plugin's
 `.tar.zst` archive — is picked through a `GtkFileDialog` in
-`crates/cordial-shell/src/settings.rs` (`choose_file`), which is a deliberate
+`crates/vanta-shell/src/settings.rs` (`choose_file`), which is a deliberate
 act inside Settings rather than a double-click-to-install flow, and
 `docs/adr/ADR-014-plugin-registry-and-unpacking.md` is where that shape is
-decided. Registering `.tar.zst` as "opens with Cordial" would also collide
+decided. Registering `.tar.zst` as "opens with Vanta" would also collide
 with every other tool on a desktop that already claims that extension for
 plain archives. Nothing to change here.
 
 ## 5. GameMode, and other things already defaulted away correctly
 
-`crates/cordial-shell/src/shell_config.rs`'s `gamemode` field is **default
+`crates/vanta-shell/src/shell_config.rs`'s `gamemode` field is **default
 on**, with the comment stating why in exactly the terms this audit's brief
 asked about: "a performance setting nobody finds is a performance setting
 nobody gets," and "it costs nothing on a machine without gamemoded — the
 request is a D-Bus call that fails, the client says so once and carries on."
-`false` here is what becomes `CORDIAL_GAMEMODE=0`, so the mechanism is opt-out
+`false` here is what becomes `VANTA_GAMEMODE=0`, so the mechanism is opt-out
 rather than opt-in. This is the shape every other item in this section is
 being measured against, and it already exists.
 
 Sign-in is Quick Sign-in, a code flow needing no typing (README's status
-table, corroborated by the presence of `crates/cordial-runtime/src/cookies.rs`
+table, corroborated by the presence of `crates/vanta-runtime/src/cookies.rs`
 persisting the session to the desktop keyring rather than a file). Profile
 choice is a chooser above the Launch button that creates one if none exists.
 Neither asks for configuration a first-time user would have to look up.
@@ -173,8 +173,8 @@ under "Interface looked like a low-end phone: Surface hardcoded to 720p and
 `dpiScale` to 1.0 — Roblox lays out in dp and picks asset resolutions from
 exactly those." That is a phone's density, not a desktop monitor's, and fixing
 it today needs two environment variables set outside the application —
-`CORDIAL_RESOLUTION` and `CORDIAL_DPI_SCALE` — read from `grep` across
-`crates/cordial-shell/src/settings.rs`, which has no UI control for either.
+`VANTA_RESOLUTION` and `VANTA_DPI_SCALE` — read from `grep` across
+`crates/vanta-shell/src/settings.rs`, which has no UI control for either.
 
 **This is a real "press one button and play" gap** — a first launch renders
 at a size and density nobody would choose, and the fix is not discoverable

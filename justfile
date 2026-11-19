@@ -20,8 +20,8 @@ clean what="":
     # those. The actual fix is `df` and then deleting a target directory.
     #
     # Deliberately NOT touched, however much space they hold:
-    #   ~/.local/share/cordial/profiles/*   a user's saved sessions and identity
-    #   ~/.cache/cordial-known-good/*       the last engine known to work, which
+    #   ~/.local/share/vanta/profiles/*   a user's saved sessions and identity
+    #   ~/.cache/vanta-known-good/*       the last engine known to work, which
     #                                       matters more than usual while the
     #                                       updater has no fallback of its own
     #                                       (TASKS.md U2)
@@ -58,8 +58,8 @@ build where="host":
     # and running outside it is unnecessary.
     case "{{ where }}" in
       host)
-        # No `cordial-runtime/vr`: it needs Boost's headers, which a host
-        # build should not have to have. Add `--features cordial-runtime/vr`
+        # No `vanta-runtime/vr`: it needs Boost's headers, which a host
+        # build should not have to have. Add `--features vanta-runtime/vr`
         # to build Play in VR here.
         cargo build --release
         ;;
@@ -73,13 +73,13 @@ build where="host":
         # `my-distrobox`: it builds with whatever that container carries, and on
         # a Fedora 43 image that is gtk4 4.20.3 against the 4.22 this workspace
         # pins, which dies in three *-sys build scripts.
-        box="${CORDIAL_DISTROBOX:-my-distrobox}"
+        box="${VANTA_DISTROBOX:-my-distrobox}"
         # Not `grep -q`. It exits at the first match and closes the pipe, which
         # SIGPIPEs `distrobox list`, and `set -o pipefail` then reports the whole
         # pipeline as failed — so the check inverted and claimed a container that
         # plainly exists did not. Plain grep reads all of its input.
         if ! distrobox list 2>/dev/null | grep "| $box " >/dev/null; then
-            echo "no distrobox called '$box' (set CORDIAL_DISTROBOX to pick another)" >&2
+            echo "no distrobox called '$box' (set VANTA_DISTROBOX to pick another)" >&2
             distrobox list 2>/dev/null >&2 || true
             exit 1
         fi
@@ -91,11 +91,11 @@ build where="host":
         # the dependency was installed, the build succeeded, and `openWindow`
         # still did nothing.
         distrobox enter "$box" -- bash -lc \
-          'CARGO_TARGET_DIR=target-distrobox cargo build --release --features cordial-shell/webview,cordial-runtime/webview,cordial-runtime/vr'
+          'CARGO_TARGET_DIR=target-distrobox cargo build --release --features vanta-shell/webview,vanta-runtime/webview,vanta-runtime/vr'
         echo "built into target-distrobox/release"
         ;;
       toolbox)
-        # Cordial's own container, and the recommended way to build. `distrobox`
+        # Vanta's own container, and the recommended way to build. `distrobox`
         # below predates it and is kept working for anyone who already has one.
         #
         # It exists because the two things the full client needs are exactly the
@@ -110,9 +110,9 @@ build where="host":
         # missing package rather than an old one.
         #
         # To create it:
-        #   distrobox create --name cordial \
+        #   distrobox create --name vanta \
         #     --image registry.fedoraproject.org/fedora-toolbox:44 --yes
-        #   distrobox enter cordial -- sudo dnf install -y \
+        #   distrobox enter vanta -- sudo dnf install -y \
         #     gtk4-devel libadwaita-devel webkitgtk6.0-devel pipewire-devel \
         #     clang cmake gcc-c++ pkgconf-pkg-config openssl-devel \
         #     wayland-devel vulkan-loader-devel libxkbcommon-devel \
@@ -131,29 +131,29 @@ build where="host":
         # DT_INIT on any library with a .relr.dyn section -- every Fedora 44
         # one -- and the AppImage then dies in the dynamic loader before main
         # with nothing printed.
-        box="${CORDIAL_TOOLBOX:-cordial}"
+        box="${VANTA_TOOLBOX:-vanta}"
         if ! distrobox list 2>/dev/null | grep "| $box " >/dev/null; then
-            echo "no container called '$box' (set CORDIAL_TOOLBOX to pick another)" >&2
+            echo "no container called '$box' (set VANTA_TOOLBOX to pick another)" >&2
             echo "create it with the commands in this recipe's comment" >&2
             exit 1
         fi
         # Both crates' `webview` features, not only the shell's. The shell holds
-        # the WebKit window and `cordial-runtime` holds the presenter that calls
+        # the WebKit window and `vanta-runtime` holds the presenter that calls
         # it, so enabling one leaves the caller cfg'd out, nothing references
         # `webview::open`, the linker collects it, and the binary carries no
         # libwebkitgtk at all. That is the same dead-code shape that made web
         # views silently do nothing for months, reappearing one layer up.
-        # `readelf -d target-toolbox/release/cordial-run | grep -i webkit` is the
+        # `readelf -d target-toolbox/release/vanta-run | grep -i webkit` is the
         # check that it actually linked.
         distrobox enter "$box" -- bash -lc \
-          'CARGO_TARGET_DIR=target-toolbox cargo build --release --features cordial-shell/webview,cordial-runtime/webview,cordial-runtime/vr'
+          'CARGO_TARGET_DIR=target-toolbox cargo build --release --features vanta-shell/webview,vanta-runtime/webview,vanta-runtime/vr'
         echo "built into target-toolbox/release"
         ;;
       nix)
         # Unverified on an ostree host, where /nix is part of the read-only image
         # and nix-daemon is disabled. See CONTRIBUTING.md.
         nix develop --command bash -c \
-          'CARGO_TARGET_DIR=target-nix cargo build --release --features cordial-runtime/vr'
+          'CARGO_TARGET_DIR=target-nix cargo build --release --features vanta-runtime/vr'
         echo "built into target-nix/release"
         ;;
       *)
@@ -169,7 +169,7 @@ test:
 # Build and test, the pre-pull-request gate
 check: build test
 
-# Start Cordial: just dev [--in host|toolbox|distrobox|nix] [--apk PATH] [--play]
+# Start Vanta: just dev [--in host|toolbox|distrobox|nix] [--apk PATH] [--play]
 dev *args:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -192,7 +192,7 @@ dev *args:
             # running client without a human pressing Roblox. Goes through the
             # window's own `win.launch` action, which is the same thing the
             # button does.
-            --play)  export CORDIAL_AUTOSTART=1; shift ;;
+            --play)  export VANTA_AUTOSTART=1; shift ;;
             *)       extra+=("$1"); shift ;;
         esac
     done
@@ -210,8 +210,8 @@ dev *args:
       nix)       bindir=target-nix/release ;;
       *)         echo "usage: just dev [--in host|toolbox|distrobox|nix] [--apk PATH]" >&2; exit 1 ;;
     esac
-    if [ ! -x "$bindir/cordial-shell" ]; then
-        echo "no cordial-shell in $bindir — did 'just build $env' succeed?" >&2
+    if [ ! -x "$bindir/vanta-shell" ]; then
+        echo "no vanta-shell in $bindir — did 'just build $env' succeed?" >&2
         exit 1
     fi
     # Deliberately no check that the APK exists and no advice about how to get
@@ -219,25 +219,25 @@ dev *args:
     # the shell's job — it is what the user actually sees, and a second copy of
     # that message here would drift out of step with it.
     if [ -n "$apk" ]; then
-        export CORDIAL_APK="$apk"
+        export VANTA_APK="$apk"
     fi
     # The development control surface, on by default for `just dev` because
     # that is what `just dev` is for. It costs a socket in the profile
     # directory and nothing else until something connects, and having it off
     # by default here would mean every investigation started by restarting the
     # client -- which is exactly the friction it was built to remove. Set
-    # CORDIAL_DEV_CONTROL=0 to run without it.
+    # VANTA_DEV_CONTROL=0 to run without it.
     #
     # Exported rather than passed as a flag because the shell launches the
     # client as a child and the child inherits the environment; `launch.rs`
     # adds to that environment rather than clearing it.
-    export CORDIAL_DEV_CONTROL="${CORDIAL_DEV_CONTROL:-1}"
-    if [ "$CORDIAL_DEV_CONTROL" != 0 ]; then
+    export VANTA_DEV_CONTROL="${VANTA_DEV_CONTROL:-1}"
+    if [ "$VANTA_DEV_CONTROL" != 0 ]; then
         echo "dev control on; attach with: just mcp" >&2
     fi
     # **Built-in plugins, from the source tree rather than from a package.**
     #
-    # `manifest::system_plugin_dir` looks in `/usr/share/cordial/plugins` (or
+    # `manifest::system_plugin_dir` looks in `/usr/share/vanta/plugins` (or
     # `/app/share/...` in the Flatpak), which only a packaging script ever
     # populates -- so a built-in plugin could not be run at all without
     # building a .deb or an .rpm first. Reported as "built in plugins cant be
@@ -248,9 +248,9 @@ dev *args:
     # The override already existed for distributions that install elsewhere.
     # Pointing it at `plugins/` makes `just dev` load exactly what the
     # packaging scripts would install, from the files being edited.
-    export CORDIAL_SYSTEM_PLUGIN_DIR="${CORDIAL_SYSTEM_PLUGIN_DIR:-$PWD/plugins}"
-    echo "built-in plugins from $CORDIAL_SYSTEM_PLUGIN_DIR" >&2
-    exec "./$bindir/cordial-shell" ${extra+"${extra[@]}"}
+    export VANTA_SYSTEM_PLUGIN_DIR="${VANTA_SYSTEM_PLUGIN_DIR:-$PWD/plugins}"
+    echo "built-in plugins from $VANTA_SYSTEM_PLUGIN_DIR" >&2
+    exec "./$bindir/vanta-shell" ${extra+"${extra[@]}"}
 
 # Run the engine directly: just client [--in host|distrobox|nix] [--apk PATH] [--run SECS]
 client *args:
@@ -258,7 +258,7 @@ client *args:
     set -euo pipefail
     set -- {{ args }}
     apk="" lib="" run="600" env=host x11=0 extra=()
-    # `--apk` and `--lib-dir` are spelled the way cordial-run spells them: this
+    # `--apk` and `--lib-dir` are spelled the way vanta-run spells them: this
     # recipe exists to stop people assembling that command by hand, not to teach
     # a second vocabulary for it. Anything unrecognised passes straight through,
     # so --dump-classes and friends still work.
@@ -283,28 +283,28 @@ client *args:
     # until ADR-011's removal trigger fires.
     # Inverted, because the runtime's default inverted. `backend()` now prefers
     # Wayland whenever `WAYLAND_DISPLAY` is set, so *not* exporting
-    # CORDIAL_WAYLAND no longer selects X11 -- it selects nothing, and --x11
+    # VANTA_WAYLAND no longer selects X11 -- it selects nothing, and --x11
     # would have silently kept giving you Wayland. Asking for X11 is now an
-    # explicit CORDIAL_X11, which is the only thing that still forces it.
+    # explicit VANTA_X11, which is the only thing that still forces it.
     if [ "${x11:-0}" = 1 ]; then
-        export CORDIAL_X11=1
+        export VANTA_X11=1
     fi
-    # The Android ABI this build of Cordial can execute, spelled the way the
+    # The Android ABI this build of Vanta can execute, spelled the way the
     # APK's own `lib/` directory spells it -- the shell-script mirror of
-    # `cordial_update::apk::HOST_ABI`, which a `just` recipe has no way to
+    # `vanta_update::apk::HOST_ABI`, which a `just` recipe has no way to
     # borrow directly. Only this one spelling is needed here: the split
     # archive below is found by globbing `split_config*.apk` rather than
     # building its exact name, so this recipe never has to know that Play
     # spells the same ABI with an underscore there instead of a hyphen (see
-    # `cordial_update::install::SPLIT_APK`'s own comment for that trap --
-    # `cordial-shell/src/install.rs` got it wrong once by rebuilding that
+    # `vanta_update::install::SPLIT_APK`'s own comment for that trap --
+    # `vanta-shell/src/install.rs` got it wrong once by rebuilding that
     # filename from the hyphenated form instead of using that constant).
     case "$(uname -m)" in
         x86_64)  abi_dir=x86_64 ;;
         aarch64) abi_dir=arm64-v8a ;;
-        *) echo "unsupported host architecture $(uname -m); Cordial runs only Roblox's own x86-64 or arm64-v8a Android build" >&2; exit 1 ;;
+        *) echo "unsupported host architecture $(uname -m); Vanta runs only Roblox's own x86-64 or arm64-v8a Android build" >&2; exit 1 ;;
     esac
-    # Cordial ships no Roblox build. Sober downloads the same official Android
+    # Vanta ships no Roblox build. Sober downloads the same official Android
     # one this runtime loads, so checking there first means a debugging run needs
     # no arguments. The shell says all this properly to a user who has neither.
     sober_apk="$HOME/.var/app/org.vinegarhq.Sober/data/sober/packages/$abi_dir/com.roblox.client/base.apk"
@@ -322,10 +322,10 @@ client *args:
         # Nothing unpacked, so unpack it. On a split build the engine is in
         # split_config.<abi>.apk rather than base.apk, so try the APK given and
         # then its siblings instead of asserting which one holds it.
-        cache="${XDG_CACHE_HOME:-$HOME/.cache}/cordial/lib/$abi_dir"
+        cache="${XDG_CACHE_HOME:-$HOME/.cache}/vanta/lib/$abi_dir"
         # Re-extract when the APK it came from has changed. Presence alone was
         # the test until now, so installing a new Roblox build left the OLD
-        # engine cached and Cordial ran it against the new APK's assets --
+        # engine cached and Vanta ran it against the new APK's assets --
         # a silent version mismatch, which is worse than the cold start the
         # cache exists to avoid. mtime on the extracted file cannot be used: zip
         # preserves the stored timestamp, so it reads 1981.
@@ -367,24 +367,24 @@ client *args:
       nix)       bindir=target-nix/release ;;
       *)         echo "usage: just client [--in host|distrobox|nix] ..." >&2; exit 1 ;;
     esac
-    if [ ! -x "$bindir/cordial-run" ]; then
-        echo "no cordial-run in $bindir — did 'just build $env' succeed?" >&2
+    if [ ! -x "$bindir/vanta-run" ]; then
+        echo "no vanta-run in $bindir — did 'just build $env' succeed?" >&2
         exit 1
     fi
     # On for the same reason as in `just dev`: this recipe exists to be poked at.
-    export CORDIAL_DEV_CONTROL="${CORDIAL_DEV_CONTROL:-1}"
-    if [ "$CORDIAL_DEV_CONTROL" != 0 ]; then
+    export VANTA_DEV_CONTROL="${VANTA_DEV_CONTROL:-1}"
+    if [ "$VANTA_DEV_CONTROL" != 0 ]; then
         echo "dev control on; attach with: just mcp" >&2
     fi
     # Built-in plugins from the source tree, for the same reason `just dev`
     # does it -- see the longer comment there. Both recipes, because a plugin
     # that loads under one and not the other is a difference nobody would think
     # to suspect.
-    export CORDIAL_SYSTEM_PLUGIN_DIR="${CORDIAL_SYSTEM_PLUGIN_DIR:-$PWD/plugins}"
+    export VANTA_SYSTEM_PLUGIN_DIR="${VANTA_SYSTEM_PLUGIN_DIR:-$PWD/plugins}"
     # A long default timer on purpose: a run that ends on its own while somebody
     # is still reading the screen looks exactly like a crash, and that has
     # already cost one debugging session here.
-    exec "./$bindir/cordial-run" \
+    exec "./$bindir/vanta-run" \
         --lib-dir "$lib" --apk "$apk" \
         --host-libc --game-activity --run "$run" ${extra+"${extra[@]}"}
 
@@ -394,7 +394,7 @@ icons:
     set -euo pipefail
     # A `just dev` build installs nothing, so its window borrows whatever icon
     # the *installed* Flatpak exported -- which is why a dev build titled
-    # Frostbite still wore the Cordial mango, and why that looked like a code
+    # Frostbite still wore the Vanta mango, and why that looked like a code
     # bug rather than a missing file.
     #
     # On Wayland the compositor resolves a window's icon by name through the
@@ -402,8 +402,8 @@ icons:
     # a name that resolves to nothing gives a blank window in the switcher.
     dest="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/scalable/apps"
     mkdir -p "$dest"
-    cp packaging/icons/hicolor/scalable/apps/io.github.luohoa97.Cordial.svg "$dest/"
-    cp packaging/icons/hicolor/scalable/apps/io.github.luohoa97.Cordial.Frostbite.svg "$dest/"
+    cp packaging/icons/hicolor/scalable/apps/io.github.gpt4omni.Vanta.svg "$dest/"
+    cp packaging/icons/hicolor/scalable/apps/io.github.gpt4omni.Vanta.Frostbite.svg "$dest/"
     # Harmless if absent, and GTK re-reads scalable icons without it anyway.
     gtk-update-icon-cache -q -t -f "$(dirname "$(dirname "$dest")")" 2>/dev/null || true
     echo "installed both icons into $dest"
@@ -415,23 +415,23 @@ mcp *args:
     # Speaks MCP on stdin/stdout, so this is what an agent's MCP configuration
     # runs rather than something to type at a prompt. Register it once with
     #
-    #     claude mcp add cordial -- just mcp
+    #     claude mcp add vanta -- just mcp
     #
     # It finds the socket itself rather than being told where it is: the most
     # recently bound devctl.sock wins, so it lands on whichever client was
     # started last, whether that was `just dev`, `just client`, or a bare
-    # cordial-run with CORDIAL_DEV_CONTROL=1. There is no pid to look up either
+    # vanta-run with VANTA_DEV_CONTROL=1. There is no pid to look up either
     # -- the debugger tools ask the client for its own over the socket.
     #
     # XDG_DATA_HOME is honoured because AGENTS.md asks agents to set it so
     # parallel runs do not collide on one profile lock, and such a run puts its
     # profile somewhere else entirely.
-    root="${XDG_DATA_HOME:-$HOME/.local/share}/cordial"
-    exec python3 tools/cordial-mcp.py --profile-root "$root" {{ args }}
+    root="${XDG_DATA_HOME:-$HOME/.local/share}/vanta"
+    exec python3 tools/vanta-mcp.py --profile-root "$root" {{ args }}
 
 # `just client` with text-entry tracing, which is the one wanted most often
 client-text *args:
-    @CORDIAL_TRACE_TEXT=1 just client {{ args }}
+    @VANTA_TRACE_TEXT=1 just client {{ args }}
 
 # What a new APK needs that the stub table lacks: just symbols --lib-dir DIR
 symbols lib_dir:

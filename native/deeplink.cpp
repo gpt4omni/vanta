@@ -9,7 +9,7 @@
 // Google Play services rather than to Roblox's process. On Android the URL goes
 // the other way: Roblox's own Java receives it and calls *inward*.
 //
-// So the surface here is the set of inward calls, and Cordial is the Java side
+// So the surface here is the set of inward calls, and Vanta is the Java side
 // in this architecture — the same reasoning `cookies.cpp` sets out for
 // `nativeSetMultipleCookies`. Three of them matter:
 //
@@ -31,7 +31,7 @@
 // made-up arguments is a claim this file cannot support.
 //
 // **A URL that arrives here came from a browser click and is attacker-shaped.**
-// It is validated in `cordial_runtime::deeplink` before it reaches this file —
+// It is validated in `vanta_runtime::deeplink` before it reaches this file —
 // scheme, length, and character set — and it is never used to build a path, a
 // command line, or a format string. Here it is one `String` argument handed to
 // one native.
@@ -40,7 +40,7 @@
 // desktop play button emits `roblox-player:1+launchmode:play+gameinfo:<ticket>+…`,
 // which the engine's own link pattern does not match, so `deeplink.rs` rewrites
 // it into `roblox://experiences/start?placeId=<id>` and it is the rewrite that
-// arrives here. The one-time ticket in the original is dropped on Cordial's side
+// arrives here. The one-time ticket in the original is dropped on Vanta's side
 // and never crosses into the engine, which is deliberate: this engine is the
 // Android client and has no such ticket to redeem.
 
@@ -52,7 +52,7 @@
 #include <memory>
 #include <string>
 
-namespace cordial {
+namespace vanta {
 
 using jnivm::Class;
 using jnivm::ENV;
@@ -66,7 +66,7 @@ static auto to_jni(jnivm::ENV* env, const std::shared_ptr<T>& p) {
     return jnivm::JNITypes<std::shared_ptr<T>>::ToJNIType(env, p);
 }
 
-} // namespace cordial
+} // namespace vanta
 
 extern "C" {
 
@@ -77,10 +77,10 @@ extern "C" {
 /// names and JSON field names of the engine's own linking protocol, so calling
 /// them is how the protocol's vocabulary is read out of a running engine
 /// instead of guessed at from symbol names. Diagnostic; changes nothing.
-int cordial_deeplink_protocol_string(void* fn, const char* class_name, char* out, size_t out_len,
+int vanta_deeplink_protocol_string(void* fn, const char* class_name, char* out, size_t out_len,
                                      char* err, size_t err_len) {
     using Call = jstring (*)(JNIEnv*, jobject);
-    auto* env = cordial::process_env();
+    auto* env = vanta::process_env();
     if (!fn || !env || !class_name) {
         snprintf(err, err_len, "no JavaVM, or the native is not exported");
         return -1;
@@ -88,8 +88,8 @@ int cordial_deeplink_protocol_string(void* fn, const char* class_name, char* out
     try {
         auto cls = env->GetClass(class_name);
         jstring r = reinterpret_cast<Call>(fn)(env->GetJNIEnv(),
-                                               (jobject)cordial::to_jni(env, cls));
-        const auto* s = reinterpret_cast<cordial::String*>(r);
+                                               (jobject)vanta::to_jni(env, cls));
+        const auto* s = reinterpret_cast<vanta::String*>(r);
         const std::string value = s ? static_cast<const std::string&>(*s) : std::string();
         if (value.size() >= out_len) {
             snprintf(err, err_len, "the answer is %zu bytes and the buffer is %zu", value.size(),
@@ -116,20 +116,20 @@ int cordial_deeplink_protocol_string(void* fn, const char* class_name, char* out
 /// URL and says whether it claimed it, so a caller can tell a link that was
 /// consumed from one that fell through — the distinction between a deep link
 /// that worked and one that silently did nothing.
-int cordial_deeplink_cold_start(void* fn, const char* class_name, const char* url, int* out_handled,
+int vanta_deeplink_cold_start(void* fn, const char* class_name, const char* url, int* out_handled,
                                 char* err, size_t err_len) {
     using Call = jboolean (*)(JNIEnv*, jobject, jstring);
-    auto* env = cordial::process_env();
+    auto* env = vanta::process_env();
     if (!fn || !env || !class_name) {
         snprintf(err, err_len, "no JavaVM, or the native is not exported");
         return -1;
     }
     try {
         auto cls = env->GetClass(class_name);
-        auto arg = std::make_shared<cordial::String>(std::string(url ? url : ""));
+        auto arg = std::make_shared<vanta::String>(std::string(url ? url : ""));
         jboolean r = reinterpret_cast<Call>(fn)(env->GetJNIEnv(),
-                                               (jobject)cordial::to_jni(env, cls),
-                                               (jstring)cordial::to_jni(env, arg));
+                                               (jobject)vanta::to_jni(env, cls),
+                                               (jstring)vanta::to_jni(env, arg));
         if (out_handled) {
             *out_handled = r ? 1 : 0;
         }
@@ -146,15 +146,15 @@ int cordial_deeplink_cold_start(void* fn, const char* class_name, const char* ur
 /// A static native taking one `Context` — `JNIBaseUrlProtocol.init` and
 /// `JNIWebLoginProtocol.init`.
 ///
-/// The `Context` is a bare object. Cordial has no `android.content.Context` and
+/// The `Context` is a bare object. Vanta has no `android.content.Context` and
 /// never has; every other place the engine is handed one (`initializeNativeCode`,
 /// `initStorageManagerNativeV3`) passes the same empty stand-in, and libjnivm
 /// answers whatever is asked of it with an unresolved-symbol stub rather than
 /// crashing. If the engine ever reads something real off it, the jnivm log says
 /// so by name — which is the point of driving this rather than skipping it.
-int cordial_deeplink_protocol_init(void* fn, const char* class_name, char* err, size_t err_len) {
+int vanta_deeplink_protocol_init(void* fn, const char* class_name, char* err, size_t err_len) {
     using Call = void (*)(JNIEnv*, jobject, jobject);
-    auto* env = cordial::process_env();
+    auto* env = vanta::process_env();
     if (!fn || !env || !class_name) {
         snprintf(err, err_len, "no JavaVM, or the native is not exported");
         return -1;
@@ -163,8 +163,8 @@ int cordial_deeplink_protocol_init(void* fn, const char* class_name, char* err, 
         auto cls = env->GetClass(class_name);
         auto context = std::make_shared<jnivm::Object>();
         reinterpret_cast<Call>(fn)(env->GetJNIEnv(),
-                                   (jobject)cordial::to_jni(env, cls),
-                                   (jobject)cordial::to_jni(env, context));
+                                   (jobject)vanta::to_jni(env, cls),
+                                   (jobject)vanta::to_jni(env, context));
         return 0;
     } catch (const std::exception& e) {
         snprintf(err, err_len, "%s", e.what());
@@ -178,7 +178,7 @@ int cordial_deeplink_protocol_init(void* fn, const char* class_name, char* err, 
 /// A static native taking one `String` and returning one —
 /// `MessageBus.getLastRaw(String)`.
 ///
-/// This is the only way anything on Cordial's side can *see* the engine's
+/// This is the only way anything on Vanta's side can *see* the engine's
 /// message bus without implementing a `RawCallback` class for it to call back
 /// into: it hands back the last raw payload published on a message id. It is
 /// how "did the publish land" and "did the app shell answer" stop being
@@ -190,31 +190,31 @@ int cordial_deeplink_protocol_init(void* fn, const char* class_name, char* err, 
 /// its message ids as protocol-plus-method, and asking it to compose one is how
 /// a subscriber gets an id it cannot have spelled wrong. The single-argument
 /// version above cannot express it, and the three-argument
-/// `cordial_call_static_strings` returns `void` because every native it was
+/// `vanta_call_static_strings` returns `void` because every native it was
 /// written for does.
 ///
 /// Same body as its one-argument sibling with a second `jstring`. Kept beside it
 /// rather than generalised into a variadic: the shapes the engine actually uses
 /// are few and named, and a variadic JNI caller in this codebase would be a
 /// place for the argument count and the descriptor to disagree silently.
-int cordial_deeplink_two_strings_ret_string(void* fn, const char* class_name, const char* arg_a,
+int vanta_deeplink_two_strings_ret_string(void* fn, const char* class_name, const char* arg_a,
                                             const char* arg_b, char* out, size_t out_len,
                                             char* err, size_t err_len) {
     using Call = jstring (*)(JNIEnv*, jobject, jstring, jstring);
-    auto* env = cordial::process_env();
+    auto* env = vanta::process_env();
     if (!fn || !env || !class_name) {
         snprintf(err, err_len, "no JavaVM, or the native is not exported");
         return -1;
     }
     try {
         auto cls = env->GetClass(class_name);
-        auto a = std::make_shared<cordial::String>(std::string(arg_a ? arg_a : ""));
-        auto b = std::make_shared<cordial::String>(std::string(arg_b ? arg_b : ""));
+        auto a = std::make_shared<vanta::String>(std::string(arg_a ? arg_a : ""));
+        auto b = std::make_shared<vanta::String>(std::string(arg_b ? arg_b : ""));
         jstring r = reinterpret_cast<Call>(fn)(env->GetJNIEnv(),
-                                               (jobject)cordial::to_jni(env, cls),
-                                               (jstring)cordial::to_jni(env, a),
-                                               (jstring)cordial::to_jni(env, b));
-        const auto* s = reinterpret_cast<cordial::String*>(r);
+                                               (jobject)vanta::to_jni(env, cls),
+                                               (jstring)vanta::to_jni(env, a),
+                                               (jstring)vanta::to_jni(env, b));
+        const auto* s = reinterpret_cast<vanta::String*>(r);
         const std::string value = s ? static_cast<const std::string&>(*s) : std::string();
         if (value.size() >= out_len) {
             snprintf(err, err_len, "the answer is %zu bytes and the buffer is %zu", value.size(),
@@ -233,21 +233,21 @@ int cordial_deeplink_two_strings_ret_string(void* fn, const char* class_name, co
     }
 }
 
-int cordial_deeplink_string_ret_string(void* fn, const char* class_name, const char* arg, char* out,
+int vanta_deeplink_string_ret_string(void* fn, const char* class_name, const char* arg, char* out,
                                        size_t out_len, char* err, size_t err_len) {
     using Call = jstring (*)(JNIEnv*, jobject, jstring);
-    auto* env = cordial::process_env();
+    auto* env = vanta::process_env();
     if (!fn || !env || !class_name) {
         snprintf(err, err_len, "no JavaVM, or the native is not exported");
         return -1;
     }
     try {
         auto cls = env->GetClass(class_name);
-        auto a = std::make_shared<cordial::String>(std::string(arg ? arg : ""));
+        auto a = std::make_shared<vanta::String>(std::string(arg ? arg : ""));
         jstring r = reinterpret_cast<Call>(fn)(env->GetJNIEnv(),
-                                               (jobject)cordial::to_jni(env, cls),
-                                               (jstring)cordial::to_jni(env, a));
-        const auto* s = reinterpret_cast<cordial::String*>(r);
+                                               (jobject)vanta::to_jni(env, cls),
+                                               (jstring)vanta::to_jni(env, a));
+        const auto* s = reinterpret_cast<vanta::String*>(r);
         const std::string value = s ? static_cast<const std::string&>(*s) : std::string();
         if (value.size() >= out_len) {
             snprintf(err, err_len, "the answer is %zu bytes and the buffer is %zu", value.size(),

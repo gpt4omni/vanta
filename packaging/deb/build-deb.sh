@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Build a .deb for Cordial by hand.
+# Build a .deb for Vanta by hand.
 #
 # Not dpkg-buildpackage or cargo-deb. This is a virtual Cargo workspace with
 # no top-level [package] section, which is the same problem that already
-# ruled out %cargo_install in packaging/rpm/cordial.spec -- both cargo-deb and
+# ruled out %cargo_install in packaging/rpm/vanta.spec -- both cargo-deb and
 # debhelper's dh_auto_install assume one crate is the package, and this one is
 # a workspace of five. So, like the RPM spec, this compiles the two binaries
 # directly and stages a package root by hand, then calls dpkg-deb itself
@@ -38,39 +38,39 @@ eval "$(packaging/version.sh)"
 # Debian version syntax: '+' marks a build newer than the release it is
 # closest to, which is the true relationship for a snapshot built after a tag.
 # '~', the other common separator, sorts *before* the bare version and is for
-# pre-releases -- the wrong direction for a commit that came after v$CORDIAL_VERSION.
-if [ "$CORDIAL_COMMITS" = "0" ]; then
-    pkgversion="$CORDIAL_VERSION"
+# pre-releases -- the wrong direction for a commit that came after v$VANTA_VERSION.
+if [ "$VANTA_COMMITS" = "0" ]; then
+    pkgversion="$VANTA_VERSION"
 else
-    pkgversion="${CORDIAL_VERSION}+${CORDIAL_COMMITS}.g${CORDIAL_SHORTHASH}"
+    pkgversion="${VANTA_VERSION}+${VANTA_COMMITS}.g${VANTA_SHORTHASH}"
 fi
 debversion="${pkgversion}-1"
 
-echo "==> building cordial ${CORDIAL_DESCRIBE} (deb version ${debversion})"
+echo "==> building vanta ${VANTA_DESCRIBE} (deb version ${debversion})"
 
 export CC=clang CXX=clang++
-# See the %describe comment in packaging/rpm/cordial.spec: without this the
+# See the %describe comment in packaging/rpm/vanta.spec: without this the
 # packaged binary's window title falls back to the bare Cargo version and
 # disagrees with the package that shipped it.
-# `CORDIAL_GIT_SHA`, not a version. `Cargo.toml` is the version now and a
+# `VANTA_GIT_SHA`, not a version. `Cargo.toml` is the version now and a
 # packager may not override it -- a release job that stamped its own would
 # be the second, disagreeing number this scheme exists to remove. The build
 # happens outside a git checkout here, so the commit has to be passed in.
-export CORDIAL_GIT_SHA="$CORDIAL_SHORTHASH"
+export VANTA_GIT_SHA="$VANTA_SHORTHASH"
 
 # Both crates' `webview` features, never one alone. The shell holds the
-# WebKit window and cordial-runtime holds the presenter that calls it, so
+# WebKit window and vanta-runtime holds the presenter that calls it, so
 # enabling only one leaves the caller cfg'd out, the linker collects
 # webview::open, and the binary carries no WebKitGTK at all -- silently: the
 # build still succeeds. This exact shape shipped once in the Flatpak and was
-# reported as "webview doesnt work in cordial flatpak". The readelf check
-# below is what catches it here instead. `cordial-runtime/vr` is Play in VR
+# reported as "webview doesnt work in vanta flatpak". The readelf check
+# below is what catches it here instead. `vanta-runtime/vr` is Play in VR
 # (ADR-053), and why the build needs libboost-dev.
 cargo build --release --locked \
-    --features cordial-shell/webview,cordial-runtime/webview,cordial-runtime/vr
+    --features vanta-shell/webview,vanta-runtime/webview,vanta-runtime/vr
 
-readelf -d target/release/cordial-run | grep -qi webkit || {
-    echo "cordial-run linked no WebKitGTK; the webview features did not take" >&2
+readelf -d target/release/vanta-run | grep -qi webkit || {
+    echo "vanta-run linked no WebKitGTK; the webview features did not take" >&2
     exit 1
 }
 
@@ -78,26 +78,26 @@ root=$(mktemp -d)
 trap 'rm -rf "$root"' EXIT
 
 # Both binaries, side by side. launch.rs looks for the loader as the sibling
-# of current_exe and nowhere else, so a shell installed without cordial-run
+# of current_exe and nowhere else, so a shell installed without vanta-run
 # beside it is a launcher whose Launch button cannot find anything to launch.
-install -Dm755 target/release/cordial-shell "$root/usr/bin/cordial-shell"
-# **`cordial` is the command; `cordial-shell` is the file.** Asked for on
+install -Dm755 target/release/vanta-shell "$root/usr/bin/vanta-shell"
+# **`vanta` is the command; `vanta-shell` is the file.** Asked for on
 # 2026-08-28: nobody wants to type the second word, and every other launcher on
 # a desktop answers to its own name. A symlink rather than a rename so that
-# anything already invoking `cordial-shell` -- a .desktop file somebody edited,
+# anything already invoking `vanta-shell` -- a .desktop file somebody edited,
 # a script, a bug report -- keeps working, and so the two binaries stay
-# obviously related in `ls /usr/bin`. `cordial-run` deliberately gets no alias:
+# obviously related in `ls /usr/bin`. `vanta-run` deliberately gets no alias:
 # it is the loader the shell launches and is not what anyone should run by hand.
-ln -sf cordial-shell "$root/usr/bin/cordial"
-install -Dm755 target/release/cordial-run   "$root/usr/bin/cordial-run"
+ln -sf vanta-shell "$root/usr/bin/vanta"
+install -Dm755 target/release/vanta-run   "$root/usr/bin/vanta-run"
 
 # **Strip our own two binaries, which are almost entirely debug info.**
 # `[profile.release]` in Cargo.toml sets `debug = true`, deliberately -- AGENTS.md
 # leans on lldb and gdb against a running client and says so at length, and a
 # runtime you cannot get a backtrace out of is not worth the disk it saves. But
 # that is an argument about the build on a developer's machine, not about what a
-# user downloads: `cordial-run` is 207.4 MB unstripped and 15.7 MB with
-# `--strip-debug`, measured here, and `cordial-shell` is another 175.7 MB.
+# user downloads: `vanta-run` is 207.4 MB unstripped and 15.7 MB with
+# `--strip-debug`, measured here, and `vanta-shell` is another 175.7 MB.
 #
 # Stripping at packaging time keeps both: full DWARF where somebody is debugging,
 # and a package that is not thirteen times larger than it needs to be. rpmbuild
@@ -107,38 +107,38 @@ install -Dm755 target/release/cordial-run   "$root/usr/bin/cordial-run"
 # This package is built with plain `dpkg-deb` rather than debhelper -- see the
 # note above the control file for why -- so `dh_strip`, which every ordinary
 # Debian package gets for free, never runs here. Nothing else was going to.
-strip --strip-debug "$root/usr/bin/cordial-shell" "$root/usr/bin/cordial-run"
+strip --strip-debug "$root/usr/bin/vanta-shell" "$root/usr/bin/vanta-run"
 
 # The square icons under packaging/icons/hicolor/, not the 680x480 README
 # banner. Both of them: Frostbite is the twice-a-year name in
-# crates/cordial-shell/src/branding.rs, and a missing one is a blank icon in
+# crates/vanta-shell/src/branding.rs, and a missing one is a blank icon in
 # the task switcher on the one day nobody is watching for it.
-install -Dm644 packaging/icons/hicolor/scalable/apps/io.github.luohoa97.Cordial.svg \
-    "$root/usr/share/icons/hicolor/scalable/apps/io.github.luohoa97.Cordial.svg"
-install -Dm644 packaging/icons/hicolor/scalable/apps/io.github.luohoa97.Cordial.Frostbite.svg \
-    "$root/usr/share/icons/hicolor/scalable/apps/io.github.luohoa97.Cordial.Frostbite.svg"
+install -Dm644 packaging/icons/hicolor/scalable/apps/io.github.gpt4omni.Vanta.svg \
+    "$root/usr/share/icons/hicolor/scalable/apps/io.github.gpt4omni.Vanta.svg"
+install -Dm644 packaging/icons/hicolor/scalable/apps/io.github.gpt4omni.Vanta.Frostbite.svg \
+    "$root/usr/share/icons/hicolor/scalable/apps/io.github.gpt4omni.Vanta.Frostbite.svg"
 
-# Exec=cordial-shell %u, and the %u is not decorative: the entry registers
+# Exec=vanta-shell %u, and the %u is not decorative: the entry registers
 # x-scheme-handler/roblox-player, which is how a Play button on the website
 # reaches a client at all.
 # First-party plugins, read-only beside the binary -- see the same block in
-# packaging/rpm/cordial.spec for why this is per-package rather than a path
+# packaging/rpm/vanta.spec for why this is per-package rather than a path
 # compiled in.
 for plugin in plugins/*/; do
     id=$(basename "$plugin")
     [ -f "$plugin/plugin.json" ] || continue
-    install -Dm644 "$plugin/plugin.json" "$root/usr/share/cordial/plugins/$id/plugin.json"
-    install -Dm644 "$plugin/main.ts"     "$root/usr/share/cordial/plugins/$id/main.ts"
+    install -Dm644 "$plugin/plugin.json" "$root/usr/share/vanta/plugins/$id/plugin.json"
+    install -Dm644 "$plugin/main.ts"     "$root/usr/share/vanta/plugins/$id/main.ts"
 done
-install -Dm644 packaging/io.github.luohoa97.Cordial.desktop \
-    "$root/usr/share/applications/io.github.luohoa97.Cordial.desktop"
-install -Dm644 packaging/io.github.luohoa97.Cordial.metainfo.xml \
-    "$root/usr/share/metainfo/io.github.luohoa97.Cordial.metainfo.xml"
+install -Dm644 packaging/io.github.gpt4omni.Vanta.desktop \
+    "$root/usr/share/applications/io.github.gpt4omni.Vanta.desktop"
+install -Dm644 packaging/io.github.gpt4omni.Vanta.metainfo.xml \
+    "$root/usr/share/metainfo/io.github.gpt4omni.Vanta.metainfo.xml"
 
-docdir="$root/usr/share/doc/cordial"
+docdir="$root/usr/share/doc/vanta"
 install -Dm644 THIRD-PARTY-NOTICES.md "$docdir/THIRD-PARTY-NOTICES.md"
 # Apache-2.0 section 4(d): the NOTICE for mocktail-webview, the basis for
-# Cordial's own in-experience web window, has to travel with a binary
+# Vanta's own in-experience web window, has to travel with a binary
 # distribution and not only with the source tree. Neither the Flatpak
 # manifest nor the RPM spec install this today -- see this change's report.
 install -Dm644 NOTICE "$docdir/NOTICE"
@@ -198,7 +198,7 @@ fi
 install -m755 packaging/deb/postinst "$root/DEBIAN/postinst"
 
 mkdir -p "$outdir"
-out="$outdir/cordial_${debversion}_${debarch}.deb"
+out="$outdir/vanta_${debversion}_${debarch}.deb"
 dpkg-deb --build --root-owner-group "$root" "$out"
 
 echo

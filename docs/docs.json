@@ -1,14 +1,14 @@
 {
   "$schema": "https://mintlify.com/docs.json",
   "theme": "mint",
-  "name": "Cordial",
+  "name": "Vanta",
   "colors": {
     "primary": "#FF1B6B",
     "light": "#FF7A18",
     "dark": "#FF1B6B"
   },
-  "logo": "/logo/cordial.svg",
-  "favicon": "/logo/cordial.svg",
+  "logo": "/logo/vanta.svg",
+  "favicon": "/logo/vanta.svg",
   "navigation": {
     "groups": [
       {
@@ -21,7 +21,7 @@
         ]
       },
       {
-        "group": "Using Cordial",
+        "group": "Using Vanta",
         "pages": [
           "fastflags",
           "asset-overrides",
@@ -157,7 +157,7 @@
           "adr/ADR-051-overrides-are-reapplied-after-the-engines-refresh",
           "adr/ADR-052-the-runtime-spec",
           "adr/ADR-053-vr-is-a-mode-of-the-android-runtime",
-          "adr/ADR-054-cordial-owns-its-roblox-builds",
+          "adr/ADR-054-vanta-owns-its-roblox-builds",
           "adr/ADR-055-the-launcher-and-the-runtime-are-two-programs",
           "adr/ADR-056-the-host-window-keeps-one-pixel-the-engine-does-not-cover",
           "adr/ADR-059-recording-is-the-swapchain-read-on-a-timer-handed-to-ffmpeg",
@@ -180,12 +180,12 @@
     ],
     "primary": {
       "type": "github",
-      "href": "https://github.com/luohoa97/cordial"
+      "href": "https://github.com/gpt4omni/vanta"
     }
   },
   "footer": {
     "socials": {
-      "github": "https://github.com/luohoa97/cordial",
+      "github": "https://github.com/gpt4omni/vanta",
       "discord": "https://discord.gg/qJzU3Xfr9b"
     }
   }

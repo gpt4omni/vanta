@@ -21,7 +21,7 @@ export function pickerMessage(forms: IssueForm[], repoUrl: string): unknown {
     type: BUTTON,
     style: 2,
     label: form.name,
-    custom_id: `cordial-issue-open:${form.slug}`,
+    custom_id: `vanta-issue-open:${form.slug}`,
   }));
 
   const rows: unknown[] = [];
@@ -53,7 +53,7 @@ export function pickerMessage(forms: IssueForm[], repoUrl: string): unknown {
       separator(),
       text(
         "Every form asks for the diagnostics block. Get it from **Main menu \u2192 " +
-          "Report a Problem \u2192 Copy**, or run `cordial --diagnostics` " +
+          "Report a Problem \u2192 Copy**, or run `vanta --diagnostics` " +
           "\u2014 it works even when the client will not start, which is the report " +
           "that needs it most.",
       ),

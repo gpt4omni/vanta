@@ -34,7 +34,7 @@ export function isMaintainerAssociation(association: AuthorAssociation): boolean
 
 /**
  * A single comment on an issue. Deliberately has no `login`/`author` field —
- * a maintainer triaging a Cordial issue needs to know WHETHER a reply is
+ * a maintainer triaging a Vanta issue needs to know WHETHER a reply is
  * authoritative (authorAssociation), never WHO wrote it.
  */
 export interface CommentRecord {
@@ -98,7 +98,7 @@ export function emptyCheckpoint(): Checkpoint {
 
 /**
  * One derived triage case: a Sober problem report paired with the
- * maintainer's actual resolution — the thing a Cordial maintainer greps for
+ * maintainer's actual resolution — the thing a Vanta maintainer greps for
  * when a new issue looks familiar. "Maintainer" is GitHub's own
  * `authorAssociation` of OWNER/MEMBER/COLLABORATOR; see triage.ts for the
  * substantive-reply filter that decides what survives into this set.

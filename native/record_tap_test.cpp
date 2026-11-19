@@ -17,7 +17,7 @@
 #include <cstdio>
 #include <vector>
 
-namespace tap = cordial::audio::tap;
+namespace tap = vanta::audio::tap;
 
 namespace {
 

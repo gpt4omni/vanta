@@ -5,7 +5,7 @@
 // confirmed on a single profile, so it is not the `flock` in `profile.rs`
 // handing out a different directory.
 //
-// The measurement that explains it. A complete `CORDIAL_TRACE_PATHS=1`
+// The measurement that explains it. A complete `VANTA_TRACE_PATHS=1`
 // inventory of every non-system file the engine opens contains no cookie jar
 // and no credential store of any kind, and `grep -rl ROBLOSECURITY` over a
 // real profile tree finds nothing. **The engine never writes its cookies to
@@ -16,7 +16,7 @@
 //     OnSetCookieHandlerImpl.b(): Updated WebViewCookieHandler with Cookies
 //     from URL https://apis.roblox.com/browser-tracker-api/device/initialize
 //
-// Cordial has no Java side, so nothing was persisting anything. This is worth
+// Vanta has no Java side, so nothing was persisting anything. This is worth
 // stating precisely because it rules out the fix everybody reaches for first:
 // no shutdown path can flush a file that is never written, and the graceful
 // teardown descent in `looper.rs` — which does exist and does work — was
@@ -24,7 +24,7 @@
 // No file is created or updated at shutdown that a killed run does not also
 // produce. Teardown was never the missing piece.
 //
-// So Cordial has to be the Java side. Three natives, all read out of the
+// So Vanta has to be the Java side. Three natives, all read out of the
 // shipping APK's own dex declarations and confirmed as real exports in
 // `libroblox.so` (`readelf --dyn-syms`):
 //
@@ -59,7 +59,7 @@
 #include <memory>
 #include <string>
 
-namespace cordial {
+namespace vanta {
 
 using jnivm::Class;
 using jnivm::ENV;
@@ -76,7 +76,7 @@ static auto to_jni(jnivm::ENV* env, const std::shared_ptr<T>& p) {
 namespace {
 
 /// Where an observed host is handed to the Rust store. Null until
-/// `cordial_cookies_set_host_sink` installs one, which is the state a run with
+/// `vanta_cookies_set_host_sink` installs one, which is the state a run with
 /// cookie persistence switched off stays in — the class is still registered so
 /// the engine's callback resolves, but nothing is recorded.
 void (*g_host_sink)(const char*) = nullptr;
@@ -93,7 +93,7 @@ std::shared_ptr<Object> g_handler;
 /// Deliberately not a URL parser. Everything after the authority is dropped
 /// without being examined, because a Roblox URL's query string can carry a
 /// one-time authentication ticket and this value's whole purpose is to be
-/// recorded somewhere Cordial can see it later.
+/// recorded somewhere Vanta can see it later.
 std::string host_of(const std::string& url) {
     auto start = url.find("://");
     start = (start == std::string::npos) ? 0 : start + 3;
@@ -161,11 +161,11 @@ public:
         // twice, once with a receiver and once without, under either helper —
         // so the dump does not settle which descriptor the engine would resolve.
         // Settling it needs a real `Set-Cookie` to arrive, and no response in a
-        // logged-out Cordial run carries one: over repeated runs the sink was
+        // logged-out Vanta run carries one: over repeated runs the sink was
         // called zero times while the engine's own log showed it reaching the
         // network and collecting the documented 401s. The capture's cookie
         // traffic comes from requests Roblox's *Java* code issues, which
-        // Cordial does not run.
+        // Vanta does not run.
         //
         // So this stays INFERRED, and the session is saved by reading the jar
         // back on a timer and at teardown instead. If this callback does fire
@@ -179,7 +179,7 @@ void register_cookie_classes(jnivm::ENV* env) {
     OnSetCookieHandler::Register(env);
 }
 
-} // namespace cordial
+} // namespace vanta
 
 extern "C" {
 
@@ -190,8 +190,8 @@ extern "C" {
 /// is listening. The class stays registered either way, so a difference in
 /// behaviour cannot be confused with the engine failing to resolve the
 /// callback.
-void cordial_cookies_set_host_sink(void (*sink)(const char*)) {
-    cordial::g_host_sink = sink;
+void vanta_cookies_set_host_sink(void (*sink)(const char*)) {
+    vanta::g_host_sink = sink;
 }
 
 /// `JNICookieProtocol.updateOnSetCookieHandler(OnSetCookieHandler)`.
@@ -200,30 +200,30 @@ void cordial_cookies_set_host_sink(void (*sink)(const char*)) {
 /// four times in the Waydroid capture, on a *logged-out* cold start — the
 /// device and tracking cookies exercise the identical plumbing an auth cookie
 /// does, which is what makes this testable without an account.
-int cordial_cookies_register_handler(void* fn, char* err, size_t err_len) {
+int vanta_cookies_register_handler(void* fn, char* err, size_t err_len) {
     using Call = void (*)(JNIEnv*, jobject, jobject);
-    auto* env = cordial::process_env();
+    auto* env = vanta::process_env();
     if (!fn || !env) {
         snprintf(err, err_len, "no JavaVM, or updateOnSetCookieHandler is not exported");
         return -1;
     }
     try {
         auto cls = env->GetClass("com/roblox/universalapp/cookie/JNICookieProtocol");
-        auto handler = std::make_shared<cordial::OnSetCookieHandler>();
+        auto handler = std::make_shared<vanta::OnSetCookieHandler>();
         // Park it before the call, not after: the engine may call back
         // synchronously from inside this very call, and a handler owned only
         // by a local would already be a candidate for collection.
-        cordial::g_handler = handler;
+        vanta::g_handler = handler;
         reinterpret_cast<Call>(fn)(env->GetJNIEnv(),
-                                   (jobject)cordial::to_jni(env, cls),
-                                   (jobject)cordial::to_jni(env, handler));
+                                   (jobject)vanta::to_jni(env, cls),
+                                   (jobject)vanta::to_jni(env, handler));
         return 0;
     } catch (const std::exception& e) {
-        cordial::g_handler.reset();
+        vanta::g_handler.reset();
         snprintf(err, err_len, "%s", e.what());
         return -1;
     } catch (...) {
-        cordial::g_handler.reset();
+        vanta::g_handler.reset();
         snprintf(err, err_len, "non-standard C++ exception");
         return -1;
     }
@@ -236,24 +236,24 @@ int cordial_cookies_register_handler(void* fn, char* err, size_t err_len) {
 /// `needed`. **Truncation is an error, not a short answer.** A cookie jar cut
 /// off mid-value would still parse as a list of cookies, and handing that back
 /// to the engine on the next launch is the "half-token that parses" failure —
-/// it presents as an invalid session rather than as a Cordial bug, which is
+/// it presents as an invalid session rather than as a Vanta bug, which is
 /// the worst place for it to present.
-int cordial_cookies_get_for_domain(void* fn, const char* class_name, const char* domain,
+int vanta_cookies_get_for_domain(void* fn, const char* class_name, const char* domain,
                                    char* out, size_t out_len, size_t* needed,
                                    char* err, size_t err_len) {
     using Call = jstring (*)(JNIEnv*, jobject, jstring);
-    auto* env = cordial::process_env();
+    auto* env = vanta::process_env();
     if (!fn || !env || !class_name) {
         snprintf(err, err_len, "no JavaVM, or the cookie native is not exported");
         return -1;
     }
     try {
         auto cls = env->GetClass(class_name);
-        auto arg = std::make_shared<cordial::String>(std::string(domain ? domain : ""));
+        auto arg = std::make_shared<vanta::String>(std::string(domain ? domain : ""));
         jstring r = reinterpret_cast<Call>(fn)(env->GetJNIEnv(),
-                                               (jobject)cordial::to_jni(env, cls),
-                                               (jstring)cordial::to_jni(env, arg));
-        const auto* s = reinterpret_cast<cordial::String*>(r);
+                                               (jobject)vanta::to_jni(env, cls),
+                                               (jstring)vanta::to_jni(env, arg));
+        const auto* s = reinterpret_cast<vanta::String*>(r);
         const std::string value = s ? static_cast<const std::string&>(*s) : std::string();
         if (needed) {
             *needed = value.size();

@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Build a distro-agnostic AppImage for Cordial.
+# Build a distro-agnostic AppImage for Vanta.
 #
 # This is the packaging format with the most work still to prove out, and
 # that is worth saying before the recipe: an AppImage's whole job is to carry
 # its own copies of libraries a host might not have at the right version, and
-# Cordial links four things a bare `ldd`-following bundler does not fully
+# Vanta links four things a bare `ldd`-following bundler does not fully
 # reach -- GTK4, libadwaita and WebKitGTK are ordinary DT_NEEDED dependencies
 # that linuxdeploy's ELF walk does find, but WebKitGTK's own helper
 # processes (WebKitWebProcess, WebKitNetworkProcess, WebKitGPUProcess), its
@@ -38,14 +38,14 @@
 # with bwrap and xdg-dbus-proxy removed: with the wrap, WebKitNetworkProcess
 # and WebKitWebProcess both ran out of the image, loaded the image's own
 # libwebkitgtk and injected bundle, the sandbox engaged on the planted bwrap,
-# and a page finished loading; with CORDIAL_APPIMAGE_NO_WRAP=1, the same image
+# and a page finished loading; with VANTA_APPIMAGE_NO_WRAP=1, the same image
 # on the same host produced the reported error verbatim. AppRun carries the
 # full reading.
 #
 # Two caveats on that. The binaries inside the tested image came from the
-# installed cordial rpm rather than from the cargo build below, because the
+# installed vanta rpm rather than from the cargo build below, because the
 # machine it was measured on has no webkitgtk6.0-devel and cannot compile the
-# webview feature; and the probe was a WebKitWebView, not cordial-shell's own
+# webview feature; and the probe was a WebKitWebView, not vanta-shell's own
 # sign-in view. That whole measurement was taken against a Fedora-built
 # libwebkitgtk-6.0.so, which is no longer what this script bundles -- see the
 # note beside the layout section below and in AppRun for what changed and
@@ -67,7 +67,7 @@
 # Needs: cargo, clang/clang++, cmake, pkg-config, the GTK4/libadwaita/
 # WebKitGTK development headers, rsvg-convert (for the AppDir's PNG icon --
 # AppImage integration tooling looks for one at the AppDir root even though
-# Cordial's own icon is scalable SVG everywhere else), patchelf (the host's,
+# Vanta's own icon is scalable SVG everywhere else), patchelf (the host's,
 # not linuxdeploy's -- see the NO_STRIP/PATCHELF block below for what its
 # bundled 0.15 does to a library with a .relr.dyn section), and network access
 # to fetch linuxdeploy and appimagetool on first use.
@@ -85,7 +85,7 @@ done
 
 cd "$repo"
 eval "$(packaging/version.sh)"
-echo "==> building cordial ${CORDIAL_DESCRIBE}"
+echo "==> building vanta ${VANTA_DESCRIBE}"
 
 need() {
     command -v "$1" >/dev/null 2>&1 || {
@@ -102,13 +102,13 @@ done
 # and CLAUDE.md tells every agent working in a worktree to export one, because
 # two builds sharing a target/ once produced two rlibs neither of which held a
 # symbol plainly in the source. With one exported, cargo wrote into it and the
-# very next line here read `target/release/cordial-run`, which did not exist.
+# very next line here read `target/release/vanta-run`, which did not exist.
 target_dir="${CARGO_TARGET_DIR:-$repo/target}"
 
-tools_dir="${CORDIAL_APPIMAGE_TOOLS_DIR:-$target_dir/appimage-tools}"
+tools_dir="${VANTA_APPIMAGE_TOOLS_DIR:-$target_dir/appimage-tools}"
 mkdir -p "$tools_dir"
 
-# The architecture this container is actually running on, not the one Cordial
+# The architecture this container is actually running on, not the one Vanta
 # is being cross-packaged for -- there is no cross-packaging here, linuxdeploy
 # and appimagetool both run as ordinary binaries on the build host, and each
 # ships a separate AppImage per architecture with no universal build. Fixed to
@@ -185,11 +185,11 @@ export APPIMAGE_EXTRACT_AND_RUN=1
 #                    loader called libcbor's at base+0x2cc, which is now the
 #                    ELF header, and the AppImage took SIGSEGV in call_init
 #                    before main. Nothing printed. It looked like a crash in
-#                    Cordial.
+#                    Vanta.
 #
 # NO_STRIP costs nothing for the bundled libraries -- Fedora's are already
 # stripped and their debug info lives in separate debuginfo packages. **It cost
-# a great deal for ours, and this comment used to say otherwise.** Cordial's own
+# a great deal for ours, and this comment used to say otherwise.** Vanta's own
 # two binaries carry full DWARF by `[profile.release]`, so leaving linuxdeploy's
 # stripping off left roughly 350 MB of symbol tables inside the AppImage --
 # which is why it was 176 MB against the rpm's 6. They are stripped above,
@@ -202,24 +202,24 @@ export NO_STRIP=1
 export PATCHELF="${PATCHELF:-$(command -v patchelf)}"
 
 export CC=clang CXX=clang++
-# `CORDIAL_GIT_SHA`, not a version. `Cargo.toml` is the version now and a
+# `VANTA_GIT_SHA`, not a version. `Cargo.toml` is the version now and a
 # packager may not override it -- a release job that stamped its own would
 # be the second, disagreeing number this scheme exists to remove. The build
 # happens outside a git checkout here, so the commit has to be passed in.
-export CORDIAL_GIT_SHA="$CORDIAL_SHORTHASH"
+export VANTA_GIT_SHA="$VANTA_SHORTHASH"
 
 # Both crates' `webview` features, never one alone -- see the identical
-# comment in packaging/rpm/cordial.spec's %build and packaging/deb/build-deb.sh
+# comment in packaging/rpm/vanta.spec's %build and packaging/deb/build-deb.sh
 # for the shape of the bug that taught this project to say so at every
 # callsite: with only one crate's feature on, the linker collects
 # webview::open silently and the binary carries no WebKitGTK, with no error
-# anywhere in the build. `cordial-runtime/vr` is Play in VR (ADR-053), and
+# anywhere in the build. `vanta-runtime/vr` is Play in VR (ADR-053), and
 # why the build needs Boost's headers.
 cargo build --release --locked \
-    --features cordial-shell/webview,cordial-runtime/webview,cordial-runtime/vr
+    --features vanta-shell/webview,vanta-runtime/webview,vanta-runtime/vr
 
-readelf -d "$target_dir/release/cordial-run" | grep -qi webkit || {
-    echo "cordial-run linked no WebKitGTK; the webview features did not take" >&2
+readelf -d "$target_dir/release/vanta-run" | grep -qi webkit || {
+    echo "vanta-run linked no WebKitGTK; the webview features did not take" >&2
     exit 1
 }
 
@@ -227,33 +227,33 @@ appdir="$target_dir/appimage/AppDir"
 rm -rf "$appdir"
 mkdir -p "$appdir"
 
-install -Dm755 "$target_dir/release/cordial-shell" "$appdir/usr/bin/cordial-shell"
-# **`cordial` is the command; `cordial-shell` is the file.** Asked for on
+install -Dm755 "$target_dir/release/vanta-shell" "$appdir/usr/bin/vanta-shell"
+# **`vanta` is the command; `vanta-shell` is the file.** Asked for on
 # 2026-08-28: nobody wants to type the second word, and every other launcher on
 # a desktop answers to its own name. A symlink rather than a rename so that
-# anything already invoking `cordial-shell` -- a .desktop file somebody edited,
+# anything already invoking `vanta-shell` -- a .desktop file somebody edited,
 # a script, a bug report -- keeps working, and so the two binaries stay
-# obviously related in `ls /usr/bin`. `cordial-run` deliberately gets no alias:
+# obviously related in `ls /usr/bin`. `vanta-run` deliberately gets no alias:
 # it is the loader the shell launches and is not what anyone should run by hand.
-ln -sf cordial-shell "$appdir/usr/bin/cordial"
+ln -sf vanta-shell "$appdir/usr/bin/vanta"
 # First-party plugins, read-only beside the binary.
-# Until the native packages existed nothing installed these anywhere, so the settings window listed no built-in plugins for anybody -- including Flatpak users, whose /app/share/cordial/plugins the code has looked in from the start and which has never existed.
+# Until the native packages existed nothing installed these anywhere, so the settings window listed no built-in plugins for anybody -- including Flatpak users, whose /app/share/vanta/plugins the code has looked in from the start and which has never existed.
 for plugin in plugins/*/; do
     id=$(basename "$plugin")
     [ -f "$plugin/plugin.json" ] || continue
-    install -Dm644 "$plugin/plugin.json" "$appdir/usr/share/cordial/plugins/$id/plugin.json"
-    install -Dm644 "$plugin/main.ts"     "$appdir/usr/share/cordial/plugins/$id/main.ts"
+    install -Dm644 "$plugin/plugin.json" "$appdir/usr/share/vanta/plugins/$id/plugin.json"
+    install -Dm644 "$plugin/main.ts"     "$appdir/usr/share/vanta/plugins/$id/main.ts"
 done
 
-install -Dm755 "$target_dir/release/cordial-run"   "$appdir/usr/bin/cordial-run"
+install -Dm755 "$target_dir/release/vanta-run"   "$appdir/usr/bin/vanta-run"
 
 # **Strip our own two binaries, which are almost entirely debug info.**
 # `[profile.release]` in Cargo.toml sets `debug = true`, deliberately -- AGENTS.md
 # leans on lldb and gdb against a running client and says so at length, and a
 # runtime you cannot get a backtrace out of is not worth the disk it saves. But
 # that is an argument about the build on a developer's machine, not about what a
-# user downloads: `cordial-run` is 207.4 MB unstripped and 15.7 MB with
-# `--strip-debug`, measured here, and `cordial-shell` is another 175.7 MB.
+# user downloads: `vanta-run` is 207.4 MB unstripped and 15.7 MB with
+# `--strip-debug`, measured here, and `vanta-shell` is another 175.7 MB.
 #
 # Stripping at packaging time keeps both: full DWARF where somebody is debugging,
 # and a package that is not thirteen times larger than it needs to be. rpmbuild
@@ -264,18 +264,18 @@ install -Dm755 "$target_dir/release/cordial-run"   "$appdir/usr/bin/cordial-run"
 # below turns off linuxdeploy's own stripping because its bundled binutils is
 # from 2020 and mangles a `.relr.dyn` section -- but that is a reason to keep it
 # away from Fedora's libraries, not a reason to ship ours unstripped.
-strip --strip-debug "$appdir/usr/bin/cordial-shell" "$appdir/usr/bin/cordial-run"
+strip --strip-debug "$appdir/usr/bin/vanta-shell" "$appdir/usr/bin/vanta-run"
 
-install -Dm644 packaging/io.github.luohoa97.Cordial.desktop \
-    "$appdir/usr/share/applications/io.github.luohoa97.Cordial.desktop"
-install -Dm644 packaging/io.github.luohoa97.Cordial.metainfo.xml \
-    "$appdir/usr/share/metainfo/io.github.luohoa97.Cordial.metainfo.xml"
-install -Dm644 packaging/icons/hicolor/scalable/apps/io.github.luohoa97.Cordial.svg \
-    "$appdir/usr/share/icons/hicolor/scalable/apps/io.github.luohoa97.Cordial.svg"
-install -Dm644 packaging/icons/hicolor/scalable/apps/io.github.luohoa97.Cordial.Frostbite.svg \
-    "$appdir/usr/share/icons/hicolor/scalable/apps/io.github.luohoa97.Cordial.Frostbite.svg"
+install -Dm644 packaging/io.github.gpt4omni.Vanta.desktop \
+    "$appdir/usr/share/applications/io.github.gpt4omni.Vanta.desktop"
+install -Dm644 packaging/io.github.gpt4omni.Vanta.metainfo.xml \
+    "$appdir/usr/share/metainfo/io.github.gpt4omni.Vanta.metainfo.xml"
+install -Dm644 packaging/icons/hicolor/scalable/apps/io.github.gpt4omni.Vanta.svg \
+    "$appdir/usr/share/icons/hicolor/scalable/apps/io.github.gpt4omni.Vanta.svg"
+install -Dm644 packaging/icons/hicolor/scalable/apps/io.github.gpt4omni.Vanta.Frostbite.svg \
+    "$appdir/usr/share/icons/hicolor/scalable/apps/io.github.gpt4omni.Vanta.Frostbite.svg"
 
-licdir="$appdir/usr/share/licenses/cordial"
+licdir="$appdir/usr/share/licenses/vanta"
 install -Dm644 LICENSE "$licdir/LICENSE"
 install -Dm644 NOTICE "$licdir/NOTICE"
 install -Dm644 THIRD-PARTY-NOTICES.md "$licdir/THIRD-PARTY-NOTICES.md"
@@ -306,16 +306,16 @@ install -Dm755 packaging/appimage/AppRun "$appdir/AppRun"
 # desktop file and an icon at the AppDir root, not only under usr/share/. A
 # copy rather than a symlink, because appimagetool refuses to package a
 # symlink pointing outside the tree it is squashing.
-cp "$appdir/usr/share/applications/io.github.luohoa97.Cordial.desktop" \
-    "$appdir/io.github.luohoa97.Cordial.desktop"
+cp "$appdir/usr/share/applications/io.github.gpt4omni.Vanta.desktop" \
+    "$appdir/io.github.gpt4omni.Vanta.desktop"
 # Rasterised because AppImage's own integration (and thumbnailers that read
 # AppImages without extracting them) commonly assume a PNG at the root even
 # where the desktop's Icon= key resolves an SVG everywhere else -- 256x256
-# matches the largest size Cordial's own icon theme directory would carry had
+# matches the largest size Vanta's own icon theme directory would carry had
 # one been rendered, and is large enough not to look soft in a file manager.
 rsvg-convert --width 256 --height 256 \
-    packaging/icons/hicolor/scalable/apps/io.github.luohoa97.Cordial.svg \
-    -o "$appdir/io.github.luohoa97.Cordial.png"
+    packaging/icons/hicolor/scalable/apps/io.github.gpt4omni.Vanta.svg \
+    -o "$appdir/io.github.gpt4omni.Vanta.png"
 
 echo "==> bundling shared libraries with linuxdeploy"
 # Plain linuxdeploy, deliberately with no GTK plugin. linuxdeploy-plugin-gtk
@@ -345,17 +345,17 @@ webkit_pkg_files() {
 }
 # `[a-z0-9_]+-linux-gnu` rather than the literal `x86_64-linux-gnu`: this is
 # Debian's multiarch triplet, which names the *build host's* architecture
-# (aarch64-linux-gnu on the arm64 runner), not Cordial's own -- the pattern
+# (aarch64-linux-gnu on the arm64 runner), not Vanta's own -- the pattern
 # generalises to whichever container this actually runs in rather than
 # assuming the one it was first measured against.
 webkit_libexec=$(webkit_pkg_files | grep -E '/(libexec|lib64|lib/[a-z0-9_]+-linux-gnu)/webkitgtk-6.0$' | head -1)
 webkit_bundle=$(webkit_pkg_files | grep -m1 '/webkitgtk-6.0/injected-bundle$' || true)
-deploy_args=(--executable "$appdir/usr/bin/cordial-shell" --executable "$appdir/usr/bin/cordial-run")
+deploy_args=(--executable "$appdir/usr/bin/vanta-shell" --executable "$appdir/usr/bin/vanta-run")
 if [ -n "$webkit_libexec" ] && [ -d "$webkit_libexec" ]; then
     # Every helper binary passed as its own --executable, not just copied,
     # so linuxdeploy's dependency walk covers *their* DT_NEEDED entries too
     # -- a WebProcess is a separate executable with its own library needs,
-    # not merely a data file sitting next to cordial-run.
+    # not merely a data file sitting next to vanta-run.
     while IFS= read -r -d '' helper; do
         deploy_args+=(--executable "$helper")
     done < <(find "$webkit_libexec" -maxdepth 1 -type f -executable -print0)
@@ -409,8 +409,8 @@ done
 "$tools_dir/linuxdeploy-${appimage_arch}.AppImage" \
     --appdir "$appdir" \
     "${deploy_args[@]}" \
-    --desktop-file "$appdir/io.github.luohoa97.Cordial.desktop" \
-    --icon-file "$appdir/io.github.luohoa97.Cordial.png"
+    --desktop-file "$appdir/io.github.gpt4omni.Vanta.desktop" \
+    --icon-file "$appdir/io.github.gpt4omni.Vanta.png"
 
 echo "==> laying out what WebKitGTK reaches by absolute path"
 # linuxdeploy was just given each helper as an --executable so their own
@@ -484,7 +484,7 @@ echo "==> completing the dependency closure linuxdeploy's excludelist dropped"
 # 2026-09-13: linuxdeploy printed "Skipping deployment of blacklisted library
 # .../libharfbuzz.so.0" while bundling this AppDir, and the resulting image
 # then failed outright on a bare `ubuntu:24.04` container with
-# `cordial-shell: error while loading shared libraries: libharfbuzz.so.0:
+# `vanta-shell: error while loading shared libraries: libharfbuzz.so.0:
 # cannot open shared object file` -- the exact host this AppImage claims to
 # support, refusing it for a library the bundler decided was not its job.
 #
@@ -499,7 +499,7 @@ echo "==> completing the dependency closure linuxdeploy's excludelist dropped"
 #
 # Two families are left to the host on purpose, and the first pass of this
 # fix copied one of them in before that was noticed -- worth recording so it
-# is not tried again. `cordial-shell`/`cordial-run` carry `RUNPATH
+# is not tried again. `vanta-shell`/`vanta-run` carry `RUNPATH
 # $ORIGIN/../lib` (`readelf -d`, this pass), and copying `libc.so.6` and
 # `ld-linux-x86-64.so.2` into that directory put them ahead of the host's own
 # in the dynamic linker's search order for `DT_NEEDED` resolution -- while the
@@ -525,10 +525,10 @@ echo "==> completing the dependency closure linuxdeploy's excludelist dropped"
 # .interp` on either of the two binaries just linked answers that directly,
 # with no case statement mapping `uname -m` onto a loader name that could
 # itself go stale on a third architecture.
-ld_linux=$(readelf -p .interp "$appdir/usr/bin/cordial-shell" 2>/dev/null \
+ld_linux=$(readelf -p .interp "$appdir/usr/bin/vanta-shell" 2>/dev/null \
     | grep -oE 'ld-linux[a-zA-Z0-9._-]*\.so\.[0-9]+' | head -1)
 if [ -z "$ld_linux" ]; then
-    echo "error: could not read the ELF interpreter out of cordial-shell's .interp section" >&2
+    echo "error: could not read the ELF interpreter out of vanta-shell's .interp section" >&2
     exit 1
 fi
 never_bundle_libs="libEGL.so.1 libGLX.so.0 libGL.so.1 libOpenGL.so.0 libGLdispatch.so.0 libgbm.so.1 libdrm.so.2 libGLESv2.so.2 libc.so.6 libm.so.6 libdl.so.2 libpthread.so.0 librt.so.1 libresolv.so.2 libutil.so.1 libnsl.so.1 libanl.so.1 libcrypt.so.1 $ld_linux libstdc++.so.6 libgcc_s.so.1"
@@ -593,12 +593,12 @@ echo "==> checking every bundled ELF against the glibc floor"
 # outcome: "The AppImage had it too, and that one bundles no libc at all, so
 # the format whose whole purpose is running anywhere would have run on Fedora
 # 44 and nothing else." The release workflow then ran it over
-# `target/release/cordial-run` and `target/release/cordial-shell` and nothing
-# else -- so Cordial's own two binaries were held at GLIBC_2.39, and the
+# `target/release/vanta-run` and `target/release/vanta-shell` and nothing
+# else -- so Vanta's own two binaries were held at GLIBC_2.39, and the
 # hundred-odd libraries linuxdeploy copies out of this Fedora 44 container
 # were never looked at.
 #
-# Measured on the shipped v0.13.2 AppImage on 2026-09-13: both Cordial
+# Measured on the shipped v0.13.2 AppImage on 2026-09-13: both Vanta
 # binaries at GLIBC_2.39, and eighteen bundled libraries at GLIBC_2.43 --
 # among them libgtk-4.so.1, libglib-2.0.so.0 and libwebkitgtk-6.0.so.4, which
 # is to say the ones nothing can start without. On any host older than Fedora
@@ -629,16 +629,16 @@ The AppImage was not written.
 One or more bundled libraries need a newer glibc than the floor, which means
 this image would fail to start on every host older than the container it was
 built in -- the failure mode v0.13.2 shipped with. The libraries named above
-came out of this build container, so the fix is not in Cordial's own code:
+came out of this build container, so the fix is not in Vanta's own code:
 either build the image on a base whose glibc is at or below the floor, or
 bundle the loader and libc alongside them and exec through it. Do not raise
-CORDIAL_GLIBC_FLOOR to make this pass; that silently drops distributions.
+VANTA_GLIBC_FLOOR to make this pass; that silently drops distributions.
 FLOOREOF
     exit 1
 fi
 
 echo "==> appimagetool"
-outfile="$outdir/Cordial-${CORDIAL_DESCRIBE}-${appimage_arch}.AppImage"
+outfile="$outdir/Vanta-${VANTA_DESCRIBE}-${appimage_arch}.AppImage"
 mkdir -p "$outdir"
 ARCH="$appimage_arch" "$tools_dir/appimagetool-${appimage_arch}.AppImage" "$appdir" "$outfile"
 
@@ -647,7 +647,7 @@ ls -lh "$outfile"
 echo "built: $outfile"
 echo
 echo "The shell starts and draws: launched on Fedora 44 (Bluefin, GNOME,"
-echo "Wayland) on 2026-08-27, first-run window titled with CORDIAL_DESCRIBE,"
+echo "Wayland) on 2026-08-27, first-run window titled with VANTA_DESCRIBE,"
 echo "profile row and Roblox button, as a wl_surface with the right app id."
 echo "That run was against a Fedora-built AppImage, before ADR-032 moved the"
 echo "base to ubuntu:24.04; not yet repeated against this one."

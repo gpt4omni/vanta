@@ -2,7 +2,7 @@
 """Verify commit 22127ba: pairing a forwarded press's release to itself,
 so a single "/" reliably opens chat and Sober #987 stays fixed.
 
-Model is tools/text-input-e2e.py (nested sway in the "cordial" distrobox,
+Model is tools/text-input-e2e.py (nested sway in the "vanta" distrobox,
 never cage, so a real seat exists), but the keystrokes under test are driven
 straight at the devctl socket rather than through the virtual keyboard:
 
@@ -25,10 +25,10 @@ guaranteed on every attempt rather than hoped for from a blind timing sweep.
 import argparse, json, os, re, socket, subprocess, sys, time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-HOLDERS = os.environ.get("CORDIAL_HOLDER_BIN", "/tmp/cordial-wl-holders")
-BOX = "cordial"
-OUT = "/tmp/cordial-agent-slash-out"
-TAG = "cordial-agent-slash"
+HOLDERS = os.environ.get("VANTA_HOLDER_BIN", "/tmp/vanta-wl-holders")
+BOX = "vanta"
+OUT = "/tmp/vanta-agent-slash-out"
+TAG = "vanta-agent-slash"
 
 
 def sh(argv, **kw):
@@ -147,7 +147,7 @@ def sway_pid(cfg):
 
 
 def profile_holder(profile):
-    out = sh(["pidof", "cordial-run"]).stdout.split()
+    out = sh(["pidof", "vanta-run"]).stdout.split()
     for pid in out:
         try:
             argv = open(f"/proc/{pid}/cmdline").read().split("\0")
@@ -203,8 +203,8 @@ def main():
     # chat there to open). So this joins for real, the same way
     # tools/join-run.sh does: the project's own sanctioned test account and
     # test place, never the human's account.
-    ap.add_argument("--profile", default=os.environ.get("CORDIAL_TEST_PROFILE", "CordialTest"))
-    ap.add_argument("--place", default=os.environ.get("CORDIAL_TEST_PLACE", "17625359962"))
+    ap.add_argument("--profile", default=os.environ.get("VANTA_TEST_PROFILE", "VantaTest"))
+    ap.add_argument("--place", default=os.environ.get("VANTA_TEST_PLACE", "17625359962"))
     ap.add_argument("--attempts", type=int, default=8)
     ap.add_argument("--keep", action="store_true")
     ap.add_argument("--width", type=int, default=1280)
@@ -213,18 +213,18 @@ def main():
 
     os.makedirs(OUT, exist_ok=True)
     log_path = os.path.join(OUT, "client.log")
-    binary = os.path.join(ROOT, "target/release/cordial-run")
+    binary = os.path.join(ROOT, "target/release/vanta-run")
     apk = os.environ.get(
-        "CORDIAL_APK",
+        "VANTA_APK",
         os.path.expanduser("~/.var/app/org.vinegarhq.Sober/data/sober/packages/"
                            "x86_64/com.roblox.client/base.apk"))
-    lib = os.environ.get("CORDIAL_LIB_DIR", os.path.expanduser("~/.cache/cordial/lib/x86_64"))
-    # CordialTest is a named, shared profile -- not "default" -- so it is used
+    lib = os.environ.get("VANTA_LIB_DIR", os.path.expanduser("~/.cache/vanta/lib/x86_64"))
+    # VantaTest is a named, shared profile -- not "default" -- so it is used
     # at its standard path rather than redirected through XDG_DATA_HOME. That
     # standard path is exactly where its saved login lives, which is the whole
     # reason to use it: joining a real experience needs to be signed in.
     logs_dir = os.path.expanduser(
-        f"~/.local/share/cordial/profiles/{args.profile}/data/files/appData/logs")
+        f"~/.local/share/vanta/profiles/{args.profile}/data/files/appData/logs")
 
     for path, what in ((binary, "build"), (apk, "APK"), (lib, "library directory")):
         if not os.path.exists(path):
@@ -266,13 +266,13 @@ def main():
         env.update(
             WAYLAND_DISPLAY=display,
             GDK_BACKEND="wayland",
-            CORDIAL_WAYLAND="1",
-            CORDIAL_DEV_CONTROL="1",
-            CORDIAL_TRACE_TEXT="1",
-            CORDIAL_TRACE_TEXT_SHOW_PASSWORDS="1",
+            VANTA_WAYLAND="1",
+            VANTA_DEV_CONTROL="1",
+            VANTA_TRACE_TEXT="1",
+            VANTA_TRACE_TEXT_SHOW_PASSWORDS="1",
         )
         join_url = os.environ.get(
-            "CORDIAL_TEST_LINK", f"roblox://experiences/start?placeId={args.place}")
+            "VANTA_TEST_LINK", f"roblox://experiences/start?placeId={args.place}")
         log = open(log_path, "w")
         client = subprocess.Popen(
             [binary, "--lib-dir", lib, "--apk", apk, "--host-libc",
@@ -314,7 +314,7 @@ def main():
         time.sleep(20)
 
         sock = os.path.expanduser(
-            f"~/.local/share/cordial/profiles/{args.profile}/devctl.sock")
+            f"~/.local/share/vanta/profiles/{args.profile}/devctl.sock")
         deadline = time.time() + 20
         while time.time() < deadline and not os.path.exists(sock):
             time.sleep(0.5)

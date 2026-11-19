@@ -1,24 +1,24 @@
-# Cordial's APT repository, and why it is not Debian itself
+# Vanta's APT repository, and why it is not Debian itself
 
-"Publish Cordial to a Debian repository" has two readings, and they are not
+"Publish Vanta to a Debian repository" has two readings, and they are not
 close cousins -- one ships this week, and the other is a multi-month process
-Cordial does not control the outcome of. This document is both halves,
+Vanta does not control the outcome of. This document is both halves,
 written out separately on purpose, because conflating them is the way this
 kind of request goes sideways.
 
-1. **Cordial's own APT repository.** A `dists/`+`pool/` tree at a URL Cordial
+1. **Vanta's own APT repository.** A `dists/`+`pool/` tree at a URL Vanta
    controls, that a user adds to `sources.list` and then runs `apt install
-   cordial` against, the same shape [`packaging/cordial.flatpakrepo`](../../packaging/cordial.flatpakrepo)
+   vanta` against, the same shape [`packaging/vanta.flatpakrepo`](../../packaging/vanta.flatpakrepo)
    already gives `flatpak remote-add`. This is what §1 below covers, and it
    is built.
-2. **The `cordial` package in Debian proper** -- in the archive every
+2. **The `vanta` package in Debian proper** -- in the archive every
    `apt install` reaches by default, with no third-party line added first.
    That needs a Debian Developer to sponsor the upload, an ITP (Intent To
    Package) bug, packaging that satisfies Debian Policy, and months rather
    than days. §2 below is the honest assessment of that path and stops
    there; nothing towards it has been started.
 
-## §1. Cordial's own repository
+## §1. Vanta's own repository
 
 ### What is signed, and what that does and does not cover
 
@@ -30,8 +30,8 @@ dists/stable/Release            # suite metadata + a SHA256/MD5Sum manifest
 dists/stable/Release.gpg        # detached signature of Release, for apt < 1.1
 dists/stable/InRelease           # Release, inline-clearsigned, for apt >= 1.1
 dists/stable/main/binary-amd64/Packages(.gz)
-pool/main/c/cordial/cordial_<version>_amd64.deb
-cordial-archive-keyring.gpg     # the public half, for a user's sources.list
+pool/main/c/vanta/vanta_<version>_amd64.deb
+vanta-archive-keyring.gpg     # the public half, for a user's sources.list
 ```
 
 **The signature is on `Release`, not on the individual `.deb`.** That is
@@ -80,14 +80,14 @@ export GNUPGHOME="$(mktemp -d)"
 trap 'rm -rf "$GNUPGHOME"' EXIT
 
 gpg --batch --passphrase '' --quick-generate-key \
-    'Cordial APT Repository <choose-an-address-you-monitor>' \
+    'Vanta APT Repository <choose-an-address-you-monitor>' \
     rsa4096 sign 2y
 
 FPR=$(gpg --list-secret-keys --with-colons | awk -F: '/^fpr/{print $10; exit}')
 echo "$FPR"
 
-gpg --armor --export-secret-keys "$FPR" > cordial-apt-signing-key.private.asc
-gpg --armor --export             "$FPR" > cordial-apt-signing-key.public.asc
+gpg --armor --export-secret-keys "$FPR" > vanta-apt-signing-key.private.asc
+gpg --armor --export             "$FPR" > vanta-apt-signing-key.public.asc
 ```
 
 ### Where the private half lives
@@ -99,20 +99,20 @@ was just generated in and reads exactly the same bytes
 `.github/workflows/apt.yml`'s "Import the signing key" step later imports:
 
 ```bash
-gh secret set APT_GPG_PRIVATE_KEY -R luohoa97/cordial < cordial-apt-signing-key.private.asc
-gh secret set APT_GPG_KEY_ID      -R luohoa97/cordial --body "$FPR"
+gh secret set APT_GPG_PRIVATE_KEY -R gpt4omni/vanta < vanta-apt-signing-key.private.asc
+gh secret set APT_GPG_KEY_ID      -R gpt4omni/vanta --body "$FPR"
 
 # Rebuild now, rather than waiting for the next push --
 # .github/workflows/apt.yml's own workflow_dispatch trigger exists for
 # exactly this moment.
-gh workflow run apt.yml -R luohoa97/cordial
+gh workflow run apt.yml -R gpt4omni/vanta
 ```
 
 Two secrets, named precisely because `apt.yml` reads them by these names and
 nothing else:
 
 - `APT_GPG_PRIVATE_KEY` -- the full contents of
-  `cordial-apt-signing-key.private.asc`, `-----BEGIN...-----` lines
+  `vanta-apt-signing-key.private.asc`, `-----BEGIN...-----` lines
   included. **Armoured plain text, not base64** -- confirmed by reading
   `apt.yml`'s own "Import the signing key" step, which does
   `printf '%s' "$KEY" | gpg --batch --import` and never decodes anything
@@ -127,30 +127,30 @@ into a scratch `GNUPGHOME` the same way `flatpak.yml` already does for its
 own key -- `gpg --batch --import`, never `--pinentry-mode loopback
 --passphrase`, which is why the key must need no passphrase to sign with in
 the first place. **GitHub secrets are write-only.** There is no "view"
-button once saved, so `cordial-apt-signing-key.private.asc` needs a durable,
+button once saved, so `vanta-apt-signing-key.private.asc` needs a durable,
 access-controlled home -- a password manager's file storage, an encrypted
 volume -- before the scratch keyring and loose `.asc` files are deleted.
 Losing the only copy means the next key generated cannot re-sign anything
 the old one did, and every user who fetched the old
-`cordial-archive-keyring.gpg` needs telling, which is the rotation case
+`vanta-archive-keyring.gpg` needs telling, which is the rotation case
 below.
 
 ### What ties this together in CI, and the one thing that follows from it
 
 Three files, three jobs, in order:
 
-1. **`release.yml`**'s existing `deb` job builds `cordial_<version>_amd64.deb`
+1. **`release.yml`**'s existing `deb` job builds `vanta_<version>_amd64.deb`
    inside `ubuntu:25.10` (where that job has been shown to build; the
    `gtk4 >= 4.20` floor that once made it the only candidate came down to
-   4.12 in ADR-032) and uploads it as the `cordial-deb` artifact,
+   4.12 in ADR-032) and uploads it as the `vanta-deb` artifact,
    exactly as it did before this change. Nothing in that file was touched.
 2. **`apt.yml`**, new, triggers when that job's workflow finishes, downloads
-   `cordial-deb` from that specific run, and runs `build-repo.sh` against
+   `vanta-deb` from that specific run, and runs `build-repo.sh` against
    it -- but only when `APT_GPG_PRIVATE_KEY` is set; otherwise it stops
-   after saying so. It does not rebuild Cordial from source: the whole point
+   after saying so. It does not rebuild Vanta from source: the whole point
    of reading `release.yml`'s artifact is not compiling the workspace a
    second time on every push. Its output is a plain `actions/upload-artifact`
-   named `cordial-apt-repo`, not a Pages deployment.
+   named `vanta-apt-repo`, not a Pages deployment.
 3. **`flatpak.yml`** is the one workflow that deploys to GitHub Pages, and
    deliberately stays the only one: Pages, published through
    `actions/deploy-pages`, is one deployment for the whole site with no
@@ -158,8 +158,8 @@ Three files, three jobs, in order:
    independently would not add an `/apt/` directory to the site, it would
    *replace* the site with one. `flatpak.yml`'s "Assemble the Pages tree"
    step now looks up `apt.yml`'s latest successful run, downloads
-   `cordial-apt-repo` from it, and copies it into `pages/apt/` alongside the
-   existing `pages/repo/` (the OSTree remote) and `pages/cordial.flatpakrepo`.
+   `vanta-apt-repo` from it, and copies it into `pages/apt/` alongside the
+   existing `pages/repo/` (the OSTree remote) and `pages/vanta.flatpakrepo`.
    If no successful `apt.yml` run exists yet -- no key, or it has simply
    never run -- that step says so and publishes without `/apt/`, the same
    graceful-degradation shape the existing "is `site/` there" check already
@@ -182,11 +182,11 @@ The README's install section (§2.3) carries the commands a user runs. The
 short version:
 
 ```bash
-sudo curl -fsSL https://luohoa97.github.io/cordial/apt/cordial-archive-keyring.gpg \
-    -o /etc/apt/keyrings/cordial-archive-keyring.gpg
-echo "deb [signed-by=/etc/apt/keyrings/cordial-archive-keyring.gpg] https://luohoa97.github.io/cordial/apt stable main" \
-    | sudo tee /etc/apt/sources.list.d/cordial.list
-sudo apt update && sudo apt install cordial
+sudo curl -fsSL https://gpt4omni.github.io/vanta/apt/vanta-archive-keyring.gpg \
+    -o /etc/apt/keyrings/vanta-archive-keyring.gpg
+echo "deb [signed-by=/etc/apt/keyrings/vanta-archive-keyring.gpg] https://gpt4omni.github.io/vanta/apt stable main" \
+    | sudo tee /etc/apt/sources.list.d/vanta.list
+sudo apt update && sudo apt install vanta
 ```
 
 That is the modern form -- a key named on the `deb` line by path, not
@@ -199,7 +199,7 @@ shares.
 **The key exists.** Its fingerprint is in [`docs/install.md`](../install.md); it was read from the published file on 2026-09-30 and has not been confirmed by whoever holds the key. To read it from the keyring you downloaded:
 
 ```bash
-gpg --show-keys --with-fingerprint /etc/apt/keyrings/cordial-archive-keyring.gpg
+gpg --show-keys --with-fingerprint /etc/apt/keyrings/vanta-archive-keyring.gpg
 ```
 
 A second source, out of band from the site, still wants to be added here by
@@ -210,7 +210,7 @@ whoever holds the key.
 **A user who already has the keyring file keeps trusting the old key until
 they replace it, which is the correct failure mode.** `apt` checks the
 *current* `InRelease` signature against whatever is in
-`/etc/apt/keyrings/cordial-archive-keyring.gpg` on their machine, on every
+`/etc/apt/keyrings/vanta-archive-keyring.gpg` on their machine, on every
 `apt update`. If the signing key is ever rotated -- planned renewal at
 expiry, or a compromise -- new `Release` files signed by the new key will
 not verify against a keyring file that still holds the old one, and `apt
@@ -256,7 +256,7 @@ upstream project. It needs:
   `cargo-deb` and `dpkg-buildpackage` for the `.deb` this repository builds
   today).
 - A sponsor: an existing Debian Developer or Debian Maintainer who reviews
-  the packaging and uploads it, because Cordial has none today. Finding one
+  the packaging and uploads it, because Vanta has none today. Finding one
   is itself work, not a formality.
 - ftp-master review of the *upload*, separately from the sponsor's own
   review, which is where DFSG-freeness and archive-section questions
@@ -266,10 +266,10 @@ Realistic timeline for a new package going through this correctly, even
 with an engaged sponsor, is months rather than weeks -- this is well short
 of a criticism of the process; it is a review step this repository's own
 "never state an unobserved result" culture would recognise, applied by
-people outside it who cannot take Cordial's own claims about itself on
+people outside it who cannot take Vanta's own claims about itself on
 faith either.
 
-**Licensing is not the obstacle.** Cordial itself is GPL-3.0-or-later, which
+**Licensing is not the obstacle.** Vanta itself is GPL-3.0-or-later, which
 is DFSG-free without qualification. The vendored third-party code
 [`NOTICE`](../../NOTICE) and
 [`THIRD-PARTY-NOTICES.md`](../../THIRD-PARTY-NOTICES.md) list --
@@ -277,9 +277,9 @@ libbadcpu (MIT), mcpelauncher-linker (MIT, with the AOSP NOTICE it carries),
 libjnivm (MIT), mocktail-webview (Apache-2.0) -- are each independently
 DFSG-free too. None of that is what would slow a review down.
 
-**What would: Cordial's entire purpose is loading a proprietary binary it
+**What would: Vanta's entire purpose is loading a proprietary binary it
 fetches at runtime, and Debian has a section for exactly that distinction.**
-Cordial ships no Roblox code -- see AGENTS.md's "Permanently out of scope" --
+Vanta ships no Roblox code -- see AGENTS.md's "Permanently out of scope" --
 but the software has no purpose without one: on first run it offers to fetch
 Roblox's official Android build, and does nothing useful until it has. That
 is a materially different shape from, say, `wine`, which is general-purpose
@@ -288,7 +288,7 @@ useful. Debian's own `main` archive is reserved for software that neither
 requires nor recommends anything outside `main`; software whose purpose
 depends on non-free software it does not itself ship is the textbook case
 for the `contrib` section instead. Games and compatibility launchers built
-around one specific proprietary target -- the general shape Cordial is in --
+around one specific proprietary target -- the general shape Vanta is in --
 have historically landed in `contrib`, stayed out of the archive entirely
 and lived in third-party repositories, or taken a long review to place, more
 often than they have gone straight into `main`. **This is a reasoned
@@ -298,7 +298,7 @@ though it does.
 
 **What is not a Debian-specific obstacle, for the avoidance of a wrong
 inference from the Flathub section of the README:** Flathub's
-generative-AI policy, which is the reason Cordial is not on Flathub today,
+generative-AI policy, which is the reason Vanta is not on Flathub today,
 is Flathub's own policy and there is no known equivalent in Debian's own
 process. That obstacle does not carry over. It is named here only so nobody
 reads "blocked from one channel over AI-assisted code" and assumes it
@@ -312,7 +312,7 @@ enabled non-free-adjacent sections and does not solve the "one line adds a
 repository" problem this document's §1 already solves today. **§1 is
 therefore the plan, not a stopgap for §2** -- the same framing
 [flatpak-remote-signing.md](flatpak-remote-signing.md) gives for Flathub, and
-for the same underlying reason: the channel Cordial controls is the one that
+for the same underlying reason: the channel Vanta controls is the one that
 can actually ship this week.
 
 ## Notes moved from docs/install.md (2026-10-02)

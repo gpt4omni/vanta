@@ -2,7 +2,7 @@
 """How evenly do frames actually go out, with input flowing the whole time?
 
 **The complaint this answers is "low fps randomly", which is a tail and not a
-mean.** `cordial_fps` divides presents by wall time and reports an average; an
+mean.** `vanta_fps` divides presents by wall time and reports an average; an
 average is exactly the statistic that hides a stall. The frame-pacing ring in
 `android/frame_pacing.rs` keeps the last 1024 inter-present intervals, so the
 percentiles are already there -- this drives input for long enough to fill that
@@ -25,7 +25,7 @@ Usage:  tools/frame-pacing-check.py [--profile NAME] [--seconds N] [--idle]
 import argparse, os, re, socket, subprocess, sys, time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-BOX = "cordial"
+BOX = "vanta"
 
 
 def send(sock, line):
@@ -48,19 +48,19 @@ def main():
     ap.add_argument("--hz", type=float, default=60)
     args = ap.parse_args()
 
-    out = "/tmp/cordial-pacing"
+    out = "/tmp/vanta-pacing"
     os.makedirs(out, exist_ok=True)
     log = os.path.join(out, "client.log")
-    sock = os.path.expanduser(f"~/.local/share/cordial/profiles/{args.profile}/devctl.sock")
+    sock = os.path.expanduser(f"~/.local/share/vanta/profiles/{args.profile}/devctl.sock")
 
-    for pid in subprocess.run(["pidof", "cordial-run"], capture_output=True, text=True).stdout.split():
+    for pid in subprocess.run(["pidof", "vanta-run"], capture_output=True, text=True).stdout.split():
         os.kill(int(pid), 9)
     subprocess.run(["distrobox", "enter", BOX, "--", "bash", "-lc",
                     "for p in $(pidof sway); do kill -9 $p 2>/dev/null; done"],
                    capture_output=True)
     time.sleep(3)
 
-    stamp, cfg = "/tmp/cordial-pacing-display", "/tmp/cordial-pacing-sway.cfg"
+    stamp, cfg = "/tmp/vanta-pacing-display", "/tmp/vanta-pacing-sway.cfg"
     for f in (stamp, cfg):
         if os.path.exists(f):
             os.unlink(f)
@@ -70,7 +70,7 @@ def main():
     subprocess.Popen(["distrobox", "enter", BOX, "--", "bash", "-lc",
                       "exec env -u WAYLAND_DISPLAY -u DISPLAY WLR_BACKENDS=headless "
                       "WLR_LIBINPUT_NO_DEVICES=1 WLR_HEADLESS_OUTPUTS=1 "
-                      f"sway -c {cfg} > /tmp/cordial-pacing-sway.log 2>&1"],
+                      f"sway -c {cfg} > /tmp/vanta-pacing-sway.log 2>&1"],
                      stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     display = None
     for _ in range(120):
@@ -82,12 +82,12 @@ def main():
         sys.exit("FAIL: sway never reported a display")
 
     env = dict(os.environ, WAYLAND_DISPLAY=display, GDK_BACKEND="wayland",
-               CORDIAL_DEV_CONTROL="1")
+               VANTA_DEV_CONTROL="1")
     apk = os.path.expanduser("~/.var/app/org.vinegarhq.Sober/data/sober/packages/"
                              "x86_64/com.roblox.client/base.apk")
     client = subprocess.Popen(
-        [os.path.join(ROOT, "target/release/cordial-run"),
-         "--lib-dir", os.path.expanduser("~/.cache/cordial/lib/x86_64"), "--apk", apk,
+        [os.path.join(ROOT, "target/release/vanta-run"),
+         "--lib-dir", os.path.expanduser("~/.cache/vanta/lib/x86_64"), "--apk", apk,
          "--host-libc", "--game-activity", "--run", "0", "--profile", args.profile],
         env=env, stdout=open(log, "w"), stderr=subprocess.STDOUT)
 

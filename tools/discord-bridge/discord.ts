@@ -66,7 +66,7 @@ export class Discord {
           headers: {
             "authorization": `Bot ${this.#token}`,
             "content-type": "application/json",
-            "user-agent": "cordial-issue-bridge",
+            "user-agent": "vanta-issue-bridge",
           },
           body: body === undefined ? undefined : JSON.stringify(body),
         }),

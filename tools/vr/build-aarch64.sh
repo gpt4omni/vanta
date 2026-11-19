@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# Cross-compile cordial-run for aarch64 Linux from an x86-64 host.
+# Cross-compile vanta-run for aarch64 Linux from an x86-64 host.
 #
 #   tools/vr/build-aarch64.sh            # aarch64, into target-aarch64/
 #   ARCH=x86_64 tools/vr/build-aarch64.sh  # same recipe for x86-64, into target/
-#   ARCH=x86_64 BINS="cordial-run cordial-shell" tools/vr/build-aarch64.sh
+#   ARCH=x86_64 BINS="vanta-run vanta-shell" tools/vr/build-aarch64.sh
 #                                          # the launcher as well as the client
-#   ARCH=x86_64 tools/vr/build-aarch64.sh cargo test -p cordial-guest --features dynarmic
+#   ARCH=x86_64 tools/vr/build-aarch64.sh cargo test -p vanta-guest --features dynarmic
 #                                          # any cargo subcommand, same environment
 #
-# The build turns on `cordial-runtime/vr`, since VR is what this script is
+# The build turns on `vanta-runtime/vr`, since VR is what this script is
 # for; a cargo subcommand gets only the features it is given.
 #
 # The compilers are the host's (clang, lld, rustup's aarch64 std); only the
@@ -36,7 +36,7 @@ esac
 rust_target="$ARCH-unknown-linux-gnu"
 export CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-$default_target_dir}
 sysroot=${SYSROOT:-$repo/target-aarch64/sysroot-$ARCH}
-image="cordial-sysroot-$ARCH:24.04"
+image="vanta-sysroot-$ARCH:24.04"
 
 # Built every time rather than only when missing: an unchanged Dockerfile is a
 # layer-cache hit in about a second, and a changed one (mesa-vulkan-drivers was
@@ -75,7 +75,7 @@ rustup target add "$rust_target" >/dev/null
 # native/CMakeLists.txt also runs its test executables as POST_BUILD steps.
 # Once CMAKE_SYSTEM_NAME is set CMake counts the build as a cross build and
 # stops resolving those commands to the built executable's path unless an
-# emulator is named -- the build then fails with "cordial_pipewire_backend_test:
+# emulator is named -- the build then fails with "vanta_pipewire_backend_test:
 # No such file or directory". So the aarch64 tests run under qemu-user against
 # the same sysroot, which also means they actually execute aarch64 code, and
 # the x86_64 mode leaves CMAKE_SYSTEM_NAME unset since it is not a cross build.
@@ -132,10 +132,10 @@ if [ "${1:-}" = cargo ]; then
     shift
     exec cargo "$sub" --target "$rust_target" "$@"
 fi
-# BINS names the binaries to build, `cordial-run` alone by default. The
-# launcher is `cordial-shell`, and building it here is the only way a host
+# BINS names the binaries to build, `vanta-run` alone by default. The
+# launcher is `vanta-shell`, and building it here is the only way a host
 # without GTK 4 development packages can run the window that starts a VR
-# launch: BINS="cordial-run cordial-shell".
-bins=${BINS:-cordial-run}
-cargo build --release $(printf -- '--bin %s ' $bins) --features cordial-runtime/vr --target "$rust_target" "$@"
+# launch: BINS="vanta-run vanta-shell".
+bins=${BINS:-vanta-run}
+cargo build --release $(printf -- '--bin %s ' $bins) --features vanta-runtime/vr --target "$rust_target" "$@"
 for bin in $bins; do echo "built $CARGO_TARGET_DIR/$rust_target/release/$bin"; done

@@ -5,7 +5,7 @@
 // nobody notices. On a desktop with a faster panel it is the difference between
 // the monitor you bought and the one the engine assumes you have.
 //
-// Cordial reads one FastFlag-layer key, `CordialPresentMode`, and hands the
+// Vanta reads one FastFlag-layer key, `VantaPresentMode`, and hands the
 // answer to `vkCreateSwapchainKHR`. This plugin sets that key. It never learns
 // a swapchain exists, cannot name a mode the driver does not advertise, and
 // cannot reach any other Vulkan call: the effect, never the channel (ADR-007).
@@ -29,9 +29,9 @@
 // plugin that Settings advertises by name.
 //
 // Nothing caught it because nothing ran it: the plugin tests in
-// `crates/cordial-plugins` drive `host::Session`, which the client never
+// `crates/vanta-plugins` drive `host::Session`, which the client never
 // constructs, and the host the client does run is
-// `crates/cordial-runtime/src/plugin_host.rs`. `plugin_call_shapes.rs` now
+// `crates/vanta-runtime/src/plugin_host.rs`. `plugin_call_shapes.rs` now
 // checks every method these shipped plugins name against the one closed table
 // both hosts agree on, which is the half of this that a test can hold.
 
@@ -98,7 +98,7 @@ const MODES = [
 // advertises.
 const DEFAULT_MODE = "uncapped";
 
-// Cordial pushes `cordial/init` before the plugin has asked for anything,
+// Vanta pushes `vanta/init` before the plugin has asked for anything,
 // carrying this plugin's settings document and the answers to the preferences
 // its manifest declares. Waiting for it costs no round trip, which is the point
 // of the handshake — but waiting *forever* would mean a host that stopped
@@ -108,7 +108,7 @@ function waitForInit(ms: number): Promise<any | null> {
   return new Promise((resolve) => {
     const timer = setTimeout(() => resolve(null), ms);
     onPush = (p) => {
-      if (p.event !== "cordial/init") return;
+      if (p.event !== "vanta/init") return;
       clearTimeout(timer);
       onPush = () => {};
       resolve(p.payload ?? null);
@@ -121,7 +121,7 @@ let answers = init?.preferences ?? null;
 
 if (answers === null || typeof answers !== "object") {
   // No handshake, or a handshake that carried nothing — which is what a
-  // Cordial with no open profile sends. Ask, and let the refusal be reported
+  // Vanta with no open profile sends. Ask, and let the refusal be reported
   // rather than read as "the user chose the default".
   const got = await call("preferences.get");
   if (got.status === "ok") {
@@ -171,7 +171,7 @@ if (wantedCap && CAPS.includes(wantedCap)) {
   );
 }
 
-const values: Record<string, string> = { CordialPresentMode: mode };
+const values: Record<string, string> = { VantaPresentMode: mode };
 if (cap !== "default") {
   values.DFIntTaskSchedulerTargetFps = cap;
 }
