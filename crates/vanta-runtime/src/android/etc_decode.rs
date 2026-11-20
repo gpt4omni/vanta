@@ -1,3 +1,7 @@
+#[allow(dead_code)]
+#[path = "etc_decode_legacy.rs"]
+mod legacy;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EtcFormat {
     Rgb8,
@@ -225,29 +229,40 @@ fn eac_index(bits: u64, x: usize, y: usize) -> usize {
 
 pub fn decode_eac_alpha(block: &[u8], out: &mut [[u8; 4]; 16]) {
     let (base, mult, table, bits) = eac_parts(block);
+    let paint = table.map(|m| clamp8(i32::from(base) + m * mult));
     for y in 0..4 {
         for x in 0..4 {
-            out[y * 4 + x][3] = clamp8(i32::from(base) + table[eac_index(bits, x, y)] * mult);
+            out[y * 4 + x][3] = paint[eac_index(bits, x, y)];
         }
     }
 }
 
-pub fn decode_eac11(block: &[u8], signed: bool, out: &mut [u16; 16]) {
+#[inline]
+fn eac_palette(block: &[u8], signed: bool) -> ([u16; 8], u64) {
     let (base, mult, table, bits) = eac_parts(block);
+    let scale = if mult == 0 { 1 } else { mult * 8 };
+    let b = if signed { i32::from(base as i8).max(-127) * 8 } else { i32::from(base) * 8 + 4 };
+    let paint = table.map(|m| {
+        let value = b + m * scale;
+        if signed {
+            let v = value.clamp(-1023, 1023);
+            let mag = v.abs();
+            let wide = (mag << 5) | (mag >> 5);
+            (if v < 0 { -wide } else { wide }) as i16 as u16
+        } else {
+            let v = value.clamp(0, 2047);
+            ((v << 5) | (v >> 6)) as u16
+        }
+    });
+    (paint, bits)
+}
+
+#[cfg(test)]
+pub fn decode_eac11(block: &[u8], signed: bool, out: &mut [u16; 16]) {
+    let (paint, bits) = eac_palette(block, signed);
     for y in 0..4 {
         for x in 0..4 {
-            let m = table[eac_index(bits, x, y)];
-            let step = if mult == 0 { m } else { m * mult * 8 };
-            out[y * 4 + x] = if signed {
-                let b = i32::from(base as i8).max(-127);
-                let v = (b * 8 + step).clamp(-1023, 1023);
-                let mag = v.abs();
-                let wide = (mag << 5) | (mag >> 5);
-                (if v < 0 { -wide } else { wide }) as i16 as u16
-            } else {
-                let v = (i32::from(base) * 8 + 4 + step).clamp(0, 2047);
-                ((v << 5) | (v >> 6)) as u16
-            };
+            out[y * 4 + x] = paint[eac_index(bits, x, y)];
         }
     }
 }
@@ -272,23 +287,23 @@ fn decode_block_rows(format: EtcFormat, block: &[u8], out: &mut [u8], stride: us
             }
         }
         EtcFormat::R11 | EtcFormat::R11Signed => {
-            let mut r = [0u16; 16];
-            decode_eac11(&block[0..8], format == EtcFormat::R11Signed, &mut r);
+            let (paint, bits) = eac_palette(&block[0..8], format == EtcFormat::R11Signed);
+            let paint = paint.map(u16::to_le_bytes);
             for y in 0..4 {
-                let row: [u8; 8] = std::array::from_fn(|i| r[y * 4 + i / 2].to_le_bytes()[i % 2]);
+                let row: [u8; 8] = std::array::from_fn(|i| paint[eac_index(bits, i / 2, y)][i % 2]);
                 out[y * stride..y * stride + 8].copy_from_slice(&row);
             }
         }
         EtcFormat::Rg11 | EtcFormat::Rg11Signed => {
             let signed = format == EtcFormat::Rg11Signed;
-            let mut r = [0u16; 16];
-            let mut g = [0u16; 16];
-            decode_eac11(&block[0..8], signed, &mut r);
-            decode_eac11(&block[8..16], signed, &mut g);
+            let (red, rbits) = eac_palette(&block[0..8], signed);
+            let (green, gbits) = eac_palette(&block[8..16], signed);
+            let red = red.map(u16::to_le_bytes);
+            let green = green.map(u16::to_le_bytes);
             for y in 0..4 {
                 let row: [u8; 16] = std::array::from_fn(|i| {
-                    let v = if i % 4 < 2 { r[y * 4 + i / 4] } else { g[y * 4 + i / 4] };
-                    v.to_le_bytes()[i % 2]
+                    if i % 4 < 2 { red[eac_index(rbits, i / 4, y)][i % 2] }
+                    else { green[eac_index(gbits, i / 4, y)][i % 2] }
                 });
                 out[y * stride..y * stride + 16].copy_from_slice(&row);
             }
@@ -309,6 +324,15 @@ pub fn decode_region(
     height: usize,
     dst: &mut [u8],
 ) -> Result<(), String> {
+    let unsigned = match format {
+        EtcFormat::R11 => Some(legacy::EtcFormat::R11),
+        EtcFormat::Rg11 => Some(legacy::EtcFormat::Rg11),
+        _ => None,
+    };
+    if let Some(format) = unsigned {
+        let source = legacy::Surface { data: src.data, row_blocks: src.row_blocks, rows_of_blocks: src.rows_of_blocks };
+        return legacy::decode_region(format, &source, width, height, dst);
+    }
     if width == 0 || height == 0 {
         return Ok(());
     }
@@ -379,6 +403,150 @@ pub fn decode_region(
 mod tests {
     use super::*;
 
+    fn reference_eac11(block: &[u8], signed: bool, out: &mut [u16; 16]) {
+        let (base, mult, table, bits) = eac_parts(block);
+        for y in 0..4 {
+            for x in 0..4 {
+                let m = table[eac_index(bits, x, y)];
+                let step = if mult == 0 { m } else { m * mult * 8 };
+                out[y * 4 + x] = if signed {
+                    let b = i32::from(base as i8).max(-127);
+                    let v = (b * 8 + step).clamp(-1023, 1023);
+                    let mag = v.abs();
+                    let wide = (mag << 5) | (mag >> 5);
+                    (if v < 0 { -wide } else { wide }) as i16 as u16
+                } else {
+                    let v = (i32::from(base) * 8 + 4 + step).clamp(0, 2047);
+                    ((v << 5) | (v >> 6)) as u16
+                };
+            }
+        }
+    }
+
+    #[test]
+    fn eac_palettes_match_the_old_per_pixel_decoder() {
+        let mut seed = 0x1234_5678u32;
+        for i in 0..65536 {
+            let mut block = [0; 16];
+            for byte in &mut block {
+                seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                *byte = (seed >> 24) as u8;
+            }
+            // Cover every base/table/multiplier pair as well as random selectors.
+            block[0] = (i >> 8) as u8;
+            block[1] = i as u8;
+            for signed in [false, true] {
+                let mut expected = [[0; 16]; 2];
+                reference_eac11(&block[..8], signed, &mut expected[0]);
+                reference_eac11(&block[8..], signed, &mut expected[1]);
+                for (format, channels) in if signed {
+                    [(EtcFormat::R11Signed, 1), (EtcFormat::Rg11Signed, 2)]
+                } else {
+                    [(EtcFormat::R11, 1), (EtcFormat::Rg11, 2)]
+                } {
+                    let mut out = [0; 64];
+                    decode_block(format, &block, &mut out);
+                    for px in 0..16 {
+                        for c in 0..channels {
+                            let at = (px * channels + c) * 2;
+                            assert_eq!(&out[at..at + 2], &expected[c][px].to_le_bytes());
+                        }
+                    }
+                }
+            }
+            let (base, mult, table, bits) = eac_parts(&block);
+            let mut alpha = [[0; 4]; 16];
+            decode_eac_alpha(&block, &mut alpha);
+            for y in 0..4 {
+                for x in 0..4 {
+                    assert_eq!(alpha[y * 4 + x][3], clamp8(i32::from(base) + table[eac_index(bits, x, y)] * mult));
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn microbench_eac_interleaved() {
+        use std::hint::black_box;
+        use std::time::Instant;
+
+        let (width, height) = (1024, 1024);
+        for (format, old_format) in [
+            (EtcFormat::R11, legacy::EtcFormat::R11),
+            (EtcFormat::R11Signed, legacy::EtcFormat::R11Signed),
+            (EtcFormat::Rg11, legacy::EtcFormat::Rg11),
+            (EtcFormat::Rg11Signed, legacy::EtcFormat::Rg11Signed),
+        ] {
+            let mut seed = 0x1234_5678u32;
+            let mut data = vec![0; width * height / 16 * format.block_bytes()];
+            for out in data.chunks_mut(format.block_bytes()) {
+                let mut block = [0; 16];
+                for byte in &mut block {
+                    seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                    *byte = (seed >> 24) as u8;
+                }
+                out.copy_from_slice(&block[..format.block_bytes()]);
+            }
+            let surface = Surface { data: &data, row_blocks: width / 4, rows_of_blocks: height / 4 };
+            let old_surface = legacy::Surface { data: &data, row_blocks: width / 4, rows_of_blocks: height / 4 };
+            let mut old_dst = vec![0; width * height * format.texel_bytes()];
+            let mut new_dst = old_dst.clone();
+            legacy::decode_region(old_format, &old_surface, width, height, &mut old_dst).unwrap();
+            decode_region(format, &surface, width, height, &mut new_dst).unwrap();
+            assert_eq!(old_dst, new_dst);
+            for round in 0..3 {
+                let (mut old_samples, mut new_samples) = (Vec::new(), Vec::new());
+                for batch in 0..7 {
+                    let (mut old_time, mut new_time) = (0.0, 0.0);
+                    for image in 0..10 {
+                        for old in if (round + batch + image) % 2 == 0 { [true, false] } else { [false, true] } {
+                            let start = Instant::now();
+                            if old {
+                                legacy::decode_region(old_format, black_box(&old_surface), width, height, black_box(&mut new_dst)).unwrap();
+                                old_time += start.elapsed().as_secs_f64();
+                                black_box(&new_dst);
+                            } else {
+                                decode_region(format, black_box(&surface), width, height, black_box(&mut new_dst)).unwrap();
+                                new_time += start.elapsed().as_secs_f64();
+                                black_box(&new_dst);
+                            }
+                        }
+                    }
+                    old_samples.push(old_time / 10.0);
+                    new_samples.push(new_time / 10.0);
+                }
+                old_samples.sort_by(f64::total_cmp);
+                new_samples.sort_by(f64::total_cmp);
+                println!("interleaved {format:?} round {}: old {:.3} ms; new {:.3} ms", round + 1, old_samples[3] * 1000.0, new_samples[3] * 1000.0);
+                assert_eq!(old_dst, new_dst);
+            }
+        }
+    }
+
+    #[test]
+    fn unsigned_regions_preserve_the_pinned_path_including_errors_and_edges() {
+        for (format, old_format) in [(EtcFormat::R11, legacy::EtcFormat::R11),
+                                     (EtcFormat::Rg11, legacy::EtcFormat::Rg11)] {
+            for (width, height) in [(0usize, 0usize), (0, 9), (1, 1), (5, 9), (16, 8)] {
+                let row_blocks = width.div_ceil(4) + 1;
+                let rows_of_blocks = height.div_ceil(4) + 1;
+                let data: Vec<_> = (0..row_blocks * rows_of_blocks * format.block_bytes()).map(|i| i as u8).collect();
+                for (short_source, short_dest) in [(false, false), (true, false), (false, true)] {
+                    let bytes = if short_source { &data[..0] } else { &data[..] };
+                    let surface = Surface { data: bytes, row_blocks, rows_of_blocks };
+                    let old_surface = legacy::Surface { data: bytes, row_blocks, rows_of_blocks };
+                    let size = width * height * format.texel_bytes();
+                    let mut out = vec![0xa5; if short_dest { size.saturating_sub(1) } else { size + 7 }];
+                    let mut expected = out.clone();
+                    assert_eq!(decode_region(format, &surface, width, height, &mut out),
+                               legacy::decode_region(old_format, &old_surface, width, height, &mut expected));
+                    assert_eq!(out, expected);
+                }
+            }
+        }
+    }
+
     #[test]
     #[ignore]
     fn microbench_decode() {
@@ -386,7 +554,8 @@ mod tests {
         use std::time::Instant;
 
         let (width, height) = (1024usize, 1024usize);
-        for format in [EtcFormat::Rgb8, EtcFormat::Rgba8, EtcFormat::Rg11Signed] {
+        for format in [EtcFormat::Rgb8, EtcFormat::Rgba8, EtcFormat::R11,
+                       EtcFormat::R11Signed, EtcFormat::Rg11, EtcFormat::Rg11Signed] {
             for pattern in ["random", "flat", "runs"] {
                 let bb = format.block_bytes();
                 let mut data = vec![0u8; width * height / 16 * bb];
