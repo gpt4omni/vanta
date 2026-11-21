@@ -153,25 +153,23 @@ impl TitleBar {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum FrameRateLimit {
-    /// Sets nothing. The engine's own default, and what every Vanta before
-    /// this row shipped.
+    /// Follow the display refresh (with headroom under replacing present modes).
     #[default]
     Display,
     Cap90,
     Cap120,
     Cap144,
     Cap165,
-    /// `unlimited` is what a pre-release build wrote here, when the row had one;
-    /// a config that names it still has to load, and 240 is where the engine
-    /// stops anyway.
-    #[serde(alias = "unlimited")]
     Cap240,
     Cap360,
     Cap480,
+    /// Uncapped scheduler target (`DFIntTaskSchedulerTargetFps = 999`).
+    #[serde(alias = "unlimited")]
+    Uncapped,
 }
 
 impl FrameRateLimit {
-    pub const ALL: [FrameRateLimit; 8] = [
+    pub const ALL: [FrameRateLimit; 9] = [
         FrameRateLimit::Display,
         FrameRateLimit::Cap90,
         FrameRateLimit::Cap120,
@@ -180,6 +178,7 @@ impl FrameRateLimit {
         FrameRateLimit::Cap240,
         FrameRateLimit::Cap360,
         FrameRateLimit::Cap480,
+        FrameRateLimit::Uncapped,
     ];
 
     /// Order matches the `AdwComboRow` model in `settings.rs`, as
@@ -205,10 +204,14 @@ impl FrameRateLimit {
             FrameRateLimit::Cap240 => "240",
             FrameRateLimit::Cap360 => "360",
             FrameRateLimit::Cap480 => "480",
+            FrameRateLimit::Uncapped => "uncapped",
         }
     }
 
     pub fn parse(word: &str) -> Option<Self> {
+        if word == "unlimited" {
+            return Some(FrameRateLimit::Uncapped);
+        }
         Self::ALL.iter().copied().find(|c| c.as_env() == word)
     }
 
@@ -222,6 +225,7 @@ impl FrameRateLimit {
             FrameRateLimit::Cap240 => "240 fps",
             FrameRateLimit::Cap360 => "360 fps",
             FrameRateLimit::Cap480 => "480 fps",
+            FrameRateLimit::Uncapped => "Uncapped",
         }
     }
 }

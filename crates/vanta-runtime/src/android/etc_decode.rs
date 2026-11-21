@@ -388,6 +388,276 @@ pub fn decode_region(
     Ok(())
 }
 
+#[inline]
+fn pack_rgb565(r: i32, g: i32, b: i32) -> u16 {
+    (((r.clamp(0, 255) as u16) & 0xF8) << 8)
+        | (((g.clamp(0, 255) as u16) & 0xFC) << 3)
+        | ((b.clamp(0, 255) as u16) >> 3)
+}
+
+#[inline]
+fn unpack_rgb565(c: u16) -> [i32; 3] {
+    let r = ((c >> 8) & 0xF8) as i32;
+    let g = ((c >> 3) & 0xFC) as i32;
+    let b = ((c << 3) & 0xF8) as i32;
+    [r | (r >> 5), g | (g >> 6), b | (b >> 5)]
+}
+
+fn encode_bc1_block(rgba: &[u8; 64], punchthrough: bool, out: &mut [u8]) {
+    let mut has_trans = false;
+    let mut mn = [255i32; 3];
+    let mut mx = [0i32; 3];
+    for i in 0..16 {
+        let p = &rgba[i * 4..i * 4 + 4];
+        if punchthrough && p[3] == 0 {
+            has_trans = true;
+            continue;
+        }
+        for c in 0..3 {
+            let v = p[c] as i32;
+            if v < mn[c] { mn[c] = v; }
+            if v > mx[c] { mx[c] = v; }
+        }
+    }
+    if mn[0] > mx[0] {
+        out[0..4].copy_from_slice(&0u32.to_le_bytes());
+        out[4..8].copy_from_slice(&u32::MAX.to_le_bytes());
+        return;
+    }
+    for c in 0..3 {
+        let inset = (mx[c] - mn[c]) >> 4;
+        mn[c] = (mn[c] + inset).min(255);
+        mx[c] = (mx[c] - inset).max(0);
+    }
+    let mut c0 = pack_rgb565(mx[0], mx[1], mx[2]);
+    let mut c1 = pack_rgb565(mn[0], mn[1], mn[2]);
+    if has_trans {
+        if c0 > c1 {
+            std::mem::swap(&mut c0, &mut c1);
+        }
+        let p0 = unpack_rgb565(c0);
+        let p1 = unpack_rgb565(c1);
+        let p2 = [(p0[0] + p1[0]) >> 1, (p0[1] + p1[1]) >> 1, (p0[2] + p1[2]) >> 1];
+        let mut bits = 0u32;
+        for i in 0..16 {
+            let p = &rgba[i * 4..i * 4 + 4];
+            let best = if p[3] == 0 {
+                3u32
+            } else {
+                let c = [p[0] as i32, p[1] as i32, p[2] as i32];
+                let d = |q: [i32; 3]| (c[0] - q[0]).pow(2) + (c[1] - q[1]).pow(2) + (c[2] - q[2]).pow(2);
+                let (e0, e1, e2) = (d(p0), d(p1), d(p2));
+                if e0 <= e1 && e0 <= e2 { 0 } else if e1 <= e2 { 1 } else { 2 }
+            };
+            bits |= best << (i * 2);
+        }
+        out[0..2].copy_from_slice(&c0.to_le_bytes());
+        out[2..4].copy_from_slice(&c1.to_le_bytes());
+        out[4..8].copy_from_slice(&bits.to_le_bytes());
+        return;
+    }
+    if c0 < c1 {
+        std::mem::swap(&mut c0, &mut c1);
+    }
+    if c0 == c1 {
+        out[0..2].copy_from_slice(&c0.to_le_bytes());
+        out[2..4].copy_from_slice(&c1.to_le_bytes());
+        out[4..8].copy_from_slice(&0u32.to_le_bytes());
+        return;
+    }
+    let p0 = unpack_rgb565(c0);
+    let p1 = unpack_rgb565(c1);
+    let p2 = [(2 * p0[0] + p1[0]) / 3, (2 * p0[1] + p1[1]) / 3, (2 * p0[2] + p1[2]) / 3];
+    let p3 = [(p0[0] + 2 * p1[0]) / 3, (p0[1] + 2 * p1[1]) / 3, (p0[2] + 2 * p1[2]) / 3];
+    let mut bits = 0u32;
+    for i in 0..16 {
+        let p = &rgba[i * 4..i * 4 + 4];
+        let c = [p[0] as i32, p[1] as i32, p[2] as i32];
+        let d = |q: [i32; 3]| (c[0] - q[0]).pow(2) + (c[1] - q[1]).pow(2) + (c[2] - q[2]).pow(2);
+        let (e0, e1, e2, e3) = (d(p0), d(p1), d(p2), d(p3));
+        let mut best = 0u32;
+        let mut eb = e0;
+        if e1 < eb { eb = e1; best = 1; }
+        if e2 < eb { eb = e2; best = 2; }
+        if e3 < eb { best = 3; }
+        bits |= best << (i * 2);
+    }
+    out[0..2].copy_from_slice(&c0.to_le_bytes());
+    out[2..4].copy_from_slice(&c1.to_le_bytes());
+    out[4..8].copy_from_slice(&bits.to_le_bytes());
+}
+
+fn encode_bc4_unorm_block(vals: &[u8; 16], out: &mut [u8]) {
+    let mut lo = 255u32;
+    let mut hi = 0u32;
+    for &v in vals {
+        lo = lo.min(v as u32);
+        hi = hi.max(v as u32);
+    }
+    if hi == lo {
+        out[0..4].copy_from_slice(&(lo | (lo << 8)).to_le_bytes());
+        out[4..8].copy_from_slice(&0u32.to_le_bytes());
+        return;
+    }
+    let span = hi - lo;
+    let half = span >> 1;
+    let mut w0 = hi | (lo << 8);
+    let mut w1 = 0u32;
+    for (i, &v) in vals.iter().enumerate() {
+        let q = ((hi - v as u32) * 7 + half) / span;
+        let code = if q == 0 { 0 } else if q == 7 { 1 } else { q + 1 };
+        let bit = 16 + i * 3;
+        if bit < 32 {
+            w0 |= code << bit;
+            if bit > 29 {
+                w1 |= code >> (32 - bit);
+            }
+        } else {
+            w1 |= code << (bit - 32);
+        }
+    }
+    out[0..4].copy_from_slice(&w0.to_le_bytes());
+    out[4..8].copy_from_slice(&w1.to_le_bytes());
+}
+
+fn encode_bc4_snorm_block(vals: &[i8; 16], out: &mut [u8]) {
+    let mut lo = 127i32;
+    let mut hi = -127i32;
+    for &v in vals {
+        lo = lo.min(v as i32);
+        hi = hi.max(v as i32);
+    }
+    let uhi = (hi as u32) & 0xFF;
+    let ulo = (lo as u32) & 0xFF;
+    if hi == lo {
+        out[0..4].copy_from_slice(&(uhi | (ulo << 8)).to_le_bytes());
+        out[4..8].copy_from_slice(&0u32.to_le_bytes());
+        return;
+    }
+    let span = hi - lo;
+    let half = span >> 1;
+    let mut w0 = uhi | (ulo << 8);
+    let mut w1 = 0u32;
+    for (i, &v) in vals.iter().enumerate() {
+        let q = (((hi - v as i32) * 7 + half) / span) as u32;
+        let code = if q == 0 { 0 } else if q == 7 { 1 } else { q + 1 };
+        let bit = 16 + i * 3;
+        if bit < 32 {
+            w0 |= code << bit;
+            if bit > 29 {
+                w1 |= code >> (32 - bit);
+            }
+        } else {
+            w1 |= code << (bit - 32);
+        }
+    }
+    out[0..4].copy_from_slice(&w0.to_le_bytes());
+    out[4..8].copy_from_slice(&w1.to_le_bytes());
+}
+
+/// CPU fallback transcoder from ETC2/EAC to native BC1/BC3/BC4/BC5 blocks.
+/// Mirrors `etc_decode_gpu.comp`'s BC mode bit-for-bit so BC-backed images
+/// never break if a region falls back from GPU compute to CPU.
+pub fn transcode_region_bc(
+    format: EtcFormat,
+    src: &Surface<'_>,
+    width: usize,
+    height: usize,
+    dst: &mut [u8],
+) -> Result<(), String> {
+    if width == 0 || height == 0 {
+        return Ok(());
+    }
+    let bb = format.block_bytes();
+    let bw = width.div_ceil(4);
+    let bh = height.div_ceil(4);
+    if bw > src.row_blocks || bh > src.rows_of_blocks {
+        return Err(format!(
+            "region {width}x{height} exceeds source {}x{} blocks",
+            src.row_blocks, src.rows_of_blocks
+        ));
+    }
+    let need = ((bh - 1) * src.row_blocks + bw) * bb;
+    if src.data.len() < need {
+        return Err(format!("source has {} bytes, region needs {need}", src.data.len()));
+    }
+    let dst_need = bw * bh * bb;
+    if dst.len() < dst_need {
+        return Err(format!("destination has {} bytes, region needs {dst_need}", dst.len()));
+    }
+    let mut texels = [0u8; 64];
+    let mut bc_block = [0u8; 16];
+    let mut previous: Option<&[u8]> = None;
+    for by in 0..bh {
+        for bx in 0..bw {
+            let off = (by * src.row_blocks + bx) * bb;
+            let block = &src.data[off..off + bb];
+            if previous != Some(block) {
+                decode_block(format, block, &mut texels);
+                match format {
+                    EtcFormat::Rgb8 => encode_bc1_block(&texels, false, &mut bc_block[0..8]),
+                    EtcFormat::Rgb8A1 => encode_bc1_block(&texels, true, &mut bc_block[0..8]),
+                    EtcFormat::Rgba8 => {
+                        let mut a = [0u8; 16];
+                        for i in 0..16 {
+                            a[i] = texels[i * 4 + 3];
+                        }
+                        encode_bc4_unorm_block(&a, &mut bc_block[0..8]);
+                        encode_bc1_block(&texels, false, &mut bc_block[8..16]);
+                    }
+                    EtcFormat::R11 => {
+                        let mut v = [0u8; 16];
+                        for i in 0..16 {
+                            let u = u16::from_le_bytes([texels[i * 2], texels[i * 2 + 1]]) as u32;
+                            v[i] = ((u + 128) >> 8).min(255) as u8;
+                        }
+                        encode_bc4_unorm_block(&v, &mut bc_block[0..8]);
+                    }
+                    EtcFormat::R11Signed => {
+                        let mut s = [0i8; 16];
+                        for i in 0..16 {
+                            let s16 = i16::from_le_bytes([texels[i * 2], texels[i * 2 + 1]]) as i32;
+                            let r = if s16 >= 0 { (s16 + 128) >> 8 } else { -((-s16 + 128) >> 8) };
+                            s[i] = r.clamp(-127, 127) as i8;
+                        }
+                        encode_bc4_snorm_block(&s, &mut bc_block[0..8]);
+                    }
+                    EtcFormat::Rg11 => {
+                        let mut r = [0u8; 16];
+                        let mut g = [0u8; 16];
+                        for i in 0..16 {
+                            let ru = u16::from_le_bytes([texels[i * 4], texels[i * 4 + 1]]) as u32;
+                            let gu = u16::from_le_bytes([texels[i * 4 + 2], texels[i * 4 + 3]]) as u32;
+                            r[i] = ((ru + 128) >> 8).min(255) as u8;
+                            g[i] = ((gu + 128) >> 8).min(255) as u8;
+                        }
+                        encode_bc4_unorm_block(&r, &mut bc_block[0..8]);
+                        encode_bc4_unorm_block(&g, &mut bc_block[8..16]);
+                    }
+                    EtcFormat::Rg11Signed => {
+                        let mut r = [0i8; 16];
+                        let mut g = [0i8; 16];
+                        for i in 0..16 {
+                            let rs = i16::from_le_bytes([texels[i * 4], texels[i * 4 + 1]]) as i32;
+                            let gs = i16::from_le_bytes([texels[i * 4 + 2], texels[i * 4 + 3]]) as i32;
+                            let rr = if rs >= 0 { (rs + 128) >> 8 } else { -((-rs + 128) >> 8) };
+                            let gr = if gs >= 0 { (gs + 128) >> 8 } else { -((-gs + 128) >> 8) };
+                            r[i] = rr.clamp(-127, 127) as i8;
+                            g[i] = gr.clamp(-127, 127) as i8;
+                        }
+                        encode_bc4_snorm_block(&r, &mut bc_block[0..8]);
+                        encode_bc4_snorm_block(&g, &mut bc_block[8..16]);
+                    }
+                }
+                previous = Some(block);
+            }
+            let d = (by * bw + bx) * bb;
+            dst[d..d + bb].copy_from_slice(&bc_block[0..bb]);
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1008,12 +1008,28 @@ impl HostWindow {
             let seeding = editor_seeding.clone();
             let sink = editor_changed.clone();
             let widget = editor.clone();
+            // Both `changed` and `notify::cursor-position` fire synchronously
+            // for every keystroke with the exact same `(text, caret)`. Deduping
+            // consecutive identical pairs avoids sending duplicate JNI text +
+            // `APP_CMD_WINDOW_REDRAW_NEEDED` bursts on every keystroke.
+            let last_sent: std::rc::Rc<std::cell::RefCell<Option<(String, i32)>>> =
+                std::rc::Rc::new(std::cell::RefCell::new(None));
             let notify: std::rc::Rc<dyn Fn()> = std::rc::Rc::new(move || {
                 if seeding.get() {
+                    *last_sent.borrow_mut() = None;
                     return;
                 }
+                let text = widget.text();
+                let pos = widget.position();
+                {
+                    let mut prev = last_sent.borrow_mut();
+                    if prev.as_ref().is_some_and(|(t, p)| *p == pos && t == text.as_str()) {
+                        return;
+                    }
+                    *prev = Some((text.as_str().to_owned(), pos));
+                }
                 if let Some(cb) = sink.borrow().as_ref() {
-                    cb(widget.text().as_str(), widget.position());
+                    cb(text.as_str(), pos);
                 }
             });
             let on_text = notify.clone();
@@ -1054,14 +1070,25 @@ impl HostWindow {
             let seeding = editor_multiline_seeding.clone();
             let sink = editor_changed.clone();
             let buf = multiline_buffer.clone();
+            let last_sent: std::rc::Rc<std::cell::RefCell<Option<(String, i32)>>> =
+                std::rc::Rc::new(std::cell::RefCell::new(None));
             let notify: std::rc::Rc<dyn Fn()> = std::rc::Rc::new(move || {
                 if seeding.get() {
+                    *last_sent.borrow_mut() = None;
                     return;
                 }
+                let (start, end) = buf.bounds();
+                let text = buf.text(&start, &end, true);
+                let caret = buf.iter_at_mark(&buf.get_insert()).offset();
+                {
+                    let mut prev = last_sent.borrow_mut();
+                    if prev.as_ref().is_some_and(|(t, p)| *p == caret && t == text.as_str()) {
+                        return;
+                    }
+                    *prev = Some((text.as_str().to_owned(), caret));
+                }
                 if let Some(cb) = sink.borrow().as_ref() {
-                    let (start, end) = buf.bounds();
-                    let caret = buf.iter_at_mark(&buf.get_insert()).offset();
-                    cb(buf.text(&start, &end, true).as_str(), caret);
+                    cb(text.as_str(), caret);
                 }
             });
             let on_text = notify.clone();

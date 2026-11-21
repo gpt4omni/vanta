@@ -97,37 +97,71 @@ const char* remap(const char* path, char* buf, size_t n) {
     return buf;
 }
 
+static inline bool needs_slow_path(const char* path) {
+    if (__builtin_expect(g_trace, 0)) {
+        return true;
+    }
+    if (__builtin_expect(g_root_len == 0 || !path || path[0] != '/' || path[1] != 's', 1)) {
+        return false;
+    }
+    return std::strncmp(path, "/system/", 8) == 0;
+}
+
 #define REMAP(path)                          \
     char _buf[PATH_MAX];                     \
     const char* _p = remap(path, _buf, sizeof _buf); \
     const char* real = _p ? _p : (path)
 
-int s_stat(const char* path, struct stat* out) {
+[[gnu::noinline]] int s_stat_slow(const char* path, struct stat* out) {
     REMAP(path);
     int r = ::stat(real, out);
     trace_i("stat", real, r);
     return r;
 }
+int s_stat(const char* path, struct stat* out) {
+    if (__builtin_expect(!needs_slow_path(path), 1)) {
+        return ::stat(path, out);
+    }
+    return s_stat_slow(path, out);
+}
 
-int s_lstat(const char* path, struct stat* out) {
+[[gnu::noinline]] int s_lstat_slow(const char* path, struct stat* out) {
     REMAP(path);
     int r = ::lstat(real, out);
     trace_i("lstat", real, r);
     return r;
 }
+int s_lstat(const char* path, struct stat* out) {
+    if (__builtin_expect(!needs_slow_path(path), 1)) {
+        return ::lstat(path, out);
+    }
+    return s_lstat_slow(path, out);
+}
 
-int s_access(const char* path, int mode) {
+[[gnu::noinline]] int s_access_slow(const char* path, int mode) {
     REMAP(path);
     int r = ::access(real, mode);
     trace_i("access", real, r);
     return r;
 }
+int s_access(const char* path, int mode) {
+    if (__builtin_expect(!needs_slow_path(path), 1)) {
+        return ::access(path, mode);
+    }
+    return s_access_slow(path, mode);
+}
 
-DIR* s_opendir(const char* path) {
+[[gnu::noinline]] DIR* s_opendir_slow(const char* path) {
     REMAP(path);
     DIR* d = ::opendir(real);
     trace(d ? "opendir" : "opendir!", real, d ? "ok" : "null");
     return d;
+}
+DIR* s_opendir(const char* path) {
+    if (__builtin_expect(!needs_slow_path(path), 1)) {
+        return ::opendir(path);
+    }
+    return s_opendir_slow(path);
 }
 
 char* s_realpath(const char* path, char* resolved) {
@@ -183,20 +217,38 @@ char* s_realpath(const char* path, char* resolved) {
     return r;
 }
 
-ssize_t s_readlink(const char* path, char* buf, size_t n) {
+[[gnu::noinline]] ssize_t s_readlink_slow(const char* path, char* buf, size_t n) {
     REMAP(path);
     ssize_t r = ::readlink(real, buf, n);
     trace_i("readlink", real, (long)r);
     return r;
 }
+ssize_t s_readlink(const char* path, char* buf, size_t n) {
+    if (__builtin_expect(!needs_slow_path(path), 1)) {
+        return ::readlink(path, buf, n);
+    }
+    return s_readlink_slow(path, buf, n);
+}
 
-FILE* s_fopen(const char* path, const char* mode) {
+[[gnu::noinline]] FILE* s_fopen_slow(const char* path, const char* mode) {
     REMAP(path);
     FILE* f = ::fopen(real, mode);
     trace("fopen", real, f ? "ok" : "null");
     return f;
 }
+FILE* s_fopen(const char* path, const char* mode) {
+    if (__builtin_expect(!needs_slow_path(path), 1)) {
+        return ::fopen(path, mode);
+    }
+    return s_fopen_slow(path, mode);
+}
 
+[[gnu::noinline]] int s_open_slow(const char* path, int flags, unsigned mode) {
+    REMAP(path);
+    int r = ::open(real, flags, mode);
+    trace_i("open", real, r);
+    return r;
+}
 /// `open` is variadic: the mode argument exists only for `O_CREAT`/`O_TMPFILE`.
 /// Reading it unconditionally would walk the register save area for an argument
 /// the caller never pushed, which is the mistake that makes `VANTA_TRACE=1`
@@ -209,10 +261,10 @@ int s_open(const char* path, int flags, ...) {
         mode = va_arg(ap, unsigned);
         va_end(ap);
     }
-    REMAP(path);
-    int r = ::open(real, flags, mode);
-    trace_i("open", real, r);
-    return r;
+    if (__builtin_expect(!needs_slow_path(path), 1)) {
+        return ::open(path, flags, mode);
+    }
+    return s_open_slow(path, flags, mode);
 }
 
 /// `statvfs`, which the engine imports and Vanta had never intercepted.

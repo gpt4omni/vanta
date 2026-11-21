@@ -337,7 +337,9 @@ public:
     /// Never empty. A mouse and a wheel are one contact and fill slot 0;
     /// `getPointerCount() == 0` is not something Android can produce and
     /// nothing downstream checks for it.
-    std::vector<MotionPointer> pointers{MotionPointer{0, 0.0f, 0.0f}};
+    static constexpr size_t kMaxPointers = 16;
+    MotionPointer pointers[kMaxPointers] = {MotionPointer{0, 0.0f, 0.0f}};
+    size_t pointer_count = 1;
     // Paired with `source` above and set by the same factory; see the
     // `kSource*`/`kToolType*` constants for why the two never disagree.
     jint toolType = kToolTypeMouse;
@@ -349,16 +351,9 @@ public:
     jfloat vscroll = 0.0f, hscroll = 0.0f;
 
     /// The contact at a pointer *index*, clamped rather than trusted.
-    ///
-    /// AGDK reads indices 0..`getPointerCount()-1` and so cannot go out of
-    /// range unless this file has got its own count wrong — but "cannot" and
-    /// "does not" differ by one undefined-behaviour read of a `std::vector`,
-    /// and a caller that has already been handed a wrong count is exactly the
-    /// caller that will ask. Slot 0 always exists, so answering with it is the
-    /// bounded wrong answer rather than the unbounded one.
     const MotionPointer& at(jint index) const {
-        if (index < 0 || static_cast<size_t>(index) >= pointers.size()) {
-            return pointers.front();
+        if (index < 0 || static_cast<size_t>(index) >= pointer_count) {
+            return pointers[0];
         }
         return pointers[static_cast<size_t>(index)];
     }
@@ -407,73 +402,52 @@ public:
     jint getClassification(ENV*) { return 0; }
     jint getEdgeFlags(ENV*) { return 0; }
     jint getHistorySize(ENV*) { return 0; }
-    jint getPointerCount(ENV*) { return static_cast<jint>(pointers.size()); }
+    jint getPointerCount(ENV*) { return static_cast<jint>(pointer_count); }
 
-    static std::shared_ptr<MotionEvent> Create(ENV* env, jfloat x, jfloat y, jint action,
+    static std::shared_ptr<MotionEvent> Create(ENV*, jfloat x, jfloat y, jint action,
                                                jint buttonState, jint actionButton,
                                                jlong eventTime, jlong downTime) {
         auto p = std::make_shared<MotionEvent>();
         p->pointers[0] = MotionPointer{0, x, y};
+        p->pointer_count = 1;
         p->action = action;
         p->buttonState = buttonState;
         p->actionButton = actionButton;
         p->eventTime = eventTime;
         p->downTime = downTime;
-        to_jni(env, p);
         return p;
     }
 
-    /// A wheel event: ACTION_SCROLL with the two scroll axes filled in.
-    ///
-    /// Separate from `Create` rather than two more arguments on it, because a
-    /// scroll has no gesture behind it — no down time, no action button, and
-    /// no button state that means anything — and threading four zeros through
-    /// every existing call site to say so would make the common path harder to
-    /// read for the sake of the rare one.
-    static std::shared_ptr<MotionEvent> CreateScroll(ENV* env, jfloat x, jfloat y, jfloat hscroll,
+    static std::shared_ptr<MotionEvent> CreateScroll(ENV*, jfloat x, jfloat y, jfloat hscroll,
                                                      jfloat vscroll, jlong eventTime) {
         auto p = std::make_shared<MotionEvent>();
         p->pointers[0] = MotionPointer{0, x, y};
+        p->pointer_count = 1;
         // AMOTION_EVENT_ACTION_SCROLL.
         p->action = 8;
         p->hscroll = hscroll;
         p->vscroll = vscroll;
         p->eventTime = eventTime;
         p->downTime = eventTime;
-        to_jni(env, p);
         return p;
     }
 
-    /// A finger gesture: one entry per contact currently down, and the source
-    /// and tool type that say so.
-    ///
-    /// Unconditionally touchscreen and finger, the way `Create` is
-    /// unconditionally mouse and wheel. Nothing here consults an environment
-    /// variable: these contacts arrived on a `wl_touch`, so there is a true
-    /// answer to what produced them. Which factory an event reaches is decided
-    /// once, in `android::input`, from the device it came in on.
-    ///
-    /// `action` arrives already packed: for `ACTION_POINTER_DOWN`/`_UP` Android
-    /// carries the index of the contact the event is *about* in bits 8-15, and
-    /// the caller in `android::input` is where that packing is done and tested.
-    static std::shared_ptr<MotionEvent> CreateTouch(ENV* env, const VantaTouchContact* contacts,
+    static std::shared_ptr<MotionEvent> CreateTouch(ENV*, const VantaTouchContact* contacts,
                                                     int count, jint action, jlong eventTime,
                                                     jlong downTime) {
         auto p = std::make_shared<MotionEvent>();
         if (contacts && count > 0) {
-            p->pointers.clear();
-            p->pointers.reserve(static_cast<size_t>(count));
-            for (int i = 0; i < count; ++i) {
-                p->pointers.push_back(
-                    MotionPointer{(jint)contacts[i].id, contacts[i].x, contacts[i].y});
+            const size_t n = std::min(static_cast<size_t>(count), kMaxPointers);
+            for (size_t i = 0; i < n; ++i) {
+                p->pointers[i] = MotionPointer{(jint)contacts[i].id, contacts[i].x, contacts[i].y};
             }
+            p->pointer_count = n;
         }
         p->source = kSourceTouchscreen;
         p->toolType = kToolTypeFinger;
         p->action = action;
         p->eventTime = eventTime;
         p->downTime = downTime;
-        to_jni(env, p);
         return p;
     }
 
@@ -874,7 +848,7 @@ int deliver_motion(long handle, Build&& build, int* consumed, char* err, size_t 
                                      jfloat, jfloat);
         jboolean r = reinterpret_cast<TouchFn>(fn)(
             jni, jactivity, (jlong)handle, jevent,
-            /*pointerCount=*/(jint)event->pointers.size(), /*historySize=*/0,
+            /*pointerCount=*/(jint)event->pointer_count, /*historySize=*/0,
             /*deviceId=*/event->deviceId, /*source=*/event->source,
             /*action=*/event->action, /*eventTime=*/event->eventTime,
             /*downTime=*/event->downTime, /*flags=*/event->flags,

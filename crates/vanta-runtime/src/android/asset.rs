@@ -965,6 +965,10 @@ impl Served {
 static REQUESTED: Mutex<Option<BTreeMap<String, Served>>> = Mutex::new(None);
 
 fn record(name: &str, served: Served) {
+    #[cfg(not(test))]
+    if !trace_assets_enabled() {
+        return;
+    }
     if let Ok(mut held) = REQUESTED.lock() {
         held.get_or_insert_with(BTreeMap::new).insert(name.to_string(), served);
     }

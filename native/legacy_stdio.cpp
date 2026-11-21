@@ -42,32 +42,36 @@ extern "C" {
 extern const unsigned char* vanta_legacy_sf_base(void);
 extern size_t vanta_legacy_sf_stride(void);
 
-/// Map a `FILE*` onto the host's real stream when it points into `__sF`.
-///
-/// Returns the argument unchanged for every other pointer. The comparison is on
-/// the address falling inside the array, not on equality with a slot, because a
-/// caller that computed `&__sF[1]` and a caller that took `stdout` as a macro
-/// arrive at the same place by different arithmetic and both must be caught.
-static FILE* translate(FILE* f) {
-    if (!f) {
-        return f;
-    }
-    // Both values are process-lifetime constants from Rust's static `LEGACY_SF`;
-    // caching them avoids two cross-FFI calls on every fread/fwrite/fseek/fprintf.
-    static const uintptr_t lo = reinterpret_cast<uintptr_t>(vanta_legacy_sf_base());
-    static const size_t stride = vanta_legacy_sf_stride();
-    if (!lo || !stride) {
-        return f;
-    }
-    const auto addr = reinterpret_cast<uintptr_t>(f);
-    if (addr < lo || addr >= lo + stride * 3) {
-        return f;
-    }
-    switch ((addr - lo) / stride) {
+static uintptr_t g_sf_lo = 0;
+static size_t g_sf_stride = 0;
+static size_t g_sf_span = 0;
+
+[[gnu::constructor]]
+static void init_legacy_sf_range(void) {
+    g_sf_lo = reinterpret_cast<uintptr_t>(vanta_legacy_sf_base());
+    g_sf_stride = vanta_legacy_sf_stride();
+    g_sf_span = g_sf_stride * 3;
+}
+
+[[gnu::noinline]]
+static FILE* translate_slow(uintptr_t addr) {
+    switch ((addr - g_sf_lo) / g_sf_stride) {
         case 0: return stdin;
         case 1: return stdout;
         default: return stderr;
     }
+}
+
+/// Map a `FILE*` onto the host's real stream when it points into `__sF`.
+/// Single unsigned range check on the hot path — zero C++ static-init guards.
+static inline FILE* translate(FILE* f) {
+    const auto addr = reinterpret_cast<uintptr_t>(f);
+    if (__builtin_expect((addr - g_sf_lo) < g_sf_span, 0)) {
+        if (g_sf_stride) {
+            return translate_slow(addr);
+        }
+    }
+    return f;
 }
 
 // Only the FILE-taking entry points `libroblox.so` actually imports. Checked

@@ -1656,7 +1656,7 @@ public:
         if (ram_mb > 0) {
             long clamped = ram_mb < 2048 ? 2048 : (ram_mb > 65536 ? 65536 : ram_mb);
             p->deviceTotalMemoryMB = static_cast<jint>(clamped);
-            if (clamped >= 16384) {
+            if (clamped >= 12288) {
                 p->memoryClass = 512;
                 p->largeMemoryClass = 1024;
             }

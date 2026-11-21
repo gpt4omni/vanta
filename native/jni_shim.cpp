@@ -3,6 +3,9 @@
 // As with shim.cpp: translation only, no policy.
 
 #include <jnivm.h>
+#include <jnivm/weak.h>
+#include <jnivm/bytebuffer.h>
+#include <jnivm/internal/skipJNIType.h>
 
 extern "C" void vanta_register_android_classes(void* env);
 namespace vanta {
@@ -17,14 +20,22 @@ void register_init_params_classes(jnivm::ENV* env);
 /// later.
 namespace vanta { jnivm::ENV* process_env(); }
 
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <cstdarg>
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <exception>
 #include <execinfo.h>
 #include <unistd.h>
 #include <stdexcept>
 #include <memory>
+#include <string>
+#include <vector>
 
 namespace {
 JNIInvokeInterface g_traced_iface;
@@ -33,23 +44,889 @@ JNIInvokeInterface g_real_iface;
 JavaVM* g_real_vm = nullptr;
 bool g_trace_invoke = false;
 
+// ---------------------------------------------------------------------------
+// Fast JNI Rocket Layer (zero third_party/libjnivm edits, wired via AddHook).
+//
+// Eliminates libjnivm's per-call overhead on the hot path:
+//  1. 2-instruction vptr unwrap (replaces 3-9 dynamic_casts + shared_ptr churn)
+//  2. O(1) reverse-scan swap-and-pop DeleteLocalRef & DeleteGlobalRef
+//  3. Leak-free single-alloc New*Array (fixes libjnivm's `new T[n]{0}` leak)
+//  4. Zero-heap stack jvalue[16] Call*Method/V/A + CallStatic*Method/V/A
+//     without leaking a Class local ref on every single virtual call
+//  5. Lock-free TLS direct-mapped caches for FindClass, Get*MethodID,
+//     Get*FieldID, and virtual overload dispatch.
+// Disable via VANTA_NO_JNI_FAST=1 for A/B comparison.
+// ---------------------------------------------------------------------------
+
+JNINativeInterface g_orig_jni{};
+std::atomic<uint64_t> g_vm_gen{0};
+
+const void* g_vptr_global = nullptr;
+const void* g_vptr_weak = nullptr;
+ptrdiff_t g_global_obj_delta = 0;
+ptrdiff_t g_weak_obj_delta = 0;
+const void* g_vptr_string = nullptr;
+const void* g_vptr_class = nullptr;
+const void* g_vptr_bytebuf = nullptr;
+const void* g_vptr_arr_bool = nullptr;
+const void* g_vptr_arr_byte = nullptr;
+const void* g_vptr_arr_char = nullptr;
+const void* g_vptr_arr_short = nullptr;
+const void* g_vptr_arr_int = nullptr;
+const void* g_vptr_arr_long = nullptr;
+const void* g_vptr_arr_float = nullptr;
+const void* g_vptr_arr_double = nullptr;
+
+std::shared_ptr<jnivm::Class> g_cls_global;
+std::shared_ptr<jnivm::Class> g_cls_arr_bool;
+std::shared_ptr<jnivm::Class> g_cls_arr_byte;
+std::shared_ptr<jnivm::Class> g_cls_arr_char;
+std::shared_ptr<jnivm::Class> g_cls_arr_short;
+std::shared_ptr<jnivm::Class> g_cls_arr_int;
+std::shared_ptr<jnivm::Class> g_cls_arr_long;
+std::shared_ptr<jnivm::Class> g_cls_arr_float;
+std::shared_ptr<jnivm::Class> g_cls_arr_double;
+
+template <class T>
+static const void* vptr_of(const T* p) noexcept {
+    return *reinterpret_cast<const void* const*>(p);
+}
+
+static void init_fast_vptrs() {
+    jnivm::Global g;
+    jnivm::Weak w;
+    jnivm::String s;
+    jnivm::Class c;
+    jnivm::ByteBuffer bb(nullptr, 0);
+    jnivm::Array<jboolean> az;
+    jnivm::Array<jbyte> ab;
+    jnivm::Array<jchar> ac;
+    jnivm::Array<jshort> as;
+    jnivm::Array<jint> ai;
+    jnivm::Array<jlong> aj;
+    jnivm::Array<jfloat> af;
+    jnivm::Array<jdouble> ad;
+
+    jnivm::Object* g_obj = &g;
+    jnivm::Object* w_obj = &w;
+    g_vptr_global = vptr_of(g_obj);
+    g_vptr_weak = vptr_of(w_obj);
+    g_global_obj_delta = reinterpret_cast<const char*>(&g) - reinterpret_cast<const char*>(g_obj);
+    g_weak_obj_delta = reinterpret_cast<const char*>(&w) - reinterpret_cast<const char*>(w_obj);
+    g_vptr_string = vptr_of(static_cast<jnivm::Object*>(&s));
+    g_vptr_class = vptr_of(static_cast<jnivm::Object*>(&c));
+    g_vptr_bytebuf = vptr_of(static_cast<jnivm::Object*>(&bb));
+    g_vptr_arr_bool = vptr_of(static_cast<jnivm::Object*>(&az));
+    g_vptr_arr_byte = vptr_of(static_cast<jnivm::Object*>(&ab));
+    g_vptr_arr_char = vptr_of(static_cast<jnivm::Object*>(&ac));
+    g_vptr_arr_short = vptr_of(static_cast<jnivm::Object*>(&as));
+    g_vptr_arr_int = vptr_of(static_cast<jnivm::Object*>(&ai));
+    g_vptr_arr_long = vptr_of(static_cast<jnivm::Object*>(&aj));
+    g_vptr_arr_float = vptr_of(static_cast<jnivm::Object*>(&af));
+    g_vptr_arr_double = vptr_of(static_cast<jnivm::Object*>(&ad));
+}
+
+static void init_fast_classes(jnivm::ENV* env) {
+    g_cls_global = env->GetClass("internal/lang/Global");
+    g_cls_arr_bool = env->GetClass("[Z");
+    g_cls_arr_byte = env->GetClass("[B");
+    g_cls_arr_char = env->GetClass("[C");
+    g_cls_arr_short = env->GetClass("[S");
+    g_cls_arr_int = env->GetClass("[I");
+    g_cls_arr_long = env->GetClass("[J");
+    g_cls_arr_float = env->GetClass("[F");
+    g_cls_arr_double = env->GetClass("[D");
+}
+
+static inline jnivm::Object* fast_unwrap(jobject o) noexcept {
+    if (!o) {
+        return nullptr;
+    }
+    auto* obj = reinterpret_cast<jnivm::Object*>(o);
+    const void* vp = vptr_of(obj);
+    if (__builtin_expect(vp != g_vptr_global && vp != g_vptr_weak, 1)) {
+        return obj;
+    }
+    if (vp == g_vptr_global) {
+        auto* g = reinterpret_cast<jnivm::Global*>(reinterpret_cast<char*>(obj) + g_global_obj_delta);
+        return g->wrapped.get();
+    }
+    auto* w = reinterpret_cast<jnivm::Weak*>(reinterpret_cast<char*>(obj) + g_weak_obj_delta);
+    auto sp = w->wrapped.lock();
+    return sp.get();
+}
+
+static inline jnivm::Class* fast_unwrap_class(jclass c) noexcept {
+    jnivm::Object* obj = fast_unwrap(c);
+    if (!obj) {
+        return nullptr;
+    }
+    if (__builtin_expect(vptr_of(obj) == g_vptr_class, 1)) {
+        return static_cast<jnivm::Class*>(obj);
+    }
+    return dynamic_cast<jnivm::Class*>(obj);
+}
+
+static inline void push_local(jnivm::ENV* nenv, const std::shared_ptr<jnivm::Object>& obj) {
+#ifdef EnableJNIVMGC
+    if (obj) {
+        nenv->localframe.front().emplace_back(obj);
+    }
+#else
+    (void)nenv;
+    (void)obj;
+#endif
+}
+
+static inline void push_local(jnivm::ENV* nenv, std::shared_ptr<jnivm::Object>&& obj) {
+#ifdef EnableJNIVMGC
+    if (obj) {
+        nenv->localframe.front().emplace_back(std::move(obj));
+    }
+#else
+    (void)nenv;
+    (void)obj;
+#endif
+}
+
+// Fast FNV-1a 64-bit hash for small JNI names/signatures.
+static inline uint64_t fnv1a(const char* s, size_t& out_len) noexcept {
+    uint64_t h = 14695981039346656037ULL;
+    size_t n = 0;
+    while (unsigned char c = static_cast<unsigned char>(s[n])) {
+        h ^= c;
+        h *= 1099511628211ULL;
+        ++n;
+    }
+    out_len = n;
+    return h;
+}
+
+// ---- Local / Global Reference fast paths ----------------------------------
+
+static void fast_delete_local_ref(JNIEnv* env, jobject obj) {
+#ifdef EnableJNIVMGC
+    if (!obj) {
+        return;
+    }
+    auto* nenv = jnivm::ENV::FromJNIEnv(env);
+    jnivm::Object* raw = fast_unwrap(obj);
+    if (!raw) {
+        return;
+    }
+    for (auto& frame : nenv->localframe) {
+        for (size_t i = frame.size(); i-- > 0;) {
+            if (frame[i].get() == raw) {
+                if (i + 1 < frame.size()) {
+                    frame[i] = std::move(frame.back());
+                }
+                frame.pop_back();
+                return;
+            }
+        }
+    }
+#else
+    (void)env;
+    (void)obj;
+#endif
+}
+
+static jobject fast_new_global_ref(JNIEnv* env, jobject obj) {
+    if (!obj) {
+        return nullptr;
+    }
+    jnivm::Object* raw = fast_unwrap(obj);
+    if (!raw) {
+        return nullptr;
+    }
+    auto strong = raw->weak_from_this().lock();
+    if (!strong) {
+        return g_orig_jni.NewGlobalRef(env, obj);
+    }
+    auto global = std::make_shared<jnivm::Global>();
+    global->wrapped = std::move(strong);
+    global->clazz = g_cls_global;
+    jnivm::Object* global_obj = static_cast<jnivm::Object*>(global.get());
+#ifdef EnableJNIVMGC
+    auto* nvm = jnivm::ENV::FromJNIEnv(env)->GetVM();
+    {
+        std::lock_guard<std::mutex> guard(nvm->mtx);
+        nvm->globals.emplace_back(std::move(global));
+    }
+#endif
+    return reinterpret_cast<jobject>(global_obj);
+}
+
+static void fast_delete_global_ref(JNIEnv* env, jobject obj) {
+#ifdef EnableJNIVMGC
+    if (!obj) {
+        return;
+    }
+    auto* raw = reinterpret_cast<jnivm::Object*>(obj);
+    auto* nvm = jnivm::ENV::FromJNIEnv(env)->GetVM();
+    std::lock_guard<std::mutex> guard(nvm->mtx);
+    auto& g = nvm->globals;
+    for (size_t i = g.size(); i-- > 0;) {
+        if (g[i].get() == raw) {
+            if (i + 1 < g.size()) {
+                g[i] = std::move(g.back());
+            }
+            g.pop_back();
+            return;
+        }
+    }
+#else
+    (void)env;
+    (void)obj;
+#endif
+}
+
+static jobject fast_new_local_ref(JNIEnv* env, jobject obj) {
+    if (!obj) {
+        return nullptr;
+    }
+    jnivm::Object* raw = fast_unwrap(obj);
+    if (!raw) {
+        return nullptr;
+    }
+    auto strong = raw->weak_from_this().lock();
+    if (!strong) {
+        return g_orig_jni.NewLocalRef(env, obj);
+    }
+    push_local(jnivm::ENV::FromJNIEnv(env), strong);
+    return reinterpret_cast<jobject>(strong.get());
+}
+
+static jboolean fast_is_same_object(JNIEnv*, jobject l, jobject r) {
+    if (l == r) {
+        return JNI_TRUE;
+    }
+    return fast_unwrap(l) == fast_unwrap(r) ? JNI_TRUE : JNI_FALSE;
+}
+
+static jclass fast_get_object_class(JNIEnv* env, jobject obj) {
+    jnivm::Object* raw = fast_unwrap(obj);
+    if (!raw) {
+        return nullptr;
+    }
+    auto cl = raw->clazz.lock();
+    if (!cl) {
+        return g_orig_jni.GetObjectClass(env, obj);
+    }
+    push_local(jnivm::ENV::FromJNIEnv(env), cl);
+    return reinterpret_cast<jclass>(cl.get());
+}
+
+// ---- TLS caches for FindClass / Get*MethodID / Get*FieldID ----------------
+
+struct FindClassSlot {
+    uint64_t gen = 0;
+    uint64_t hash = 0;
+    uint16_t len = 0;
+    char name[126]{};
+    std::shared_ptr<jnivm::Class> cls;
+};
+
+static constexpr size_t kFindClassCacheSize = 64;
+thread_local std::array<FindClassSlot, kFindClassCacheSize> t_find_class_cache{};
+
+static jclass fast_find_class(JNIEnv* env, const char* name) {
+    if (!name) {
+        return g_orig_jni.FindClass(env, name);
+    }
+    size_t len = 0;
+    const uint64_t h = fnv1a(name, len);
+    const uint64_t gen = g_vm_gen.load(std::memory_order_relaxed);
+    if (len < sizeof(FindClassSlot::name)) {
+        auto& slot = t_find_class_cache[h & (kFindClassCacheSize - 1)];
+        if (slot.gen == gen && slot.hash == h && slot.len == len &&
+            std::memcmp(slot.name, name, len) == 0 && slot.cls) {
+            push_local(jnivm::ENV::FromJNIEnv(env), slot.cls);
+            return reinterpret_cast<jclass>(slot.cls.get());
+        }
+        jclass res = g_orig_jni.FindClass(env, name);
+        if (res) {
+            if (auto* cp = fast_unwrap_class(res)) {
+                auto sp = std::static_pointer_cast<jnivm::Class>(cp->weak_from_this().lock());
+                if (sp) {
+                    slot.gen = gen;
+                    slot.hash = h;
+                    slot.len = static_cast<uint16_t>(len);
+                    std::memcpy(slot.name, name, len + 1);
+                    slot.cls = std::move(sp);
+                }
+            }
+        }
+        return res;
+    }
+    return g_orig_jni.FindClass(env, name);
+}
+
+struct MemberIdSlot {
+    uint64_t gen = 0;
+    uint64_t hash = 0;
+    const jnivm::Class* cls = nullptr;
+    void* id = nullptr;
+    uint8_t kind = 0; // 0=method, 1=static_method, 2=field, 3=static_field
+    uint8_t name_len = 0;
+    uint16_t sig_len = 0;
+    char name[64]{};
+    char sig[128]{};
+};
+
+static constexpr size_t kMemberCacheSize = 128;
+thread_local std::array<MemberIdSlot, kMemberCacheSize> t_member_cache{};
+
+template <uint8_t Kind, typename IdT, typename OrigFn>
+static IdT fast_lookup_member_id(JNIEnv* env, jclass cl, const char* name, const char* sig, OrigFn orig) {
+    if (!cl || !name || !sig) {
+        return orig(env, cl, name, sig);
+    }
+    jnivm::Class* cp = fast_unwrap_class(cl);
+    if (!cp) {
+        return orig(env, cl, name, sig);
+    }
+    size_t nlen = 0;
+    size_t slen = 0;
+    const uint64_t nh = fnv1a(name, nlen);
+    const uint64_t sh = fnv1a(sig, slen);
+    if (nlen < sizeof(MemberIdSlot::name) && slen < sizeof(MemberIdSlot::sig)) {
+        const uint64_t h = (reinterpret_cast<uintptr_t>(cp) * 0x9E3779B97F4A7C15ULL) ^ nh ^ (sh * 31ULL) ^ Kind;
+        const uint64_t gen = g_vm_gen.load(std::memory_order_relaxed);
+        auto& slot = t_member_cache[h & (kMemberCacheSize - 1)];
+        if (slot.gen == gen && slot.hash == h && slot.cls == cp && slot.kind == Kind &&
+            slot.name_len == nlen && slot.sig_len == slen &&
+            std::memcmp(slot.name, name, nlen) == 0 &&
+            std::memcmp(slot.sig, sig, slen) == 0) {
+            return reinterpret_cast<IdT>(slot.id);
+        }
+        IdT res = orig(env, cl, name, sig);
+        if (res) {
+            slot.gen = gen;
+            slot.hash = h;
+            slot.cls = cp;
+            slot.id = reinterpret_cast<void*>(res);
+            slot.kind = Kind;
+            slot.name_len = static_cast<uint8_t>(nlen);
+            slot.sig_len = static_cast<uint16_t>(slen);
+            std::memcpy(slot.name, name, nlen + 1);
+            std::memcpy(slot.sig, sig, slen + 1);
+        }
+        return res;
+    }
+    return orig(env, cl, name, sig);
+}
+
+static jmethodID fast_get_method_id(JNIEnv* env, jclass cl, const char* name, const char* sig) {
+    return fast_lookup_member_id<0, jmethodID>(env, cl, name, sig, g_orig_jni.GetMethodID);
+}
+static jmethodID fast_get_static_method_id(JNIEnv* env, jclass cl, const char* name, const char* sig) {
+    return fast_lookup_member_id<1, jmethodID>(env, cl, name, sig, g_orig_jni.GetStaticMethodID);
+}
+static jfieldID fast_get_field_id(JNIEnv* env, jclass cl, const char* name, const char* sig) {
+    return fast_lookup_member_id<2, jfieldID>(env, cl, name, sig, g_orig_jni.GetFieldID);
+}
+static jfieldID fast_get_static_field_id(JNIEnv* env, jclass cl, const char* name, const char* sig) {
+    return fast_lookup_member_id<3, jfieldID>(env, cl, name, sig, g_orig_jni.GetStaticFieldID);
+}
+
+// ---- Fast String & DirectByteBuffer accessors -----------------------------
+
+static inline jnivm::String* fast_as_string(jstring s) noexcept {
+    jnivm::Object* raw = fast_unwrap(s);
+    if (!raw) {
+        return nullptr;
+    }
+    if (__builtin_expect(vptr_of(raw) == g_vptr_string, 1)) {
+        return static_cast<jnivm::String*>(raw);
+    }
+    return dynamic_cast<jnivm::String*>(raw);
+}
+
+static jstring fast_new_string_utf(JNIEnv* env, const char* str) {
+    auto s = std::make_shared<jnivm::String>(std::string(str ? str : ""));
+    push_local(jnivm::ENV::FromJNIEnv(env), s);
+    return reinterpret_cast<jstring>(s.get());
+}
+
+static jsize fast_get_string_utf_length(JNIEnv*, jstring str) {
+    auto* s = fast_as_string(str);
+    return s ? static_cast<jsize>(s->length()) : 0;
+}
+
+static const char* fast_get_string_utf_chars(JNIEnv*, jstring str, jboolean* isCopy) {
+    if (isCopy) {
+        *isCopy = JNI_FALSE;
+    }
+    auto* s = fast_as_string(str);
+    return s ? s->c_str() : "";
+}
+
+static void* fast_get_direct_buffer_address(JNIEnv*, jobject buf) {
+    jnivm::Object* raw = fast_unwrap(buf);
+    if (!raw) {
+        return nullptr;
+    }
+    auto* bb = (__builtin_expect(vptr_of(raw) == g_vptr_bytebuf, 1))
+        ? static_cast<jnivm::ByteBuffer*>(raw)
+        : dynamic_cast<jnivm::ByteBuffer*>(raw);
+    return bb ? bb->buffer : nullptr;
+}
+
+static jlong fast_get_direct_buffer_capacity(JNIEnv*, jobject buf) {
+    jnivm::Object* raw = fast_unwrap(buf);
+    if (!raw) {
+        return -1;
+    }
+    auto* bb = (__builtin_expect(vptr_of(raw) == g_vptr_bytebuf, 1))
+        ? static_cast<jnivm::ByteBuffer*>(raw)
+        : dynamic_cast<jnivm::ByteBuffer*>(raw);
+    return bb ? bb->capacity : -1;
+}
+
+// ---- Leak-free single-alloc New*Array & zero-dynamic_cast Array ops -------
+
+template <class T>
+struct ArrayTraits;
+
+#define DEFINE_ARRAY_TRAITS(CType, JArrType, VptrVar, ClsVar) \
+    template <> struct ArrayTraits<CType> { \
+        using JArr = JArrType; \
+        static inline const void* vptr() noexcept { return VptrVar; } \
+        static inline const std::shared_ptr<jnivm::Class>& cls() noexcept { return ClsVar; } \
+    }
+
+DEFINE_ARRAY_TRAITS(jboolean, jbooleanArray, g_vptr_arr_bool, g_cls_arr_bool);
+DEFINE_ARRAY_TRAITS(jbyte, jbyteArray, g_vptr_arr_byte, g_cls_arr_byte);
+DEFINE_ARRAY_TRAITS(jchar, jcharArray, g_vptr_arr_char, g_cls_arr_char);
+DEFINE_ARRAY_TRAITS(jshort, jshortArray, g_vptr_arr_short, g_cls_arr_short);
+DEFINE_ARRAY_TRAITS(jint, jintArray, g_vptr_arr_int, g_cls_arr_int);
+DEFINE_ARRAY_TRAITS(jlong, jlongArray, g_vptr_arr_long, g_cls_arr_long);
+DEFINE_ARRAY_TRAITS(jfloat, jfloatArray, g_vptr_arr_float, g_cls_arr_float);
+DEFINE_ARRAY_TRAITS(jdouble, jdoubleArray, g_vptr_arr_double, g_cls_arr_double);
+#undef DEFINE_ARRAY_TRAITS
+
+template <class T>
+static inline jnivm::Array<T>* fast_as_array(typename ArrayTraits<T>::JArr a) noexcept {
+    jnivm::Object* raw = fast_unwrap(a);
+    if (!raw) {
+        return nullptr;
+    }
+    if (__builtin_expect(vptr_of(raw) == ArrayTraits<T>::vptr(), 1)) {
+        return static_cast<jnivm::Array<T>*>(raw);
+    }
+    return dynamic_cast<jnivm::Array<T>*>(raw);
+}
+
+static jsize fast_get_array_length(JNIEnv*, jarray a) {
+    jnivm::Object* raw = fast_unwrap(a);
+    if (!raw) {
+        return 0;
+    }
+    const void* vp = vptr_of(raw);
+    if (vp == g_vptr_arr_byte || vp == g_vptr_arr_int || vp == g_vptr_arr_float ||
+        vp == g_vptr_arr_short || vp == g_vptr_arr_long || vp == g_vptr_arr_bool ||
+        vp == g_vptr_arr_char || vp == g_vptr_arr_double) {
+        return static_cast<jnivm::Array<void>*>(raw)->getSize();
+    }
+    auto* arr = dynamic_cast<jnivm::Array<void>*>(raw);
+    return arr ? arr->getSize() : 0;
+}
+
+template <class T>
+static typename ArrayTraits<T>::JArr fast_new_array(JNIEnv* env, jsize length) {
+    if (length < 0) {
+        length = 0;
+    }
+    auto arr = length > 0
+        ? std::make_shared<jnivm::Array<T>>(length)
+        : std::make_shared<jnivm::Array<T>>();
+    if (length > 0) {
+        std::memset(arr->getArray(), 0, sizeof(T) * static_cast<size_t>(length));
+    }
+    arr->clazz = ArrayTraits<T>::cls();
+    push_local(jnivm::ENV::FromJNIEnv(env), arr);
+    return reinterpret_cast<typename ArrayTraits<T>::JArr>(arr.get());
+}
+
+template <class T>
+static T* fast_get_array_elements(JNIEnv*, typename ArrayTraits<T>::JArr a, jboolean* isCopy) {
+    if (isCopy) {
+        *isCopy = JNI_FALSE;
+    }
+    auto* arr = fast_as_array<T>(a);
+    return arr ? arr->getArray() : nullptr;
+}
+
+template <class T>
+static void fast_get_array_region(JNIEnv*, typename ArrayTraits<T>::JArr a, jsize start, jsize len, T* buf) {
+    auto* arr = fast_as_array<T>(a);
+    if (arr && buf && len > 0) {
+        std::memcpy(buf, arr->getArray() + start, sizeof(T) * static_cast<size_t>(len));
+    }
+}
+
+template <class T>
+static void fast_set_array_region(JNIEnv*, typename ArrayTraits<T>::JArr a, jsize start, jsize len, const T* buf) {
+    auto* arr = fast_as_array<T>(a);
+    if (arr && buf && len > 0) {
+        std::memcpy(arr->getArray() + start, buf, sizeof(T) * static_cast<size_t>(len));
+    }
+}
+
+static void* fast_get_primitive_array_critical(JNIEnv*, jarray a, jboolean* isCopy) {
+    if (isCopy) {
+        *isCopy = JNI_FALSE;
+    }
+    jnivm::Object* raw = fast_unwrap(a);
+    if (!raw) {
+        return nullptr;
+    }
+    const void* vp = vptr_of(raw);
+    if (vp == g_vptr_arr_byte || vp == g_vptr_arr_int || vp == g_vptr_arr_float ||
+        vp == g_vptr_arr_short || vp == g_vptr_arr_long || vp == g_vptr_arr_bool ||
+        vp == g_vptr_arr_char || vp == g_vptr_arr_double) {
+        return static_cast<jnivm::Array<void>*>(raw)->getArray();
+    }
+    auto* arr = dynamic_cast<jnivm::Array<void>*>(raw);
+    return arr ? arr->getArray() : nullptr;
+}
+
+// ---- Zero-heap stack va_list -> jvalue[16] & zero-leak Call*Method --------
+
+static constexpr size_t kStackArgsMax = 16;
+
+static jvalue* parse_va_args(va_list list, const char* sig, jvalue (&stack_buf)[kStackArgsMax], std::vector<jvalue>& overflow) {
+    if (!sig || sig[0] != '(') {
+        return stack_buf;
+    }
+    const char* p = sig + 1;
+    size_t count = 0;
+    auto push = [&](const jvalue& v) {
+        if (__builtin_expect(count < kStackArgsMax, 1)) {
+            stack_buf[count++] = v;
+        } else {
+            if (overflow.empty()) {
+                overflow.assign(stack_buf, stack_buf + kStackArgsMax);
+            }
+            overflow.push_back(v);
+            ++count;
+        }
+    };
+    while (*p && *p != ')') {
+        jvalue v{};
+        switch (*p) {
+        case 'V':
+            break;
+        case 'Z':
+            v.z = static_cast<jboolean>(va_arg(list, int));
+            break;
+        case 'B':
+            v.b = static_cast<jbyte>(va_arg(list, int));
+            break;
+        case 'S':
+            v.s = static_cast<jshort>(va_arg(list, int));
+            break;
+        case 'C':
+            v.c = static_cast<jchar>(va_arg(list, int));
+            break;
+        case 'I':
+            v.i = va_arg(list, jint);
+            break;
+        case 'J':
+            v.j = va_arg(list, jlong);
+            break;
+        case 'F':
+            v.f = static_cast<jfloat>(va_arg(list, jdouble));
+            break;
+        case 'D':
+            v.d = va_arg(list, jdouble);
+            break;
+        case '[': {
+            const char* end = p + std::strlen(p);
+            p = jnivm::SkipJNIType(p + 1, end) - 1;
+            v.l = va_arg(list, jobject);
+            break;
+        }
+        case 'L': {
+            const char* semi = std::strchr(p, ';');
+            if (!semi) {
+                return overflow.empty() ? stack_buf : overflow.data();
+            }
+            p = semi;
+            v.l = va_arg(list, jobject);
+            break;
+        }
+        default:
+            break;
+        }
+        push(v);
+        ++p;
+    }
+    return overflow.empty() ? stack_buf : overflow.data();
+}
+
+struct VDispatchSlot {
+    uint64_t gen = 0;
+    const jnivm::Class* cls = nullptr;
+    const jnivm::Method* mid = nullptr;
+    jnivm::Method* resolved = nullptr;
+};
+
+static constexpr size_t kVDispatchCacheSize = 64;
+thread_local std::array<VDispatchSlot, kVDispatchCacheSize> t_vdispatch_cache{};
+
+static jnivm::Method* resolve_virtual_method(jnivm::Class* cl, jnivm::Method* mid) {
+    if (!cl) {
+        return mid;
+    }
+    const uint64_t gen = g_vm_gen.load(std::memory_order_relaxed);
+    const size_t idx = ((reinterpret_cast<uintptr_t>(cl) >> 4) ^ (reinterpret_cast<uintptr_t>(mid) >> 4)) &
+                       (kVDispatchCacheSize - 1);
+    auto& slot = t_vdispatch_cache[idx];
+    if (__builtin_expect(slot.gen == gen && slot.cls == cl && slot.mid == mid, 1)) {
+        return slot.resolved;
+    }
+    jnivm::Method* found = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(cl->mtx);
+        // Pointer identity hit first (exact declaring class, zero string comparisons).
+        for (const auto& m : cl->methods) {
+            if (m.get() == mid && m->nativehandle) {
+                found = mid;
+                break;
+            }
+        }
+        if (!found) {
+            for (const auto& m : cl->methods) {
+                if (!m->_static && m->nativehandle && m->name == mid->name && m->signature == mid->signature) {
+                    found = m.get();
+                    break;
+                }
+            }
+        }
+    }
+    if (!found && mid->nativehandle) {
+        found = mid;
+    }
+    if (found) {
+        slot.gen = gen;
+        slot.cls = cl;
+        slot.mid = mid;
+        slot.resolved = found;
+    }
+    return found;
+}
+
+template <class T>
+struct FastCall {
+    static T instance_a(JNIEnv* env, jobject obj, jmethodID id, jvalue* args) {
+        auto* mid = reinterpret_cast<jnivm::Method*>(id);
+        jnivm::Object* raw = fast_unwrap(obj);
+        if (__builtin_expect(!mid || !mid->nativehandle || !raw, 0)) {
+            return orig_a(env, obj, id, args);
+        }
+        // Hold shared_ptr to Class on stack — never pushes a leaked local ref!
+        auto cl_sp = raw->clazz.lock();
+        jnivm::Method* resolved = resolve_virtual_method(cl_sp.get(), mid);
+        if (__builtin_expect(!resolved || !resolved->nativehandle, 0)) {
+            return orig_a(env, obj, id, args);
+        }
+        auto* nenv = jnivm::ENV::FromJNIEnv(env);
+        try {
+            return static_cast<jnivm::impl::MethodHandleBase<T>*>(resolved->nativehandle.get())
+                ->InstanceInvoke(nenv, obj, args, jnivm::impl::MethodHandleBase<T>{});
+        } catch (...) {
+            auto cur = std::make_shared<jnivm::Throwable>();
+            cur->except = std::current_exception();
+            nenv->current_exception = std::move(cur);
+            if constexpr (!std::is_void_v<T>) {
+                return T{};
+            }
+        }
+    }
+
+    static T instance_v(JNIEnv* env, jobject obj, jmethodID id, va_list ap) {
+        auto* mid = reinterpret_cast<jnivm::Method*>(id);
+        if (__builtin_expect(!mid || !mid->nativehandle || !obj, 0)) {
+            return orig_v(env, obj, id, ap);
+        }
+        jvalue stack_buf[kStackArgsMax];
+        std::vector<jvalue> overflow;
+        jvalue* args = parse_va_args(ap, mid->signature.c_str(), stack_buf, overflow);
+        return instance_a(env, obj, id, args);
+    }
+
+    static T instance_dots(JNIEnv* env, jobject obj, jmethodID id, ...) {
+        va_list ap;
+        va_start(ap, id);
+        if constexpr (std::is_void_v<T>) {
+            instance_v(env, obj, id, ap);
+            va_end(ap);
+        } else {
+            T r = instance_v(env, obj, id, ap);
+            va_end(ap);
+            return r;
+        }
+    }
+
+    static T static_a(JNIEnv* env, jclass cl, jmethodID id, jvalue* args) {
+        auto* mid = reinterpret_cast<jnivm::Method*>(id);
+        jnivm::Class* cp = fast_unwrap_class(cl);
+        if (__builtin_expect(!mid || !mid->nativehandle || !cp, 0)) {
+            return orig_static_a(env, cl, id, args);
+        }
+        auto* nenv = jnivm::ENV::FromJNIEnv(env);
+        try {
+            return static_cast<jnivm::impl::MethodHandleBase<T>*>(mid->nativehandle.get())
+                ->StaticInvoke(nenv, cp, args, jnivm::impl::MethodHandleBase<T>{});
+        } catch (...) {
+            auto cur = std::make_shared<jnivm::Throwable>();
+            cur->except = std::current_exception();
+            nenv->current_exception = std::move(cur);
+            if constexpr (!std::is_void_v<T>) {
+                return T{};
+            }
+        }
+    }
+
+    static T static_v(JNIEnv* env, jclass cl, jmethodID id, va_list ap) {
+        auto* mid = reinterpret_cast<jnivm::Method*>(id);
+        if (__builtin_expect(!mid || !mid->nativehandle || !cl, 0)) {
+            return orig_static_v(env, cl, id, ap);
+        }
+        jvalue stack_buf[kStackArgsMax];
+        std::vector<jvalue> overflow;
+        jvalue* args = parse_va_args(ap, mid->signature.c_str(), stack_buf, overflow);
+        return static_a(env, cl, id, args);
+    }
+
+    static T static_dots(JNIEnv* env, jclass cl, jmethodID id, ...) {
+        va_list ap;
+        va_start(ap, id);
+        if constexpr (std::is_void_v<T>) {
+            static_v(env, cl, id, ap);
+            va_end(ap);
+        } else {
+            T r = static_v(env, cl, id, ap);
+            va_end(ap);
+            return r;
+        }
+    }
+
+    static T orig_a(JNIEnv* env, jobject obj, jmethodID id, jvalue* args);
+    static T orig_v(JNIEnv* env, jobject obj, jmethodID id, va_list ap);
+    static T orig_static_a(JNIEnv* env, jclass cl, jmethodID id, jvalue* args);
+    static T orig_static_v(JNIEnv* env, jclass cl, jmethodID id, va_list ap);
+};
+
+#define DEFINE_ORIG_CALL(T, Name) \
+    template <> T FastCall<T>::orig_a(JNIEnv* e, jobject o, jmethodID m, jvalue* a) { return g_orig_jni.Call##Name##MethodA(e, o, m, a); } \
+    template <> T FastCall<T>::orig_v(JNIEnv* e, jobject o, jmethodID m, va_list a) { return g_orig_jni.Call##Name##MethodV(e, o, m, a); } \
+    template <> T FastCall<T>::orig_static_a(JNIEnv* e, jclass c, jmethodID m, jvalue* a) { return g_orig_jni.CallStatic##Name##MethodA(e, c, m, a); } \
+    template <> T FastCall<T>::orig_static_v(JNIEnv* e, jclass c, jmethodID m, va_list a) { return g_orig_jni.CallStatic##Name##MethodV(e, c, m, a); }
+
+DEFINE_ORIG_CALL(jobject, Object)
+DEFINE_ORIG_CALL(jboolean, Boolean)
+DEFINE_ORIG_CALL(jbyte, Byte)
+DEFINE_ORIG_CALL(jchar, Char)
+DEFINE_ORIG_CALL(jshort, Short)
+DEFINE_ORIG_CALL(jint, Int)
+DEFINE_ORIG_CALL(jlong, Long)
+DEFINE_ORIG_CALL(jfloat, Float)
+DEFINE_ORIG_CALL(jdouble, Double)
+DEFINE_ORIG_CALL(void, Void)
+#undef DEFINE_ORIG_CALL
+
 class ProcessVM final : public jnivm::VM {
 public:
     ProcessVM() : VM(true) {
+        g_orig_jni = GetNativeInterfaceTemplate();
+        init_fast_vptrs();
+        g_vm_gen.fetch_add(1, std::memory_order_relaxed);
+
+        const bool fast_jni =
+#ifdef JNI_TRACE
+            false;
+#else
+            getenv("VANTA_NO_JNI_FAST") == nullptr;
+#endif
+
         // libjnivm also takes the VM mutex to read this immutable association.
         // Hand out `&g_traced_vm` so JNIEnv::GetJavaVM stays on the same
         // wrapper table as JNI_OnLoad: DetachCurrentThread invalidates `t_env`
         // and libjnivm's own `g_real_vm` (and its `reserved0` pointer) stays
         // private to this file.
-        AddHook([](JNINativeInterface& iface) {
+        AddHook([fast_jni](JNINativeInterface& iface) {
             iface.GetJavaVM = [](JNIEnv*, JavaVM** out) -> jint {
                 if (out) {
                     *out = &g_traced_vm;
                 }
                 return JNI_OK;
             };
+            if (!fast_jni) {
+                return;
+            }
+            // Ref & class lookups
+            iface.FindClass = fast_find_class;
+            iface.GetObjectClass = fast_get_object_class;
+            iface.NewGlobalRef = fast_new_global_ref;
+            iface.DeleteGlobalRef = fast_delete_global_ref;
+            iface.DeleteLocalRef = fast_delete_local_ref;
+            iface.NewLocalRef = fast_new_local_ref;
+            iface.IsSameObject = fast_is_same_object;
+            iface.GetMethodID = fast_get_method_id;
+            iface.GetStaticMethodID = fast_get_static_method_id;
+            iface.GetFieldID = fast_get_field_id;
+            iface.GetStaticFieldID = fast_get_static_field_id;
+
+            // Strings & DirectByteBuffer
+            iface.NewStringUTF = fast_new_string_utf;
+            iface.GetStringUTFLength = fast_get_string_utf_length;
+            iface.GetStringUTFChars = fast_get_string_utf_chars;
+            iface.GetDirectBufferAddress = fast_get_direct_buffer_address;
+            iface.GetDirectBufferCapacity = fast_get_direct_buffer_capacity;
+
+            // Arrays (leak-free single alloc + zero dynamic_cast accessors)
+            iface.GetArrayLength = fast_get_array_length;
+            iface.GetPrimitiveArrayCritical = fast_get_primitive_array_critical;
+#define HOOK_PRIM_ARRAY(T, Name) \
+            iface.New##Name##Array = fast_new_array<T>; \
+            iface.Get##Name##ArrayElements = fast_get_array_elements<T>; \
+            iface.Get##Name##ArrayRegion = fast_get_array_region<T>; \
+            iface.Set##Name##ArrayRegion = fast_set_array_region<T>
+            HOOK_PRIM_ARRAY(jboolean, Boolean);
+            HOOK_PRIM_ARRAY(jbyte, Byte);
+            HOOK_PRIM_ARRAY(jchar, Char);
+            HOOK_PRIM_ARRAY(jshort, Short);
+            HOOK_PRIM_ARRAY(jint, Int);
+            HOOK_PRIM_ARRAY(jlong, Long);
+            HOOK_PRIM_ARRAY(jfloat, Float);
+            HOOK_PRIM_ARRAY(jdouble, Double);
+#undef HOOK_PRIM_ARRAY
+
+            // Zero-heap, zero-localref-leak Call*Method/V/A & CallStatic*Method/V/A
+#define HOOK_CALL(T, Name) \
+            iface.Call##Name##Method = FastCall<T>::instance_dots; \
+            iface.Call##Name##MethodV = FastCall<T>::instance_v; \
+            iface.Call##Name##MethodA = FastCall<T>::instance_a; \
+            iface.CallStatic##Name##Method = FastCall<T>::static_dots; \
+            iface.CallStatic##Name##MethodV = FastCall<T>::static_v; \
+            iface.CallStatic##Name##MethodA = FastCall<T>::static_a
+            HOOK_CALL(jobject, Object);
+            HOOK_CALL(jboolean, Boolean);
+            HOOK_CALL(jbyte, Byte);
+            HOOK_CALL(jchar, Char);
+            HOOK_CALL(jshort, Short);
+            HOOK_CALL(jint, Int);
+            HOOK_CALL(jlong, Long);
+            HOOK_CALL(jfloat, Float);
+            HOOK_CALL(jdouble, Double);
+            HOOK_CALL(void, Void);
+#undef HOOK_CALL
         });
         initialize();
+        init_fast_classes(GetEnv().get());
     }
 };
 

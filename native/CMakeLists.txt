@@ -330,10 +330,12 @@ endif()
 
 # JNI virtual machine. Roblox's native code calls into Java through 518 statically
 # registered natives and expects a JavaVM to call back into; libjnivm supplies both
-# sides without a JVM. Debug mode is what makes VM::GenerateClassDump available —
-# it records the Java classes and methods Roblox actually reaches for, which is the
-# only reliable way to turn the framework-API inventory into a work queue.
-set(JNIVM_ENABLE_DEBUG ON CACHE BOOL "" FORCE)
+# sides without a JVM. Debug mode (JNI_DEBUG) enables VM::GenerateClassDump, but
+# also forces every InternalFindClass / NewGlobalRef / NewWeakGlobalRef off the
+# vm->classes hash map onto an O(N) heap-allocating namespace walk. Keep it OFF
+# by default for fast gameplay and opt in via -DVANTA_JNI_DEBUG=ON when dumping.
+option(VANTA_JNI_DEBUG "Enable libjnivm class-dump tracking (slower FindClass)" OFF)
+set(JNIVM_ENABLE_DEBUG ${VANTA_JNI_DEBUG} CACHE BOOL "" FORCE)
 
 # JNIVM_ENABLE_TRACE printfs *every* JNI call libjnivm handles. That is
 # genuinely how most of the framework surface was discovered — `String.getBytes`
@@ -379,6 +381,9 @@ set_target_properties(logger PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../third_party/libjnivm
                  ${CMAKE_CURRENT_BINARY_DIR}/libjnivm EXCLUDE_FROM_ALL)
+# libjnivm's vm.h uses std::unordered_map<std::string, ...> without including
+# <string>; when JNI_DEBUG is OFF, namespace.h no longer pulls <string> in.
+target_compile_options(jnivm PUBLIC $<$<COMPILE_LANGUAGE:CXX>:-include> $<$<COMPILE_LANGUAGE:CXX>:string>)
 
 # audio_classes.cpp needs no PipeWire headers and so is compiled
 # unconditionally: pipewire_backend.h deliberately carries no PipeWire types
@@ -395,6 +400,14 @@ add_custom_command(TARGET vanta_jni_shim_test POST_BUILD
   COMMAND vanta_jni_shim_test
   COMMENT "Running JNI worker attachment checks")
 add_dependencies(vanta_jni_shim vanta_jni_shim_test)
+
+add_executable(vanta_netdb_compat_test EXCLUDE_FROM_ALL netdb_compat.cpp netdb_compat_test.cpp)
+target_compile_options(vanta_netdb_compat_test PRIVATE -UNDEBUG)
+target_link_libraries(vanta_netdb_compat_test PRIVATE pthread)
+add_custom_command(TARGET vanta_netdb_compat_test POST_BUILD
+  COMMAND vanta_netdb_compat_test
+  COMMENT "Running netdb_compat DNS cache checks")
+add_dependencies(vanta_jni_shim vanta_netdb_compat_test)
 
 add_executable(vanta_permissions_transport_test EXCLUDE_FROM_ALL
   permissions_transport.cpp permissions_transport_test.cpp)

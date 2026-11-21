@@ -29,7 +29,11 @@ fn main() {
         "bionic",
         &linker,
         &root.join("patches"),
-        &["0005-parse-relr-dynamic-tags", "0006-link-guest-arch-objects"],
+        &[
+            "0005-parse-relr-dynamic-tags",
+            "0006-link-guest-arch-objects",
+            "0009-hugepage-large-text",
+        ],
     );
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux") {
         // The fallback shadows the host UAPI header, leaving arm64's
@@ -60,6 +64,16 @@ fn main() {
         // It is ruinously slow: the engine polls `MotionEvent.getRawX`/`getRawY`
         // per pointer per frame and this writes a line for each, unbuffered. Use
         // it to take an inventory, not to play.
+        .define(
+            "VANTA_JNI_DEBUG",
+            if std::env::var_os("VANTA_JNI_DEBUG").is_some()
+                || std::env::var_os("VANTA_JNI_TRACE").is_some()
+            {
+                "ON"
+            } else {
+                "OFF"
+            },
+        )
         .define(
             "VANTA_JNI_TRACE",
             if std::env::var_os("VANTA_JNI_TRACE").is_some() { "ON" } else { "OFF" },
@@ -106,7 +120,8 @@ fn main() {
     // above makes about `native/`, and it should have been applied here at the
     // same time.
     for dir in ["third_party/mcpelauncher-linker/bionic/linker",
-                "third_party/mcpelauncher-linker/bionic/libdl"] {
+                "third_party/mcpelauncher-linker/bionic/libdl",
+                "patches"] {
         let path = root.join(dir);
         if path.exists() {
             println!("cargo:rerun-if-changed={}", path.display());

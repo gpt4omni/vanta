@@ -21,23 +21,24 @@ layout(set = 0, binding = 1, std430) writeonly buffer DstBuf {
 } dst_buf;
 
 layout(push_constant) uniform Params {
-    uint src_byte_offset; // byte offset into src_buf
+    uint src_byte_offset; // byte offset into src_buf (always 4-byte aligned)
     uint dst_word_offset; // u32 word offset into dst_buf (dst_byte_offset / 4)
     uint width;           // texel width
     uint height;          // texel height
     uint row_blocks;      // source row stride in 4x4 blocks
     uint layer_stride;    // source byte stride per array layer
-    uint dst_row_words;   // output u32 words per row (width for 4B texels; ceil(width/2) for R11)
-    uint fmt_and_layers;  // bits 0..7: format (0..6), bits 8..31: layer count
+    uint dst_row_words;   // output u32 words per row (RGBA8/R16/RG16 mode)
+    uint fmt_and_layers;  // bits 0..6: format (0..6), bit 7: BC transcode mode, bits 8..31: layers
 } pc;
 
-const uint FMT_RGB8       = 0u;
-const uint FMT_RGB8_A1    = 1u;
-const uint FMT_RGBA8      = 2u;
-const uint FMT_R11        = 3u;
-const uint FMT_R11_SIGNED = 4u;
-const uint FMT_RG11       = 5u;
+const uint FMT_RGB8        = 0u;
+const uint FMT_RGB8_A1     = 1u;
+const uint FMT_RGBA8       = 2u;
+const uint FMT_R11         = 3u;
+const uint FMT_R11_SIGNED  = 4u;
+const uint FMT_RG11        = 5u;
 const uint FMT_RG11_SIGNED = 6u;
+const uint FMT_BC_FLAG     = 0x80u;
 
 const int INTENSITY[16] = int[16](
     2, 8,
@@ -52,34 +53,22 @@ const int INTENSITY[16] = int[16](
 
 const int DISTANCE[8] = int[8](3, 6, 11, 16, 23, 32, 41, 64);
 
-const int EAC_MODIFIERS[128] = int[128](
-    -3, -6, -9, -15, 2, 5, 8, 14,
-    -3, -7, -10, -13, 2, 6, 9, 12,
-    -2, -5, -8, -13, 1, 4, 7, 12,
-    -2, -4, -6, -13, 1, 3, 5, 12,
-    -3, -6, -8, -12, 2, 5, 7, 11,
-    -3, -7, -9, -11, 2, 6, 8, 10,
-    -4, -7, -8, -11, 3, 6, 7, 10,
-    -3, -5, -8, -11, 2, 4, 7, 10,
-    -2, -6, -8, -10, 1, 5, 7, 9,
-    -2, -5, -8, -10, 1, 4, 7, 9,
-    -2, -4, -8, -10, 1, 3, 7, 9,
-    -2, -5, -7, -10, 1, 4, 6, 9,
-    -3, -4, -7, -10, 2, 3, 6, 9,
-    -1, -2, -3, -10, 0, 1, 2, 9,
-    -4, -6, -8, -9, 3, 5, 7, 8,
-    -3, -5, -7, -9, 2, 4, 6, 8
+// Packed EAC modifier magnitudes (4 bits each for indices 0..3; indices 4..7
+// satisfy pos[i] = neg[i] - 1 across all 16 tables). 64 B instead of 512 B.
+const uint EAC_MOD_PACKED[16] = uint[16](
+    0xF963u, 0xDA73u, 0xD852u, 0xD642u,
+    0xC863u, 0xB973u, 0xB874u, 0xB853u,
+    0xA862u, 0xA852u, 0xA842u, 0xA752u,
+    0xA743u, 0xA321u, 0x9864u, 0x9753u
 );
 
+int eac_mod(uint table, uint idx) {
+    uint m = (EAC_MOD_PACKED[table] >> ((idx & 3u) * 4u)) & 15u;
+    return (idx < 4u) ? -int(m) : (int(m) - 1);
+}
+
 uint load_u32_le(uint byte_off) {
-    uint idx = byte_off >> 2u;
-    uint rem = byte_off & 3u;
-    uint w0 = src_buf.data[idx];
-    if (rem == 0u) {
-        return w0;
-    }
-    uint w1 = src_buf.data[idx + 1u];
-    return (w0 >> (rem * 8u)) | (w1 << ((4u - rem) * 8u));
+    return src_buf.data[byte_off >> 2u];
 }
 
 uint bswap32(uint v) {
@@ -274,13 +263,13 @@ void decode_eac_alpha(uint byte_off, inout uint px[16]) {
     int base = int(w0 & 0xFFu);
     uint b1 = (w0 >> 8u) & 0xFFu;
     int mult = int(b1 >> 4u);
-    uint tab = (b1 & 0xFu) * 8u;
+    uint tab = b1 & 0xFu;
     uint hi16 = (((w0 >> 16u) & 0xFFu) << 8u) | (w0 >> 24u);
     uint lo32 = bswap32(w1);
 
     uint paint[8];
     for (uint k = 0u; k < 8u; ++k) {
-        paint[k] = clamp8(base + EAC_MODIFIERS[tab + k] * mult) << 24u;
+        paint[k] = clamp8(base + eac_mod(tab, k) * mult) << 24u;
     }
     for (uint y = 0u; y < 4u; ++y) {
         for (uint x = 0u; x < 4u; ++x) {
@@ -296,7 +285,7 @@ void decode_eac11(uint byte_off, bool is_signed, out uint ch[16]) {
     uint b0 = w0 & 0xFFu;
     uint b1 = (w0 >> 8u) & 0xFFu;
     int mult = int(b1 >> 4u);
-    uint tab = (b1 & 0xFu) * 8u;
+    uint tab = b1 & 0xFu;
     uint hi16 = (((w0 >> 16u) & 0xFFu) << 8u) | (w0 >> 24u);
     uint lo32 = bswap32(w1);
 
@@ -311,7 +300,7 @@ void decode_eac11(uint byte_off, bool is_signed, out uint ch[16]) {
 
     uint paint[8];
     for (uint k = 0u; k < 8u; ++k) {
-        int val = b + EAC_MODIFIERS[tab + k] * scale;
+        int val = b + eac_mod(tab, k) * scale;
         if (is_signed) {
             int v = clamp(val, -1023, 1023);
             int mag = abs(v);
@@ -330,6 +319,178 @@ void decode_eac11(uint byte_off, bool is_signed, out uint ch[16]) {
     }
 }
 
+uint pack_rgb565(ivec3 c) {
+    uint r = (uint(clamp(c.r, 0, 255)) & 0xF8u) << 8u;
+    uint g = (uint(clamp(c.g, 0, 255)) & 0xFCu) << 3u;
+    uint b = uint(clamp(c.b, 0, 255)) >> 3u;
+    return r | g | b;
+}
+
+ivec3 unpack_rgb565(uint c) {
+    int r = int((c >> 8u) & 0xF8u);
+    int g = int((c >> 3u) & 0xFCu);
+    int b = int((c << 3u) & 0xF8u);
+    return ivec3(r | (r >> 5), g | (g >> 6), b | (b >> 5));
+}
+
+uvec2 encode_bc1(uint px[16], bool punchthrough) {
+    bool has_trans = false;
+    ivec3 mn = ivec3(255);
+    ivec3 mx = ivec3(0);
+    for (uint i = 0u; i < 16u; ++i) {
+        uint p = px[i];
+        if (punchthrough && (p >> 24u) == 0u) {
+            has_trans = true;
+            continue;
+        }
+        ivec3 c = ivec3(int(p & 0xFFu), int((p >> 8u) & 0xFFu), int((p >> 16u) & 0xFFu));
+        mn = min(mn, c);
+        mx = max(mx, c);
+    }
+    if (mn.r > mx.r) {
+        // All 16 pixels transparent in punchthrough mode.
+        return uvec2(0u, 0xFFFFFFFFu);
+    }
+    // van Waveren bounding-box inset (1/16) reduces RMS error noticeably.
+    ivec3 inset = (mx - mn) >> 4;
+    mn = min(mn + inset, ivec3(255));
+    mx = max(mx - inset, ivec3(0));
+
+    uint c0 = pack_rgb565(mx);
+    uint c1 = pack_rgb565(mn);
+
+    if (has_trans) {
+        if (c0 > c1) {
+            uint tmp = c0; c0 = c1; c1 = tmp;
+        }
+        ivec3 p0 = unpack_rgb565(c0);
+        ivec3 p1 = unpack_rgb565(c1);
+        ivec3 p2 = (p0 + p1) >> 1;
+        uint bits = 0u;
+        for (uint i = 0u; i < 16u; ++i) {
+            uint p = px[i];
+            uint best = 3u;
+            if ((p >> 24u) != 0u) {
+                ivec3 c = ivec3(int(p & 0xFFu), int((p >> 8u) & 0xFFu), int((p >> 16u) & 0xFFu));
+                ivec3 d0 = c - p0; int e0 = d0.r * d0.r + d0.g * d0.g + d0.b * d0.b;
+                ivec3 d1 = c - p1; int e1 = d1.r * d1.r + d1.g * d1.g + d1.b * d1.b;
+                ivec3 d2 = c - p2; int e2 = d2.r * d2.r + d2.g * d2.g + d2.b * d2.b;
+                best = 0u; int eb = e0;
+                if (e1 < eb) { eb = e1; best = 1u; }
+                if (e2 < eb) { best = 2u; }
+            }
+            bits |= best << (i * 2u);
+        }
+        return uvec2(c0 | (c1 << 16u), bits);
+    }
+
+    if (c0 < c1) {
+        uint tmp = c0; c0 = c1; c1 = tmp;
+    }
+    if (c0 == c1) {
+        return uvec2(c0 | (c1 << 16u), 0u);
+    }
+    ivec3 p0 = unpack_rgb565(c0);
+    ivec3 p1 = unpack_rgb565(c1);
+    ivec3 p2 = (2 * p0 + p1) / 3;
+    ivec3 p3 = (p0 + 2 * p1) / 3;
+    uint bits = 0u;
+    for (uint i = 0u; i < 16u; ++i) {
+        uint p = px[i];
+        ivec3 c = ivec3(int(p & 0xFFu), int((p >> 8u) & 0xFFu), int((p >> 16u) & 0xFFu));
+        ivec3 d0 = c - p0; int e0 = d0.r * d0.r + d0.g * d0.g + d0.b * d0.b;
+        ivec3 d1 = c - p1; int e1 = d1.r * d1.r + d1.g * d1.g + d1.b * d1.b;
+        ivec3 d2 = c - p2; int e2 = d2.r * d2.r + d2.g * d2.g + d2.b * d2.b;
+        ivec3 d3 = c - p3; int e3 = d3.r * d3.r + d3.g * d3.g + d3.b * d3.b;
+        uint best = 0u; int eb = e0;
+        if (e1 < eb) { eb = e1; best = 1u; }
+        if (e2 < eb) { eb = e2; best = 2u; }
+        if (e3 < eb) { best = 3u; }
+        bits |= best << (i * 2u);
+    }
+    return uvec2(c0 | (c1 << 16u), bits);
+}
+
+uvec2 encode_bc4_unorm(uint v[16]) {
+    uint lo = 255u;
+    uint hi = 0u;
+    for (uint i = 0u; i < 16u; ++i) {
+        lo = min(lo, v[i]);
+        hi = max(hi, v[i]);
+    }
+    if (hi == lo) {
+        return uvec2(lo | (lo << 8u), 0u);
+    }
+    uint span = hi - lo;
+    uint half_span = span >> 1u;
+    uint w0 = hi | (lo << 8u);
+    uint w1 = 0u;
+    for (uint i = 0u; i < 16u; ++i) {
+        uint q = ((hi - v[i]) * 7u + half_span) / span;
+        uint code = (q == 0u) ? 0u : ((q == 7u) ? 1u : (q + 1u));
+        uint bit = 16u + i * 3u;
+        if (bit < 32u) {
+            w0 |= code << bit;
+            if (bit > 29u) {
+                w1 |= code >> (32u - bit);
+            }
+        } else {
+            w1 |= code << (bit - 32u);
+        }
+    }
+    return uvec2(w0, w1);
+}
+
+uvec2 encode_bc4_snorm(int s[16]) {
+    int lo = 127;
+    int hi = -127;
+    for (uint i = 0u; i < 16u; ++i) {
+        lo = min(lo, s[i]);
+        hi = max(hi, s[i]);
+    }
+    uint uhi = uint(hi) & 0xFFu;
+    uint ulo = uint(lo) & 0xFFu;
+    if (hi == lo) {
+        return uvec2(uhi | (ulo << 8u), 0u);
+    }
+    int span = hi - lo;
+    int half_span = span >> 1;
+    uint w0 = uhi | (ulo << 8u);
+    uint w1 = 0u;
+    for (uint i = 0u; i < 16u; ++i) {
+        uint q = uint(((hi - s[i]) * 7 + half_span) / span);
+        uint code = (q == 0u) ? 0u : ((q == 7u) ? 1u : (q + 1u));
+        uint bit = 16u + i * 3u;
+        if (bit < 32u) {
+            w0 |= code << bit;
+            if (bit > 29u) {
+                w1 |= code >> (32u - bit);
+            }
+        } else {
+            w1 |= code << (bit - 32u);
+        }
+    }
+    return uvec2(w0, w1);
+}
+
+uvec2 encode_bc4_from_eac11(uint ch[16], bool is_signed) {
+    if (is_signed) {
+        int s[16];
+        for (uint i = 0u; i < 16u; ++i) {
+            int s16 = (ch[i] >= 32768u) ? (int(ch[i]) - 65536) : int(ch[i]);
+            int rounded = (s16 >= 0) ? ((s16 + 128) >> 8) : -((-s16 + 128) >> 8);
+            s[i] = clamp(rounded, -127, 127);
+        }
+        return encode_bc4_snorm(s);
+    } else {
+        uint v[16];
+        for (uint i = 0u; i < 16u; ++i) {
+            v[i] = min((ch[i] + 128u) >> 8u, 255u);
+        }
+        return encode_bc4_unorm(v);
+    }
+}
+
 void main() {
     uint bx = gl_GlobalInvocationID.x;
     uint by = gl_GlobalInvocationID.y;
@@ -342,9 +503,59 @@ void main() {
         return;
     }
 
-    uint fmt = pc.fmt_and_layers & 0xFFu;
+    uint fmt = pc.fmt_and_layers & 0x7Fu;
+    bool bc_mode = (pc.fmt_and_layers & FMT_BC_FLAG) != 0u;
     uint block_bytes = (fmt == FMT_RGBA8 || fmt == FMT_RG11 || fmt == FMT_RG11_SIGNED) ? 16u : 8u;
     uint block_off = pc.src_byte_offset + layer * pc.layer_stride + (by * pc.row_blocks + bx) * block_bytes;
+
+    if (bc_mode) {
+        uint block_idx = (layer * bh + by) * bw + bx;
+        if (fmt == FMT_RGB8 || fmt == FMT_RGB8_A1) {
+            uint px[16];
+            decode_etc2_rgb(block_off, fmt == FMT_RGB8_A1, px);
+            uvec2 bc1 = encode_bc1(px, fmt == FMT_RGB8_A1);
+            uint out_w = pc.dst_word_offset + block_idx * 2u;
+            dst_buf.data[out_w] = bc1.x;
+            dst_buf.data[out_w + 1u] = bc1.y;
+        } else if (fmt == FMT_RGBA8) {
+            uint px[16];
+            decode_etc2_rgb(block_off + 8u, false, px);
+            decode_eac_alpha(block_off, px);
+            uint a[16];
+            for (uint i = 0u; i < 16u; ++i) {
+                a[i] = px[i] >> 24u;
+            }
+            uvec2 bc4a = encode_bc4_unorm(a);
+            uvec2 bc1 = encode_bc1(px, false);
+            uint out_w = pc.dst_word_offset + block_idx * 4u;
+            dst_buf.data[out_w] = bc4a.x;
+            dst_buf.data[out_w + 1u] = bc4a.y;
+            dst_buf.data[out_w + 2u] = bc1.x;
+            dst_buf.data[out_w + 3u] = bc1.y;
+        } else if (fmt == FMT_R11 || fmt == FMT_R11_SIGNED) {
+            uint r[16];
+            bool is_signed = (fmt == FMT_R11_SIGNED);
+            decode_eac11(block_off, is_signed, r);
+            uvec2 bc4 = encode_bc4_from_eac11(r, is_signed);
+            uint out_w = pc.dst_word_offset + block_idx * 2u;
+            dst_buf.data[out_w] = bc4.x;
+            dst_buf.data[out_w + 1u] = bc4.y;
+        } else {
+            uint r[16];
+            uint g[16];
+            bool is_signed = (fmt == FMT_RG11_SIGNED);
+            decode_eac11(block_off, is_signed, r);
+            decode_eac11(block_off + 8u, is_signed, g);
+            uvec2 bc4r = encode_bc4_from_eac11(r, is_signed);
+            uvec2 bc4g = encode_bc4_from_eac11(g, is_signed);
+            uint out_w = pc.dst_word_offset + block_idx * 4u;
+            dst_buf.data[out_w] = bc4r.x;
+            dst_buf.data[out_w + 1u] = bc4r.y;
+            dst_buf.data[out_w + 2u] = bc4g.x;
+            dst_buf.data[out_w + 3u] = bc4g.y;
+        }
+        return;
+    }
 
     uint max_y = min(4u, pc.height - by * 4u);
     uint max_x = min(4u, pc.width - bx * 4u);

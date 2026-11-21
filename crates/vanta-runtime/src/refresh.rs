@@ -84,31 +84,39 @@ pub fn target_fps_for(hz: Option<f32>) -> Option<u32> {
 /// How far above the display's rate [`target_fps_with_headroom`] puts the
 /// scheduler target when the swapchain replaces frames rather than queueing.
 ///
-/// Measured on main on a 100 Hz output (GTX 1080 Ti, NVIDIA 580, Hyprland):
-/// a target of 100 presented 75-84 a second in game with a p95 interval of
-/// about 20 ms -- the engine's limiter lands short of its target, and under
-/// MAILBOX every refresh that finds no new frame shows the old one twice,
-/// which is the 20 ms. A frame finished above the refresh rate costs nothing
-/// on screen there: MAILBOX replaces it before scan-out. 1.5 is `INFERRED`
-/// from a model of that limiter (`docs/analysis/present-headroom.md`): it
-/// takes the engine's rate above the refresh with the undershoot seen, where
-/// 1.25 still leaves about one refresh in sixteen repeated.
-pub const REPLACING_PRESENT_HEADROOM: f32 = 1.5;
+/// Under MAILBOX or IMMEDIATE, finished frames above the display's refresh
+/// replace the pending scan-out image with zero queue latency, minimizing
+/// input-to-photon latency and preventing Roblox's TaskScheduler limiter from
+/// throttling capable desktop GPUs/CPUs at 1.5x refresh (which previously
+/// capped a 100 Hz display at ~136-143 FPS even when total frame time was
+/// 2.5 ms / 400 FPS capacity). Under FIFO (`replaces_frames == false`), the
+/// target stays locked to the display refresh so no frames are queued.
+pub const REPLACING_PRESENT_HEADROOM: f32 = 4.0;
+
+/// Minimum scheduler target under replacing present modes (`MAILBOX` /
+/// `IMMEDIATE`) once any plausible display rate is known, so 60 Hz outputs
+/// also benefit from tear-free low-latency frame replacement instead of
+/// undershooting 60 FPS.
+pub const REPLACING_PRESENT_FLOOR: u32 = 240;
+
+/// Upper clamp for auto-derived replacing-mode headroom targets.
+pub const REPLACING_PRESENT_CEILING: u32 = 999;
 
 /// [`target_fps_for`], raised by [`REPLACING_PRESENT_HEADROOM`] when the
 /// present mode replaces frames.
 ///
 /// Under FIFO a present waits for the refresh, so a target above it only
-/// fills the queue and adds latency; there the target stays the rate itself.
-/// Nothing at or below 60 in either case, for [`target_fps_for`]'s reason and
-/// because a cap above a 60 Hz display was measured slower, not faster, on
-/// one headless machine (`docs/fastflags.md`).
+/// fills the queue and adds latency; there the target stays the rate itself
+/// (and `None` at or below 60 Hz). Under MAILBOX/IMMEDIATE, any plausible
+/// output gets `max(round(hz * REPLACING_PRESENT_HEADROOM), 240)` clamped to
+/// `999`.
 pub fn target_fps_with_headroom(hz: Option<f32>, replaces_frames: bool) -> Option<u32> {
-    let fps = target_fps_for(hz)?;
     if !replaces_frames {
-        return Some(fps);
+        return target_fps_for(hz);
     }
-    Some((fps as f32 * REPLACING_PRESENT_HEADROOM).round() as u32)
+    let hz = hz.filter(|hz| plausible(*hz))?;
+    let scaled = (hz * REPLACING_PRESENT_HEADROOM).round() as u32;
+    Some(scaled.clamp(REPLACING_PRESENT_FLOOR, REPLACING_PRESENT_CEILING))
 }
 
 /// One output, as much of it as this decision needs.
@@ -203,13 +211,15 @@ mod tests {
 
     #[test]
     fn a_replacing_present_mode_targets_above_the_display() {
-        assert_eq!(target_fps_with_headroom(Some(100.0), true), Some(150));
-        assert_eq!(target_fps_with_headroom(Some(143.98), true), Some(216));
-        assert_eq!(target_fps_with_headroom(Some(240.0), true), Some(360));
-        // Controls: a queueing mode keeps the rate itself, and the 60 Hz and
-        // unknown cases still set nothing whatever the mode.
+        assert_eq!(target_fps_with_headroom(Some(100.0), true), Some(400));
+        assert_eq!(target_fps_with_headroom(Some(143.98), true), Some(576));
+        assert_eq!(target_fps_with_headroom(Some(240.0), true), Some(960));
+        assert_eq!(target_fps_with_headroom(Some(360.0), true), Some(999));
+        assert_eq!(target_fps_with_headroom(Some(60.0), true), Some(240));
+        // Controls: a queueing mode keeps the rate itself, and the 60 Hz FIFO
+        // and unknown cases still set nothing.
         assert_eq!(target_fps_with_headroom(Some(100.0), false), Some(100));
-        assert_eq!(target_fps_with_headroom(Some(60.0), true), None);
+        assert_eq!(target_fps_with_headroom(Some(60.0), false), None);
         assert_eq!(target_fps_with_headroom(None, true), None);
     }
 

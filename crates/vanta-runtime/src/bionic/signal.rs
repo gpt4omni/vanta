@@ -45,39 +45,22 @@ struct BionicSigaction {
 }
 
 extern "C" {
-    // glibc's, operating on its own 128-byte sets.
-    fn sigemptyset(set: *mut c_void) -> c_int;
-    fn sigaddset(set: *mut c_void, sig: c_int) -> c_int;
-    fn sigismember(set: *const c_void, sig: c_int) -> c_int;
-    fn sigprocmask(how: c_int, set: *const c_void, old: *mut c_void) -> c_int;
-    fn pthread_sigmask(how: c_int, set: *const c_void, old: *mut c_void) -> c_int;
     fn sigaction(sig: c_int, act: *const c_void, old: *mut c_void) -> c_int;
 }
 
 /// Build a glibc set from bionic's bitmask.
+/// On Linux LP64 glibc, `sigset_t` is `unsigned long __val[16]` whose first
+/// 8-byte word is the identical kernel signal bitmask (bit `n-1` = signal `n`).
 fn to_glibc(mask: BionicSigset, out: &mut [u8; GLIBC_SIGSET_BYTES]) {
-    let p = out.as_mut_ptr() as *mut c_void;
-    // SAFETY: `out` is at least as large as glibc's sigset_t.
-    unsafe { sigemptyset(p) };
-    for sig in 1..=MAX_SIGNAL {
-        if mask & (1u64 << (sig - 1)) != 0 {
-            // SAFETY: `p` is an initialised glibc set; `sig` is in range.
-            unsafe { sigaddset(p, sig) };
-        }
-    }
+    out.fill(0);
+    out[..8].copy_from_slice(&mask.to_ne_bytes());
 }
 
 /// Read a glibc set back into bionic's bitmask.
 fn from_glibc(set: &[u8; GLIBC_SIGSET_BYTES]) -> BionicSigset {
-    let p = set.as_ptr() as *const c_void;
-    let mut mask = 0u64;
-    for sig in 1..=MAX_SIGNAL {
-        // SAFETY: `p` is a glibc set written by one of its own functions.
-        if unsafe { sigismember(p, sig) } == 1 {
-            mask |= 1u64 << (sig - 1);
-        }
-    }
-    mask
+    u64::from_ne_bytes([
+        set[0], set[1], set[2], set[3], set[4], set[5], set[6], set[7],
+    ])
 }
 
 // ---------------------------------------------------------------- set builders
@@ -130,44 +113,28 @@ extern "C" fn b_sigismember(set: *const BionicSigset, sig: c_int) -> c_int {
 
 // ------------------------------------------------------------------- masking
 
-fn mask_call(
-    how: c_int,
-    set: *const BionicSigset,
-    old: *mut BionicSigset,
-    f: unsafe extern "C" fn(c_int, *const c_void, *mut c_void) -> c_int,
-) -> c_int {
-    let mut new_buf = [0u8; GLIBC_SIGSET_BYTES];
-    let mut old_buf = [0u8; GLIBC_SIGSET_BYTES];
-
-    let new_ptr = if set.is_null() {
-        std::ptr::null()
-    } else {
-        // SAFETY: bionic's contract is a pointer to its 8-byte sigset_t.
-        to_glibc(unsafe { *set }, &mut new_buf);
-        new_buf.as_ptr() as *const c_void
-    };
-    let old_ptr = if old.is_null() {
-        std::ptr::null_mut()
-    } else {
-        old_buf.as_mut_ptr() as *mut c_void
-    };
-
-    // SAFETY: both buffers are large enough for glibc's sigset_t.
-    let rc = unsafe { f(how, new_ptr, old_ptr) };
-
-    if !old.is_null() && rc == 0 {
-        // SAFETY: glibc wrote the previous mask into `old_buf`.
-        unsafe { *old = from_glibc(&old_buf) };
-    }
-    rc
-}
+/// Preserve glibc's internal NPTL signals (32 = SIGCANCEL, 33 = SIGSETXID)
+/// the same way glibc's `sigprocmask`/`pthread_sigmask` do.
+const NPTL_INTERNAL_MASK: u64 = (1u64 << 31) | (1u64 << 32);
 
 extern "C" fn b_sigprocmask(
     how: c_int,
     set: *const BionicSigset,
     old: *mut BionicSigset,
 ) -> c_int {
-    mask_call(how, set, old, sigprocmask)
+    let filtered: BionicSigset;
+    let set_ptr = if set.is_null() {
+        std::ptr::null()
+    } else {
+        filtered = if how != libc::SIG_UNBLOCK {
+            (unsafe { *set }) & !NPTL_INTERNAL_MASK
+        } else {
+            unsafe { *set }
+        };
+        &filtered as *const BionicSigset
+    };
+    // SAFETY: Linux `rt_sigprocmask` operates directly on the 8-byte kernel sigset_t.
+    unsafe { libc::syscall(libc::SYS_rt_sigprocmask, how, set_ptr, old, 8usize) as c_int }
 }
 
 extern "C" fn b_pthread_sigmask(
@@ -175,7 +142,15 @@ extern "C" fn b_pthread_sigmask(
     set: *const BionicSigset,
     old: *mut BionicSigset,
 ) -> c_int {
-    mask_call(how, set, old, pthread_sigmask)
+    let saved_errno = unsafe { *libc::__errno_location() };
+    let rc = b_sigprocmask(how, set, old);
+    if rc == 0 {
+        0
+    } else {
+        let err = unsafe { *libc::__errno_location() };
+        unsafe { *libc::__errno_location() = saved_errno };
+        err
+    }
 }
 
 // ------------------------------------------------------------------ sigaction

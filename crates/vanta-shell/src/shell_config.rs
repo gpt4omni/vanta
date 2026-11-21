@@ -1534,13 +1534,14 @@ mod tests {
             (FrameRateLimit::Cap240, "240"),
             (FrameRateLimit::Cap360, "360"),
             (FrameRateLimit::Cap480, "480"),
+            (FrameRateLimit::Uncapped, "uncapped"),
         ] {
             assert_eq!(mode.as_env(), spelling);
             assert_eq!(FrameRateLimit::parse(spelling), Some(mode));
         }
-        assert_eq!(FrameRateLimit::parse("unlimited"), None, "there is no unlimited choice");
+        assert_eq!(FrameRateLimit::parse("unlimited"), Some(FrameRateLimit::Uncapped));
         assert_eq!(FrameRateLimit::parse("9999"), None);
-        assert_eq!(FrameRateLimit::parse("1000"), None, "rows stop at 480");
+        assert_eq!(FrameRateLimit::parse("1000"), None);
         assert_eq!(FrameRateLimit::parse(""), None);
     }
 
@@ -1567,7 +1568,7 @@ mod tests {
     fn a_prerelease_config_that_says_unlimited_still_loads() {
         let older = r#"{"frame_rate_limit":"unlimited"}"#;
         let parsed: ShellConfig = serde_json::from_str(older).expect("must load");
-        assert_eq!(parsed.frame_rate_limit, FrameRateLimit::Cap240);
+        assert_eq!(parsed.frame_rate_limit, FrameRateLimit::Uncapped);
     }
 
     #[test]

@@ -10,10 +10,87 @@
 // ADR-036.
 #![allow(unsafe_code)]
 
+use std::alloc::{GlobalAlloc, Layout};
 use std::cell::Cell;
 use std::process::ExitCode;
 use std::rc::Rc;
 use std::time::Instant;
+
+struct MiMalloc;
+
+unsafe impl GlobalAlloc for MiMalloc {
+    #[inline]
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        unsafe { libmimalloc_sys::mi_malloc_aligned(layout.size(), layout.align()) as *mut u8 }
+    }
+
+    #[inline]
+    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+        unsafe { libmimalloc_sys::mi_zalloc_aligned(layout.size(), layout.align()) as *mut u8 }
+    }
+
+    #[inline]
+    unsafe fn dealloc(&self, ptr: *mut u8, _layout: Layout) {
+        unsafe { libmimalloc_sys::mi_free(ptr as *mut std::ffi::c_void) }
+    }
+
+    #[inline]
+    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        unsafe {
+            libmimalloc_sys::mi_realloc_aligned(ptr as *mut std::ffi::c_void, new_size, layout.align()) as *mut u8
+        }
+    }
+}
+
+#[global_allocator]
+static GLOBAL: MiMalloc = MiMalloc;
+
+/// Tune mimalloc's desktop defaults before `dlopen("libroblox.so")` runs the
+/// engine's statically linked mimalloc constructors (ADR-040). Default mimalloc
+/// purges pages every 10 ms via `madvise(MADV_DONTNEED)`, causing cross-core
+/// `mmap_lock` + TLB shootdown frame spikes; extending the purge delay and
+/// eagerly committing large-page arenas eliminates allocator stutter.
+fn tune_mimalloc_for_desktop() {
+    if std::env::var_os("VANTA_NO_MIMALLOC_TUNE").is_some() {
+        return;
+    }
+    let total_mb = std::fs::read_to_string("/proc/meminfo")
+        .ok()
+        .and_then(|s| {
+            s.lines()
+                .find(|l| l.starts_with("MemTotal:"))
+                .and_then(|l| l.split_whitespace().nth(1))
+                .and_then(|kb| kb.parse::<u64>().ok())
+                .map(|kb| kb / 1024)
+        })
+        .unwrap_or(8192);
+    let set_if_unset = |k: &str, v: &str| {
+        if std::env::var_os(k).is_none() {
+            // SAFETY: called single-threaded at the start of main() before
+            // spawning worker threads or dlopen("libroblox.so").
+            unsafe { std::env::set_var(k, v) };
+        }
+    };
+    set_if_unset("MIMALLOC_PURGE_DELAY", if total_mb >= 12_000 { "10000" } else { "5000" });
+    set_if_unset("MIMALLOC_PURGE_DECOMMITS", "0");
+    set_if_unset("MIMALLOC_ALLOW_LARGE_OS_PAGES", "1");
+    set_if_unset("MIMALLOC_EAGER_COMMIT", "1");
+    set_if_unset("MIMALLOC_ARENA_EAGER_COMMIT", "2");
+    if total_mb >= 12_000 {
+        set_if_unset("MIMALLOC_RESERVE_OS_MEMORY", "1G");
+    } else if total_mb >= 8_000 {
+        set_if_unset("MIMALLOC_RESERVE_OS_MEMORY", "512M");
+    }
+    // Drop Linux's default 50 us kernel timer slack to 1 ns for this process
+    // and every child thread cloned from it (TaskScheduler, RenderThread,
+    // Physics, Audio). Cuts frame-pacer nanosleep/futex/epoll overshoot so
+    // the engine hits high target FPS cleanly with minimal jitter.
+    if std::env::var_os("VANTA_NO_TIMERSLACK").is_none() {
+        // SAFETY: PR_SET_TIMERSLACK (29) takes a single unsigned long nanosecond
+        // value and cannot fail memory safety.
+        unsafe { libc::prctl(libc::PR_SET_TIMERSLACK, 1 as libc::c_ulong, 0, 0, 0) };
+    }
+}
 
 use vanta_linker_sys as linker;
 use vanta_runtime::{stubs, symtab};
@@ -1847,6 +1924,7 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    tune_mimalloc_for_desktop();
 
     // Before anything reads or writes the profile at all, and before the
     // network gate below, which reads a setting out of it.
@@ -2978,6 +3056,10 @@ fn main() -> ExitCode {
                         let dark = vanta_shell::prefers_dark();
                         println!("  uiMode: night={}", if dark { "yes" } else { "no" });
                         linker::game_activity::set_ui_mode_night(if dark { 1 } else { 0 });
+                        // Seed DisplayMetrics with the requested desktop size before
+                        // initializeNativeCode so engine subsystems don't cache 1280x720.
+                        let (pre_w, pre_h) = requested_resolution();
+                        linker::game_activity::set_display_size(pre_w as i32, pre_h as i32);
 
                         // Without GameActivity nothing calls `bootstrapTheApp`
                         // back, so the settings are delivered here, on this
