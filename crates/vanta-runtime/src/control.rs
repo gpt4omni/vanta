@@ -279,6 +279,7 @@ impl Shared {
             // Leaving an experience clears what was said about it; whether
             // somebody is signed in is not about the experience and stays.
             st.game_presence = None;
+            st.server = None;
         }
         self.publish(names::GAME_LEFT, to_value(&left));
     }
@@ -296,6 +297,10 @@ impl Shared {
 
     fn perf_stats(&self, stats: Option<msg::PerfStatsSnapshot>) {
         self.state().perf_stats = stats;
+    }
+
+    fn server_info(&self, info: Option<msg::ServerInfo>) {
+        self.state().server = info;
     }
 }
 
@@ -498,6 +503,13 @@ pub fn game_left() {
 pub fn perf_stats(stats: Option<msg::PerfStatsSnapshot>) {
     if let Some(server) = SERVER.get() {
         server.shared.perf_stats(stats);
+    }
+}
+
+/// Update the detected game server region/session exposed via `state.get`.
+pub fn server_info(info: Option<msg::ServerInfo>) {
+    if let Some(server) = SERVER.get() {
+        server.shared.server_info(info);
     }
 }
 

@@ -355,6 +355,23 @@ pub struct PerfStatsSnapshot {
     pub samples: u32,
 }
 
+/// Detected game server session and local region label, exposed in `state.get`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct ServerInfo {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub place_id: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_ip: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_port: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub region_label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub joined_at: Option<u64>,
+}
+
 /// The reply to `state.get`: the latest value of each event above, for a
 /// launcher that reattached. A field is absent until its event has happened.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -371,6 +388,8 @@ pub struct StateSnapshot {
     pub game_presence: Option<GamePresence>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub perf_stats: Option<PerfStatsSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server: Option<ServerInfo>,
 }
 
 // ---- settings ---------------------------------------------------------------

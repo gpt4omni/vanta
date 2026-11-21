@@ -261,6 +261,8 @@ pub enum Update {
     FrameRateLimit(FrameRateLimit),
     /// Whether the built-in live Performance HUD badge is visible (F8 toggle).
     PerfHud(bool),
+    /// Whether desktop notifications are sent on game join with detected server region.
+    ServerRegionNotify(bool),
 }
 
 /// A title-bar choice in the words `VANTA_TITLE_BAR` and `shell.json` use.
@@ -284,7 +286,7 @@ pub fn parse_title_bar(word: &str) -> Option<TitleBar> {
 }
 
 /// The keys [`Update`] can carry, which are also the `shell.json` field names.
-pub const KEYS: [&str; 11] = [
+pub const KEYS: [&str; 12] = [
     "pointer_acceleration",
     "throttle",
     "close_on_leave",
@@ -296,6 +298,7 @@ pub const KEYS: [&str; 11] = [
     "title_bar",
     "frame_rate_limit",
     "perf_hud",
+    "server_region_notify",
 ];
 
 /// Longest sink name accepted. PipeWire node names are short; the bound is
@@ -323,6 +326,7 @@ impl Update {
             Update::TitleBar(_) => "title_bar",
             Update::FrameRateLimit(_) => "frame_rate_limit",
             Update::PerfHud(_) => "perf_hud",
+            Update::ServerRegionNotify(_) => "server_region_notify",
         }
     }
 
@@ -334,7 +338,8 @@ impl Update {
             | Update::CarryLaunchTicket(b)
             | Update::Gamemode(b)
             | Update::Gamepad(b)
-            | Update::PerfHud(b) => Value::from(*b),
+            | Update::PerfHud(b)
+            | Update::ServerRegionNotify(b) => Value::from(*b),
             Update::AudioOutput(name) | Update::AudioInput(name) => Value::from(name.as_str()),
             Update::TitleBar(t) => Value::from(title_bar_word(*t)),
             Update::FrameRateLimit(l) => Value::from(l.as_env()),
@@ -359,6 +364,7 @@ impl Update {
             "gamemode" => value.as_bool().map(Update::Gamemode).ok_or_else(bad),
             "gamepad" => value.as_bool().map(Update::Gamepad).ok_or_else(bad),
             "perf_hud" => value.as_bool().map(Update::PerfHud).ok_or_else(bad),
+            "server_region_notify" => value.as_bool().map(Update::ServerRegionNotify).ok_or_else(bad),
             "title_bar" => {
                 value.as_str().and_then(parse_title_bar).map(Update::TitleBar).ok_or_else(bad)
             }
@@ -448,6 +454,7 @@ mod tests {
             Update::TitleBar(TitleBar::Hidden),
             Update::FrameRateLimit(FrameRateLimit::Cap144),
             Update::PerfHud(true),
+            Update::ServerRegionNotify(false),
         ]
     }
 

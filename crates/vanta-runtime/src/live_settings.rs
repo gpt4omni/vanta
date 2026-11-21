@@ -90,6 +90,10 @@ pub fn apply(update: &Update) -> Option<String> {
             crate::perf_hud::set_enabled(*on);
             None
         }
+        Update::ServerRegionNotify(on) => {
+            crate::server_region::set_notify_enabled(*on);
+            None
+        }
     };
     // Narrated because this project debugs by reading the client's output, and
     // "the setting reached the process" is the fact worth being able to see.
@@ -112,7 +116,8 @@ fn value_word(update: &Update) -> String {
         | Update::CarryLaunchTicket(b)
         | Update::Gamemode(b)
         | Update::Gamepad(b)
-        | Update::PerfHud(b) => b.to_string(),
+        | Update::PerfHud(b)
+        | Update::ServerRegionNotify(b) => b.to_string(),
         Update::TitleBar(t) => vanta_protocol::settings::title_bar_word(*t).to_string(),
         Update::FrameRateLimit(l) => l.as_env().to_string(),
         Update::AudioOutput(name) if name.is_empty() => "the system default".to_string(),
@@ -273,6 +278,7 @@ pub fn current() -> BTreeMap<String, Value> {
     );
     m.insert("frame_rate_limit".into(), Value::from(frame_rate_limit_word()));
     m.insert("perf_hud".into(), Value::from(crate::perf_hud::enabled()));
+    m.insert("server_region_notify".into(), Value::from(crate::server_region::notify_enabled()));
     m
 }
 
@@ -330,6 +336,7 @@ mod tests {
         let _gm = crate::gamemode::TEST_GUARD.lock().unwrap_or_else(|e| e.into_inner());
         let _gp = crate::android::gamepad::TEST_GUARD.lock().unwrap_or_else(|e| e.into_inner());
         let _ph = crate::perf_hud::TEST_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        let _sr = crate::server_region::TEST_GUARD.lock().unwrap_or_else(|e| e.into_inner());
         // `current()` also reads the frame-rate choice, which depends on the
         // environment and the flag files other tests rewrite.
         let _env = crate::flags::tests::ENV.lock().unwrap_or_else(|e| e.into_inner());
@@ -520,5 +527,21 @@ mod tests {
         let back = set(&[Update::PerfHud(before)]);
         assert_eq!(back.values["perf_hud"], before);
         assert_eq!(crate::perf_hud::enabled(), before);
+    }
+
+    #[test]
+    fn a_server_region_notify_toggle_reaches_server_region_and_get_reports_it() {
+        let _g = GLOBALS.lock().unwrap_or_else(|e| e.into_inner());
+        let _sr = crate::server_region::TEST_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        let before = crate::server_region::notify_enabled();
+
+        let r = set(&[Update::ServerRegionNotify(!before)]);
+        assert_eq!(r.applied, vec!["server_region_notify".to_string()]);
+        assert_eq!(r.values["server_region_notify"], !before);
+        assert_eq!(crate::server_region::notify_enabled(), !before);
+
+        let back = set(&[Update::ServerRegionNotify(before)]);
+        assert_eq!(back.values["server_region_notify"], before);
+        assert_eq!(crate::server_region::notify_enabled(), before);
     }
 }

@@ -390,6 +390,31 @@ pub struct HostWindow {
     perf_hud_label: gtk::Label,
     /// Base title before any HUD suffix (used when header bar is hidden/fullscreen).
     perf_hud_title_base: std::cell::RefCell<Option<String>>,
+    /// Server region quick-actions pill in the header bar (visible while in-game).
+    server_pill: gtk::MenuButton,
+    /// Detail header label inside the server quick-actions popover.
+    server_detail_label: gtk::Label,
+    /// Rejoin button inside the server popover (enabled when a place_id is known).
+    server_rejoin_btn: gtk::Button,
+    /// Latest server banner payload backing the popover's Copy / Rejoin buttons.
+    server_banner: std::rc::Rc<std::cell::RefCell<Option<ServerBanner>>>,
+    /// Callback installed by the runtime to trigger Quick Rejoin Server.
+    server_rejoin_cb: std::rc::Rc<std::cell::RefCell<Option<Box<dyn Fn()>>>>,
+}
+
+/// Live in-game server details displayed by [`HostWindow::set_server_banner`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerBanner {
+    /// Short pill text in the header bar (e.g. `US-South · Dallas`).
+    pub pill_label: String,
+    /// Multi-line summary displayed at the top of the popover.
+    pub detail_title: String,
+    /// Shareable Roblox invite link copied by "Copy Invite Link".
+    pub invite_link: String,
+    /// Full diagnostic summary copied by "Copy Server Info".
+    pub server_info: String,
+    /// Whether "Quick Rejoin Server" is available.
+    pub can_rejoin: bool,
 }
 
 /// What [`HostWindow::arm_present_probe`] remembers between ticks.
@@ -913,6 +938,15 @@ impl HostWindow {
                  border-radius: 999px; \
                  background-color: alpha(@window_fg_color, 0.10); \
                  color: @headerbar_fg_color; \
+             } \
+             .vanta-server-pill > button { \
+                 font-size: 11px; \
+                 font-weight: 600; \
+                 min-height: 24px; \
+                 padding: 0 9px; \
+                 border-radius: 999px; \
+                 background-color: alpha(@window_fg_color, 0.10); \
+                 color: @headerbar_fg_color; \
              }",
         );
         let css = gtk::CssProvider::new();
@@ -951,6 +985,90 @@ impl HostWindow {
         perf_hud_label.set_valign(gtk::Align::Center);
         perf_hud_label.set_visible(false);
         header.pack_end(&perf_hud_label);
+
+        // Server region quick-actions pill (hidden until in-game).
+        let server_banner: std::rc::Rc<std::cell::RefCell<Option<ServerBanner>>> =
+            std::rc::Rc::new(std::cell::RefCell::new(None));
+        let server_rejoin_cb: std::rc::Rc<std::cell::RefCell<Option<Box<dyn Fn()>>>> =
+            std::rc::Rc::new(std::cell::RefCell::new(None));
+
+        let popover_box = gtk::Box::new(gtk::Orientation::Vertical, 4);
+        popover_box.set_margin_top(6);
+        popover_box.set_margin_bottom(6);
+        popover_box.set_margin_start(6);
+        popover_box.set_margin_end(6);
+
+        let server_detail_label = gtk::Label::new(None);
+        server_detail_label.set_xalign(0.0);
+        server_detail_label.add_css_class("caption");
+        server_detail_label.add_css_class("dim-label");
+        server_detail_label.set_margin_bottom(4);
+        server_detail_label.set_margin_start(6);
+        server_detail_label.set_margin_end(6);
+        popover_box.append(&server_detail_label);
+
+        let copy_invite_btn = gtk::Button::builder()
+            .label("Copy Invite Link")
+            .has_frame(false)
+            .build();
+        let copy_info_btn = gtk::Button::builder()
+            .label("Copy Server Info")
+            .has_frame(false)
+            .build();
+        let server_rejoin_btn = gtk::Button::builder()
+            .label("Quick Rejoin Server")
+            .has_frame(false)
+            .build();
+        popover_box.append(&copy_invite_btn);
+        popover_box.append(&copy_info_btn);
+        popover_box.append(&server_rejoin_btn);
+
+        let server_popover = gtk::Popover::new();
+        server_popover.set_child(Some(&popover_box));
+
+        let server_pill = gtk::MenuButton::builder()
+            .label("Server")
+            .popover(&server_popover)
+            .valign(gtk::Align::Center)
+            .visible(false)
+            .build();
+        server_pill.add_css_class("vanta-server-pill");
+        header.pack_start(&server_pill);
+
+        {
+            let banner = server_banner.clone();
+            let pop = server_popover.clone();
+            copy_invite_btn.connect_clicked(move |btn| {
+                if let Some(b) = banner.borrow().as_ref() {
+                    if !b.invite_link.is_empty() {
+                        WidgetExt::display(btn).clipboard().set_text(&b.invite_link);
+                    }
+                }
+                pop.popdown();
+            });
+        }
+        {
+            let banner = server_banner.clone();
+            let pop = server_popover.clone();
+            copy_info_btn.connect_clicked(move |btn| {
+                if let Some(b) = banner.borrow().as_ref() {
+                    if !b.server_info.is_empty() {
+                        WidgetExt::display(btn).clipboard().set_text(&b.server_info);
+                    }
+                }
+                pop.popdown();
+            });
+        }
+        {
+            let cb_slot = server_rejoin_cb.clone();
+            let pop = server_popover.clone();
+            server_rejoin_btn.connect_clicked(move |_| {
+                pop.popdown();
+                if let Some(cb) = cb_slot.borrow().as_ref() {
+                    cb();
+                }
+            });
+        }
         let toolbar = adw::ToolbarView::new();
         toolbar.add_top_bar(&header);
         install_visibility_anchor(&toolbar);
@@ -1180,6 +1298,11 @@ impl HostWindow {
             present_probe: std::cell::RefCell::new(None),
             perf_hud_label,
             perf_hud_title_base: std::cell::RefCell::new(None),
+            server_pill,
+            server_detail_label,
+            server_rejoin_btn,
+            server_banner,
+            server_rejoin_cb,
             editor_seeding,
             editor_changed,
             editor_activated,
@@ -2492,6 +2615,30 @@ impl HostWindow {
                 }
             }
         }
+    }
+
+    /// Show or hide the in-game Server Region quick-actions pill in the header bar.
+    pub fn set_server_banner(&self, banner: Option<ServerBanner>) {
+        match banner {
+            Some(b) => {
+                self.server_pill.set_label(&b.pill_label);
+                self.server_pill.set_tooltip_text(Some(&b.server_info));
+                self.server_detail_label.set_text(&b.detail_title);
+                self.server_rejoin_btn.set_sensitive(b.can_rejoin);
+                *self.server_banner.borrow_mut() = Some(b);
+                self.server_pill.set_visible(true);
+            }
+            None => {
+                self.server_pill.set_visible(false);
+                self.server_pill.set_tooltip_text(None);
+                *self.server_banner.borrow_mut() = None;
+            }
+        }
+    }
+
+    /// Install the callback invoked when the user clicks "Quick Rejoin Server".
+    pub fn connect_rejoin<F: Fn() + 'static>(&self, f: F) {
+        *self.server_rejoin_cb.borrow_mut() = Some(Box::new(f));
     }
 }
 

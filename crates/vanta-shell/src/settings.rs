@@ -850,6 +850,22 @@ fn build_session_group(
     }
     group.add(&close_on_leave);
 
+    let region_notify = adw::SwitchRow::builder()
+        .title("Server region notifications")
+        .subtitle("Shows a desktop notification with the detected server region when joining a game. Resolved 100% locally.")
+        .active(config.borrow().server_region_notify)
+        .build();
+    region_notify.set_subtitle_lines(2);
+    {
+        let config = config.clone();
+        let config_path = config_path.clone();
+        region_notify.connect_active_notify(move |row| {
+            config.borrow_mut().server_region_notify = row.is_active();
+            persist(&config, &config_path);
+        });
+    }
+    group.add(&region_notify);
+
     // **In Session rather than anywhere else**, because it is about what
     // happens when a launch arrives rather than about graphics or plugins.
     let ticket = adw::SwitchRow::builder()

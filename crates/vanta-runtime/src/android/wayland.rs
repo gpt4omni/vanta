@@ -2102,6 +2102,12 @@ pub fn open(width: u32, height: u32, title: &str) -> Result<&'static WaylandWind
         w.send_current_text(which);
         super::input::return_pressed(which);
     });
+    host.host.0.connect_rejoin(|| {
+        match crate::server_region::trigger_rejoin() {
+            Ok(()) => println!("[vanta] quick rejoin triggered"),
+            Err(e) => println!("[vanta] quick rejoin unavailable: {e}"),
+        }
+    });
 
     // Listeners that dereference `current()` can only be installed now.
     unsafe {
@@ -7010,6 +7016,10 @@ impl WaylandWindow {
                     crate::control::perf_stats(None);
                 }
             }
+        }
+        // Server region quick-actions pill (one atomic load when unchanged).
+        if let Some(banner) = crate::server_region::take_ui_update() {
+            self.host.0.set_server_banner(banner);
         }
         let pump_started = std::time::Instant::now();
         self.host.0.pump();

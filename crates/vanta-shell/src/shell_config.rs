@@ -933,6 +933,12 @@ pub struct ShellConfig {
     /// `#[serde(default)]` for the same reason as `gamepad`: container default
     /// fills older configs from `ShellConfig::default()` (`true`).
     pub mods_enabled: bool,
+    /// Show a desktop notification naming the locally detected server region
+    /// whenever joining a Roblox experience.
+    ///
+    /// Default on; no field-level `#[serde(default)]` so older configs inherit
+    /// `ShellConfig::default()` (`true`).
+    pub server_region_notify: bool,
 }
 
 fn default_fullscreen_accel() -> String {
@@ -972,6 +978,7 @@ impl Default for ShellConfig {
             multi_instance_warning_seen: false,
             perf_hud: false,
             mods_enabled: true,
+            server_region_notify: true,
         }
     }
 }
@@ -1632,5 +1639,16 @@ mod tests {
         let p = scratch("mods-enabled.json");
         save(&p, &ShellConfig { mods_enabled: false, ..Default::default() }).unwrap();
         assert!(!load(&p).mods_enabled);
+    }
+
+    #[test]
+    fn server_region_notify_defaults_on_and_round_trips() {
+        let older = r#"{"gamemode":true,"profile":"default"}"#;
+        let parsed: ShellConfig = serde_json::from_str(older).expect("older shell.json must load");
+        assert!(parsed.server_region_notify);
+
+        let p = scratch("server-region-notify.json");
+        save(&p, &ShellConfig { server_region_notify: false, ..Default::default() }).unwrap();
+        assert!(!load(&p).server_region_notify);
     }
 }

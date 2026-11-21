@@ -80,6 +80,7 @@ pub mod recording;
 pub mod refresh;
 pub mod roblox_api;
 pub mod secrets;
+pub mod server_region;
 pub mod bionic;
 pub mod mimalloc_lib;
 pub mod storage;

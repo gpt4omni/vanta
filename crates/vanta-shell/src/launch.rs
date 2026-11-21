@@ -566,6 +566,11 @@ pub fn spawn(
         command.env("VANTA_NO_MODS", "1");
     }
 
+    // Server region join notifications: default on; disable explicitly when off.
+    if !config.server_region_notify {
+        command.env("VANTA_SERVER_REGION_NOTIFY", "0");
+    }
+
     // Plugin folders being worked on, in the shape of `PATH`. Only when there
     // are some: an empty variable and an absent one mean the same thing to
     // `manifest::unpacked_dirs`, and sending an empty one would put a
