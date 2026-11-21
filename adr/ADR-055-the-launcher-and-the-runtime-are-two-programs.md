@@ -1,11 +1,11 @@
 ---
 title: "ADR-055: The launcher and the runtime are two programs, and plugins stay in the launcher"
 ---
-**Status:** accepted for the transport, 2026-10-08: the launcher and `cordial-run` speak `cordial.runtime/1` and it is the only channel between them. **The plugin host move, the flag resolver move, `assets.overlay`, manifest discovery and the Flatpak extension are still proposed** and nothing in them is built.
+**Status:** accepted for the transport, 2026-10-08: the launcher and `vanta-run` speak `vanta.runtime/1` and it is the only channel between them. **The plugin host move, the flag resolver move, `assets.overlay`, manifest discovery and the Flatpak extension are still proposed** and nothing in them is built.
 **Date:** 2026-10-08
 **Supersedes:** [ADR-052](/adr/ADR-052-the-runtime-spec) decision 4 ("the built-in Android runtime is the first implementation, in-process") and `docs/runtime-spec.md` section 8 as first written. The rest of ADR-052, including the listing policy, stands.
 **Amends:** [ADR-038](/adr/ADR-038-plugin-hot-swap) on *where* the reconciler runs (the launcher, not the client); its reasoning about polling and about never restarting a plugin for a re-grant stands. [ADR-044](/adr/ADR-044-settings-reach-a-running-game): the live or next-launch classification becomes a per-runtime declaration, with today's table as the built-in runtime's.
-**Related:** [ADR-001](/adr/ADR-001-in-process-hooking), [ADR-002](/adr/ADR-002-core-shell-and-ui-handoff), [ADR-003](/adr/ADR-003-plugin-isolation), [ADR-007](/adr/ADR-007-host-resources-are-brokered), [ADR-010](/adr/ADR-010-plugin-asset-overlays), [ADR-011](/adr/ADR-011-wayland-and-libadwaita), [ADR-012](/adr/ADR-012-profiles-and-instances), [ADR-019](/adr/ADR-019-development-control-surface), [ADR-021](/adr/ADR-021-everything-is-a-plugin), [ADR-031](/adr/ADR-031-the-launcher-outlives-its-window), [ADR-039](/adr/ADR-039-a-runtime-backend-seam-and-why-macos-waits), [ADR-043](/adr/ADR-043-the-roblox-build-is-the-binarys-architecture), [ADR-051](/adr/ADR-051-overrides-are-reapplied-after-the-engines-refresh), [ADR-054](/adr/ADR-054-cordial-owns-its-roblox-builds)
+**Related:** [ADR-001](/adr/ADR-001-in-process-hooking), [ADR-002](/adr/ADR-002-core-shell-and-ui-handoff), [ADR-003](/adr/ADR-003-plugin-isolation), [ADR-007](/adr/ADR-007-host-resources-are-brokered), [ADR-010](/adr/ADR-010-plugin-asset-overlays), [ADR-011](/adr/ADR-011-wayland-and-libadwaita), [ADR-012](/adr/ADR-012-profiles-and-instances), [ADR-019](/adr/ADR-019-development-control-surface), [ADR-021](/adr/ADR-021-everything-is-a-plugin), [ADR-031](/adr/ADR-031-the-launcher-outlives-its-window), [ADR-039](/adr/ADR-039-a-runtime-backend-seam-and-why-macos-waits), [ADR-043](/adr/ADR-043-the-roblox-build-is-the-binarys-architecture), [ADR-051](/adr/ADR-051-overrides-are-reapplied-after-the-engines-refresh), [ADR-054](/adr/ADR-054-vanta-owns-its-roblox-builds)
 **Spec:** [`docs/runtime-spec.md`](/runtime-spec). **Review and plan:** [`docs/analysis/runtime-protocol-review.md`](https://github.com/gpt4omni/vanta/blob/main/docs/analysis/runtime-protocol-review.md), which carries the code reading and the commit order.
 
 ## Context
@@ -21,13 +21,13 @@ replaces.
 The code is closer to this than the crate graph suggests, and further than the
 spec's section 8 said. Read for this ADR:
 
-- **The process boundary already exists.** `cordial-shell` spawns `cordial-run`
-  as a sibling binary and never links it; the references to `cordial_runtime`
-  in the shell are comments. What it passes is argv, about fifteen `CORDIAL_*`
+- **The process boundary already exists.** `vanta-shell` spawns `vanta-run`
+  as a sibling binary and never links it; the references to `vanta_runtime`
+  in the shell are comments. What it passes is argv, about fifteen `VANTA_*`
   variables, an inherited `flock` descriptor and piped stdout and stderr, and
   afterwards `live/settings.sock` ([ADR-044](/adr/ADR-044-settings-reach-a-running-game)).
-- **The dependency runs the wrong way for a port.** `cordial-runtime` depends on
-  `cordial-shell`, and imports `host_window`, `webview`, `nvidia`, `profile`,
+- **The dependency runs the wrong way for a port.** `vanta-runtime` depends on
+  `vanta-shell`, and imports `host_window`, `webview`, `nvidia`, `profile`,
   `stacking_gate`, `title_bar` and `live_wire` from it. A port that forked the
   runtime would drag GTK, libadwaita and the launcher's modules with it.
 - **The plugin host is in the client.** `plugin_host.rs` is 3,031 lines and is
@@ -41,7 +41,7 @@ spec's section 8 said. Read for this ADR:
 ## Decision
 
 1. **The launcher and the runtime are two programs speaking
-   `cordial.runtime/1` over a Unix socket.** The built-in runtime, `cordial-run`,
+   `vanta.runtime/1` over a Unix socket.** The built-in runtime, `vanta-run`,
    stays a separate process and implements the protocol in place of the
    in-process channel ADR-052 described. It is the conformance suite. The
    version-0 settings socket was removed when the transport landed (see
@@ -85,8 +85,8 @@ spec's section 8 said. Read for this ADR:
    version 1.** A third-party runtime gets placeholders (`{socket}`,
    `{session_dir}`, `{profile_dir}`, `{build_dir}`, `{join_url}`) and receives
    settings over the socket. The profile lock is inherited at spawn, not sent.
-8. **Cordial's pseudo-flags become typed settings.** `CordialGraphicsBackend`,
-   `CordialFrameRateLimit` and `CordialDeviceProfile` ride in `flags.json` today
+8. **Vanta's pseudo-flags become typed settings.** `VantaGraphicsBackend`,
+   `VantaFrameRateLimit` and `VantaDeviceProfile` ride in `flags.json` today
    and would reach a foreign engine as unknown flag names. The launcher strips
    them from the resolved document and sends them as `settings`.
    `flags.live` means "apply and hold in force", which is what
@@ -94,9 +94,9 @@ spec's section 8 said. Read for this ADR:
    re-apply already does.
 9. **The development control surface is not in the protocol.** devctl
    ([ADR-019](/adr/ADR-019-development-control-surface)) stays a runtime-private
-   socket behind its own variable, and `cordial-mcp.py` keeps talking to it.
-10. **A manifest says who manages builds.** `builds: "cordial"` means the store
-    of [ADR-054](/adr/ADR-054-cordial-owns-its-roblox-builds) supplies
+   socket behind its own variable, and `vanta-mcp.py` keeps talking to it.
+10. **A manifest says who manages builds.** `builds: "vanta"` means the store
+    of [ADR-054](/adr/ADR-054-vanta-owns-its-roblox-builds) supplies
     `{build_dir}`; `builds: "runtime"` means the launcher shows no Version row.
 11. **Left out of version 1:** `updates`, `doctor`, `session.vault`, `window`,
     `launch.join`, a runtime-declared settings form. Each is added by a minor
@@ -110,21 +110,21 @@ and runs inside the launcher's sandbox.** The manifest gains one block and
 
 ```yaml
 add-extensions:
-  io.github.luohoa97.Cordial.Runtime:
+  io.github.gpt4omni.Vanta.Runtime:
     directory: runtimes
     subdirectories: true
     version: '1'
     no-autodownload: true
 ```
 
-An extension `io.github.luohoa97.Cordial.Runtime.<Name>` on branch `1` (the
+An extension `io.github.gpt4omni.Vanta.Runtime.<Name>` on branch `1` (the
 protocol major) mounts at `/app/runtimes/<Name>/`, where the launcher already
 looks for a manifest. The socket is an ordinary path in the profile directory,
 which both sides see because they are one sandbox, so nothing new is shared and
 `child_watch` and the inherited lock work unchanged.
 
 The alternatives need a grant this project has refused. Two separate apps
-sharing a directory would need `--filesystem=xdg-run/cordial-runtime:create` in
+sharing a directory would need `--filesystem=xdg-run/vanta-runtime:create` in
 both, and still could not start each other without
 `--talk-name=org.freedesktop.Flatpak`, which is arbitrary host command
 execution ([ADR-002](/adr/ADR-002-core-shell-and-ui-handoff) section 2,
@@ -134,7 +134,7 @@ caller's own application, and no portal brokers a connection between two apps.
 **All of this is INFERRED from the Flatpak documentation; no extension was
 built.**
 
-**The cost is stated plainly:** an extension runs with Cordial's permissions and
+**The cost is stated plainly:** an extension runs with Vanta's permissions and
 no others, so a runtime that needs more (`--device=all`, a FUSE device) cannot be
 one. That is the property ADR-007 asks for, the set of host resources fixed when
 the launcher's manifest is written, and a runtime that cannot live with it is
@@ -143,17 +143,17 @@ native-only in version 1. A runtime built against another base than
 
 ## The protocol crate and its licence
 
-A new crate, `cordial-protocol`, depends on `serde` and `serde_json` and
+A new crate, `vanta-protocol`, depends on `serde` and `serde_json` and
 nothing else, links no native code, and holds the message types, the framing
 codec, the manifest type, the version negotiation and a conformance harness that
 both sides run against shared line vectors. `live_wire.rs` moves into it with its
-tests. Both the launcher and `cordial-run` depend on it.
+tests. Both the launcher and `vanta-run` depend on it.
 
-It is licensed **`MIT OR Apache-2.0`**, and it is the only part of Cordial that
+It is licensed **`MIT OR Apache-2.0`**, and it is the only part of Vanta that
 is. The maintainer decided this on 2026-10-08, after this ADR was first written
 with the crate under the workspace's GPL-3.0-or-later. The reasoning that
 decided it is the one the first draft left as a cost: ADR-052 rejected "a trait
-with no wire form" partly because it forces a runtime into Cordial's licence,
+with no wire form" partly because it forces a runtime into Vanta's licence,
 and a GPL crate does the same to a Rust runtime or launcher that links it. The
 crate is the interface other programs implement, so it has to be something they
 can depend on whatever their own licence is. What it contains is the message
@@ -163,9 +163,9 @@ stays plain JSON lines specified in `docs/runtime-spec.md`, so a runtime in any
 language implements it without the crate.
 
 **Why this is not the relicensing `CONTRIBUTING.md` declines.** The rule in "The
-licence is settled" refuses requests to relicense Cordial, and it still does. It
+licence is settled" refuses requests to relicense Vanta, and it still does. It
 now names this crate as the single exception, with the reason, and says
-contributions to `crates/cordial-protocol` are under the crate's licence. The
+contributions to `crates/vanta-protocol` are under the crate's licence. The
 sole author of the code that moved in (`live_wire.rs`, which the crate was built
 from) is the maintainer, who made the decision, so nobody else's grant is
 overridden. A pull request to that directory is accepted under `MIT OR
@@ -180,12 +180,12 @@ launcher (`TitleBar`, `FrameRateLimit`) came with the methods the Settings rows
 call, which are pure data.
 
 **Publishing.** `crates.io` publication is the maintainer's call and is not done
-here; the crate is `publish = true` at version 0.1.0, independent of Cordial's
+here; the crate is `publish = true` at version 0.1.0, independent of Vanta's
 version, and `cargo publish --dry-run` passes. It is meant to be published once
 the split has landed, so the first public version is not immediately wrong.
 Every other crate stays `publish = false`, because each links the AOSP linker or
 GTK. `NOTICE` and `THIRD-PARTY-NOTICES.md` say the exception exists and where
-its licence texts are (`crates/cordial-protocol/LICENSE-MIT` and
+its licence texts are (`crates/vanta-protocol/LICENSE-MIT` and
 `LICENSE-APACHE`). (`NOTICE` said "See COPYING", a file that does not exist; the
 repository's text is `LICENSE`, corrected in the same change as this ADR.)
 
@@ -211,12 +211,12 @@ Written the same day, from the code that landed. Everything here was read from
 the tree or measured in the runs listed in the commit messages; where it was
 not, it says so.
 
-**The runtime serves.** `cordial_runtime::control` listens on
+**The runtime serves.** `vanta_runtime::control` listens on
 `<profile>/runtime/<session>/ctl.sock`, a `0700` directory the launcher makes
 before the spawn and names with eight hex characters, and tells the runtime in
-`CORDIAL_SESSION_DIR`. A runtime started by hand makes its own. A path that does
+`VANTA_SESSION_DIR`. A runtime started by hand makes its own. A path that does
 not fit `sun_path`'s 108 bytes is bound and reached through
-`/proc/self/fd/<dirfd>/ctl.sock` on both sides (`cordial_protocol::socket`). It
+`/proc/self/fd/<dirfd>/ctl.sock` on both sides (`vanta_protocol::socket`). It
 offers `lifecycle`, `events.core`, `events.presence`, `state` and `settings`, and
 nothing else: `flags`, `assets.overlay` and `diagnostics` have no code behind them
 and a request for one is `unsupported`. The server is started where
@@ -244,9 +244,9 @@ closing. A client whose output goes elsewhere, which is every client started by
 hand, survives it. Fixing the pipe means the log-file shape ADR-031 sketched, and
 is not done.
 
-**Removed.** `live/settings.sock`, the version-0 codec (`cordial_protocol::v0`)
-and `cordial_shell::live_wire`. Nothing in `tools/`, the MCP, the docs or any test
-outside those used them; `tools/cordial-mcp.py` talks to devctl, which is
+**Removed.** `live/settings.sock`, the version-0 codec (`vanta_protocol::v0`)
+and `vanta_shell::live_wire`. Nothing in `tools/`, the MCP, the docs or any test
+outside those used them; `tools/vanta-mcp.py` talks to devctl, which is
 untouched.
 
 **Events.** `game.joined`, `game.left` and `session.state` come from the
@@ -264,7 +264,7 @@ uses them yet**, because the consumer is the plugin host, which has not moved.
 Signed out, in a nested headless sway, with the shell's own `XDG_*` directories
 redirected to scratch, release build `1e774ac89-dirty` plus the commit after it:
 
-- **Conformance, against a real `cordial-run` with no launcher attached:** 16
+- **Conformance, against a real `vanta-run` with no launcher attached:** 16
   passed, 0 failed, 1 skipped (`diagnostics.get`, not offered). With a launcher
   attached and `--stop`: 17 passed, 0 failed, 1 skipped, then the client exited 0
   and removed its session directory. **The first run of the second kind failed 5
@@ -277,7 +277,7 @@ redirected to scratch, release build `1e774ac89-dirty` plus the commit after it:
   it)` and no `settings.set`; a shell-only key and an unchanged re-save produced
   nothing.
 - **Closing the launcher window** left the shell process and the client running
-  and `cordial_info` presents rising (1322, then 1326). A second `cordial-shell`
+  and `vanta_info` presents rising (1322, then 1326). A second `vanta-shell`
   handed over to the running one and a later setting change went down the same
   connection: one `controller attached` line in the client's log, no reattach.
 - **A launcher started after a client it did not spawn adopted it** (`found ...
@@ -288,7 +288,7 @@ redirected to scratch, release build `1e774ac89-dirty` plus the commit after it:
   piped stdout, as ADR-031 said it would. That is the control for the paragraph
   above about what is not fixed.
 - Not measured: the session path over `sun_path`'s limit with a real client (the
-  runtime's was 101 bytes; the fallback is covered by `cordial_protocol::socket`'s
+  runtime's was 101 bytes; the fallback is covered by `vanta_protocol::socket`'s
   tests only), and any signed-in run, so `game.joined`, `session.state` and
   `game.presence` were exercised by unit tests and not by a real join.
 
@@ -296,8 +296,8 @@ redirected to scratch, release build `1e774ac89-dirty` plus the commit after it:
 ## What is not decided
 
 - Where the session cookie lives for a third-party runtime. The built-in
-  runtime reads the secret store itself through `cordial_shell::secrets`
-  (re-exported in `cordial-runtime/src/secrets.rs`); `session.vault` is deferred
+  runtime reads the secret store itself through `vanta_shell::secrets`
+  (re-exported in `vanta-runtime/src/secrets.rs`); `session.vault` is deferred
   until a runtime needs it.
 - Whether `mangohud` and `vkbasalt`, which are Vulkan loader environment
   variables, are settings or a manifest-declared environment allowlist.
@@ -305,8 +305,8 @@ redirected to scratch, release build `1e774ac89-dirty` plus the commit after it:
 
 ## Consequences
 
-- `cordial-runtime` is eventually renamed (`cordial-android`) and loses its
-  dependency on `cordial-shell`'s non-window modules; the window code it imports
+- `vanta-runtime` is eventually renamed (`vanta-android`) and loses its
+  dependency on `vanta-shell`'s non-window modules; the window code it imports
   moves with it or into a small crate of its own. That is the last step, not the
   first.
 - The launcher gains a session object: a child, a socket, a plugin host, a

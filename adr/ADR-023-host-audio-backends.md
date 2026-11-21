@@ -8,7 +8,7 @@ title: "ADR-023: PipeWire is the primary audio backend, and the others go behind
 
 **PipeWire stays the primary and default host audio backend.** Alongside it,
 the three stream classes in `native/pipewire_backend.h` move behind a backend
-interface, selected by a new `CORDIAL_AUDIO_HOST` variable, with PipeWire as
+interface, selected by a new `VANTA_AUDIO_HOST` variable, with PipeWire as
 the only implementation until that refactor is proved to change nothing.
 
 Then, in this order: **PulseAudio**, **ALSA**, and **OSS only if somebody with
@@ -21,12 +21,12 @@ dependency is added by any of this.
 ## Why this is being decided at all
 
 A user asked for it, in these words: *"pipewire-only, no ALSA nor OSS Support,
-no FreeBSD support, wayland only"*. The first clause is accurate. Cordial has
+no FreeBSD support, wayland only"*. The first clause is accurate. Vanta has
 three output paths into the engine — AAudio's pull callback, OpenSL ES and
 FMOD's Java `AudioDevice` push path, and capture — and every one of them ends
 in PipeWire. On a desktop running PipeWire this is invisible, because
 `pipewire-pulse` and the ALSA plugin cover PulseAudio and ALSA clients. On a
-machine running PulseAudio or bare ALSA, Cordial is silent.
+machine running PulseAudio or bare ALSA, Vanta is silent.
 
 Sober, which is the reference implementation this project studies, links
 PulseAudio (`docs/analysis/sober-input-stack.md`). That is a data point about
@@ -43,14 +43,14 @@ room for it — and then a silent regression in PipeWire, which every current us
 depends on, would be indistinguishable from a bug in the new code.
 
 **A refactor that changes nothing is the one refactor that can be proved.**
-`cordial_pipewire_backend_test` and `audio_probe` both exist and both pass
+`vanta_pipewire_backend_test` and `audio_probe` both exist and both pass
 today; they are the control, and they must still pass with PipeWire reached
 through the seam before a line of PulseAudio is written.
 
 ## The one-way door, which is the real risk here
 
 `native/aaudio.cpp` records it: **once FMOD has been told AAudio exists, there
-is no way back.** A control run with `CORDIAL_AUDIO=aaudio-refuse` answered
+is no way back.** A control run with `VANTA_AUDIO=aaudio-refuse` answered
 `supportsAAudio()` true and then failed every `openStream`; FMOD tried twice and
 abandoned audio for the rest of the process — no `AudioDevice.init`, no
 `slCreateEngine`, no node of any kind, and a place that loaded and played in
@@ -67,7 +67,7 @@ silence-without-one, and AGENTS.md's rule about stubs that lie applies exactly.
 The instrument problem compounds it. `getXRunCount()` reads zero on output
 whether the stream is perfect or underrunning every 40 ms — the file says so, and
 says it is there so the counter does not become this project's fifth constant
-mistaken for a measurement. What does discriminate is `CORDIAL_TRACE_AUDIO=1`'s
+mistaken for a measurement. What does discriminate is `VANTA_TRACE_AUDIO=1`'s
 peak meter and `pw-top`'s error column, and the second of those is PipeWire's.
 **Under ALSA or OSS we would be shipping with fewer instruments than the path we
 are copying.** Whatever lands must bring its own way of telling working audio
@@ -75,11 +75,11 @@ from silent audio, or it is not finished.
 
 ## What is rejected
 
-**Adding `alsa`/`pulse`/`oss` as values of `CORDIAL_AUDIO`.** That variable
-selects which *Android* API FMOD reaches Cordial through — AAudio, OpenSL, or
+**Adding `alsa`/`pulse`/`oss` as values of `VANTA_AUDIO`.** That variable
+selects which *Android* API FMOD reaches Vanta through — AAudio, OpenSL, or
 FMOD's Java path — and every combination of those with a host backend is
 meaningful. One variable for two orthogonal axes is a variable nobody can
-document. Hence `CORDIAL_AUDIO_HOST`, parsed in one place, announced at startup
+document. Hence `VANTA_AUDIO_HOST`, parsed in one place, announced at startup
 the way the existing one already is.
 
 **Trusting `pkg_check_modules` for ALSA or PulseAudio.** On the machine this was
@@ -90,7 +90,7 @@ the system one — a silent wrong answer, which is worse. The `find_path` fallba
 pattern in `native/CMakeLists.txt` is mandatory here, not optional.
 
 **OSS as a route to FreeBSD.** It is not one, and saying so to the person who
-asked is more useful than shipping it. Cordial is AOSP's bionic linker over a
+asked is more useful than shipping it. Vanta is AOSP's bionic linker over a
 Linux syscall and `epoll` shim, in a GTK4/Wayland window fixed by ADR-011, and
 `docs/multiarch.md` restricts supported targets to Linux. Audio is not what
 stops FreeBSD; approximately everything else is. An OSS backend would be a
@@ -115,7 +115,7 @@ against the PipeWire ALSA plugin, and once against hardware", and OSS ships
 this; writing it down here is so that nobody has to decide it under pressure at
 review time.
 
-**`CORDIAL_AUDIO_SINK` does not port cleanly, and one property of it is load-
+**`VANTA_AUDIO_SINK` does not port cleanly, and one property of it is load-
 bearing.** Empty means "follow whatever the session calls the default sink, and
 keep following it" — a standing instruction, not a snapshot, so changing the
 default sink mid-game moves the stream. PulseAudio keeps that property exactly.
@@ -135,12 +135,12 @@ Asked directly on 2026-08-26 -- should ALSA be dropped and the backends be
 PipeWire and PulseAudio only? -- and the answer turns on a fact about the
 sandbox that was not written down anywhere.
 
-**The Flatpak has no route to `/dev/snd`.** `packaging/io.github.luohoa97.Cordial.yml`
+**The Flatpak has no route to `/dev/snd`.** `packaging/io.github.gpt4omni.Vanta.yml`
 grants `--socket=pulseaudio` and the native PipeWire socket, and `--device=dri`
 and nothing else. `alsa_available()` proves a device by opening a PCM and
 closing it, which is the right probe and which cannot succeed against a
-directory that is not in the sandbox. So for everybody installing Cordial the
-recommended way, `CORDIAL_AUDIO_HOST=alsa` is a variable that reports it did not
+directory that is not in the sandbox. So for everybody installing Vanta the
+recommended way, `VANTA_AUDIO_HOST=alsa` is a variable that reports it did not
 get what it asked for.
 
 **The grant it would need is `--device=all`.** Flatpak has no narrower lever --
@@ -151,7 +151,7 @@ far more than the capability needs is a permission that lies. That reasoning
 does not get weaker because the capability this time is audio.
 
 **ALSA stays anyway, and the reason is the users the Flatpak is not for.** The
-AUR package, an RPM, and `cargo build` all produce a Cordial with no sandbox
+AUR package, an RPM, and `cargo build` all produce a Vanta with no sandbox
 around it, and a machine with no sound server at all is exactly the case ALSA
 exists to answer. It is opt-in, it is probed before it is trusted, it compiles
 out entirely without `alsa-lib-devel`, and it costs nothing on a machine that
@@ -183,10 +183,10 @@ PCM, so this is the one that serves a machine with none of that.
 
 Three things about it are worth knowing before anybody selects it:
 
-- **The device is exclusive on most drivers.** While Cordial holds `/dev/dsp`,
+- **The device is exclusive on most drivers.** While Vanta holds `/dev/dsp`,
   nothing else on the machine gets sound. That is what the interface is, not a
   bug to work around, and it is why this is opt-in behind
-  `CORDIAL_AUDIO_HOST=oss` and never chosen for anybody who did not ask.
+  `VANTA_AUDIO_HOST=oss` and never chosen for anybody who did not ask.
 - **Even the probe takes the device**, briefly, for the same reason. It is
   cached so it happens once.
 - **OSS speaks integer PCM.** The engine's float frames are converted to
@@ -206,13 +206,13 @@ emulation and has no `/dev/dsp`, so `oss_available()` correctly answers no here
 and no audio has been produced through this path by anybody yet.
 
 What *is* verified on this machine: it compiles into the build, `find_path`
-detects `sys/soundcard.h`, `CORDIAL_AUDIO_HOST=oss` selects it, the probe
+detects `sys/soundcard.h`, `VANTA_AUDIO_HOST=oss` selects it, the probe
 reports honestly, and the fallback to PipeWire announces itself and names
-`CORDIAL_AUDIO_DEVICE` as the escape hatch:
+`VANTA_AUDIO_DEVICE` as the escape hatch:
 
 ```text
-W/Cordial-Audio  CORDIAL_AUDIO_HOST=oss, but /dev/dsp would not open
-                 (set CORDIAL_AUDIO_DEVICE for another node); using pipewire.
+W/Vanta-Audio  VANTA_AUDIO_HOST=oss, but /dev/dsp would not open
+                 (set VANTA_AUDIO_DEVICE for another node); using pipewire.
 host_backend_name(): oss
 oss_available():     NO
 ```

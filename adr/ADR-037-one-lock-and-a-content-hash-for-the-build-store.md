@@ -2,20 +2,20 @@
 title: "ADR-037: The build store's three writers share one lock, and an entry now proves its own bytes"
 ---
 **Status:** accepted, implemented
-**Amended by:** [ADR-054](/adr/ADR-054-cordial-owns-its-roblox-builds) (launches resolve from the store; Sober is an import; 2026-10-04)
+**Amended by:** [ADR-054](/adr/ADR-054-vanta-owns-its-roblox-builds) (launches resolve from the store; Sober is an import; 2026-10-04)
 **Date:** 2026-09-24
 **Extends:** [ADR-033](/adr/ADR-033-roblox-versions-are-a-keyed-store)
 **Related:** [ADR-012](/adr/ADR-012-profiles-and-instances), [ADR-025](/adr/ADR-025-fetching-from-a-third-party-mirror)
 
 ## What this is not
 
-This is not the ADR that makes Cordial's Roblox builds shared instead of
+This is not the ADR that makes Vanta's Roblox builds shared instead of
 per-profile. **That one is [ADR-033](/adr/ADR-033-roblox-versions-are-a-keyed-store)
 and it shipped on 2026-09-13.** A profile has never held its own copy of an
 engine or an APK -- `profiles/<name>/roblox-version` is one line of text naming
-a version, and the bytes live once, under `~/.cache/cordial/builds/<version>/`,
+a version, and the bytes live once, under `~/.cache/vanta/builds/<version>/`,
 shared by every profile on the machine. Measured on the machine this was
-written on: `~/.cache/cordial` is 535 MB total, `build/x86_64` (the build in
+written on: `~/.cache/vanta` is 535 MB total, `build/x86_64` (the build in
 use) reports 271 MB and `builds/2.738.0.1397` (the same build, kept as a store
 entry) reports 384 MB, and the two do not add up to more than the whole because
 `base.apk` is one inode with two names -- `store::keep_archives`'s hard link,
@@ -28,13 +28,13 @@ left open or got only partly right:
 ## Decision
 
 **One lock, not two, and a third path that had none at all.** Three places in
-this codebase mutate `~/.cache/cordial/builds/`:
+this codebase mutate `~/.cache/vanta/builds/`:
 
 | Caller | Guarded by, before this ADR |
 |---|---|
 | `provider::obtain_and_install` (an auto-update) | `build_dir().join(".installing")` |
 | `provider::obtain_into_store` (the Version page's download) | `store::root().join(".downloading")` |
-| `cordial-shell::install::key_into_store` (keying a build Sober or the user already supplied) | **nothing** |
+| `vanta-shell::install::key_into_store` (keying a build Sober or the user already supplied) | **nothing** |
 
 The first two are different lock files on different directories and do not
 serialise against each other. The third takes no lock at all. All three end up
@@ -69,7 +69,7 @@ what everybody already calls.
 **Blocking, not refused.** `provider::exclusive` — the lock behind
 `.installing` and `.downloading` — refuses instantly and says so, because what
 it guards is a fetch the user is watching a progress bar for, and queuing
-silently behind someone else's download would look like Cordial hanging.
+silently behind someone else's download would look like Vanta hanging.
 `store::lock` guards a handful of renames with no network in it, typically
 under a second even for a 100 MB engine being hashed (see below), so a second
 caller waits rather than being told to try again. The alternative — refusing a
@@ -82,7 +82,7 @@ refusing is not free just because it is simpler to write.
 `store::prune_in` against the same root, sleeps 200 ms, then releases the lock.
 The thread's `prune_in` call is measured taking at least 180 ms — it blocked
 for the lock rather than running concurrently with the holder. See
-`concurrent_mutations_serialize_on_the_store_lock` in `crates/cordial-update/src/store.rs`.
+`concurrent_mutations_serialize_on_the_store_lock` in `crates/vanta-update/src/store.rs`.
 
 ### A content hash, recorded once, trusted after that
 
@@ -151,8 +151,8 @@ change that.
 `$XDG_CACHE_HOME`, and Flatpak sets that variable to the sandboxed
 `~/.var/app/<id>/cache` for every app it runs, unconditionally — there is
 nothing here to detect or branch on. Confirmed on the machine this was written
-on: `~/.var/app/io.github.luohoa97.Cordial/cache/cordial` exists and is a
-sibling of the host installation's own `~/.cache/cordial`, with no shared
+on: `~/.var/app/io.github.gpt4omni.Vanta/cache/vanta` exists and is a
+sibling of the host installation's own `~/.cache/vanta`, with no shared
 content between them, which is correct — a Flatpak's sandbox and a host
 checkout are different machines from the store's point of view, and each gets
 its own.

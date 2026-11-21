@@ -37,7 +37,7 @@ break it), presents normally: the window surface attaches, `repaint_now` reports
 
 ## Decision
 
-1. `cordial_shell::stacking_gate::Gate` decides. The canvas is lowered only
+1. `vanta_shell::stacking_gate::Gate` decides. The canvas is lowered only
    after GTK has been asked for a frame with the transparent background
    (`HostWindow::arm_present_probe`) and GDK's frame timings show a frame laid
    out after that request with a presentation time
@@ -46,13 +46,13 @@ break it), presents normally: the window surface attaches, `repaint_now` reports
    the window (the game stays visible, the editor does not), a line names the
    renderer and the frame-clock state, and the attempt is repeated a second
    later for as long as the box has focus.
-3. Waiting is spread over pump ticks instead of blocking one, and Cordial sends
+3. Waiting is spread over pump ticks instead of blocking one, and Vanta sends
    no parent commit of its own while waiting, because a commit of ours would
    resolve GDK's pending presentation feedback and pass the check without GTK
    having attached anything.
 4. Without `wp_presentation` GDK's timings cannot report a presentation, so the
    check falls back to `after-paint`, the weaker old answer.
-5. `CORDIAL_STACKING_GATE=off` restores the old ordering. It is the control for
+5. `VANTA_STACKING_GATE=off` restores the old ordering. It is the control for
    a before-and-after on one binary.
 
 ## Alternatives
@@ -72,9 +72,9 @@ In the failing configuration GTK presents nothing, so the gate alone leaves the
 game visible and the editor invisible. The cause is GTK's GL renderer sharing a
 process with the engine's GLES; `GSK_RENDERER=cairo` cures it.
 
-`cordial_shell::gtk_renderer` now chooses cairo for the machines that would
-otherwise get nothing. `cordial-run` starts the Vulkan probe of
-[`vulkan_probe`](https://github.com/gpt4omni/vanta/blob/main/crates/cordial-shell/src/vulkan_probe.rs) in a background
+`vanta_shell::gtk_renderer` now chooses cairo for the machines that would
+otherwise get nothing. `vanta-run` starts the Vulkan probe of
+[`vulkan_probe`](https://github.com/gpt4omni/vanta/blob/main/crates/vanta-shell/src/vulkan_probe.rs) in a background
 thread right after the Graphics line is printed, and collects it in
 `wayland::open` before `init_wayland`, which is before GTK realises the window
 and reads the variable. The rule:
@@ -89,11 +89,11 @@ and reads the variable. The rule:
 One line is logged either way, `[gtk] renderer: ...`, naming the reason and how
 long the launch waited for the probe.
 
-**The Graphics setting is not an input.** `CORDIAL_GRAPHICS=gles` was measured
+**The Graphics setting is not an input.** `VANTA_GRAPHICS=gles` was measured
 on this machine with working Vulkan and GTK stayed on `GskVulkanRenderer`,
 presented, and lowered 3 of 3, so forcing GLES is not by itself a reason; the
-probe is. The probe runs in a child of `cordial-run`
-(`cordial-run --vulkan-probe`, handled before the profile is claimed), so a
+probe is. The probe runs in a child of `vanta-run`
+(`vanta-run --vulkan-probe`, handled before the profile is claimed), so a
 driver that faults at load costs the probe and not the client.
 
 Measured on the #53 reproduction (nested KWin 6.7, signed out, `fakefocus` three
@@ -104,10 +104,10 @@ times; `GSK_RENDERER=ngl` set by the user is the "before", on the same binary):
 | no Vulkan, user sets `ngl` | GskGLRenderer | 0 of 3 (gate holds) | 0 |
 | no Vulkan, nothing set | GskCairoRenderer, chosen by the log line | 3 of 3 | 257 |
 | Vulkan, nothing set | GskVulkanRenderer, left alone | 3 of 3 | 266 |
-| Vulkan, `CORDIAL_GRAPHICS=gles` | GskVulkanRenderer, left alone | 3 of 3 | 269 |
+| Vulkan, `VANTA_GRAPHICS=gles` | GskVulkanRenderer, left alone | 3 of 3 | 269 |
 
 The probe takes about 60 ms on a working Vulkan stack and 29 ms with no
-driver (10 runs each, a child of `cordial-run`), and `settle` waited 0 to 10 ms
+driver (10 runs each, a child of `vanta-run`), and `settle` waited 0 to 10 ms
 for it because it runs while the engine loads.
 
 INFERRED: that this is the reporter's cause. It reproduces their log signature

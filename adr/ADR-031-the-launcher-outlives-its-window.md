@@ -8,15 +8,15 @@ title: "ADR-031: The launcher outlives its window, and the client is a child pro
 
 ## Context
 
-Cordial is two processes. `cordial-shell` is the launcher — a single-instance
+Vanta is two processes. `vanta-shell` is the launcher — a single-instance
 `GtkApplication` on the session bus, which is what lets a `roblox-player:` link
 clicked in a browser reach the launcher that is already open instead of starting
-a second one. `cordial-run` is the client: it loads `libroblox.so`, holds the
+a second one. `vanta-run` is the client: it loads `libroblox.so`, holds the
 profile's `flock` (ADR-012) and owns its own window.
 
 Two questions were open, and they turn out to be the same question.
 
-**"Closing the launcher closes Cordial completely"** was reported against the
+**"Closing the launcher closes Vanta completely"** was reported against the
 Flatpak build on 2026-09-13. **"Is launching the binary the proper way, or is it
 a hack?"** was asked in the same breath.
 
@@ -25,7 +25,7 @@ a hack?"** was asked in the same breath.
 The natural reading is that a Flatpak sandbox tears down when its `command:`
 process exits, taking the client with it. **That was measured and it is false.**
 A marker process backgrounded inside `flatpak run --command=sh
-io.github.luohoa97.Cordial`, with the sandbox's own main process then exiting,
+io.github.gpt4omni.Vanta`, with the sandbox's own main process then exiting,
 was still alive on the host seconds later with `bwrap` still hosting it — both
 as a plain child and under `setsid`. The sandbox is not the mechanism.
 
@@ -35,7 +35,7 @@ The mechanism is a pipe.
 reader threads, so that the crash page can quote what the client printed. **The
 read ends of those pipes belong to the launcher process.** Close the launcher
 window, and with no window left the `GtkApplication` quits, the process exits,
-both read ends close — and the next `println!` inside `cordial-run` panics:
+both read ends close — and the next `println!` inside `vanta-run` panics:
 
 ```text
 thread 'main' panicked at library/std/src/io/stdio.rs:1165:9:
@@ -74,7 +74,7 @@ hack, and the alternatives are worse:
   that drives it.
 * **`flatpak-spawn --host`** is arbitrary command execution on the host and is
   refused outright by the manifest's own reasoning; see the header of
-  `packaging/io.github.luohoa97.Cordial.yml`.
+  `packaging/io.github.gpt4omni.Vanta.yml`.
 * **One process** contradicts ADR-002, which keeps the shell buildable without
   the engine on purpose, and would put a 1.5 GB engine load in the same address
   space as the launcher's WebKit view.
@@ -87,7 +87,7 @@ makes it safe, and that is what this ADR adds.
 
 **A launcher that crashes still takes the client with it**, by the same pipe.
 The hold makes the ordinary path safe; it does not make the client independent.
-The defence in depth is for `cordial-run` to survive a broken stdout rather than
+The defence in depth is for `vanta-run` to survive a broken stdout rather than
 panic on it — Rust's `println!` panics on `EPIPE` because std sets `SIGPIPE` to
 `SIG_IGN` at startup, so the write error surfaces rather than the signal. The
 better shape is for the client to narrate into a log file inside its profile and
@@ -100,6 +100,6 @@ is single-instance, so the *link* reaches the running launcher correctly.
 the configured secret backend; unmatched links and unavailable sessions still
 wait for the button. Either path starts a new client
 — which ADR-012's lock refuses if that profile is already open. Routing a join
-into a live engine needs an IPC into `cordial-run` that does not exist outside
+into a live engine needs an IPC into `vanta-run` that does not exist outside
 the development control surface (ADR-019). That is a separate decision and
 wants its own ADR rather than being folded into this one.

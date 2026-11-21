@@ -1,5 +1,5 @@
 ---
-title: "ADR-027: Plugins describe an overlay; Cordial draws it"
+title: "ADR-027: Plugins describe an overlay; Vanta draws it"
 ---
 **Status:** proposed
 **Related:** [ADR-029](/adr/ADR-029-overlays-are-three-decisions), [ADR-001](/adr/ADR-001-in-process-hooking), [ADR-003](/adr/ADR-003-plugin-isolation), [ADR-007](/adr/ADR-007-host-resources-are-brokered), [ADR-010](/adr/ADR-010-plugin-asset-overlays), [ADR-011](/adr/ADR-011-wayland-and-libadwaita), [ADR-026](/adr/ADR-026-the-core-event-bus)
@@ -7,7 +7,7 @@ title: "ADR-027: Plugins describe an overlay; Cordial draws it"
 ## Decision
 
 A plugin may put its own interface on screen over the running client. It does so
-by **sending a description of what it wants shown**; Cordial builds the widgets
+by **sending a description of what it wants shown**; Vanta builds the widgets
 with GTK and composites them over the engine's surface.
 
 Three rules.
@@ -20,8 +20,8 @@ Three rules.
    `ui.hud` for something that persists over gameplay, `ui.panel` for something
    that takes focus. A plugin permitted to show a toast is not thereby permitted
    to cover the screen.
-3. **Cordial owns the frame.** Position, stacking, styling, dismissal and the
-   right to refuse are Cordial's. A plugin asks for a region by name, not by
+3. **Vanta owns the frame.** Position, stacking, styling, dismissal and the
+   right to refuse are Vanta's. A plugin asks for a region by name, not by
    coordinate.
 
 ## Why this needs no hooking, and is not a new architecture
@@ -37,12 +37,12 @@ Three rules.
 > state and the two shapes an overlay may take; a plugin overlay is an Inset or
 > a Modal in its terms.
 
-**The engine's `wl_surface` is already a `wl_subsurface` of Cordial's GTK
+**The engine's `wl_surface` is already a `wl_subsurface` of Vanta's GTK
 toplevel** — ADR-011 records that and the reasons it had to be. So a GTK widget
 placed above it is drawn above it, by the compositor, with no cooperation from
 the engine and nothing injected into its process.
 
-That is not a theory. `crates/cordial-shell/src/host_window.rs` already does it:
+That is not a theory. `crates/vanta-shell/src/host_window.rs` already does it:
 `TextOverlay` puts a real `gtk::Text` over the engine's output whenever a Roblox
 TextBox takes focus, and the player sees the GTK widget's glyphs rather than the
 engine's. The overlay system exists and has exactly one user.
@@ -77,7 +77,7 @@ widget that grabs input on its own terms.
 
 **It breaks the capability model.** ADR-007's rule is that a plugin receives an
 effect and never a channel. A web view is a network stack, a storage API and a
-JavaScript runtime that Cordial does not broker. Handing one to a plugin gives
+JavaScript runtime that Vanta does not broker. Handing one to a plugin gives
 it every channel at once, which is the thing "no sockets, no file descriptors"
 exists to prevent.
 
@@ -89,24 +89,24 @@ it.
 
 ## Why declarative, which is the part that ages well
 
-A plugin that sends pixels or markup pins Cordial to whatever rendered them.
+A plugin that sends pixels or markup pins Vanta to whatever rendered them.
 A plugin that sends *"a toast saying this"* survives the renderer changing
 underneath it.
 
 Four things fall out of that and none of them are available otherwise:
 
-- **Overlays cannot fight.** Cordial places them, so two plugins cannot both
+- **Overlays cannot fight.** Vanta places them, so two plugins cannot both
   own the top-right corner, and a misbehaving one cannot cover the client.
-- **They look like Cordial.** One libadwaita style, restyled in one place, and
+- **They look like Vanta.** One libadwaita style, restyled in one place, and
   a plugin author does not have to reimplement a theme to look native.
 - **They can be refused.** A HUD element while the client is loading, or a panel
-  during a join, can be declined or deferred, because Cordial knows what the
+  during a join, can be declined or deferred, because Vanta knows what the
   client is doing and the plugin does not.
 - **The payload is inspectable.** A grant dialogue can say *what* a plugin wants
   to show, which it cannot do for an opaque surface.
 
 The cost is real and should be stated: **a plugin cannot build an interface
-Cordial has no vocabulary for.** Somebody will want a chart. The answer is to
+Vanta has no vocabulary for.** Somebody will want a chart. The answer is to
 add it to the vocabulary, deliberately, rather than to open a hole that makes
 the question moot — and if the vocabulary grows without limit this decision has
 failed and should be reversed rather than quietly stretched.
@@ -118,7 +118,7 @@ whether a HUD element may persist across a join. Those want writing against a
 prototype rather than in advance.
 
 Also not decided: whether overlays should be visible in a screenshot taken
-through `cordial_screenshot`. That reads the engine's swapchain, so today they
+through `vanta_screenshot`. That reads the engine's swapchain, so today they
 would not be — which is right for debugging the engine and wrong for a bug
 report about an overlay.
 

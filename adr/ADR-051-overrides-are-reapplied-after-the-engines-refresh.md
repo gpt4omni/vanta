@@ -19,9 +19,9 @@ those and not after.
 
 1. **After each refresh, hand the engine the document again with the overrides
    merged in.** `nativeInitClientSettings` takes a second call and answers `0`
-   (measured 2026-09-01); it is the entry point Cordial already calls at launch,
+   (measured 2026-09-01); it is the entry point Vanta already calls at launch,
    so nothing new reaches into the process and ADR-001 is untouched.
-   `cordial_runtime::flag_reapply` owns it.
+   `vanta_runtime::flag_reapply` owns it.
 2. **The trigger is the engine's own log, not a timer.** `game_log` already tails
    it from the pump, and the reloader writes `DynamicFastVariableReloader
    finished flag fetch` (or `Skipping flag cache write: ...` in a session on
@@ -30,7 +30,7 @@ those and not after.
    failed fetch (`Could not fetch settings`) applies nothing and triggers nothing.
 3. **A timer is only a net.** A client that has gone 150 s without ever seeing a
    refresh line re-applies on that interval; one line seen turns it off for good.
-4. **Every override counts, not only `DF*`.** Anything a layer above Cordial's own
+4. **Every override counts, not only `DF*`.** Anything a layer above Vanta's own
    built-in default contributes (user file, plugin, Performance, Frame rate
    limit) is kept. Only the dynamic family is measured to be reverted, so a
    profile of `FFlag`s alone pays one pointless call per refresh; that was chosen
@@ -45,7 +45,7 @@ those and not after.
    settings socket (ADR-044); the client stores the choice, the flag layer reads
    it, and the worker applies at once. The row sits in the flag layers above
    plugins and below the user's own `flags.json`.
-7. `CORDIAL_NO_FLAG_REDELIVERY=1` turns the whole thing off. It exists for the
+7. `VANTA_NO_FLAG_REDELIVERY=1` turns the whole thing off. It exists for the
    control below.
 
 **One mechanism, and where it came from.** A contributor's pull request (73)
@@ -68,7 +68,7 @@ positive control, because the machine delivers about 57 with nothing set.
 | Arm | presents/s before 120 s | at and after the 120 s refresh |
 |---|---|---|
 | A: re-apply on | 20.0 throughout | 20.0 to the end (175 s run: 19.9, 20.0, 20.0; 195 s run: 18.8 to 20.7) |
-| B: `CORDIAL_NO_FLAG_REDELIVERY=1` | 20.0 throughout | 56.5, 56.2, 57.6 ... 58.1 from the first sample after the refresh |
+| B: `VANTA_NO_FLAG_REDELIVERY=1` | 20.0 throughout | 56.5, 56.2, 57.6 ... 58.1 from the first sample after the refresh |
 | C: no flags | 55 to 58 | no `[reapply]` line, nothing called |
 
 The engine log's refresh line sat at 120.3 s (A), 120.1 s (B) and 120.1 s (C),
@@ -93,14 +93,14 @@ measured with a frame-time trace; the call is a once-in-two-minutes event.
 
 ### The live row
 
-`CORDIAL_FRAME_RATE_LIMIT=20` at launch, then over the socket: `90` at 45 s,
+`VANTA_FRAME_RATE_LIMIT=20` at launch, then over the socket: `90` at 45 s,
 `Display` at 85 s, 140 s run.
 
 - 20 to 90 took effect at once: about 20 a second before, about 31 after.
 - Back to Display did **not**. The re-apply carried no override and the rate
   stayed at 31 until the engine's own refresh at 120 s, then went to 56.5. A
   call that merely stops carrying a key does not unset it; only the reloader
-  does. Display refresh is the absence of the flag, and Cordial does not know the
+  does. Display refresh is the absence of the flag, and Vanta does not know the
   engine's compiled default for it (the key is not in Roblox's document), so it
   does not send one. The reply carries a note saying so, and the Settings row's
   subtitle says going back takes up to two minutes.

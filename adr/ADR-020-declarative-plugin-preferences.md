@@ -1,15 +1,15 @@
 ---
-title: "ADR-020: A plugin declares its preferences; Cordial draws them"
+title: "ADR-020: A plugin declares its preferences; Vanta draws them"
 ---
 **Status:** proposed
 **Related:** [ADR-003](/adr/ADR-003-plugin-isolation), [ADR-007](/adr/ADR-007-host-resources-are-brokered), [ADR-011](/adr/ADR-011-wayland-and-libadwaita), [ADR-013](/adr/ADR-013-per-profile-configuration), [ADR-018](/adr/ADR-018-plugin-sub-sandboxing)
 
 ## Decision
 
-A plugin may declare a list of settings in its `plugin.json`. Cordial renders
+A plugin may declare a list of settings in its `plugin.json`. Vanta renders
 that declaration as an `AdwPreferencesPage` inside its own Settings window,
 using its own widgets, in its own process. The user's answers are written by
-Cordial to `<profile>/plugins/<id>/preferences.json` and delivered to the plugin
+Vanta to `<profile>/plugins/<id>/preferences.json` and delivered to the plugin
 read-only.
 
 **A plugin never draws.** It receives no widget, no window, no surface, no
@@ -37,7 +37,7 @@ gear on a plugin's row appears exactly when there is something behind it.
 
 The comparison a reader reaches for first is GNOME's Extensions app, and it is
 the right comparison: a list of extensions, each row with a gear, and the gear
-opens that extension's own preferences. Cordial copies the affordance exactly —
+opens that extension's own preferences. Vanta copies the affordance exactly —
 name, identifier, gear where there is something to configure, enable switch —
 and deliberately does not copy the mechanism.
 
@@ -49,10 +49,10 @@ the extension is not sandboxed from the process drawing it in any meaningful
 sense — it *is* that process, for the duration, with the same GTK and the same
 widget hierarchy.
 
-Cordial's plugins are the opposite by design. [ADR-003](/adr/ADR-003-plugin-isolation)
+Vanta's plugins are the opposite by design. [ADR-003](/adr/ADR-003-plugin-isolation)
 puts each one in its own address space with no memory access to the core, and it
 argues at length that this is the only isolation that actually holds — "an
-address-space boundary is enforced by the MMU and does not depend on Cordial
+address-space boundary is enforced by the MMU and does not depend on Vanta
 being correct." A plugin is a Deno process with no file, network, environment or
 subprocess permission at all. It has no display connection. Handing it one, or a
 widget handle, or an RPC that constructs widgets on its behalf, would each undo
@@ -62,36 +62,36 @@ Three specific reasons, beyond "the architecture says so":
 
 **A drawing API is the largest channel in the system.**
 [ADR-007](/adr/ADR-007-host-resources-are-brokered) draws the line as *effects,
-not channels*: `presence.set` takes a presence structure and Cordial owns the
+not channels*: `presence.set` takes a presence structure and Vanta owns the
 Discord socket, because "a plugin that can open a socket of its choosing has the
 channel, and every narrow guarantee above evaporates." A general widget-
 construction API is that failure in its most complete form. Not one resource —
 every pixel of the launcher, with a callback surface attached. There is no
 narrow version of "build any interface you like" to broker.
 
-**A plugin that can draw in Cordial's window can draw Cordial's sign-in
+**A plugin that can draw in Vanta's window can draw Vanta's sign-in
 dialog.** This is not hypothetical and it is not a new class of risk here:
-`crates/cordial-shell/src/webview_policy.rs` exists specifically to keep
+`crates/vanta-shell/src/webview_policy.rs` exists specifically to keep
 `https://www.roblox.com@evil.example/` from rendering, because "a reader
 skimming the address sees Roblox." That module refuses a *URL* on the grounds
 that it might be misread. It would be incoherent to spend that care on the
 address bar and then let an installed plugin construct a pixel-identical
 credential prompt inside the same window, with no address bar to skim at all. A
 plugin's page is reached from Settings, it is drawn from a declaration, and
-every string in it goes through Cordial's own escaping — so the worst a hostile
+every string in it goes through Vanta's own escaping — so the worst a hostile
 declaration achieves is a badly-worded switch.
 
-**It would make the plugin boundary depend on Cordial being correct again.**
+**It would make the plugin boundary depend on Vanta being correct again.**
 ADR-003's whole argument is that in-process sandboxing is "a boundary only as
 strong as the absence of bugs in it." A widget-building RPC is exactly that
 boundary: a list of allowed constructors and properties, maintained forever,
 where one missing check is arbitrary drawing. The declarative schema has no such
-list to get wrong, because the renderer is ordinary Cordial code and the plugin's
+list to get wrong, because the renderer is ordinary Vanta code and the plugin's
 input is data.
 
 ### What the declarative form gives up, honestly
 
-A plugin cannot build a page Cordial cannot already draw. No custom widget, no
+A plugin cannot build a page Vanta cannot already draw. No custom widget, no
 live preview, no field that appears only when another is switched on, no button
 that runs the plugin's own code. Some of those are real losses. GNOME extension
 preferences do contain genuinely bespoke interfaces, and nothing here can
@@ -100,7 +100,7 @@ reproduce them.
 Two of them are worth building later and are not built now: conditional
 visibility (`show-when`), and an action row that sends a named message to the
 plugin. Both are additions to the schema rather than departures from it — they
-keep the property that Cordial constructs the widget — so neither needs this
+keep the property that Vanta constructs the widget — so neither needs this
 decision reversed. The rest are the price, and it is the same price ADR-003
 already decided to pay for everything else.
 
@@ -108,7 +108,7 @@ already decided to pay for everything else.
 
 The strongest case for plugin-drawn windows is that a plugin could draw its
 preferences in *its own* process, in its own window, with its own toolkit — not
-in Cordial's. That is genuinely different from the phishing shape above: a
+in Vanta's. That is genuinely different from the phishing shape above: a
 separate top-level window is the plugin's, not the launcher's, and a compositor
 that draws window decorations makes the distinction visible.
 
@@ -116,16 +116,16 @@ It fails on three counts. It requires the plugin to hold a display connection,
 which is a host resource ADR-007 says a plugin never holds, and on Wayland a
 display connection is a fat channel — clipboard, input, and under a permissive
 compositor a good deal more. It requires the plugin to bundle a toolkit,
-abandoning the property that every Cordial page looks and behaves the same.
+abandoning the property that every Vanta page looks and behaves the same.
 And it does not actually solve the impersonation problem, because a plugin's own
-window can still be titled "Cordial" and still ask for a password;
+window can still be titled "Vanta" and still ask for a password;
 [ADR-018](/adr/ADR-018-plugin-sub-sandboxing)'s sub-sandbox does not help, since
 the risk is what the window *says*, not what the process can reach.
 
 ## Mechanism
 
 **Declaration.** `preferences` in `plugin.json`, validated by
-`cordial_plugins::preferences::check_all` at manifest-parse time. A bad field
+`vanta_plugins::preferences::check_all` at manifest-parse time. A bad field
 refuses the whole plugin rather than being skipped — the same treatment
 `manifest::parse` already gives an unknown capability, and for the reason it
 gives: a plugin whose page is quietly missing one row installs looking correct
@@ -149,15 +149,15 @@ most likely to be "simplified" later by someone who has not hit the bug.**
 replaces it *whole*, which is correct there: the plugin is its only writer and
 needs a way to drop a key. If the user's answers lived in that document, the
 first time the plugin saved anything it would erase them. Two writers, one of
-whom replaces wholesale, loses the other's data on the first write. So Cordial
+whom replaces wholesale, loses the other's data on the first write. So Vanta
 owns this file, writes it one key at a time, and there is no `preferences.set`
 on the wire at all — a plugin that could rewrite its own answers could set them
 to whatever it liked and have the page show the result back as though the user
 had chosen it.
 
-**Delivery.** `preferences.get`, and the same document on the `cordial/init`
+**Delivery.** `preferences.get`, and the same document on the `vanta/init`
 handshake so the common case costs no round trip. Gated on the existing
-`settings.read` capability rather than a new one: both mean "read what Cordial
+`settings.read` capability rather than a new one: both mean "read what Vanta
 keeps for you", the data is the plugin's own by construction, and a separate
 permission a user could deny would leave a plugin declaring questions it is not
 allowed to hear the answers to.
@@ -167,7 +167,7 @@ declared key present, every value fitting its declaration. A saved value that no
 longer fits, because an update narrowed a range or renamed an option, falls back
 to the current default and says so in the log. This is most of what the
 declaration buys an author: the parsing, the range check and the fallback happen
-once, in Cordial, rather than once per plugin in whatever way each author
+once, in Vanta, rather than once per plugin in whatever way each author
 thought of.
 
 **The row.** Following GNOME's Extensions app: name, identifier, then the gear
@@ -189,46 +189,46 @@ Two further row states are designed here and **not built**:
   is what GNOME's coloured gear actually means. Blue and not orange: orange is
   libadwaita's warning colour and says something is wrong, whereas an available
   update is information. `plugin_preferences::gear_for` takes the flag and
-  nothing passes `true`, because Cordial has no plugin update detection at all.
-  When it gains one it must go through `cordial_update::metered` like every
+  nothing passes `true`, because Vanta has no plugin update detection at all.
+  When it gains one it must go through `vanta_update::metered` like every
   other download here — an application that updates itself quietly while nagging
   about its plugins is two policies where there should be one.
 
 ## The vsync unlock, and why it is not a new capability
 
 A plugin that wants an uncapped frame rate needs the Vulkan swapchain's present
-mode changed, which is Cordial's graphics behaviour and not a FastFlag. That is
+mode changed, which is Vanta's graphics behaviour and not a FastFlag. That is
 the first thing a plugin has wanted that is neither a flag nor an existing
 brokered effect, so it is the test of whether the contract is wide enough.
 
-It needed no widening. `CordialPresentMode` is a Cordial-owned key in the
+It needed no widening. `VantaPresentMode` is a Vanta-owned key in the
 ordinary flag layers, read by `android::vulkan::present_mode_choice` and
 filtered out of Roblox's settings document by `client_settings::is_roblox_flag`
-— the arrangement `graphics.rs`'s `CordialGraphicsBackend` has used since it was
-written. A plugin contributes a value with `flags.set`; Cordial decides what to
+— the arrangement `graphics.rs`'s `VantaGraphicsBackend` has used since it was
+written. A plugin contributes a value with `flags.set`; Vanta decides what to
 hand `vkCreateSwapchainKHR`. The plugin never learns a swapchain exists, cannot
 name a mode the driver does not advertise, and cannot reach any other Vulkan
 call. Effect, not channel.
 
 It also inherits the layering's precedence for free: the user's `flags.json`
 beats every plugin's, so a plugin cannot overrule a present mode somebody chose,
-and `CORDIAL_PRESENT_MODE` beats both.
+and `VANTA_PRESENT_MODE` beats both.
 
 **One consequence of this pattern deserves stating plainly, because it is easy
 to arrive at by accident.** `flags.write` lets a plugin set *any*
-`Cordial`-prefixed key, not only this one — `CordialGraphicsBackend` and
-`CordialDeviceProfile` included. That was already true before this change;
+`Vanta`-prefixed key, not only this one — `VantaGraphicsBackend` and
+`VantaDeviceProfile` included. That was already true before this change;
 `graphics.rs::plugin_request` reads the plugin layers deliberately and says so.
-It is worth knowing that `flags.write` is therefore "contribute to Cordial's own
+It is worth knowing that `flags.write` is therefore "contribute to Vanta's own
 runtime configuration" and not merely "contribute FastFlags", and that every
-future `Cordial*` key inherits that. Keys where a plugin's opinion would be
+future `Vanta*` key inherits that. Keys where a plugin's opinion would be
 inappropriate need to be read from somewhere other than the flag layers, and
 that is a decision to make per key rather than a hole to patch here.
 
 ## Consequences
 
 **Accepted:** the set of things a plugin's page can contain is fixed by
-Cordial's renderer, and widening it means a change to Cordial, reviewed and
+Vanta's renderer, and widening it means a change to Vanta, reviewed and
 released. This is the same trade ADR-007 already accepted for brokered
 resources, and for the same reason.
 
@@ -240,7 +240,7 @@ appear.
 **Accepted:** a plugin cannot react to a preference changing while it runs. The
 document is delivered at handshake and on request, and nothing pushes an update.
 Most plugins here already take effect at the next launch — `flags.set` says so
-explicitly — so this matches. A `cordial/preferences-changed` push is the
+explicitly — so this matches. A `vanta/preferences-changed` push is the
 obvious addition when something needs it.
 
 **Accepted, and to be watched:** the renderer is generic and must stay generic.

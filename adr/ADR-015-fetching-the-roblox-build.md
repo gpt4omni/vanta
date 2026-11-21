@@ -1,5 +1,5 @@
 ---
-title: "ADR-015: Cordial may fetch the Roblox build, and may never ship one"
+title: "ADR-015: Vanta may fetch the Roblox build, and may never ship one"
 ---
 **Status:** accepted
 **Related:** [ADR-014](/adr/ADR-014-plugin-registry-and-unpacking),
@@ -9,10 +9,10 @@ title: "ADR-015: Cordial may fetch the Roblox build, and may never ship one"
 
 ## Decision
 
-Cordial may **download** the official Roblox Android build, at the user's
+Vanta may **download** the official Roblox Android build, at the user's
 request, from Roblox's own distribution, to that user's own machine.
 
-Cordial may not **ship** one, in any sense: nothing committed, nothing vendored,
+Vanta may not **ship** one, in any sense: nothing committed, nothing vendored,
 nothing bundled in a release artefact, nothing served to a third party, and
 nothing modified on the way through.
 
@@ -24,7 +24,7 @@ The README says, and it is load-bearing:
 > vendored, or pasted into an issue.
 
 Fetching does not violate the letter of that. Nothing is committed or vendored;
-the bytes travel from Roblox's servers to the user's disk and Cordial keeps no
+the bytes travel from Roblox's servers to the user's disk and Vanta keeps no
 copy anyone else can reach. But the sentence was written to mean *this project
 does not put Roblox's property anywhere*, and a reasonable reader could take
 adding a download button as walking it back. So the answer is recorded here
@@ -35,7 +35,7 @@ rather than assembled after somebody asks.
 **The current arrangement is worse, not purer.** Today the install instructions
 tell people to install Sober — a different Roblox client — in order to obtain a
 file, and then not use it. That is a dependency on an unrelated project for a
-step Cordial could do itself, and it is the weakest part of getting started.
+step Vanta could do itself, and it is the weakest part of getting started.
 
 **~~Nothing about it is unusual.~~ Sober fetches the same build from the same
 place, in the open, and has not been troubled for it.** This sentence was
@@ -68,8 +68,8 @@ The decision below is unchanged by this, because nothing in it turned on what
 Sober does; the *argument* leaned on Sober and the argument was wrong. What
 changes is the practical consequence: **there is presently nothing to fetch.**
 `Source::official()` is a refusal that names Google Play and the Amazon
-Appstore, so a user learns where the build lives rather than that Cordial is
-broken, and `CORDIAL_ROBLOX_APK_URL` lets them point Cordial at a file they
+Appstore, so a user learns where the build lives rather than that Vanta is
+broken, and `VANTA_ROBLOX_APK_URL` lets them point Vanta at a file they
 obtained themselves. Aptoide is deliberately not wired: it is a third-party
 mirror offering only a hash it supplied itself, which is the weakest form of
 verification available and worse than none, because it looks like verification.
@@ -95,8 +95,8 @@ mode this project keeps writing down.
   a switch each for Wi-Fi and metered connections, with the metered one off by
   default. Both of NetworkManager's guesses count as metered, so an ordinary
   desktop takes the metered switch's branch and waits to be asked.
-- **Never pretends to be the official client.** Cordial identifies itself as
-  Cordial and reports the platform truthfully (`Linux`, which is the engine's
+- **Never pretends to be the official client.** Vanta identifies itself as
+  Vanta and reports the platform truthfully (`Linux`, which is the engine's
   own vocabulary).
 
 ## Verification is not optional
@@ -112,14 +112,14 @@ uncompressed-size caps, and the hash checked *before* anything is written.
 
 ## Consequences
 
-**Accepted:** Cordial becomes a thing that fetches Roblox binaries, and that is
+**Accepted:** Vanta becomes a thing that fetches Roblox binaries, and that is
 a different posture from "bring your own build" even though no line of the
 existing rule changes. Anyone assessing this project should be able to read this
 file and know precisely where the line is.
 
 **Accepted:** the fetcher is a maintenance surface. Distribution URLs, version
 endpoints and channel names are Roblox's to change without notice, and when they
-change Cordial stops updating until somebody fixes it. It must fail with a
+change Vanta stops updating until somebody fixes it. It must fail with a
 message naming what it could not reach, rather than appearing to work.
 
 **Accepted, and it is the uncomfortable one:** this makes it easier to run

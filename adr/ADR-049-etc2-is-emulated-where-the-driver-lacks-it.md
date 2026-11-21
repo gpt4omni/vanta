@@ -23,7 +23,7 @@ observation as what would change its mind.
 
 ## Decision
 
-On a physical device whose `textureCompressionETC2` is false, Cordial answers
+On a physical device whose `textureCompressionETC2` is false, Vanta answers
 as though it were true and serves the engine's ETC2 and EAC images itself:
 
 - the feature is reported set in `vkGetPhysicalDeviceFeatures` and
@@ -62,35 +62,35 @@ A non-NVIDIA driver without ETC2 (a software rasteriser, an older mobile-class
 part) has the identical problem and should be served the same way, and an
 NVIDIA driver that grows the feature should not be shimmed. The vendor id
 would be right for the first reason and wrong for the second. It also means
-the `CORDIAL_FORCE_GPU_VENDOR` switch does not turn this on.
+the `VANTA_FORCE_GPU_VENDOR` switch does not turn this on.
 
 **Device-level hooks are installed on a device only if its physical device is
 emulating.** An Intel or AMD device resolves the driver's own function. The
 instance-level lookup cannot know which device a pointer will be used on, so
 it stays hooked, and each hook forwards straight through for a device that is
-not emulating. With `CORDIAL_ANDROID_TRACE` set every device is hooked so that
+not emulating. With `VANTA_ANDROID_TRACE` set every device is hooked so that
 the passthroughs are traced.
 
 ## Controls
 
 - `VANTA_NO_GPU_ETC_DECODE=1` disables the GPU compute shader path and forces
   the pooled CPU fallback, for A/B comparison or driver workarounds.
-- `CORDIAL_NO_ETC_EMULATION=1` turns it off; the engine then sees `ETC1 0
+- `VANTA_NO_ETC_EMULATION=1` turns it off; the engine then sees `ETC1 0
   ETC2 0` on NVIDIA again.
-- `CORDIAL_FORCE_ETC_EMULATION=1` turns it on for a driver that has ETC2
+- `VANTA_FORCE_ETC_EMULATION=1` turns it on for a driver that has ETC2
   natively, so that native and decoded output can be compared on one machine
-  without NVIDIA hardware (the same family as `CORDIAL_FORCE_GPU_VENDOR`). It
-  is named in `cordial-run --help` and set by no packaging script. If both are
+  without NVIDIA hardware (the same family as `VANTA_FORCE_GPU_VENDOR`). It
+  is named in `vanta-run --help` and set by no packaging script. If both are
   set, `NO` wins.
 
 ## Failure behaviour
 
-If the engine was told ETC2 works and the state to serve it is missing, Cordial
+If the engine was told ETC2 works and the state to serve it is missing, Vanta
 fails by name rather than handing the driver a raw ETC format. A `vkCreateImage`
 with an ETC2/EAC format on a device that is emulating but has no emulation
 state (the host calls staging needs could not be resolved, or a second device
 replaced the first) returns `VK_ERROR_FORMAT_NOT_SUPPORTED` and counts into
-`ETC_UNHANDLED`. `CORDIAL_COUNT_GL=1` prints that counter, and a non-zero value
+`ETC_UNHANDLED`. `VANTA_COUNT_GL=1` prints that counter, and a non-zero value
 after joining a game is the thing to report.
 
 A `VkPhysicalDeviceFeatures2` that is not the first node of the
@@ -403,8 +403,8 @@ frame rate and frame-time percentiles remain unmeasured.
 ## Not an ADR-001 matter
 
 Nothing here reads or writes the engine's memory or code. It is the same kind
-of thing ADR-042 describes: the engine calls a function pointer Cordial handed
-it, and Cordial answers at that boundary. What changed is that the answer is no
+of thing ADR-042 describes: the engine calls a function pointer Vanta handed
+it, and Vanta answers at that boundary. What changed is that the answer is no
 longer a pass-through, which ADR-042 said it would not be until the measurement
 justified it.
 
@@ -421,13 +421,13 @@ which decoder that was and how the vectors were generated has not been recorded
 in the pull request, and is for the author to add here. Until it is, "matches
 the specification" rests on the tables and the vectors agreeing with each
 other, and has not been checked against real hardware output. Intel with
-`CORDIAL_FORCE_ETC_EMULATION=1` against native decoding is the first such
+`VANTA_FORCE_ETC_EMULATION=1` against native decoding is the first such
 check available without NVIDIA.
 
 ## Not yet established
 
 - That real NVIDIA output looks right: a before and after of the plastic
-  detail texture on the RTX 5070, and `CORDIAL_COUNT_GL=1` after joining a
+  detail texture on the RTX 5070, and `VANTA_COUNT_GL=1` after joining a
   game with `ETC_UNHANDLED` in it, are the author's to supply.
 - Staging memory for a real join. Each command buffer that uploads ETC data
   holds at least one 8 MiB staging chunk until it is reset or freed; the peak

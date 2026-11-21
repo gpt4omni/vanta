@@ -3,14 +3,14 @@ title: "ADR-034: Symbol resolution asks the library, not a checked-in list"
 ---
 ## Status
 
-Accepted, 2026-09-13. Closes [#15](https://github.com/luohoa97/cordial/issues/15).
+Accepted, 2026-09-13. Closes [#15](https://github.com/gpt4omni/vanta/issues/15).
 
 ## Context
 
-`crates/cordial-runtime/build.rs` reads `docs/analysis/undefined-symbols.tsv`
+`crates/vanta-runtime/build.rs` reads `docs/analysis/undefined-symbols.tsv`
 and generates one stub function per line, plus a `SYMBOLS` array pairing each
 name with its stub. `symtab::build` then iterated exactly that array: every
-symbol Cordial classified, resolved and registered came from the file.
+symbol Vanta classified, resolved and registered came from the file.
 
 So the file was not a record of what the engine imports. It was the *gate*. A
 symbol absent from it was never classified, never registered, and the
@@ -19,7 +19,7 @@ symbol absent from it was never classified, never registered, and the
 That has now cost two releases. `hypotf` appeared in Roblox 2.734.0.917 and
 `getpwuid_r` in 2.738.0.1393; both are ordinary C library functions that every
 host has had for decades, and both stopped the client dead until somebody
-hand-added a line to a TSV. Nothing about either was a genuine gap in Cordial.
+hand-added a line to a TSV. Nothing about either was a genuine gap in Vanta.
 The gap was that resolution was reading the wrong source of truth.
 
 Measured on this host, 2026-09-13, against `libroblox.so` of 2.738.0.1393: the
@@ -31,14 +31,14 @@ from being wrong, with no warning and a total failure as the symptom.
 ## Decision
 
 **`symtab::build` takes the set of symbols the engine actually imports**, read
-out of the ELF in `--lib-dir` by a new `cordial_runtime::elf`, and resolves the
+out of the ELF in `--lib-dir` by a new `vanta_runtime::elf`, and resolves the
 union of that set and `SYMBOLS`.
 
 Three consequences, each chosen deliberately:
 
 **A discovered symbol is resolved from the host on the same rules as any
 other.** Generic goes to the host candidates and then to libc when
-`--host-libc` is set; Khronos goes to the host's GLES or EGL; Cordial's own
+`--host-libc` is set; Khronos goes to the host's GLES or EGL; Vanta's own
 `bionic`/`android` overrides still win over everything.
 
 **A discovered symbol nothing can answer is not given a stub.** There is no
@@ -91,7 +91,7 @@ present whether anything asked for it or not. It is a good idea and it is where
 this one came from -- mocktail is Apache-2.0 and the credit is owed.
 
 It was not taken because it answers a different question. Force-linking makes a
-*library* wholesale available; Cordial resolves per symbol, and it has to,
+*library* wholesale available; Vanta resolves per symbol, and it has to,
 because `libc.so` is deliberately curated -- bionic and glibc disagree on
 `struct stat`, `pthread_mutex_t`, `DIR`, `FILE`, `sigset_t`, `struct statvfs`
 and `struct mallinfo`, and passing those through unchanged overruns the
@@ -114,7 +114,7 @@ Measured on this host, 2026-09-13, release build, same tree, sequential runs:
   then `LOADED in 98ms`, the game loaded and flags loaded, exit 0.
 * **The loud failure survives.** With `AMediaCodec_configure` deleted instead --
   an Android API no host has -- the run printed `1 symbol the engine imports
-  cannot be answered by Cordial, the host, or a stub: AMediaCodec_configure --
+  cannot be answered by Vanta, the host, or a stub: AMediaCodec_configure --
   an Android API belonging to libmediandk.so`, then failed by name, exit 1.
 * **Silent when the list is current.** Unmodified tree: 650 stubs, 573 imports,
   `LOADED in 33ms`, and neither a `note:` nor an unprovidable line.

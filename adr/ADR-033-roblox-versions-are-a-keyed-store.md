@@ -2,15 +2,15 @@
 title: "ADR-033: Roblox builds live in a keyed store, and a profile names one"
 ---
 **Status:** accepted, partly implemented (see the end)
-**Amended by:** [ADR-054](/adr/ADR-054-cordial-owns-its-roblox-builds) (launches resolve from the store; Sober is an import; 2026-10-04)
+**Amended by:** [ADR-054](/adr/ADR-054-vanta-owns-its-roblox-builds) (launches resolve from the store; Sober is an import; 2026-10-04)
 **Date:** 2026-09-13
 **Extends:** [ADR-015](/adr/ADR-015-fetching-the-roblox-build), [ADR-025](/adr/ADR-025-fetching-from-a-third-party-mirror)
 **Related:** [ADR-012](/adr/ADR-012-profiles-and-instances), [ADR-013](/adr/ADR-013-per-profile-configuration)
 
 ## Context
 
-There is one slot. `~/.cache/cordial/lib/x86_64` holds one `libroblox.so` and a
-stamp naming which APK it came out of; `cordial_update::cache` compares the
+There is one slot. `~/.cache/vanta/lib/x86_64` holds one `libroblox.so` and a
+stamp naming which APK it came out of; `vanta_update::cache` compares the
 stamp so a new APK does not leave the old engine in place. Nothing keeps a
 second version and there is no way back.
 
@@ -30,7 +30,7 @@ changes where the result is *put* and how one is *chosen*, nothing else.
 ## Decision
 
 **The cache becomes a store keyed by Roblox version.**
-`~/.cache/cordial/builds/<version>/` holds the extracted library and the stamp,
+`~/.cache/vanta/builds/<version>/` holds the extracted library and the stamp,
 and the current single-slot path becomes a symlink into it so existing installs
 keep working without a migration step the user has to notice.
 
@@ -46,8 +46,8 @@ per-profile pin, "roll back" is picking an earlier entry, so there is no
 rollback code path to get wrong and no state that exists only during a
 rollback.
 
-**Each entry records the Cordial version that last loaded it.** This is a
-compatibility matrix and not a list, because Cordial's own shim is versioned
+**Each entry records the Vanta version that last loaded it.** This is a
+compatibility matrix and not a list, because Vanta's own shim is versioned
 too: an old Roblox build can need a symbol the current shim does not answer, and
 that fails at load with `cannot locate symbol` before any window appears. A
 picker that offers a build nothing here has ever loaded is offering a crash. An
@@ -73,7 +73,7 @@ the one thing the pinned certificate set exists to prevent.
 **No claim that older builds still work.** Roblox enforces a minimum client
 version server-side and will refuse an old one whenever it chooses. The
 launcher must say that plainly next to the picker rather than let a user
-conclude Cordial broke. An old build that the server rejects is the expected
+conclude Vanta broke. An old build that the server rejects is the expected
 end state of every pin, eventually.
 
 ## Open, and worth arguing about
@@ -99,13 +99,13 @@ add later and impossible to remove, so it is left out until somebody wants it.
 
 ## As built, 2026-09-13
 
-`cordial_update::store` is the store. What the decision above left open, or got
+`vanta_update::store` is the store. What the decision above left open, or got
 wrong, and what was settled while building it:
 
 **An entry is the engine and the archives, not the engine alone.** Assets come
 out of `base.apk` at runtime, so an entry holding an old `libroblox.so` beside
 whatever APK is newest is exactly the silent version mismatch
-`cordial_update::cache` exists to prevent. Entries keep `base.apk` and the split
+`vanta_update::cache` exists to prevent. Entries keep `base.apk` and the split
 by hard link, which costs no disk. There is deliberately no copy fallback: an
 APK on another filesystem (Sober's, say) is not duplicated silently at 230 MB,
 and the entry is recorded as incomplete instead.
@@ -127,8 +127,8 @@ whose version was never recorded stays a real directory, as before. Anything
 writing to the slot has to detach the link first or it writes into a kept
 build; the updater, the shell's extraction and `just client` all do.
 
-**`.loaded-by` is written by `cordial-run` after `dlopen` succeeds**, and names
-the Cordial version. Nothing reads it yet.
+**`.loaded-by` is written by `vanta-run` after `dlopen` succeeds**, and names
+the Vanta version. Nothing reads it yet.
 
 **The shell had never recorded a version for a Sober-sourced build.** It scanned
 `split_config.x86_64.apk` for the version string. Measured, that returns

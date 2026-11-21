@@ -10,7 +10,7 @@ title: "ADR-064: A gamepad axis call is a stick, not an axis"
 
 #113 reported that on an AYN Odin 3 the left stick would not move up and down and the sticks were "not working properly". The pad's own layout had already been worked out (X, Y, Z, RX, RY, RZ, no hat, a four-button D-pad), so the axes were reaching the engine under the right Android codes. They were reaching it in the wrong shape.
 
-`nativeGamepadAxisEvent` is `(int id, int axis, float x, float y, float z)V` in the dex (`tools/dex_method.py` on `NativeInputInterface`). Cordial sent one call per Linux axis as `(value, 0, 0)`. mocktail resolves the symbol and never calls it (`include/runtime/roblox_capability_resolver.h:81`, `src/runtime/roblox_capability_resolver.cc:101`), and `docs/traces/waydroid-roblox-startup.log.gz` has no gamepad line, so there was no reference for what x, y and z mean.
+`nativeGamepadAxisEvent` is `(int id, int axis, float x, float y, float z)V` in the dex (`tools/dex_method.py` on `NativeInputInterface`). Vanta sent one call per Linux axis as `(value, 0, 0)`. mocktail resolves the symbol and never calls it (`include/runtime/roblox_capability_resolver.h:81`, `src/runtime/roblox_capability_resolver.cc:101`), and `docs/traces/waydroid-roblox-startup.log.gz` has no gamepad line, so there was no reference for what x, y and z mean.
 
 ## What the engine does with the call
 
@@ -25,13 +25,13 @@ The signed-out landing screen draws a selection ring when a pad is used, which i
 - Control: the D-pad button (`nativeGamepadButtonEvent`, key 20) moves the ring, so the pad is seen and the readout works.
 - Stick down, `(axis=1, 0, -1, 0)` and `(axis=0, 0, -1, 0)`: the ring moves down. A held call repeats (two steps in 0.6 s); a 0.15 s pulse is one step.
 - Stick up, `(0, 1, 0)`: moves up. Stick right, `(1, 0, 0)`: moves right.
-- **The old shape, reproduced:** the call Cordial made for "stick down" (`axis=1`, value in x) from Terms moved the ring right to Privacy; the call for "stick up" from Privacy moved it left to Terms. Up and down arrived as left and right.
+- **The old shape, reproduced:** the call Vanta made for "stick down" (`axis=1`, value in x) from Terms moved the ring right to Privacy; the call for "stick up" from Privacy moved it left to Terms. Up and down arrived as left and right.
 - Hat, z carries the direction: `(0,0,1)` on `AXIS_HAT_X` is right and `(0,0,-1)` left; `(0,0,-1)` on `AXIS_HAT_Y` is down. Up with x and y both zero did nothing; `(0, 1e-6, 1)`, `(0, ±1, 1)` and `(1, 0, 1)` all moved up. Why is not understood. Carrying the hat's own x and y beside the z satisfies it: `(0, 1, -1)` down, `(0, -1, 1)` up, `(-1, 0, -1)` left, `(1, 0, 1)` right were each seen to move the ring that way.
 - Right stick (`AXIS_Z` and `AXIS_RZ` with y = -1), `AXIS_RX`, and both triggers (z = 1 and x = 1): the ring did not move. That screen does not read them, so none of the right stick or trigger shapes below is measured.
 
 Then the same, through the fix and the real fold (`padjs`, joydev-shaped events on the standard layout, one session, one pad, same starting items as the control):
 
-| Start | Event | Old shape (`padaxis 0 1 1 0 0`, as Cordial sent it) | Fixed |
+| Start | Event | Old shape (`padaxis 0 1 1 0 0`, as Vanta sent it) | Fixed |
 |---|---|---|---|
 | Terms | left stick down | Privacy | stays on Terms (nothing below) |
 | Privacy | left stick up | Terms | Sign In |

@@ -13,7 +13,7 @@ overrides". Only the first of those was true in code: storage moved into
 draws the line by what a thing *is* rather than by which directory it started
 in.
 
-**Per profile**, under `$XDG_DATA_HOME/cordial/profiles/<name>/`:
+**Per profile**, under `$XDG_DATA_HOME/vanta/profiles/<name>/`:
 
 | | |
 |---|---|
@@ -25,8 +25,8 @@ in.
 
 | | |
 |---|---|
-| `$XDG_DATA_HOME/cordial/plugins/<id>/` | installed plugin code, and its own `flags.json` |
-| `$XDG_CONFIG_HOME/cordial/shell.json` | the shell's appearance |
+| `$XDG_DATA_HOME/vanta/plugins/<id>/` | installed plugin code, and its own `flags.json` |
+| `$XDG_CONFIG_HOME/vanta/shell.json` | the shell's appearance |
 
 Installing a plugin once is right; a plugin is software on the machine. What it
 may do, and what it knows, are decided per account.
@@ -38,9 +38,9 @@ neither a thing they asked for nor a thing the window is for.
 
 **A plugin's settings are brokered, never handed over.** Two capabilities,
 `settings.read` and `settings.write`, each scoped to the plugin's own id, which
-Cordial takes from its record of which process is on the other end of the pipe.
+Vanta takes from its record of which process is on the other end of the pipe.
 The methods have no id parameter at all. The current document is delivered in a
-handshake push, `cordial/init`, before the plugin has asked for anything.
+handshake push, `vanta/init`, before the plugin has asked for anything.
 
 **One argument decides the lot.** The profile is passed to the client on the
 command line; nothing else about the layout is. Everything above is resolved
@@ -50,7 +50,7 @@ from that one directory.
 
 This is the part that is a security property rather than tidiness.
 
-Grants lived at `~/.config/cordial/plugin-grants.json` — one list, every
+Grants lived at `~/.config/vanta/plugin-grants.json` — one list, every
 account. So approving a plugin in a throwaway profile *while trying it out* also
 approved it, silently and permanently, in the profile someone actually plays on,
 against the account they care about. Nothing about the approval said so. The
@@ -71,13 +71,13 @@ forget.
 
 The obvious implementation is to give each plugin a directory and let it write.
 ADR-007 forbids it: a plugin never receives a socket, a descriptor or a path,
-because the whole containment argument is that Cordial holds the resource and
+because the whole containment argument is that Vanta holds the resource and
 performs the effect. A path is a channel. Given one, a plugin's reach is bounded
 by whatever the filesystem permits rather than by what was granted, and the Deno
 process is deliberately started with no file access at all so that the broker
 having a hole in it is not sufficient to reach the machine.
 
-So Cordial owns the file and the plugin exchanges a document. Same shape as
+So Vanta owns the file and the plugin exchanges a document. Same shape as
 `presence.set`: the effect, never the channel.
 
 **Two capabilities, not one**, for the reason ADR-006 splits `events.declare`
@@ -145,8 +145,8 @@ uninstalling removes the code from the machine and the document lives in each
 profile. A stale document is cheap; deleting a user's configuration because they
 briefly removed a plugin is not.
 
-**Accepted:** the environment overrides `CORDIAL_FLAGS` and
-`CORDIAL_PLUGIN_GRANTS` are global by nature — setting one makes a single file
+**Accepted:** the environment overrides `VANTA_FLAGS` and
+`VANTA_PLUGIN_GRANTS` are global by nature — setting one makes a single file
 serve every profile, which is the arrangement this ADR ends. They are kept for
 tests and side-by-side development and are documented as development switches,
 not as a supported configuration.
@@ -184,7 +184,7 @@ Plugin *code* is installed once for the machine; what a plugin is allowed to do
 belongs to the account. Approving something in a profile you made to try it out
 does not approve it in the profile you actually play on, and that is a security
 property rather than tidiness. Grants used to live at
-`~/.config/cordial/plugin-grants.json` — one list, every account — which meant an
+`~/.config/vanta/plugin-grants.json` — one list, every account — which meant an
 approval given in a throwaway profile silently held against the account with the
 purchases and the friends list, and nothing about approving it there ever
 suggested it would apply here. ADR-003's default deny is only worth something if
@@ -198,7 +198,7 @@ already has its own file, so it can never widen approvals you have already made,
 and a failed move leaves the old file untouched rather than writing half a
 document.
 
-`CORDIAL_PLUGIN_GRANTS` overrides the path outright. It is global by nature — it
+`VANTA_PLUGIN_GRANTS` overrides the path outright. It is global by nature — it
 makes one grants file serve every profile, which is the arrangement per-profile
 grants exist to end — so treat it as a development switch, not a supported
 configuration.

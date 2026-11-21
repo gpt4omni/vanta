@@ -10,12 +10,12 @@ title: "ADR-053: VR is a mode of the Android runtime, and a profile serves both 
 ## What changed
 
 ADR-043 rejected the Quest build because running an arm64 `libroblox.so`
-looked like it needed a second, arm64 `cordial-run` under qemu-user, and that
+looked like it needed a second, arm64 `vanta-run` under qemu-user, and that
 container saw only llvmpipe. The VR work did not do that. The x86-64
-`cordial-run` links the Quest build's arm64 engine itself and runs its code
+`vanta-run` links the Quest build's arm64 engine itself and runs its code
 under dynarmic, in-process, and the engine's Vulkan and OpenXR calls reach the
 host's own GPU driver and OpenXR runtime through generated thunks
-(`cordial-run --guest-arm64 --app-bridge`). Measured on Monado's simulated HMD
+(`vanta-run --guest-arm64 --app-bridge`). Measured on Monado's simulated HMD
 (design §9.5, §9.8, §9.9): 89.95 to 90.00 `xrEndFrame`/s at 90 Hz on the
 signed-out landing panel in 3 of 3 runs, 143.93/s at 144 Hz; in game, 44 to 48
 frames/s at 90 Hz after the first performance pass and 51.7 to 65.3 at 72 Hz in
@@ -29,32 +29,32 @@ hands-on session is noted under "Not established" below.
 1. **VR is a launch mode of the built-in Android runtime, not a runtime in
    ADR-052's sense.** ADR-052's runtime is a separate program that advertises
    a `runtime.json` and is spoken to over a socket, and ADR-050 asked first
-   what of Cordial's Android layers it would reuse. The VR mode reuses all of
+   what of Vanta's Android layers it would reuse. The VR mode reuses all of
    them: the same binary, the bionic linker, the JNI layer, the framework
    answers, profiles, FastFlags, plugins and live settings. It differs by two
-   arguments. Calling it a runtime would mean Cordial implementing the spec
+   arguments. Calling it a runtime would mean Vanta implementing the spec
    to talk to itself, and listing it beside third-party runtimes that ADR-052
    deliberately does not list. ADR-052's "a runtime declares `arch`, and
-   Cordial hides one that does not match the host" is not contradicted: the
+   Vanta hides one that does not match the host" is not contradicted: the
    binary is x86-64 on an x86-64 host, and the guest ABI is internal to it, as
    an Android device's ABI is internal to Android.
 
 2. **The translator stays inside ADR-001 on the design's three conditions**
-   (§7): dispatch is keyed only on Cordial's own stub addresses and SVC ids,
+   (§7): dispatch is keyed only on Vanta's own stub addresses and SVC ids,
    never on engine addresses; no plugin sees translator state; and the
    engine's code is never written. The engine's unmodified instructions run,
    and behaviour changes only through what a real platform answers. A change
    that breaks one of the three reopens this record. The first is enforced
-   rather than described: `Runtime::install` in `cordial-guest` is the only
+   rather than described: `Runtime::install` in `vanta-guest` is the only
    way a handler is attached and accepts only the stub page's next free
    slot, and an `svc` anywhere but at the start of its own stub is the
    guest's syscall, as arm64 Linux treats any `svc`. `tests/stub_page.rs`,
    the `jit` unit test and `guest_link`'s
    `every_function_import_resolves_to_a_registered_stub` fail without it.
 
-3. **The user supplies the Quest build, and Cordial downloads none.** Settings
+3. **The user supplies the Quest build, and Vanta downloads none.** Settings
    → VR imports an APK file or pulls it from a connected Quest with `adb`
-   (`pm path com.roblox.client`, then `adb pull`), and `cordial
+   (`pm path com.roblox.client`, then `adb pull`), and `vanta
    --import-quest-apk FILE` does the same with no window. The archive must
    verify against a pinned certificate, as ADR-033 requires of every build.
    **Measured:** the Quest build 2.740.0.927 verifies to a different
@@ -77,12 +77,12 @@ hands-on session is noted under "Not established" below.
    store has its own lock and keeps three builds; there is no pin, because
    only the user adds to it.
 
-5. **The OpenXR runtime is chosen per launch and never installed.** Cordial
+5. **The OpenXR runtime is chosen per launch and never installed.** Vanta
    reads the system's active runtime (`$XDG_CONFIG_HOME`, then
    `$XDG_CONFIG_DIRS`, then `/etc`, the loader's order), WiVRn's Flatpak
    (`flatpak info --show-location`), SteamVR's manifest, and manifests in
    `share/openxr/1/`. A setting picks one, defaulting to the system's, and the
-   launcher passes it to that client alone in `XR_RUNTIME_JSON`. Cordial never
+   launcher passes it to that client alone in `XR_RUNTIME_JSON`. Vanta never
    writes `active_runtime.json`. When WiVRn is the choice and `wivrn-server`
    is not running, the launcher says so and names the command
    (`--no-manage-active-runtime`); it does not start it, because the shell
@@ -94,7 +94,7 @@ hands-on session is noted under "Not established" below.
    | Shared, at the profile's top level | Kept apart |
    |---|---|
    | `.lock` (ADR-012) | engine storage: phone in `data/`, `run/`; Quest in `quest/data/`, `quest/run/` |
-   | the saved sign-in, keyed in the secret service by the profile's path (`cookies`/`identity` in the file fallback) | unpacked assets: `cordial/assets` and `cordial/assets-arm64-v8a` |
+   | the saved sign-in, keyed in the secret service by the profile's path (`cookies`/`identity` in the file fallback) | unpacked assets: `vanta/assets` and `vanta/assets-arm64-v8a` |
    | the engine's secure local-storage values, keyed the same way | |
    | `flags.json`, `plugin-grants.json`, plugin settings, the phone build's pin | |
 
@@ -138,29 +138,29 @@ hands-on session is noted under "Not established" below.
    whose whole job is one button, which is the reason it moved. The cost is one
    more step to start a VR session; the readiness reasons are unchanged.
 
-8. **VR is a Cargo feature, `cordial-runtime/vr`, off by default and on in
+8. **VR is a Cargo feature, `vanta-runtime/vr`, off by default and on in
    every package recipe in this repository.** dynarmic needs Boost's headers, and the guest crate's
    tests an arm64-capable clang, `lld` and `llvm`; with the translator in
    every build, a plain `cargo build` from a checkout needed all of them.
-   Without the feature `crates/cordial-guest` compiles to nothing, the
+   Without the feature `crates/vanta-guest` compiles to nothing, the
    `guest_*` modules, the XR mirror and its Vulkan hooks are absent, and
-   `cordial-run --guest-arm64` refuses by name. The feature also turns on
-   `cordial-shell/vr`, which the launcher reads as `vr::COMPILED_IN` and folds
+   `vanta-run --guest-arm64` refuses by name. The feature also turns on
+   `vanta-shell/vr`, which the launcher reads as `vr::COMPILED_IN` and folds
    into `HOST_SUPPORTED`, so it does not offer a mode its client would refuse.
-   A compile-time fact rather than asking `cordial-run` at startup, because
+   A compile-time fact rather than asking `vanta-run` at startup, because
    both binaries come from one `cargo build` in every package, and a process
    spawn before the window opens would cost every launch for an answer fixed
    when it was built.
    The nixpkgs draft in `packaging/nix/` pins v0.23.2, a tag that predates the
    feature, so it names nothing; the bump to a later tag adds
-   `cordial-runtime/vr` to its `buildFeatures` and `boost` to its inputs.
+   `vanta-runtime/vr` to its `buildFeatures` and `boost` to its inputs.
 
 ## When Roblox stops accepting the build
 
 Roblox refuses old clients after an update, so a Quest build goes stale with
-every Roblox update. **Nothing tells Cordial in advance:** the `client-version`
+every Roblox update. **Nothing tells Vanta in advance:** the `client-version`
 endpoint answers only for the Windows and Mac players (`AndroidApp` gets 500,
-`cordial_update::version`), and the release-notes number the updater reads
+`vanta_update::version`), and the release-notes number the updater reads
 says a version was announced, not that the Quest build has it. **Nothing tells
 it at run time either, yet:** the phone build reports `app upgrade status
 0/3` through a GameActivity hook (`init_params.cpp`) the Quest build never
@@ -181,7 +181,7 @@ setting, `FOCUSED`, the landing panel, and a 60 s run ending in exit 0. Rate in
 10 s windows: 71.5, 85.9, 90.0, 62.2, 68.5, 63.5 frames/s at 90 Hz, on a host
 shared with other builds. A second client on the same profile, phone build,
 was refused with exit 3 while the VR client held it. A phone launch on the
-same profile afterwards used `data/`, `run/` and `cordial/assets`, left
+same profile afterwards used `data/`, `run/` and `vanta/assets`, left
 `quest/` alone, and read the same `<profile>/cookies` path the VR run had.
 
 One run ended in SIGSEGV 29 s into the session, in MangoHud's Vulkan layer

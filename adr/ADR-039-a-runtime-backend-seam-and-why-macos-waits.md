@@ -7,11 +7,11 @@ title: "ADR-039: A runtime-backend seam is cheap to describe and not worth build
 
 ## Context
 
-The maintainer asked whether `cordial-runtime` should be made more modular so
+The maintainer asked whether `vanta-runtime` should be made more modular so
 that a second backend — Roblox's macOS client — could be added later without
-rewriting `cordial-shell`. Their framing: check whether the macOS client uses
+rewriting `vanta-shell`. Their framing: check whether the macOS client uses
 Vulkan (if not, Metal would need translating to Vulkan); if there is an
-x86-64 macOS build, run it directly the way Cordial runs the x86-64 Android
+x86-64 macOS build, run it directly the way Vanta runs the x86-64 Android
 build; an aarch64 macOS build on an x86-64 host would need CPU translation;
 some features (the text editor) might not be needed on macOS; a Settings
 picker would read "macOS or Android", with settings unavailable on one
@@ -27,7 +27,7 @@ before that requirement is real. **No code changes accompany this ADR.**
 
 ### The process boundary is already generic in mechanism, specific in content
 
-`crates/cordial-shell/src/launch.rs::spawn` starts `cordial-run` as a
+`crates/vanta-shell/src/launch.rs::spawn` starts `vanta-run` as a
 separate process — `Command::new(loader_path()?)` plus a fixed set of
 arguments and environment variables — and that separation exists for reasons
 that have nothing to do with Android: ADR-012 makes an instance a window and
@@ -44,38 +44,38 @@ The *content* passed through it is. `spawn` always sends:
 
 `--lib-dir` names a directory of `lib/<abi>/*.so` objects extracted from an
 Android APK; `--host-libc` and `--game-activity` are meaningless outside the
-bionic-linker/AGDK world `cordial-run` implements (see
-`crates/cordial-runtime/src/bin/load.rs`'s own `USAGE`, which documents both
+bionic-linker/AGDK world `vanta-run` implements (see
+`crates/vanta-runtime/src/bin/load.rs`'s own `USAGE`, which documents both
 in exactly those terms). The environment variables layered on top —
-`CORDIAL_GRAPHICS` (Vulkan/GLES loader selection for `libroblox.so`'s own
-`dlopen`), `CORDIAL_DEVICE_PROFILE`/`CORDIAL_PERFORMANCE`, `CORDIAL_GAMEPAD`,
-`CORDIAL_AUDIO_SINK`, `CORDIAL_UNPACKED_PLUGINS` — are all read by
-`android::*` modules inside `cordial-runtime` and have no meaning to any
+`VANTA_GRAPHICS` (Vulkan/GLES loader selection for `libroblox.so`'s own
+`dlopen`), `VANTA_DEVICE_PROFILE`/`VANTA_PERFORMANCE`, `VANTA_GAMEPAD`,
+`VANTA_AUDIO_SINK`, `VANTA_UNPACKED_PLUGINS` — are all read by
+`android::*` modules inside `vanta-runtime` and have no meaning to any
 other kind of client.
 
 ### The runtime is not only spawned — it is also *linked*
 
-`crates/cordial-runtime/Cargo.toml` depends directly on `cordial-shell` as a
+`crates/vanta-runtime/Cargo.toml` depends directly on `vanta-shell` as a
 library, not only launches it as a sibling process:
 
 ```
-cordial-shell = { path = "../cordial-shell" }
+vanta-shell = { path = "../vanta-shell" }
 ```
 
 The comment on that dependency names the reason: ADR-011 makes the engine's
-`wl_surface` a `wl_subsurface` of the window `cordial_shell::host_window`
+`wl_surface` a `wl_subsurface` of the window `vanta_shell::host_window`
 builds, and "a Wayland subsurface must share a connection — and therefore a
-process — with its parent." So `cordial-shell` is a library as well as a
-binary, `cordial_shell::host_window` is the one place the
-`AdwWindow`/`AdwToolbarView`/`AdwHeaderBar` are built, and `cordial-runtime`
+process — with its parent." So `vanta-shell` is a library as well as a
+binary, `vanta_shell::host_window` is the one place the
+`AdwWindow`/`AdwToolbarView`/`AdwHeaderBar` are built, and `vanta-runtime`
 links that library to get its window rather than opening its own toplevel.
 This is a second, tighter coupling than the CLI/env process boundary above,
 and it is load-bearing for the property ADR-011 was written to get: "that
 shell and this window are the same window."
 
-Any second backend that wants Cordial's own chrome — the same header bar,
+Any second backend that wants Vanta's own chrome — the same header bar,
 the same theming, the same window — inherits this same constraint: it would
-need to link `cordial-shell` as a library the way `cordial-runtime` does, not
+need to link `vanta-shell` as a library the way `vanta-runtime` does, not
 merely be spawned as an unrelated process with its own top-level window. A
 backend with its own separate window is possible (it gives up ADR-011's "one
 window" property) but is a materially different design, closer to Sober's
@@ -85,25 +85,25 @@ explicitly notes "is a different arrangement that buys different things" and
 
 ### Android-specific modules, by file
 
-In `cordial-shell`:
+In `vanta-shell`:
 
 | File | What is Android-shaped |
 |---|---|
 | `src/install.rs` | `Build { apk: PathBuf, lib_dir: PathBuf }`; `sober_apk()` names Sober's `.../packages/<ABI>/com.roblox.client/base.apk`; resolution order handles split APKs where `libroblox.so` lives in `split_config.x86_64.apk` rather than `base.apk` |
-| `src/launch.rs` | The CLI contract quoted above; env vars keyed to `android::*` readers in `cordial-runtime` |
-| `src/roblox_versions.rs` | The Version page, built on `cordial_update::store`'s Android-build-keyed entries |
-| `src/settings.rs` | The Renderer row (`CORDIAL_GRAPHICS`, "what decides the backend is whether Cordial offers a Vulkan loader at all, since `libroblox.so` links none and `dlopen`s it") and the MangoHUD row (a Vulkan implicit layer) |
-| `src/updater.rs`, `src/download_progress.rs` | Driven by `cordial-update`'s APK-shaped provider |
+| `src/launch.rs` | The CLI contract quoted above; env vars keyed to `android::*` readers in `vanta-runtime` |
+| `src/roblox_versions.rs` | The Version page, built on `vanta_update::store`'s Android-build-keyed entries |
+| `src/settings.rs` | The Renderer row (`VANTA_GRAPHICS`, "what decides the backend is whether Vanta offers a Vulkan loader at all, since `libroblox.so` links none and `dlopen`s it") and the MangoHUD row (a Vulkan implicit layer) |
+| `src/updater.rs`, `src/download_progress.rs` | Driven by `vanta-update`'s APK-shaped provider |
 
-In `cordial-update`:
+In `vanta-update`:
 
 | File | What is Android-shaped |
 |---|---|
 | `src/apk.rs` | `HOST_ABI` and `LIBRARY_IN_APK` are compile-time `cfg(target_arch)` constants spelling Android ABI directory names (`"x86_64"`/`"arm64-v8a"`, `"lib/x86_64/libroblox.so"`/`"lib/arm64-v8a/libroblox.so"`) |
 | `src/apk_signature.rs` | Verifies an Android APK's v2/v3 signing block against Roblox's pinned certificates (ADR-025) — meaningless for a codesigned macOS bundle |
-| `src/store.rs` | ADR-033/037's keyed store: `~/.cache/cordial/builds/<version>/` holds one `libroblox.so` plus the archives it came from, addressed by a digits-and-dots version string scanned out of the engine and, since ADR-037, a SHA-256 of that same file |
+| `src/store.rs` | ADR-033/037's keyed store: `~/.cache/vanta/builds/<version>/` holds one `libroblox.so` plus the archives it came from, addressed by a digits-and-dots version string scanned out of the engine and, since ADR-037, a SHA-256 of that same file |
 
-In `cordial-runtime`: essentially the whole crate. `src/bin/load.rs`'s own
+In `vanta-runtime`: essentially the whole crate. `src/bin/load.rs`'s own
 module doc says what it is — "Loads and (eventually) runs Roblox's Android
 x86-64 build on Linux" — and `native/` is not incidentally Android-shaped,
 it *is* the Android framework layer: `android_classes.cpp`,
@@ -113,7 +113,7 @@ backends they route to — ALSA, PulseAudio, PipeWire, OSS), `accessibility.cpp`
 answering an Android accessibility-service surface that ADR-019 records as
 unused by the engine but still implemented. `android/mod.rs` documents "the
 Android NDK APIs in `libandroid.so`" across `AAsset*`, `ANativeWindow_*`,
-`ALooper_*`, `AConfiguration_*`. `cordial-linker-sys`'s own
+`ALooper_*`, `AConfiguration_*`. `vanta-linker-sys`'s own
 `Cargo.toml` description is "Rust bindings to the AOSP bionic linker, built
 for the host" — an ELF loader, not a generic one.
 
@@ -124,12 +124,12 @@ Measured there, on 2026-08-26: `git grep -E
 '__x86_64__|__aarch64__|asm volatile|target_arch' -- crates native` matches
 nothing across all tracked files, because TLS layout, relocation types and
 syscall numbers are upstream AOSP bionic's problem, already solved
-per-architecture, not Cordial's own code. That result does not transfer to
+per-architecture, not Vanta's own code. That result does not transfer to
 macOS, for the reason given below.
 
 *Corrected 2026-10-01:* the quoted principle is no longer the whole of
-multiarch.md. Cordial now translates one build: the Quest build's arm64
-`libroblox.so` runs in the x86-64 `cordial-run` under dynarmic, with its
+multiarch.md. Vanta now translates one build: the Quest build's arm64
+`libroblox.so` runs in the x86-64 `vanta-run` under dynarmic, with its
 Vulkan and OpenXR calls bridged to the host by generated thunks
 ([ADR-053](/adr/ADR-053-vr-is-a-mode-of-the-android-runtime)). The phone build
 is still executed natively. Where this record leans on "do not build a
@@ -150,14 +150,14 @@ not on that sentence.
   backend would supply its own bytes through its own mechanism, but the
   store itself does not care what the bytes mean.
 - **The plugin broker's effect model (ADR-007).** "The plugin sends a
-  payload; Cordial performs the effect" does not reference Android anywhere
+  payload; Vanta performs the effect" does not reference Android anywhere
   in its reasoning. Individual capabilities are a different matter — e.g.
   `flags.write` operates on Roblox's own `FFlag`/`FInt`/`FString` system,
   which is a property of the Roblox client generally, not of the Android
   build specifically, so it likely generalises to a second Roblox client
   with little change; this is not verified against a macOS build.
 - **The devctl protocol's shape, not its implementation (ADR-019).** The
-  `Cmd` enum in `crates/cordial-runtime/src/devctl.rs` — `Move`, `Button`,
+  `Cmd` enum in `crates/vanta-runtime/src/devctl.rs` — `Move`, `Button`,
   `Key`, `Text`, `Scroll`, `Fullscreen` — is a small, backend-agnostic
   vocabulary. What answers it is not: screenshots come from a Vulkan
   swapchain read inside `vkQueuePresentKHR`, and input is delivered by
@@ -169,14 +169,14 @@ not on that sentence.
 ## Proposing the seam, without building it
 
 If a second backend existed, the smallest seam that would let
-`cordial-shell` support it without a rewrite looks like this, in descending
+`vanta-shell` support it without a rewrite looks like this, in descending
 order of how confident this analysis is:
 
 1. **A backend tag threaded through the three places that currently assume
    one Android build: `install::Build`, the version/store path in
-   `cordial-update`, and the profile's version pin.** Concretely,
-   `~/.cache/cordial/builds/<version>/` would need to become
-   `~/.cache/cordial/builds/<backend>/<version>/` (or equivalent), and
+   `vanta-update`, and the profile's version pin.** Concretely,
+   `~/.cache/vanta/builds/<version>/` would need to become
+   `~/.cache/vanta/builds/<backend>/<version>/` (or equivalent), and
    `profiles/<name>/roblox-version` would need a sibling naming which backend
    it pins. This is a data-shape change, not an architectural one, and it is
    the same shape ADR-033 already used for versions.
@@ -187,12 +187,12 @@ order of how confident this analysis is:
    run of `command.env(...)` calls does. That block moving behind a
    two-armed match (or, if a third backend ever appears, a trait) is a
    contained change inside one function.
-3. **A second binary that links `cordial-shell` as a library, the way
-   `cordial-runtime` does today**, if the second backend wants to keep the
+3. **A second binary that links `vanta-shell` as a library, the way
+   `vanta-runtime` does today**, if the second backend wants to keep the
    Wayland-subsurface "one window" property ADR-011 designed for. This is
    the part of the seam that is not free: it is not "spawn a different
    executable", it is "build a second executable that satisfies the same
-   link-time contract `cordial-runtime` satisfies today", which is real work
+   link-time contract `vanta-runtime` satisfies today", which is real work
    independent of whatever the backend's own engine-loading problem turns
    out to be.
 4. **Settings rows gated on backend capability, using the pattern already in
@@ -203,8 +203,8 @@ order of how confident this analysis is:
    addition once there is a second backend to consult it about.
 
 This is deliberately not a plugin system for backends, and not a trait
-designed in the abstract. `cordial-plugins` already exists for the case
-"third-party code extends Cordial through a narrow, capability-checked
+designed in the abstract. `vanta-plugins` already exists for the case
+"third-party code extends Vanta through a narrow, capability-checked
 surface" (ADR-003, ADR-007), and a runtime backend is not that: it is
 first-party, it needs to reach far more of the shell than any plugin capability
 does (the launch path, the version store, the window itself), and pretending
@@ -217,25 +217,25 @@ here there would be no plugin, only two engines wearing the same interface.
 Reasoned from public knowledge of macOS and prior art; no macOS Roblox build
 was downloaded or examined, per AGENTS.md's "no Roblox code, ever" and this
 task's own instruction not to fetch one. Everything in this section that is
-not measured against Cordial's own code is marked **INFERRED**.
+not measured against Vanta's own code is marked **INFERRED**.
 
-**Mach-O, not ELF — `cordial-linker-sys` does not carry over.** Cordial's
+**Mach-O, not ELF — `vanta-linker-sys` does not carry over.** Vanta's
 existing loader is a ported AOSP bionic linker: it mmaps and relocates an
 ELF shared object, understanding `PT_LOAD` segments, `.rela.plt` and ELF
 symbol versioning (see ADR-001's amendment on segment protection for how
 deep that ELF-specific knowledge already runs). A macOS binary is Mach-O:
 different load commands, a different segment/section model, different
 relocation types, and dynamic linking normally performed by `dyld`, which
-Cordial has never had to reimplement because Android already ships glibc-
+Vanta has never had to reimplement because Android already ships glibc-
 adjacent ELF loading that a ported bionic linker resembles. **INFERRED:**
-none of `cordial-linker-sys`'s code is reusable for Mach-O; a macOS backend
+none of `vanta-linker-sys`'s code is reusable for Mach-O; a macOS backend
 needs its own loader from nothing.
 
 **No JNI-shaped framework layer to reuse.** `libjnivm` stands in for
 Android's ART and the JNI ABI Roblox's Java side calls through. A macOS
 client almost certainly uses Objective-C message dispatch and/or Swift's
 ABI, calling into AppKit/Cocoa/CoreFoundation rather than a JNI-described
-Android SDK surface. The *pattern* Cordial used for Android — implement the
+Android SDK surface. The *pattern* Vanta used for Android — implement the
 OS API beneath the app rather than patch the app (ADR-001's "Wine
 relationship") — is reusable as an approach. None of the ~32 NDK functions
 in `android/mod.rs`, none of the JNI class stubs, and none of `native/`'s
@@ -246,8 +246,8 @@ implementation project, not an extension of the first one.
 **No Linux-kernel shortcut.** This is the asymmetry worth stating plainly,
 because it is what makes "just port the same idea" misleading. Android
 *already runs a Linux kernel*, which is the specific fact that lets
-Cordial's symbol resolution work the way README describes it: "every symbol
-the engine imports resolves as cordial..., host..., or stub" — the "host"
+Vanta's symbol resolution work the way README describes it: "every symbol
+the engine imports resolves as vanta..., host..., or stub" — the "host"
 case exists because an Android NDK binary's libc calls are, underneath,
 calls a Linux host can often answer directly (ADR-034). macOS's kernel is
 XNU/Darwin, not Linux. **INFERRED:** a macOS binary's syscalls do not
@@ -262,9 +262,9 @@ hardware — it runs in the opposite direction from what this idea needs.
 **INFERRED, and not found:** a project translating Metal calls into Vulkan,
 for running a Metal-targeting binary on non-Apple hardware, was not located
 in general public knowledge at the time of writing. This is the opposite of
-Cordial's own Android graphics story, where the trick was narrower and
+Vanta's own Android graphics story, where the trick was narrower and
 already existed on the *engine's* side: `libroblox.so` tries `dlopen`ing
-Vulkan and falls back to its own GLES2 path on failure, so Cordial only had
+Vulkan and falls back to its own GLES2 path on failure, so Vanta only had
 to control which loader was visible (`settings.rs`'s Renderer row). Nothing
 in general knowledge suggests Roblox's macOS client carries an equivalent
 built-in fallback away from Metal that a Linux host could serve natively.
@@ -289,7 +289,7 @@ Darling's GUI and graphics support has historically been the hardest and
 least complete part of the project, without a mature story for a
 Metal-heavy 3D application. It is the right project to watch, not a
 component to borrow from at this stage — it is closer to what Sober was to
-Cordial before Cordial existed: an existence proof to watch for, not yet a
+Vanta before Vanta existed: an existence proof to watch for, not yet a
 green light.
 
 **CPU architecture is the smaller problem, and only if it is even a
@@ -329,7 +329,7 @@ syscall-compatibility layer with no Linux-kernel shortcut underneath it
 GUI/app-lifecycle stack), and a graphics path with no known translation
 project running in the needed direction. **This reads as a strictly larger
 undertaking than the Android port, not an incremental extension of it**,
-and the one component Cordial already has confidence solving quickly for a
+and the one component Vanta already has confidence solving quickly for a
 second target — CPU-architecture handling — is the smallest piece of the
 macOS gap, not the largest.
 
@@ -371,7 +371,7 @@ worth starting.
   renderer. This is the single largest gate identified above.
 - **Darling (or an equivalent) reaching practical support for a
   Cocoa/AppKit/Metal GUI application**, as the existence proof Sober was for
-  the Android idea before Cordial started.
+  the Android idea before Vanta started.
 - **Confirmation of which macOS builds Roblox actually ships** — x86-64,
   arm64, or both — which changes whether CPU-architecture translation is
   needed at all, though not whether the larger gaps above exist.
@@ -418,13 +418,13 @@ and found three statements above wrong or stale. None of it was run.
 - **"A macOS backend needs its own loader from nothing" is superseded by
   Darling.** It provides the Mach-O loader, a Darwin syscall layer and an
   Objective-C runtime. The Linux-kernel-shortcut argument is answered by
-  Darling's existence, not by a Cordial component.
+  Darling's existence, not by a Vanta component.
 - **The graphics gate may not apply today.** Mac O' Blox's source shows the
   client rendering through Roblox's own OpenGL 3.2 path, so Metal is not
   needed to get a frame (**INFERRED**; not run). That path is a fallback
   Roblox may remove.
 
 Unchanged: Darling is x86-64 only, no Roblox macOS arm64 route works, and the
-section "Settings picker and issue templates" still holds. Cordial builds no
+section "Settings picker and issue templates" still holds. Vanta builds no
 macOS runtime ([ADR-050](/adr/ADR-050-other-runtimes-are-launched-not-built));
 the launcher half is [ADR-052](/adr/ADR-052-the-runtime-spec).

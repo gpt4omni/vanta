@@ -6,7 +6,7 @@ title: "ADR-022: A plugin observes, decides and acts; that is what justifies a r
 
 ## The problem, stated plainly
 
-Cordial embeds Deno to run plugins, and the justification on the record is
+Vanta embeds Deno to run plugins, and the justification on the record is
 sandboxing: a plugin is untrusted code, so it runs somewhere it cannot reach the
 filesystem or the network except through a broker.
 
@@ -26,7 +26,7 @@ has to be true instead.
 ## Decision
 
 **A plugin is a program that observes the running client, decides something,
-and acts on it. Cordial provides all three, or it should not provide a runtime
+and acts on it. Vanta provides all three, or it should not provide a runtime
 at all.**
 
 Three things are added, and they are one thing in three parts:
@@ -34,7 +34,7 @@ Three things are added, and they are one thing in three parts:
 1. **An event bus.** A plugin subscribes to what the client is doing.
 2. **Live effects.** Some acts take effect now rather than at the next launch,
    and the API never lies about which.
-3. **Contributed UI.** A plugin can draw, in Cordial's own window, over the
+3. **Contributed UI.** A plugin can draw, in Vanta's own window, over the
    engine's canvas.
 
 ### The admission rule for any future capability
@@ -53,10 +53,10 @@ frame time and gives quality back when a scene gets cheap — is a program.
 
 ## 1. The event bus
 
-`cordial-plugins/src/events.rs` has an `EventRegistry` and essentially nothing
+`vanta-plugins/src/events.rs` has an `EventRegistry` and essentially nothing
 flowing through it. The client already knows everything below and tells nobody:
 
-| Event | Where Cordial already knows it |
+| Event | Where Vanta already knows it |
 |---|---|
 | `client.ready` | `[roblox] engine initialised` |
 | `place.joined` / `place.left` | `gameLoadedCallback`, the deep-link path |
@@ -155,7 +155,7 @@ the protocol.
    produced four `nativePassMouseButton` calls into the engine; with the punch
    removed and nothing else changed, the same clicks produced **zero**.
 
-So the fallback — a dedicated overlay subsurface Cordial paints itself — is not
+So the fallback — a dedicated overlay subsurface Vanta paints itself — is not
 needed, and the WebKit view is reachable after all.
 
 **Two things remain untested and must be before this becomes the default.**
@@ -169,7 +169,7 @@ behind a flag, test the resize, then flip the default.
 ### What a plugin declares, and the escape hatch that is not a channel
 
 A plugin never receives a `wl_surface`, a GL context, or a handle to anything
-Cordial composites. It declares content and Cordial draws it, which is ADR-007
+Vanta composites. It declares content and Vanta draws it, which is ADR-007
 applied to pixels rather than to sockets. The vocabulary is three things:
 
 1. **A toast** — text, a position, a duration. The server-location indicator is
@@ -187,7 +187,7 @@ that matters:
 
 - it cannot wedge the compositor, because the plugin never commits and never
   blocks — a slow plugin yields a stale frame, not a hung client;
-- it is droppable, because Cordial owns the frame budget and can skip a
+- it is droppable, because Vanta owns the frame budget and can skip a
   plugin's buffer while the engine is busy, which is impossible if the plugin
   holds the surface;
 - it is bounded, because a size and a refresh cap are enforceable on a handover
@@ -196,8 +196,8 @@ that matters:
 **Two constraints ride with all three, and they are not negotiable.**
 
 **Plugin content is always visually attributed.** A plugin's pixels are visibly
-a plugin's — Cordial draws the frame around them, and a plugin cannot suppress
-it. **Plugin content can never cover Cordial's own chrome and can never go
+a plugin's — Vanta draws the frame around them, and a plugin cannot suppress
+it. **Plugin content can never cover Vanta's own chrome and can never go
 fullscreen.**
 
 These are the constraints browsers put on extension UI, for the reason that
@@ -218,15 +218,15 @@ identical whether or not GTK is covering it.
 ## What this does not change
 
 **No in-process code execution against the Roblox process.** No hooking, no
-memory patching, no injected script environment. An event is something Cordial
+memory patching, no injected script environment. An event is something Vanta
 observed and chose to publish, not a callback the engine calls. A live flag is a
 value the engine re-reads of its own accord. A contributed panel is a Wayland
-surface Cordial composites. None of these is a primitive a fork could extract
+surface Vanta composites. None of these is a primitive a fork could extract
 into a hook, which is the property ADR-001 and ADR-003 exist to preserve.
 
 **Plugins still receive effects, not channels** (ADR-007). A plugin subscribing
 to `place.joined` does not get a socket; it gets a payload. A plugin drawing a
-panel does not get a `wl_surface`; it declares content and Cordial draws it.
+panel does not get a `wl_surface`; it declares content and Vanta draws it.
 
 **Default deny still holds** (ADR-003). Every event family and every UI surface
 is a capability, granted per profile, and a plugin that has been granted nothing
@@ -235,7 +235,7 @@ the Plugins page now names the profile for.
 
 ## Consequences
 
-Cordial gains a plugin API that can express an adaptive quality controller, a
+Vanta gains a plugin API that can express an adaptive quality controller, a
 presence integration that reflects the actual place, and an overlay — none of
 which a configuration file can express, and all of which need containing. The
 sandbox stops being a precaution around a config generator and starts being the

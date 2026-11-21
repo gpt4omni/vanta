@@ -10,7 +10,7 @@ title: "ADR-005: The flag service has two surfaces, because flags have two lifet
 Plugin-contributed FastFlags are exposed through **two** interfaces, not one:
 
 1. A **launch-time resolver**. Plugins declare flags in
-   `~/.local/share/cordial/plugins/<id>/flags.json`. Cordial reads every layer
+   `~/.local/share/vanta/plugins/<id>/flags.json`. Vanta reads every layer
    before the engine process starts, resolves them, and merges the result into
    the client-settings document the engine is given.
 2. A **runtime API**, restricted to the `DFFlag`/`DFInt`/`DFString` family, which
@@ -44,7 +44,7 @@ they try, rather than a silent no-op discovered three days later.
 
 **Layering already carries provenance, and the same rules apply here.** The
 resolver is implemented in
-[`crates/cordial-runtime/src/flags.rs`](https://github.com/gpt4omni/vanta/blob/main/crates/cordial-runtime/src/flags.rs):
+[`crates/vanta-runtime/src/flags.rs`](https://github.com/gpt4omni/vanta/blob/main/crates/vanta-runtime/src/flags.rs):
 the user's file always wins over any plugin, plugin-against-plugin conflicts are
 reported rather than quietly resolved, and every effective value records which
 layer set it. Extending that to a runtime API means the same guarantees, not new
@@ -69,7 +69,7 @@ could permanently alter a user's configuration from a call that reads like a
 temporary adjustment.
 
 **Open:** whether the runtime API writes through the engine's own dynamic-flag
-refresh or requires Cordial to re-present the settings document. That is an
+refresh or requires Vanta to re-present the settings document. That is an
 implementation question and it has not been established by experiment yet.
 Whoever builds it should determine it by running something, not by reading the
 binary — see [`docs/NEXT.md`](https://github.com/gpt4omni/vanta/blob/main/docs/NEXT.md) for why that rule exists here.
@@ -93,7 +93,7 @@ against the binary. An unknown name goes into the settings document like any oth
 key and nothing rejects it, so an invented flag looks exactly like a working one;
 the engine's own table stores the name without the `FFlag`/`FInt`/`FString` prefix,
 which is why the check is `strings libroblox.so | grep -x <name without prefix>`.
-The backend is a Settings choice because Cordial decides it before the engine starts.
+The backend is a Settings choice because Vanta decides it before the engine starts.
 
 **The Android client has no frame-rate row in its menu**, and nothing here can add
 a row the client does not draw, so raising the frame rate takes two separate levers:
@@ -108,12 +108,12 @@ an interface that has no such control. Measurements behind the caps (nothing abo
 **Roblox's graphics-quality FastFlags** (`DebugFRMQualityLevelOverride` and the MSAA
 overrides) were tested and change nothing here, because they govern 3D scene
 rendering and the signed-out landing page is a 2D interface. Render resolution and
-density (`CORDIAL_RESOLUTION`, `CORDIAL_DPI_SCALE`) are the levers that apply to it.
+density (`VANTA_RESOLUTION`, `VANTA_DPI_SCALE`) are the levers that apply to it.
 
-**`CordialDeviceProfile` in `flags.json` is INFERRED to have no effect.**
+**`VantaDeviceProfile` in `flags.json` is INFERRED to have no effect.**
 `flags::device_profile()` reads the environment first, then the flag layers, but
 nothing outside `flags.rs` calls it; `native/init_params.cpp` reads
-`CORDIAL_DEVICE_PROFILE` directly, which the shell sets from the Graphics
+`VANTA_DEVICE_PROFILE` directly, which the shell sets from the Graphics
 optimisation row. Established by reading callers, not by running a client.
 
 **Flag-family timing.** `FFlag`/`FInt`/`FString` are read once at startup; only the

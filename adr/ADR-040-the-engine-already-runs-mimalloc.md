@@ -7,8 +7,8 @@ title: "ADR-040: The engine already runs mimalloc, so there is no allocator to s
 
 ## Decision
 
-Cordial does not add a `CORDIAL_ENGINE_ALLOCATOR=mimalloc|glibc` switch, and
-`crates/cordial-runtime/src/mimalloc_lib.rs`'s virtual `libmimalloc.so` is left
+Vanta does not add a `VANTA_ENGINE_ALLOCATOR=mimalloc|glibc` switch, and
+`crates/vanta-runtime/src/mimalloc_lib.rs`'s virtual `libmimalloc.so` is left
 as-is rather than wired to anything. Both were the shape a prior brief for this
 work assumed; both rest on a premise this change measured to be false.
 
@@ -21,7 +21,7 @@ work assumed; both rest on a premise this change measured to be false.
 `pvalloc` or `malloc_usable_size` in the first place:
 
 ```
-readelf --dyn-syms -W ~/.cache/cordial/lib/x86_64/libroblox.so \
+readelf --dyn-syms -W ~/.cache/vanta/lib/x86_64/libroblox.so \
   | awk '$7=="UND" {print $8}' | sed 's/@.*//' | sort -u \
   | grep -E '^(malloc|free|calloc|realloc|reallocarray|memalign|posix_memalign|aligned_alloc|valloc|pvalloc|malloc_usable_size)$'
 ```
@@ -37,7 +37,7 @@ linked, and it is mimalloc.** `libroblox.so`'s read-only data holds mimalloc's
 own source strings verbatim — `"environment option \"mimalloc_%s\" is
 deprecated -- use \"mimalloc_%s\" instead."`, the full `mi_option_*` name
 table, the literal word `Mimalloc` — which is not something a binary picks up
-by accident; it is mimalloc's `options.c` compiled in. Running Cordial and
+by accident; it is mimalloc's `options.c` compiled in. Running Vanta and
 reading the engine's own log confirms it fires, not merely that the strings
 exist:
 
@@ -51,22 +51,22 @@ $ grep -i mimalloc appData/logs/*_Player_*.log
 ```
 
 Measured 2026-09-29, `--host-libc --game-activity`, signed-out landing UI, the
-prebuilt `target-toolbox/release/cordial-run` at commit `06da8306`. This line
+prebuilt `target-toolbox/release/vanta-run` at commit `06da8306`. This line
 prints at t≈1.15s into every run this session tried, unconditionally — it is
-not gated on anything Cordial does or does not provide, which is consistent
+not gated on anything Vanta does or does not provide, which is consistent
 with a statically-linked integration that runs regardless of the host. The
 `overrides()` doc comment in `mimalloc_lib.rs` already recorded that a direct
 `dlopen`/`dlsym` trace saw zero requests naming mimalloc; this is the other
 half of that finding. The engine was never going to ask for a virtual
-`libmimalloc.so`, not because Cordial failed to offer it convincingly, but
+`libmimalloc.so`, not because Vanta failed to offer it convincingly, but
 because the engine had no gap to fill — it brought its own copy.
 
 **So "mimalloc vs glibc for the engine's own allocations" is not an available
 comparison.** There is no glibc arm: glibc's `malloc` was never the engine's
-allocator on this build, on any Cordial run, ever. The measurement this task
+allocator on this build, on any Vanta run, ever. The measurement this task
 asked for — CPU%, RSS and perf `--sort dso` malloc/free share, compared
 between arms — was not run, because there is no second arm to run it against.
-Building the `CORDIAL_ENGINE_ALLOCATOR` switch as specified would have shipped
+Building the `VANTA_ENGINE_ALLOCATOR` switch as specified would have shipped
 a setting that changes nothing the moment it is not `Display`... which is
 exactly the "stub that reports success and does nothing" shape AGENTS.md
 opens with, one layer further out: a *setting*, not a stub, but the same
@@ -78,7 +78,7 @@ failure the moment somebody flips it expecting a difference.
 host is untested.** Mimalloc reads its own environment (`MIMALLOC_*`, per the
 deprecated-spelling message above, which implies an even older `mimalloc_*`
 form) for configuration, and nothing stops a future change from setting those
-variables before `cordial-run` starts the engine, the same way `CORDIAL_*`
+variables before `vanta-run` starts the engine, the same way `VANTA_*`
 variables are set today. That is a real, ADR-001-compliant lever — it is
 process environment, not memory patching, exactly the class of thing
 `graphics.rs` and `flags.rs` already do — and it was not explored here for
@@ -97,7 +97,7 @@ already in `docs/NEXT.md`'s "Solved, for reference" table**, one line, from the
 allocator; Roblox statically links mimalloc and freed a pointer its arena
 table never registered." What this ADR adds is the connection from that one
 fixed crash to the broader claim a task brief made independently of it — that
-the engine's allocator is something Cordial could still pick between mimalloc
+the engine's allocator is something Vanta could still pick between mimalloc
 and glibc for — and the fresh verification (the readelf import list, and a
 2026-09-29 log capture of the detection line itself) that settles it rather
 than resting on the one prior incident.
@@ -122,7 +122,7 @@ readelf --dyn-syms -W libroblox.so | awk '$7=="UND"{print $8}' | sort -u \
   | grep -E '^(getcwd|vasprintf)$'
 ```
 
-— and, when this was written, neither had a Cordial override in `crate::bionic`. `symtab.rs::resolve`
+— and, when this was written, neither had a Vanta override in `crate::bionic`. `symtab.rs::resolve`
 sends any `Class::Generic` symbol with no override straight to the host's real
 libc.so.6 whenever `--host-libc` is set, which is the flag AGENTS.md's own
 example invocation uses. `vasprintf` always allocates its return buffer —
@@ -136,7 +136,7 @@ safe when the engine supplies its own buffer, and the same latent fault as
 **That was the state when this ADR was written, and it has since been audited
 and guarded** (2026-09-29, `native/foreign_alloc.cpp`). Both resolved to glibc:
 the engine's own GOT was read back under gdb and pointed at `libc.so.6`'s
-`vasprintf` and `getcwd`. Both now resolve to Cordial shims that refuse the
+`vasprintf` and `getcwd`. Both now resolve to Vanta shims that refuse the
 allocating form, the way `s_realpath` does, and report failure with `ENOMEM`,
 the errno each is documented to set when it cannot allocate. `getcwd` with a
 caller buffer is forwarded untouched.
@@ -152,7 +152,7 @@ run that reaches one says so.
 
 Every other import that returns or takes memory was checked and needs nothing:
 
-- `getaddrinfo`/`freeaddrinfo` are both Cordial shims (`netdb_compat.cpp`) that
+- `getaddrinfo`/`freeaddrinfo` are both Vanta shims (`netdb_compat.cpp`) that
   copy the result, so the engine never holds a glibc block.
 - `newlocale`/`freelocale`, `opendir`/`closedir`, `fdopen`/`fopen`/`fclose` and
   `pthread_attr_init`/`pthread_getattr_np`/`pthread_attr_destroy` all resolve to

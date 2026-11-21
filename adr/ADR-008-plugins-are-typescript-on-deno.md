@@ -23,7 +23,7 @@ be writing the sandbox ourselves, which is exactly the in-process sandboxing
 for `roblox-ts` in numbers; the tooling, type system and editor support are not
 things this project has to provide.
 
-**Luau would be actively confusing here.** Cordial is a Roblox client that
+**Luau would be actively confusing here.** Vanta is a Roblox client that
 deliberately cannot execute Lua against Roblox
 ([ADR-001](/adr/ADR-001-in-process-hooking)). Shipping a Lua plugin runtime would
 put two Lua environments in one application, one of which is emphatically not an
@@ -62,8 +62,8 @@ measured with, and that applies to its own design documents.
 
 ## On ecosystem velocity
 
-ADR-007 means a host resource Cordial does not already broker needs a change to
-Cordial rather than a line in a plugin's manifest. That is slower, and the
+ADR-007 means a host resource Vanta does not already broker needs a change to
+Vanta rather than a line in a plugin's manifest. That is slower, and the
 concern that it makes for a closed ecosystem is a fair one. Three things bound
 it.
 
@@ -82,13 +82,13 @@ document, that is a sign the capability is too broad.
 **The common cases should be declared up front rather than discovered one release
 at a time.** Presence, desktop notifications, and opening a URL in the user's
 browser are wanted by enough plugins to be worth brokering before anyone asks.
-Doing that work early is what keeps "needs a Cordial release" rare rather than
+Doing that work early is what keeps "needs a Vanta release" rare rather than
 routine.
 
 The honest residue: a genuinely novel host resource will need a release, and
-Cordial will sometimes be the bottleneck. That is the cost of the sandbox being
+Vanta will sometimes be the bottleneck. That is the cost of the sandbox being
 readable in one file and staying true, and it is worth paying.
 
 ## Notes moved from docs/plugins.md (2026-10-02)
 
-**Before 0.13.1 there was no interpreter and no download row**, so on every install except a hand-built one with Deno already present, plugins were listed, granted and switched on without ever running a line. Arch is the only distribution that packages Deno, and Cordial's AUR packages depend on it; Fedora and Debian ship none, and inside the Flatpak there is no host to install one on, which is why Cordial offers to fetch a pinned release itself (checksum written into the source, verified before the file is put in place, stored under Cordial's own data directory).
+**Before 0.13.1 there was no interpreter and no download row**, so on every install except a hand-built one with Deno already present, plugins were listed, granted and switched on without ever running a line. Arch is the only distribution that packages Deno, and Vanta's AUR packages depend on it; Fedora and Debian ship none, and inside the Flatpak there is no host to install one on, which is why Vanta offers to fetch a pinned release itself (checksum written into the source, verified before the file is put in place, stored under Vanta's own data directory).

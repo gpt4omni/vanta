@@ -25,7 +25,7 @@ title: "ADR-045: One report screen, outside Settings, and a notice on X11"
 4. **The launcher shows a notice when the game will open on X11.** An
    `AdwBanner`: "X11 support is buggy. If something goes wrong, try Wayland."
    with a Report a Problem button. "Will open on X11" is the loader's own rule,
-   `cordial_runtime::android::backend()`: `CORDIAL_X11` set, or no
+   `vanta_runtime::android::backend()`: `VANTA_X11` set, or no
    `WAYLAND_DISPLAY`. `x11_notice::uses_x11` repeats it over the same two
    variables, and the two must be changed together. (Since the doctor states
    the same rule, `x11_notice::uses_x11` calls `doctor::uses_x11` in the
@@ -43,7 +43,7 @@ widgets. The banner's button is the libadwaita way to attach an action.
 
 Under real X11 the launcher was not photographed: Xwayland would not start in
 the nested compositor used here (`/tmp/.X11-unix` not owned by the user inside
-the container). The banner was shown with `CORDIAL_X11=1` on Wayland, which
+the container). The banner was shown with `VANTA_X11=1` on Wayland, which
 takes the same branch; the no-`WAYLAND_DISPLAY` branch is covered by a unit test
 of `uses_x11` only.
 
@@ -58,18 +58,18 @@ finish. See [`docs/doctor.md`](/doctor).
 
 The screen has a **Save logs…** row beside Save to a file, and the "Open an
 issue" row asks whether to save the logs before it opens the form. Both write
-one `.zip` ([`log_export.rs`](https://github.com/gpt4omni/vanta/blob/main/crates/cordial-shell/src/log_export.rs)):
+one `.zip` ([`log_export.rs`](https://github.com/gpt4omni/vanta/blob/main/crates/vanta-shell/src/log_export.rs)):
 the diagnostics and checks, the launcher's own output this session, the last
-client run's output and command line, the last `[cordial] health:` lines, the
+client run's output and command line, the last `[vanta] health:` lines, the
 newest `*_last.log` of the active profile's phone and Quest builds (each cut to
 its last 2 MiB), and a note on whether `coredumpctl` knows a dump of
-`cordial-run`. No core file is ever included: it holds the client's memory,
+`vanta-run`. No core file is ever included: it holds the client's memory,
 session cookie included.
 
 - **The launcher never kept a log.** `session_log.rs` now tees the launcher's
   stdout and stderr through pipes into a 3,000-line in-memory ring, and keeps
   the last client's tail buffer (the one the crash page reads) and a health
-  ring. Nothing is written to disk until the user saves. `CORDIAL_NO_LOG_CAPTURE=1`
+  ring. Nothing is written to disk until the user saves. `VANTA_NO_LOG_CAPTURE=1`
   turns the tee off. A cost: the two streams stop being terminals, so GLib
   stops colouring its warnings.
 - **Redaction happens at export, over all sources at once**, so an id first

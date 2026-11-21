@@ -6,7 +6,7 @@ title: "ADR-029: An overlay is three decisions, and every overlay makes all thre
 
 ## Decision
 
-Anything Cordial draws over the running engine — the text editor on a focused
+Anything Vanta draws over the running engine — the text editor on a focused
 `TextBox`, a web-view dialog, and every plugin overlay ADR-027 proposes — is
 **three independent pieces of compositor state, not one**:
 
@@ -49,10 +49,10 @@ choice:
 
 ## Why
 
-### The engine owns a surface, so Cordial cannot simply stack a widget over it
+### The engine owns a surface, so Vanta cannot simply stack a widget over it
 
 [ADR-011](/adr/ADR-011-wayland-and-libadwaita) put the engine's canvas in a
-`wl_subsurface` of Cordial's GTK toplevel, because `ANativeWindow` has to be a
+`wl_subsurface` of Vanta's GTK toplevel, because `ANativeWindow` has to be a
 real surface and the engine drives its own Vulkan swapchain against it. The
 consequence is the thing this ADR exists to write down: **the canvas is
 composited by the compositor, not laid out by GTK.** It is not in the widget
@@ -102,7 +102,7 @@ the hole's coordinates and left the overwrite in place.
 
 **Input, done from the wrong end.** `07564e2` gave the *canvas* an empty input
 region while a dialog was up, on the theory that the canvas was eating the
-dialog's clicks. Every click over the canvas then fell through Cordial's window
+dialog's clicks. Every click over the canvas then fell through Vanta's window
 and raised whatever was behind it: "as soon as we press anything it selects the
 window behind and focuses it ... my terminal gets focused". Reverted in
 `73c74eb`. The prohibition above exists because this is not obviously wrong
@@ -145,11 +145,11 @@ and is forwarded; a click on an overlay is GTK's. Overlays become ordinary
 `GtkOverlay` children and none of the three knobs moves at runtime.
 
 That deletes the restack, the see-through toggle, `POINTER_ON_CANVAS`,
-`dialog_in_front`, and most of Cordial's second `wl_pointer`. It is the right
+`dialog_in_front`, and most of Vanta's second `wl_pointer`. It is the right
 architecture and it is not adopted here, for three reasons worth stating rather
 than leaving as an omission:
 
-1. **It has now been spiked, and the spike broke input.** `CORDIAL_GTK_INPUT`
+1. **It has now been spiked, and the spike broke input.** `VANTA_GTK_INPUT`
    did exactly what this section describes -- canvas below, background
    transparent, no input hole, pointer forwarded from GTK controllers -- and
    the report was immediate: "gtk input 1 doesnt even work ... that one just

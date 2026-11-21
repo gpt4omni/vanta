@@ -18,8 +18,8 @@ anything else in Roblox's content namespace. There is no API for it and the
 extracted Roblox asset tree is not reachable from any capability a plugin can be
 granted.
 
-Plugins **can** theme Cordial's own surface: the launcher, the shell UI, its
-icons, and any sound Cordial itself plays. That is Cordial's namespace and
+Plugins **can** theme Vanta's own surface: the launcher, the shell UI, its
+icons, and any sound Vanta itself plays. That is Vanta's namespace and
 plugins own it.
 
 ## Why
@@ -38,9 +38,9 @@ built cannot be extracted from a binary that does not contain it. An asset
 override surface is the same primitive wearing different clothes, and the same
 reasoning disposes of it.
 
-**It breaks the claim the project's safety argument rests on.** Cordial's README
+**It breaks the claim the project's safety argument rests on.** Vanta's README
 states that it runs the official Android build *unmodified*, and that is the
-distinction between Cordial and the things Roblox bans — the same distinction
+distinction between Vanta and the things Roblox bans — the same distinction
 that has kept Sober viable. Substituting the client's content is modifying the
 client. Whatever the intent, a heuristic detector sees changed assets, and the
 honest version of the README would have to stop making that claim.
@@ -56,26 +56,26 @@ assets are fine" is a rule that will be wrong for some experience.
 ## Consequences
 
 **Accepted:** custom textures, sound packs and model replacements are not a
-Cordial feature, and users who want them will not get them here. This is the
+Vanta feature, and users who want them will not get them here. This is the
 same trade ADR-001 already made for client-UI modification, and it is made for
 the same reason.
 
 **Accepted:** theming Roblox's own interface is limited to what Roblox itself
 exposes. That is not nothing — `selectedTheme` is already part of
 `StartAppParams`, and theme FastFlags are reachable through the layered flag
-system in [`crates/cordial-runtime/src/flags.rs`](https://github.com/gpt4omni/vanta/blob/main/crates/cordial-runtime/src/flags.rs),
+system in [`crates/vanta-runtime/src/flags.rs`](https://github.com/gpt4omni/vanta/blob/main/crates/vanta-runtime/src/flags.rs),
 where a plugin can contribute flags without writing to the user's file.
 
 **Accepted:** this is a policy decision, not a technical limitation, and it has
-to be enforced structurally to mean anything. Cordial serves assets through
+to be enforced structurally to mean anything. Vanta serves assets through
 `AAssetManager` from the extracted APK, so an override layer is a lookup
 interposition of perhaps fifty lines. Anyone can write it. The decision is
-therefore expressed as *what Cordial ships*, and enforced by there being no
+therefore expressed as *what Vanta ships*, and enforced by there being no
 plugin-facing path to that lookup — not by a documented request that plugins
 behave.
 
 **Rejected alternative:** a namespaced override where plugins may only write into
-an asset root Cordial owns, with the Roblox tree structurally unreachable. This
+an asset root Vanta owns, with the Roblox tree structurally unreachable. This
 is defensible and would be the shape to build if the decision were ever revised.
 It is not adopted now because it is a different feature from what people ask for
 when they ask for custom textures, and shipping it under that name would

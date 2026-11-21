@@ -17,7 +17,7 @@ title: "ADR-044: Settings that can change reach a running game"
    (ADR-019) is opt-in and can inject input and capture frames; switching it on
    for everyone to move a slider would be the wrong trade. The live socket has
    two verbs, `set` and `get`, and `set` accepts only the keys in
-   `cordial_shell::live_wire::KEYS`. Unknown keys are reported back and ignored;
+   `vanta_shell::live_wire::KEYS`. Unknown keys are reported back and ignored;
    a bad value refuses the whole message. Nothing runs, reads a file, or reaches
    the engine. Plugins cannot open it: the sandbox does not bind the profile
    (ADR-003, ADR-007). No peer-credential check sits on top; the only account that
@@ -40,11 +40,11 @@ title: "ADR-044: Settings that can change reach a running game"
 
 Decision 2's socket, `<profile>/live/settings.sock` with its connect-per-request
 `set` and `get`, is gone. The same two operations are `settings.set` and
-`settings.get` on the persistent `cordial.runtime/1` connection the client
+`settings.get` on the persistent `vanta.runtime/1` connection the client
 serves at `<profile>/runtime/<session>/ctl.sock`, in a `0700` directory the
 launcher makes (ADR-055, `docs/runtime-spec.md`). What did not change:
 
-- **The closed key set** is `cordial_protocol::settings::KEYS`, ten keys, and
+- **The closed key set** is `vanta_protocol::settings::KEYS`, ten keys, and
   nothing runs, reads a file, or reaches the engine. An unknown key is named in
   the reply's `ignored` and the rest apply; a known key with a bad value refuses
   the whole message. The code that applies a key is `live_settings::apply`,
@@ -59,7 +59,7 @@ What changed: the launcher **asks first**. On connecting it reads `settings.get`
 and diffs against what the client says it is running, not against what the
 launch environment was assumed to have given it. And the client **declares** how
 each key reaches it. The table below is now that declaration for the built-in
-runtime, `cordial_runtime::control::declared_settings`: the ten wire keys `live`,
+runtime, `vanta_runtime::control::declared_settings`: the ten wire keys `live`,
 and `graphics`, `graphics_optimization_mode`, `present_mode`, `mangohud`,
 `vkbasalt` and `unpacked_plugins` `next-launch`. The launcher reports a changed
 next-launch key as applying at the next launch and does not send it; the
@@ -90,7 +90,7 @@ did not answer and the check that no `shell.json` key was left undecided.
 
 `audio_output` was next-launch because the PipeWire backend cached the sink name
 in a function-local static. The cache is now a mutex-guarded string seeded from
-`CORDIAL_AUDIO_SINK`, and a change re-links the streams that are already
+`VANTA_AUDIO_SINK`, and a change re-links the streams that are already
 playing. **The engine's streams are not recreated**: its OpenSL ES players and
 AAudio streams keep their `pw_stream`, buffers and callbacks, so nothing FMOD
 holds goes stale and the mixer sees no gap.
@@ -115,7 +115,7 @@ frames a second across the whole run against a negotiated 48 000, which a
 torn-down-and-rebuilt stream would not.
 
 What this does not cover, and the reply says so: a host backend other than
-PipeWire (`CORDIAL_AUDIO_HOST=pulse|alsa|oss`) has no sink to re-link a stream
+PipeWire (`VANTA_AUDIO_HOST=pulse|alsa|oss`) has no sink to re-link a stream
 between, so the choice applies to streams opened afterwards and the client
 reports that in `notes`. Other session managers than WirePlumber, or a session
 with no `default` metadata, are **INFERRED**: the client checks for the metadata
@@ -126,7 +126,7 @@ exercised separately.
 ## Microphone
 
 `audio_input` is the output row's twin: **Settings → Audio → Microphone**, stored
-as a PipeWire source's `node.name`, launched as `CORDIAL_AUDIO_SOURCE`, and sent
+as a PipeWire source's `node.name`, launched as `VANTA_AUDIO_SOURCE`, and sent
 live as the `audio_input` key. Unset or empty follows the session's default
 source, which is what happened before the row existed. A chosen source that is
 not in the session when a recording opens falls back to the default and says so
@@ -134,7 +134,7 @@ on the client's stderr; the choice is kept for when it returns.
 
 **Choosing a microphone opens nothing.** This is the rule at the top of
 `native/audio_classes.cpp` and the row is built around it. The list comes from
-`cordial_audio_sources`, which walks PipeWire's registry and copies two strings
+`vanta_audio_sources`, which walks PipeWire's registry and copies two strings
 per node; a capture stream exists only between Roblox starting a recording and
 stopping it. A live change moves an open capture stream the way the output side
 moves a playback one (the `target.object` write into the `default` metadata) and
@@ -147,7 +147,7 @@ Measured 2026-10-05 against the session's real WirePlumber with two null
 `pw-dump` from `audio_probe`'s `AUDIO_PROBE_SNAPSHOT` hook at the moment the
 stream was open (the OpenSL ES `record` and the AAudio `aaudio-record` commands
 reach `CaptureStream::open`; nothing signed out reaches it through the engine).
-With `CORDIAL_AUDIO_SOURCE` set the capture node was linked to that null source
+With `VANTA_AUDIO_SOURCE` set the capture node was linked to that null source
 on both paths, and with it unset or empty to the session's default source, the
 control. A live change from one null source to the other, and from a null source
 to the system default, moved the one open stream each time. A name the session
@@ -168,12 +168,12 @@ says three; the AAudio input path arrived after it was written.
 
 Roblox's own in-game device list is still empty of anything useful: it is
 FMOD's, it shows one "Android audio output" driver, and filling it would mean
-patching the engine, which ADR-001 and ADR-003 rule out. This row is Cordial's
+patching the engine, which ADR-001 and ADR-003 rule out. This row is Vanta's
 routing and the only microphone choice there is.
 
 ## GameMode
 
-`cordial_runtime::gamemode` (moved out of `load.rs` so the socket can reach it)
+`vanta_runtime::gamemode` (moved out of `load.rs` so the socket can reach it)
 keeps a wish and a fact: whether the setting is on, and whether gamemoded has
 said yes to `RegisterGame`. A live change stores the wish and, once startup
 registration has run, asks the daemon for whatever differs. A change that arrives
@@ -222,11 +222,11 @@ the engine as an ordinary resize and inherits whatever the resize path does,
 including the swapchain rebuild that Sober #2180 reports crashing on NVIDIA
 drivers (535 and 550) and that issues #35 and #39 report crashing on other
 hardware, whose cause is not known; toggling the row is one resize. That path
-was not run for this change (INFERRED). The X11 backend has no Cordial header bar at all,
+was not run for this change (INFERRED). The X11 backend has no Vanta header bar at all,
 so the setting did nothing there at launch and does nothing there now.
 
 Verified against real GTK in a nested headless sway on its own display
-(`crates/cordial-shell/tests/title_bar_window.rs`, run with `--ignored`): started
+(`crates/vanta-shell/tests/title_bar_window.rs`, run with `--ignored`): started
 on the default bar at 46 px, Hidden gave 0 and no reveal, Compact 40, and
 Default again 46, so the compact sheet was removed and not just outvoted. The
 existing Hidden-at-launch fixture still passes.
@@ -235,14 +235,14 @@ existing Hidden-at-launch fixture still passes.
 
 `mangohud` and `vkbasalt` are environment variables on the client (`MANGOHUD=1`,
 `ENABLE_VKBASALT=1`, set in `launch.rs`) that the Vulkan loader reads when the
-engine creates its instance. `graphics` decides whether Cordial offers a Vulkan
+engine creates its instance. `graphics` decides whether Vanta offers a Vulkan
 loader at all, before the engine's first `dlopen`; `graphics_optimization_mode`
 is the device profile and core count `native/init_params.cpp` hands the engine
 during initialisation; `roblox`, `profile` and `fullscreen_accel` choose what is
 started. None of those can be re-read by something already running.
 
-**`present_mode` was expected to be live by making Cordial rebuild the swapchain
-the way it does on a resize, and Cordial does not do that.** Cordial only
+**`present_mode` was expected to be live by making Vanta rebuild the swapchain
+the way it does on a resize, and Vanta does not do that.** Vanta only
 substitutes the mode in `vkCreateSwapchainKHR` (`vk_create_swapchain_inner`) and
 rate-limits the extent it reports (`settle_resize_extent`). The *engine* rebuilds
 its swapchain, and it does so when the `currentExtent` it reads from
@@ -289,11 +289,11 @@ The frame-rate row on the status page was cut down to "unsettled"; the reasoning
 
 Frame rate was measured with pointer motion driven for the whole run, because presents drop to exactly 1/s when nothing is happening and every earlier figure in this repository was that idle throttle integrated. That run, on 2026-08-02, read a flat 60.0 on MAILBOX against a variable 35-50 on FIFO across four runs of 120 s.
 
-**Do not quote those two numbers as settled, because they contradict the other record of the same thing.** `crates/cordial-runtime/src/android/vulkan.rs` says FIFO tracks the output exactly, 60.0 on the 59.88 Hz panel and 49.4 on the 49.96 Hz one, and that Sober clears both on the same machine and APK. A 35-50 FIFO sits below both refresh rates and was noted as unexplained at the time; the same 35-47 band later turned up as the *uncapped* arm in `docs/analysis/flag-init.md` §49, which is what a scheduler-paced rate would look like rather than a vsync-locked one. A flat 60 is also the one thing MAILBOX is supposed not to produce.
+**Do not quote those two numbers as settled, because they contradict the other record of the same thing.** `crates/vanta-runtime/src/android/vulkan.rs` says FIFO tracks the output exactly, 60.0 on the 59.88 Hz panel and 49.4 on the 49.96 Hz one, and that Sober clears both on the same machine and APK. A 35-50 FIFO sits below both refresh rates and was noted as unexplained at the time; the same 35-47 band later turned up as the *uncapped* arm in `docs/analysis/flag-init.md` §49, which is what a scheduler-paced rate would look like rather than a vsync-locked one. A flat 60 is also the one thing MAILBOX is supposed not to produce.
 
-What would settle it, and neither costs much: take the same input-driven count under `CORDIAL_PRESENT_MODE=fifo` and then `=mailbox`, on each output in turn. If MAILBOX follows the panel, near 60 on the 59.88 Hz one and near 50 on the 49.96 Hz one, the ceiling is the display and the present mode is not escaping it. If it stays near 60 on the 49.96 Hz output, the ceiling is the engine's own pacing and the display is irrelevant. `refresh.rs` notes Cordial has never told the engine the real refresh rate, so that is the third arm worth running.
+What would settle it, and neither costs much: take the same input-driven count under `VANTA_PRESENT_MODE=fifo` and then `=mailbox`, on each output in turn. If MAILBOX follows the panel, near 60 on the 59.88 Hz one and near 50 on the 49.96 Hz one, the ceiling is the display and the present mode is not escaping it. If it stays near 60 on the 49.96 Hz output, the ceiling is the engine's own pacing and the display is irrelevant. `refresh.rs` notes Vanta has never told the engine the real refresh rate, so that is the third arm worth running.
 
-**Measured 2026-10-03, and the ceiling is the engine's own pacing.** On a 240.001 Hz output (RTX 4070, NVIDIA 615.71.09), with the engine told the real rates (`refresh: nativePassCurrentDisplayRefreshRate 240.001` in the run's log) and input driven at 224-233 moves/s: `CORDIAL_PRESENT_MODE=auto` held 59.9 presents/s and `=fifo` 59.9, p50 frame 16.7 ms in both. Raising `DFIntTaskSchedulerTargetFps` to 240 moved MAILBOX to 216-232/s and FIFO to 193/s (p50 4.2 ms); `=30` held 29.8/s with the same input flowing. So the flat 60 the 2026-08-02 run read is the engine's frame target and the present mode never escapes it — and the third arm above, telling the engine the refresh rate, was in force during this measurement and changed nothing. What this does not cover: an output below 60 Hz (whether the engine follows one down, which the old 49.4 FIFO figure claims), the 35-50 FIFO band of that same 2026-08-02 record, and anything but NVIDIA.
+**Measured 2026-10-03, and the ceiling is the engine's own pacing.** On a 240.001 Hz output (RTX 4070, NVIDIA 615.71.09), with the engine told the real rates (`refresh: nativePassCurrentDisplayRefreshRate 240.001` in the run's log) and input driven at 224-233 moves/s: `VANTA_PRESENT_MODE=auto` held 59.9 presents/s and `=fifo` 59.9, p50 frame 16.7 ms in both. Raising `DFIntTaskSchedulerTargetFps` to 240 moved MAILBOX to 216-232/s and FIFO to 193/s (p50 4.2 ms); `=30` held 29.8/s with the same input flowing. So the flat 60 the 2026-08-02 run read is the engine's frame target and the present mode never escapes it — and the third arm above, telling the engine the refresh rate, was in force during this measurement and changed nothing. What this does not cover: an output below 60 Hz (whether the engine follows one down, which the old 49.4 FIFO figure claims), the 35-50 FIFO band of that same 2026-08-02 record, and anything but NVIDIA.
 
 ## Display refresh follows a fast display (2026-10-15)
 

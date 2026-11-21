@@ -43,7 +43,7 @@ Nested headless sway 1.11 and nested headless Mutter 50.5 (the GNOME the
 reporters run), 1280x800 output, signed out, Roblox 2.738.0.1397, the same
 binary for both arms. A synthetic text box focused with the `fakefocus` verb
 (ADR-019); `grim` photographs the composited output; "extent" is the surface
-size the engine was last told. **The control is `CORDIAL_VISIBILITY_ANCHOR=off`**,
+size the engine was last told. **The control is `VANTA_VISIBILITY_ANCHOR=off`**,
 which removes the pixel from the binary being tested.
 
 Sway, three runs of fullscreen, tiled, fullscreen, tiled:
@@ -82,8 +82,8 @@ this.
    one notify on the reveal property, which every writer already goes through.
 2. A window that opens with the bar hidden asks for one extra row of height,
    so the content comes out the size the caller asked for.
-3. `CORDIAL_VISIBILITY_ANCHOR=off` removes the strip. It is the control for a
-   before-and-after on one binary, as `CORDIAL_STACKING_GATE=off` is for ADR-047.
+3. `VANTA_VISIBILITY_ANCHOR=off` removes the strip. It is the control for a
+   before-and-after on one binary, as `VANTA_STACKING_GATE=off` is for ADR-047.
 
 The strip is black rather than the window colour because the window colour is
 near white under a light theme.

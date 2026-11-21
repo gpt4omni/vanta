@@ -51,7 +51,7 @@ the same labels and the same field headings the web form produces, opens a
 thread, and links the two.
 
 `tools/discord-bridge/` is the implementation: Deno TypeScript, matching
-`tools/sober-corpus/` beside it and the runtime Cordial already ships. Its
+`tools/sober-corpus/` beside it and the runtime Vanta already ships. Its
 `issue_forms.ts` is a check as much as a converter. Discord allows a modal **1 to 5 top-level components**, verified
 against the component reference on 2026-09-03 rather than remembered, so the
 templates do not all fit as they stand. What it does about that is the decision:
@@ -102,8 +102,8 @@ that true rather than aspirational.
 
 ## Status: accepted, 2026-09-04
 
-It is running. `cordial-issues` is a Cloudflare Worker deployed from `main` on
-every push, filing into `luohoa97/cordial` and posting into `#issues`, and a
+It is running. `vanta-issues` is a Cloudflare Worker deployed from `main` on
+every push, filing into `gpt4omni/vanta` and posting into `#issues`, and a
 real bug report has been filed through it by a person who did not use GitHub to
 do it.
 

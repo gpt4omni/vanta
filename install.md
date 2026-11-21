@@ -29,7 +29,7 @@ copy in `~/.local/share/vanta/builds/` (in the Flatpak,
 `~/.var/app/io.github.gpt4omni.Vanta/data/vanta/builds/`). Why:
 [ADR-015](/adr/ADR-015-fetching-the-roblox-build),
 [ADR-025](/adr/ADR-025-fetching-from-a-third-party-mirror),
-[ADR-054](/adr/ADR-054-cordial-owns-its-roblox-builds).
+[ADR-054](/adr/ADR-054-vanta-owns-its-roblox-builds).
 
 - **Sober is installed:** the first-run screen also offers **Copy Sober's
   build**, and **Settings → Roblox** has an **Import from Sober** row while Sober

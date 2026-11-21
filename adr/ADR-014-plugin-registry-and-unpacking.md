@@ -9,7 +9,7 @@ title: "ADR-014: Plugins are published through a signed static index, and unpack
 Five things, which are separable but arrive together.
 
 **1. `plugin.json` gains `version` and `dependencies`.** The version is
-semantic, `major.minor.patch`. A dependency names **another Cordial plugin** by
+semantic, `major.minor.patch`. A dependency names **another Vanta plugin** by
 id, with a requirement written in one of exactly two forms: `=1.2.0` for that
 version and nothing else, `^1.2.0` for anything compatible with it.
 
@@ -19,7 +19,7 @@ contents, zstd-compressed, with `plugin.json` at its root.
 **3. An index is one static JSON file** listing id, name, version, requested
 capabilities, dependencies, an `https` download URL and a `sha256:` content
 hash for each published release. It is designed to be served straight out of a
-git repository. Nothing in Cordial names a URL for one, and nothing assumes
+git repository. Nothing in Vanta names a URL for one, and nothing assumes
 there is only one.
 
 **4. Resolution is offline, deterministic, and refuses by name** — a missing
@@ -31,9 +31,9 @@ failures, not one "could not install".
 name rather than a skipped entry, and each one has a test that fails when the
 check is deleted.
 
-`crates/cordial-plugins/{registry,resolve,unpack}.rs`, and — the marketplace
-foundations described further down — `crates/cordial-plugins/{source,sign,marketplace}.rs`
-and the Marketplace section of `crates/cordial-shell/src/settings.rs`.
+`crates/vanta-plugins/{registry,resolve,unpack}.rs`, and — the marketplace
+foundations described further down — `crates/vanta-plugins/{source,sign,marketplace}.rs`
+and the Marketplace section of `crates/vanta-shell/src/settings.rs`.
 
 ## Why the manifest stays `plugin.json`
 
@@ -43,9 +43,9 @@ that file already exists in the ecosystem's muscle memory. It is refused, and
 the reason is `dependencies`.
 
 **One key cannot honestly carry two meanings.** In npm, `dependencies` means npm
-packages. Here it means other Cordial plugins — things with ids, capability
+packages. Here it means other Vanta plugins — things with ids, capability
 grants, an install order and a start order. A plugin may perfectly well need
-both: a Cordial plugin that declares the events it subscribes to, and a
+both: a Vanta plugin that declares the events it subscribes to, and a
 JavaScript library to parse something. A single field naming both kinds is a
 field where the reader cannot tell which is which, and the resolver cannot
 either.
@@ -56,9 +56,9 @@ most complained-about part of its extension model precisely because the file
 answers to two authorities. Nobody can tell by looking whether a given key is
 npm's or the editor's, and the tools that validate one ignore the other.
 
-So: `plugin.json` is Cordial's, entirely. If an author wants a `deno.json`
+So: `plugin.json` is Vanta's, entirely. If an author wants a `deno.json`
 beside it for their JS runtime's benefit, that is the runtime's business.
-Cordial does not read it, does not validate it, and does not care.
+Vanta does not read it, does not validate it, and does not care.
 
 **The two-operator requirement language is deliberate and a bare version is
 refused.** `"1.2.0"` means *exactly 1.2.0* in npm and *^1.2.0* in Cargo. An
@@ -103,7 +103,7 @@ same one: a registry that is a service is a registry only its operator can
 check.
 
 **Who hosts an index and who decides what goes in one is a policy question, and
-it is not answered here.** It belongs to whoever maintains Cordial, and they
+it is not answered here.** It belongs to whoever maintains Vanta, and they
 have not decided. What this design does instead is refuse to prejudge it: a
 curated list and a self-hosted index are indistinguishable to the code, and
 combining two indexes that publish the same id and version pointing at
@@ -115,7 +115,7 @@ from.
 ## Signing: the mechanism is implemented; the key is still nobody's to ship
 
 The intended scheme is a **detached minisign signature (Ed25519)** beside the
-index as `index.json.minisig`, checked against a key shipped with Cordial
+index as `index.json.minisig`, checked against a key shipped with Vanta
 before the JSON is parsed at all. Chosen because it is boring: one small
 well-specified format, an existing Rust implementation, a public key that fits
 on a line, and no infrastructure. OpenPGP was rejected for bringing a keyring
@@ -136,7 +136,7 @@ check, which is still every caller in this codebase today, because nothing here
 configures a key.
 
 **What is still true, and is the part that actually matters:** no key is
-shipped with Cordial, none is hardcoded anywhere, and nothing falls back to
+shipped with Vanta, none is hardcoded anywhere, and nothing falls back to
 trusting an index that has none configured. Implementing the check without
 shipping a key was deliberate, not an oversight — see "Browsing and installing
 from a source" below. Shipping a key means naming whose index it belongs to,
@@ -168,7 +168,7 @@ implementation today: a directory holding `index.json`, an optional
 an HTTPS source waiting to be written; the "why the index is a static file"
 section above already designs an index to be "served straight out of a git
 repository", and a local clone of one is that arrangement with the network
-step removed. `cordial-plugins` still takes on no HTTP client dependency —
+step removed. `vanta-plugins` still takes on no HTTP client dependency —
 doing that now, ahead of a host being named, would itself be a form of the
 policy call this ADR keeps declining to make.
 
@@ -179,7 +179,7 @@ against an optional trusted key (`open`), and resolve a request against the
 result, fetch what the plan needs, and install every step through
 `crate::unpack::install` — never a second extraction path — while refusing
 outright, before a single byte is fetched, if the index behind the plan was
-never verified (`install`). `crates/cordial-shell/src/settings.rs`'s
+never verified (`install`). `crates/vanta-shell/src/settings.rs`'s
 Marketplace section in the Plugins page is the UI wired to this: a directory
 and an optional pasted key, a listing of what it offers with each entry's
 requested capabilities shown in the same words the per-plugin grant switches
@@ -189,7 +189,7 @@ on it — for every entry until a key is configured and verifies.
 **What this still does not do, on purpose.** No default index directory, no
 shipped key, no HTTPS fetcher, and — see [ADR-001](/adr/ADR-001-in-process-hooking)
 and [ADR-003](/adr/ADR-003-plugin-isolation) — nothing that would let an index
-install anything other than a Cordial plugin archive through the existing
+install anything other than a Vanta plugin archive through the existing
 hardened unpacker: there is no broader "run this" primitive here for a
 listing to point at, which matters more once a marketplace exists than before
 one did, because a marketplace is exactly the shape a distribution channel for
@@ -265,7 +265,7 @@ the archive anyway. An archive asking for setuid is telling you something about
 itself worth stopping for.
 
 **Files are written `0644` and directories `0755` regardless of what the
-archive asked for.** Cordial never executes anything out of a plugin directory —
+archive asked for.** Vanta never executes anything out of a plugin directory —
 it runs `deno run` against the entry module — so an executable bit could only
 ever be useful to something else.
 
@@ -287,7 +287,7 @@ once the whole archive has been read and its manifest checked. `install` clears
 the staging directory when it refuses — but a process killed part way through
 clears nothing, and what is left at that moment is a directory holding a real
 `plugin.json` and a truncated entry module. The dot prefix is the only thing
-standing between that and Cordial loading half a plugin on the next launch.
+standing between that and Vanta loading half a plugin on the next launch.
 `is_valid_id` forbids a dot, so such a directory can never collide with a real
 plugin's name.
 
@@ -338,7 +338,7 @@ expensive to debug once installed.
 **Accepted:** four new dependencies (`semver`, `sha2`, `tar`, `zstd`), one of
 which builds C. The workspace already requires Clang.
 
-**Accepted:** nothing here downloads anything. Fetching is Cordial's to do and a
+**Accepted:** nothing here downloads anything. Fetching is Vanta's to do and a
 plugin never holds the channel (ADR-007); keeping the fetch out of the resolver
 and the unpacker is also what makes every refusal above reachable from a test
 with no network.

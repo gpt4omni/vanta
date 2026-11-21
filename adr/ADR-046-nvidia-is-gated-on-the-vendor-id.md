@@ -7,10 +7,10 @@ title: "ADR-046: NVIDIA behaviour is gated on the device's vendor id, and says w
 
 ## Decision
 
-Anything Cordial does only because a GPU is NVIDIA's is gated on the physical
+Anything Vanta does only because a GPU is NVIDIA's is gated on the physical
 device's `VkPhysicalDeviceProperties.vendorID` being `0x10DE`, read in
-`crates/cordial-runtime/src/android/vulkan.rs` and decided by
-`crates/cordial-shell/src/nvidia.rs`. It is never gated on "an NVIDIA kernel
+`crates/vanta-runtime/src/android/vulkan.rs` and decided by
+`crates/vanta-shell/src/nvidia.rs`. It is never gated on "an NVIDIA kernel
 module is loaded": a hybrid laptop has the module loaded and often renders on
 the other GPU, and a workaround applied there is applied to the wrong hardware.
 The one place the module is read is where the question is about the module, the
@@ -25,18 +25,18 @@ What is built on that gate:
 - a bounded retry of `vkGetPhysicalDeviceSurfacePresentModesKHR` when it fails
   with `VK_ERROR_UNKNOWN`, `INITIALIZATION_FAILED` or `SURFACE_LOST` on an NVIDIA
   device;
-- a `Graphics` row in `cordial --diagnostics` and, in a Flatpak, a sentence when
+- a `Graphics` row in `vanta --diagnostics` and, in a Flatpak, a sentence when
   the sandbox lacks the `GL.nvidia` extension the host driver needs;
 - hints on the crash page;
-- three lines in `cordial --doctor` (`doctor::nvidia_checks`): the driver series,
+- three lines in `vanta --doctor` (`doctor::nvidia_checks`): the driver series,
   the Flatpak extension against the host module, and `nvidia-drm` modeset, each
   run only for a Vulkan device whose vendor id is `0x10DE`.
 
-`CORDIAL_FORCE_GPU_VENDOR` and `CORDIAL_TEST_FAIL_PRESENT_MODES` exist so that
-path can be run on a machine without NVIDIA hardware. They change what Cordial
-decides and never what the engine is told, are named in `cordial-run --help`,
+`VANTA_FORCE_GPU_VENDOR` and `VANTA_TEST_FAIL_PRESENT_MODES` exist so that
+path can be run on a machine without NVIDIA hardware. They change what Vanta
+decides and never what the engine is told, are named in `vanta-run --help`,
 and are set by no packaging script, which is the same shape as
-`CORDIAL_MASK_MOBILE_TEXTURE_FORMATS` in ADR-042.
+`VANTA_MASK_MOBILE_TEXTURE_FORMATS` in ADR-042.
 
 ## What was decided not to do
 

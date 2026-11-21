@@ -18,7 +18,7 @@ nothing was watching for it either.
 
 A second question arrived with it: whether a sandbox could *replace* the broker
 — "sub-sandbox the plugin and let it do the thing itself" — which would remove
-the need to widen Cordial's Flatpak manifest every time a plugin needs anything.
+the need to widen Vanta's Flatpak manifest every time a plugin needs anything.
 
 ## Decision
 
@@ -32,19 +32,19 @@ than it buys.
 alternative to brokering and cannot become one.
 
 **A missing sandbox binary does not stop a plugin running.** It is reported
-instead: `crates/cordial-plugins/src/sandbox.rs`'s `Sandbox::describe` is printed
+instead: `crates/vanta-plugins/src/sandbox.rs`'s `Sandbox::describe` is printed
 at every spawn, naming the layers that are actually in force.
 
 ## Why a sandbox cannot replace the broker
 
 Because **a sub-sandbox only ever subtracts.** `bwrap` and `flatpak-spawn
 --sandbox` both narrow what the parent holds; neither grants anything the parent
-lacks. So confinement can never let a plugin do something Cordial cannot, and
-every effect still has to be performed by Cordial. ADR-007 is untouched by this
+lacks. So confinement can never let a plugin do something Vanta cannot, and
+every effect still has to be performed by Vanta. ADR-007 is untouched by this
 change, not weakened by it.
 
 The concrete case, because the abstract one invites cleverness. The Flatpak
-manifest grants **Cordial** Discord's IPC socket, narrowly, by path. Hand that
+manifest grants **Vanta** Discord's IPC socket, narrowly, by path. Hand that
 socket to a confined plugin so it can set its own presence and the plugin holds
 a Discord IPC connection — and that protocol does considerably more than set
 presence. The sandbox did not narrow the socket; it narrowed the filesystem
@@ -78,11 +78,11 @@ the host, which would hand every plugin the sandbox escape the capability model
 exists to prevent — below the level any broker can see" (ADR-002 §2).
 
 The reason is that `flatpak-spawn --sandbox` and `flatpak-spawn --host` are the
-same D-Bus name. A permission that lets Cordial create a *narrower* sandbox is
+same D-Bus name. A permission that lets Vanta create a *narrower* sandbox is
 the same permission that lets it run an arbitrary command on the host, outside
 the sandbox entirely. There is no way to take one and not the other.
 
-So taking it would mean **adding a sandbox escape to Cordial in order to sandbox
+So taking it would mean **adding a sandbox escape to Vanta in order to sandbox
 plugins** — strictly worse than not having the layer, because the layer defends
 against a Deno escape while the grant hands out a host escape unconditionally.
 

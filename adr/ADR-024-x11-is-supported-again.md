@@ -10,7 +10,7 @@ title: "ADR-024: X11 is supported again, and it gets the editor"
 **Wayland remains the primary backend and the window remains GTK4 + libadwaita.
 None of that changes.** What changes is the sentence beneath it.
 
-X11 is a supported backend. `crates/cordial-runtime/src/android/window.rs` is
+X11 is a supported backend. `crates/vanta-runtime/src/android/window.rs` is
 not deleted when the Wayland path reaches sign-in, and the focused-TextBox
 editor is brought to it rather than being a thing Wayland has and X11 does not.
 
@@ -28,12 +28,12 @@ Its rejection of a parallel X11 path was argued on maintenance cost:
 > fallback rots because nobody runs it.
 
 And its "what would change this" section contemplated exactly one thing: a
-Wayland compositor turning out to be unable to do something Cordial needs.
+Wayland compositor turning out to be unable to do something Vanta needs.
 
 **It never contemplated a user who cannot run Wayland at all**, and that is who
-turned up. From the project's own Discord, a user trying Cordial for the first
+turned up. From the project's own Discord, a user trying Vanta for the first
 time: *"my env is x11 so i can't use the android emulator without workarounds"*,
-followed by another regular telling them *"Cordial might give broken input on
+followed by another regular telling them *"Vanta might give broken input on
 x11 not sure though you'd have to ask the dev yourself"*. They were right, and
 what they were describing is worse than "might":
 
@@ -54,7 +54,7 @@ whole of the reversal.
 This is not a wiring change and nobody should start it believing otherwise.
 
 `window.rs` opens a raw Xlib toplevel through a `dlopen`'d libX11, before GTK
-exists in the process, and `cordial_shell::host_window::HostWindow` — which owns
+exists in the process, and `vanta_shell::host_window::HostWindow` — which owns
 the `gtk::Text` — is never constructed on that path. `init_wayland` forces
 `GDK_BACKEND=wayland`, so it currently cannot be. Bringing the editor over means:
 
@@ -64,7 +64,7 @@ the `gtk::Text` — is never constructed on that path. `init_wayland` forces
   `content_rect()` the way `sync_canvas_geometry` does;
 - **X11 keyboard delivery rebuilt.** This is the expensive one and the reason
   for this paragraph. X11 delivers keys to the focus window; reparenting the
-  engine under a GTK toplevel moves focus to the toplevel, and Cordial's own
+  engine under a GTK toplevel moves focus to the toplevel, and Vanta's own
   Xlib connection — today the *only* key source on X11, WASD and Escape included
   — stops receiving anything. It is the same "input has to be rebuilt, not
   ported" that ADR-011 accepted for Wayland, paid a second time;
@@ -108,12 +108,12 @@ ADR-011 catalogued as unfixable is inherited along with everything else.
 
 **This does not reopen anything else in ADR-011.** Wayland-first stands, GTK4 and
 libadwaita stand, and the reasoning about resize and `zwp_text_input_v3` stands.
-If the Wayland path and the X11 path ever disagree about what Cordial should do,
+If the Wayland path and the X11 path ever disagree about what Vanta should do,
 Wayland is the answer.
 
 ## What would change this
 
 If X11 users disappear, or if XWayland becomes good enough that a Wayland-only
-Cordial serves them, this reverts to ADR-011 and `window.rs` goes. The trigger
+Vanta serves them, this reverts to ADR-011 and `window.rs` goes. The trigger
 that would justify that is evidence about users, since that is the evidence that
 justified reversing it — not an appeal to how much simpler one backend is.
