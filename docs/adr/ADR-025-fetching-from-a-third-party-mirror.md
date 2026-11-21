@@ -1,13 +1,13 @@
-# ADR-025: Cordial may fetch the build from a third-party mirror, if it can prove Roblox signed it
+# ADR-025: Vanta may fetch the build from a third-party mirror, if it can prove Roblox signed it
 
 **Status:** accepted
-**Amended by:** [ADR-054](ADR-054-cordial-owns-its-roblox-builds.md) (launches resolve from the store; Sober is an import; 2026-10-04)
-**Extends:** [ADR-015](ADR-015-cordial-may-fetch-the-roblox-build.md)
+**Amended by:** [ADR-054](ADR-054-vanta-owns-its-roblox-builds.md) (launches resolve from the store; Sober is an import; 2026-10-04)
+**Extends:** [ADR-015](ADR-015-vanta-may-fetch-the-roblox-build.md)
 **Related:** [ADR-012](ADR-012-profiles-and-instances.md), [ADR-016](ADR-016-per-profile-network-egress.md)
 
 ## Decision
 
-Cordial may download the official Roblox Android build **from a distributor that
+Vanta may download the official Roblox Android build **from a distributor that
 is not Roblox**, to the user's own machine, at the user's request.
 
 **It may only install one it can prove Roblox signed.** The APK's signing block
@@ -22,7 +22,7 @@ on the way through.
 ## Why ADR-015 was not enough
 
 ADR-015 permits fetching "from Roblox's own distribution". The investigation
-recorded in `crates/cordial-update/src/download.rs` established, on 2026-08-03
+recorded in `crates/vanta-update/src/download.rs` established, on 2026-08-03
 and at length, that **there is no such distribution for the Android build**.
 Roblox's deployment CDN carries the desktop clients only — 7210 deployment
 records with not one occurrence of `android` or `apk`; the Android prefix
@@ -35,12 +35,12 @@ step it was written to remove is still there. That is the gap this closes.
 ## Why a mirror is acceptable when signature verification is not optional
 
 **Because the alternative in practice is worse, and it is what people already
-do.** Today Cordial tells the user to supply an APK. In the project's own
+do.** Today Vanta tells the user to supply an APK. In the project's own
 Discord this week, a newcomer asking how was told to download one from APKPure
 by hand — and then, separately, warned that any APK advertising itself as
 "modded" is likely malware. That is the status quo: **a human fetching an
 unverified archive from the same mirror, with no check on it beyond their own
-judgement, and Cordial trusting it because a person chose it.**
+judgement, and Vanta trusting it because a person chose it.**
 
 Signature verification inverts that. A mirror can serve the wrong bytes; it
 cannot forge Roblox's signing key. Once the certificate is pinned, the question
@@ -83,14 +83,14 @@ answered 503 for a full day this month. **So the chain must have a real second
 source or an honest local path, not a broken fallback that adds a second way to
 fail.**
 
-**A posture Cordial did not previously have.** "Cordial downloads Roblox for
+**A posture Vanta did not previously have.** "Vanta downloads Roblox for
 you, from a mirror" is a sentence about what this project is, and it is now true.
 It should appear in the README in those words rather than being discovered.
 
 ## What is rejected
 
 **Google Play with account credentials.** It is how Sober does it, it needs a
-Google account and a device identity, and it puts Cordial in the business of
+Google account and a device identity, and it puts Vanta in the business of
 holding or brokering somebody's authentication. The mirror route needs no
 credential at all, which is the whole reason it is available.
 
@@ -113,7 +113,7 @@ party that sees who asked and can be down, and Sober going through Google Play
 on the user's own account is a different trade and a reasonable one to prefer.
 Offering one and hiding the other would be deciding that on the user's behalf.
 
-**Cordial acquires a security-critical component.** A signature verifier is code
+**Vanta acquires a security-critical component.** A signature verifier is code
 where a subtle mistake is invisible until it matters. It needs tests with known
 answers, including negative ones — a tampered archive, a wrong certificate, a
 v1-only archive, a truncated block — and those tests are the deliverable as much
@@ -126,7 +126,7 @@ quickly, with an obvious error message saying what happened.
 
 ## What was built, and what it measured
 
-Implemented on 2026-08-26 in `crates/cordial-update/{apk_signature,url_policy,provider}`,
+Implemented on 2026-08-26 in `crates/vanta-update/{apk_signature,url_policy,provider}`,
 clean-room from `docs/design/fetching-the-roblox-build.md`. Every protocol fact
 in that spec was re-checked against the live service before being coded against,
 and all of them held.
@@ -149,13 +149,13 @@ anyone asks whether this source is safe.
 
 **Two sources ship, not one, and the free one is tried first.** A build already
 on the machine costs no request, no disclosure and no bytes on a metered
-connection, and most people who will run Cordial already have this exact file
+connection, and most people who will run Vanta already have this exact file
 because the README told them to install Sober. Reaching a mirror for a file that
 is already present would be the worst version of this feature.
 
 **The pinned set holds one certificate, not the two the design spec names.** The
 second was not observed on this machine, and a digest in that file is a key
-Cordial accepts builds from forever. Taking one from a report rather than from
+Vanta accepts builds from forever. Taking one from a report rather than from
 an archive somebody verified is the wrong way to spend that, so it is not there.
 Adding it is a one-line change for whoever does observe it.
 
@@ -182,5 +182,5 @@ version and it was not secure.
 A Roblox-operated source for the Android build appearing would make the mirror
 unnecessary, and ADR-015's original wording would be enough again. If the mirror
 route becomes unreliable enough that most attempts fail, an honest "supply your
-own, and Cordial will verify it" is a better product than a download that
+own, and Vanta will verify it" is a better product than a download that
 usually does not work.

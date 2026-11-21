@@ -6,15 +6,15 @@
 
 **What changed.** This ADR originally brokered the check through
 [`pvpn`](https://github.com/luohoa97/protun-unblocked), a VPN wrapper by this
-project's own maintainer, and `crates/cordial-shell/src/pvpn.rs` shelled out to
+project's own maintainer, and `crates/vanta-shell/src/pvpn.rs` shelled out to
 its `status` verb. That module is deleted. `Mode::VpnRequired` now runs a
 `check` command the profile's own `network.json` names -- argv, exit zero means
-the requirement is met -- and Cordial names no tool and ships no default.
+the requirement is met -- and Vanta names no tool and ships no default.
 
 **Why.** A client hard-coding a dependency on its maintainer's other project
 reads as self-promotion whatever the technical merits, and the merits did not
 require it: what a separate address means is the operator's to define, and the
-only thing Cordial needed was a yes or no. `CORDIAL_PVPN_BIN` already made the
+only thing Vanta needed was a yes or no. `VANTA_PVPN_BIN` already made the
 binary configurable, which is the tell -- the coupling was to a *name*, not to
 a capability.
 
@@ -52,16 +52,16 @@ A profile's `network.json` — placed per ADR-013, beside `flags.json` and
 sense that ADR draws the line by — may set `"mode": "vpn-required"`. A profile
 in that mode refuses to start at all unless the `check` command it names
 exits zero, checked at both of
-Cordial's entry points: the shell's `launch.rs`, before the engine process is
-even spawned, and `cordial-run`'s own `main`, so that starting the client
+Vanta's entry points: the shell's `launch.rs`, before the engine process is
+even spawned, and `vanta-run`'s own `main`, so that starting the client
 directly — which AGENTS.md documents as fully supported — cannot bypass a
 requirement the shell would have enforced. A profile with no `network.json`,
 which is every profile that exists today, is unaffected.
 
 The check runs the configured command and reads its exit status, and nothing
-else. Cordial never brings a tunnel up or down — see the amendment above and
-`crates/cordial-shell/src/network.rs` for why
-deciding when to connect is left to whoever is running Cordial rather than
+else. Vanta never brings a tunnel up or down — see the amendment above and
+`crates/vanta-shell/src/network.rs` for why
+deciding when to connect is left to whoever is running Vanta rather than
 folded into a launch button.
 
 ## Why not an `http_proxy`/`HTTPS_PROXY` setting
@@ -69,16 +69,16 @@ folded into a launch button.
 This was the obvious shape and it was rejected on two independent grounds,
 either of which would have been enough alone.
 
-**Cordial's own client-settings fetch would never see it.**
+**Vanta's own client-settings fetch would never see it.**
 `client_settings.rs` calls `ureq::get(URL).call()` directly. `ureq` does not
 consult proxy environment variables on its own, so setting them would do
-nothing for the one HTTP request Cordial itself makes, before the engine
+nothing for the one HTTP request Vanta itself makes, before the engine
 exists to blame for anything.
 
 *Correction, 2026-10-02: that paragraph is wrong.* ureq 3's default `Config`
 takes `Proxy::try_from_env()`, which reads `ALL_PROXY`, `HTTPS_PROXY`,
-`HTTP_PROXY`, their lowercase forms and `NO_PROXY`, and Cordial overrides none
-of it (read from ureq 3.3.0's source, not run). Cordial's own requests do
+`HTTP_PROXY`, their lowercase forms and `NO_PROXY`, and Vanta overrides none
+of it (read from ureq 3.3.0's source, not run). Vanta's own requests do
 follow a proxy in the environment, verifying its certificate against ureq's
 bundled roots. The decision is unaffected: an environment variable is
 process-wide, not per profile, and the second ground below holds on its own.
@@ -121,7 +121,7 @@ buildable this pass, and both came back against it.
 ip link` was run directly, in the environment this was written in, and failed
 immediately: `unshare: unshare failed: Operation not permitted`.
 `CLONE_NEWNET` wants `CAP_NET_ADMIN`, ordinarily root, on an unprivileged
-process. This is a real deployment constraint for whoever packages Cordial —
+process. This is a real deployment constraint for whoever packages Vanta —
 a Flatpak in particular does not hand this out by default, and ADR-007's
 argument against broad sandbox permissions applies here exactly as it does to
 `--filesystem=host`.
@@ -134,7 +134,7 @@ client: a tunnel managed as a NetworkManager connection (`nmcli con up`,
 brought up by a system service running in the host's own network namespace.
 The interface it creates lands there regardless of which namespace the command
 that asked for it was run inside. Bringing such a tunnel up under `ip netns
-exec cordial-<profile>` would produce the same machine-wide tunnel it always
+exec vanta-<profile>` would produce the same machine-wide tunnel it always
 produces, asked for from a process that happened to be in a namespace at the
 time — not a tunnel scoped to that namespace. A namespace that could hold a
 tunnel of its own would have to bypass NetworkManager entirely: extract the
@@ -158,7 +158,7 @@ It does not isolate a running profile's traffic from a different profile
 running alongside it on the same machine at the same time — ADR-012's own
 demonstrated two-windows-at-once case — because a machine-wide tunnel is one
 global route, not one per profile. What it does guarantee, at both of
-Cordial's entry points: this profile will never make even its own
+Vanta's entry points: this profile will never make even its own
 client-settings request on this machine's ordinary route while believing
 itself protected, and a profile with no `network.json` behaves exactly as it
 always has.
@@ -182,7 +182,7 @@ always has.
   the new modules' tests.
 - A genuine, intermittent test-isolation bug this change's own testing
   surfaced: `install.rs`/`profile_switcher.rs`/`launch.rs` each kept a private
-  mutex guarding `CORDIAL_PROFILE_ROOT`, which does not serialise one file's
+  mutex guarding `VANTA_PROFILE_ROOT`, which does not serialise one file's
   env-var writes against another's in the same test binary. Adding
   `launch.rs`'s gate test made this fail for real, once, out of several runs
   — `profile_switcher::tests::the_list_offers_no_profile_that_does_not_exist`
@@ -233,7 +233,7 @@ poller this pass did not build — see HANDOVER.md.
 than attempted and abandoned — see "Why not a network namespace, yet," above.
 Remains the right long-term mechanism once something can produce a tunnel
 scoped to one namespace — which means bypassing NetworkManager — and
-once Cordial's packaging can grant the namespace privilege this session
+once Vanta's packaging can grant the namespace privilege this session
 measured itself not to have.
 
 **Rejected: an `http_proxy`-shaped setting.** Would have looked like it worked
@@ -248,7 +248,7 @@ established connection — or if the common Linux clients move off
 NetworkManager for their tunnels — a namespace-scoped tunnel becomes
 buildable, and with it true
 concurrent per-profile isolation rather than the launch-time gate this ADR
-ships. If Cordial's packaging ever grants `CAP_NET_ADMIN` (or runs
+ships. If Vanta's packaging ever grants `CAP_NET_ADMIN` (or runs
 unsandboxed with root available), the privilege half of the namespace
 argument stops applying; the NetworkManager half would still need answering
 first.

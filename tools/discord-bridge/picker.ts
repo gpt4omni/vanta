@@ -43,7 +43,7 @@ export function pickerMessage(forms: IssueForm[], repoUrl: string): unknown {
   // instead of being another paragraph in one description, and the buttons sit
   // inside the same block rather than floating under it.
   return v2([
-    container(0xFF7A18, [
+    container(0x9A9CA2, [
       text(
         "## Report something\n" +
           "Pick the shape that fits and fill in the form. It becomes an issue on " +

@@ -1,14 +1,14 @@
 # ADR-043: The Roblox build's architecture is the binary's, and choosing another needs a second runtime
 
-**Status:** accepted; decision 5 and the premise of decision 3 superseded by [ADR-053](ADR-053-vr-is-a-mode-of-the-android-runtime.md). The reasoning below is kept: it was right about a second `cordial-run` under qemu-user, which is not what the VR mode does.
+**Status:** accepted; decision 5 and the premise of decision 3 superseded by [ADR-053](ADR-053-vr-is-a-mode-of-the-android-runtime.md). The reasoning below is kept: it was right about a second `vanta-run` under qemu-user, which is not what the VR mode does.
 **Date:** 2026-09-30
 **Related:** [ADR-001](ADR-001-in-process-hooking.md), [ADR-033](ADR-033-roblox-versions-are-a-keyed-store.md), [ADR-037](ADR-037-one-lock-and-a-content-hash-for-the-build-store.md), [ADR-039](ADR-039-a-runtime-backend-seam-and-why-macos-waits.md)
 **Evidence:** [`docs/analysis/roblox-build-architecture.md`](../analysis/roblox-build-architecture.md)
 
 ## Decision
 
-1. **The architecture stays compile-time.** `cordial_update::apk::HOST_ABI` is
-   a `cfg` constant and Cordial installs the build for the machine it was built
+1. **The architecture stays compile-time.** `vanta_update::apk::HOST_ABI` is
+   a `cfg` constant and Vanta installs the build for the machine it was built
    for. Nothing resolves it at launch and nothing re-derives it from what a
    mirror lists.
 2. **Auto is the host, set and forget.** There is no `shell.json` key for the
@@ -16,14 +16,14 @@
    binary. Settings shows the value in a read-only "Roblox build" row, with
    "(this computer)" beside it.
 3. **A non-host build is offered only once a route to run it has been measured
-   to work**: a translator on `PATH`, a second `cordial-run` of that
+   to work**: a translator on `PATH`, a second `vanta-run` of that
    architecture with its userland, and a Vulkan device that is not a CPU
    rasteriser, with a frame rate taken under driven input. The spike found
    none. Until then a dropdown would list an option that changes nothing, which
    is a stub that lies (AGENTS.md) in interface form.
    *(Premise superseded by ADR-053, 2026-10-01: this assumed a non-host build
-   needs a second `cordial-run` of its own architecture under a translator. The
-   Quest build runs in the x86-64 `cordial-run` itself, under an in-process
+   needs a second `vanta-run` of its own architecture under a translator. The
+   Quest build runs in the x86-64 `vanta-run` itself, under an in-process
    translator, with the host's own Vulkan driver. The rule that the Settings
    row offers no option it cannot run still holds for the phone build.)*
 4. **When a release exists only for another architecture, the updater says
@@ -35,7 +35,7 @@
    the broad listing to be read first; that is follow-up, not part of this
    decision.
 5. **Quest is rejected.** It is an arm64 Horizon OS build with dependencies
-   Cordial has no answer for. *(Superseded by ADR-053: the x86-64 client runs
+   Vanta has no answer for. *(Superseded by ADR-053: the x86-64 client runs
    the Quest build's engine in-process under a translator and answers its
    OpenXR and Vulkan calls with the host's own, measured at 90 frames/s on
    Monado's simulated HMD on the landing panel and 44 to 65 in game. Meta's
@@ -46,9 +46,9 @@
 
 ## Why
 
-The engine is loaded into `cordial-run`'s own address space and calls the host
+The engine is loaded into `vanta-run`'s own address space and calls the host
 by function pointer, so the other architecture's `libroblox.so` needs the other
-architecture's `cordial-run`, GTK 4 and Vulkan loader, under a CPU translator.
+architecture's `vanta-run`, GTK 4 and Vulkan loader, under a CPU translator.
 **Measured 2026-09-30:** `vulkaninfo --summary` in an arm64 Fedora 44 container
 under qemu-user, `/dev/dri` mapped, lists a single device, llvmpipe
 (`PHYSICAL_DEVICE_TYPE_CPU`), so an arm64 client on an x86_64 host would render
@@ -59,9 +59,9 @@ arm64 hardware. The store is also keyed by version alone, so two architectures a
 version would collide.
 
 *Corrected 2026-10-01:* the first sentence of this section is true of a whole
-foreign `cordial-run` and was taken to be the only route. It is not. The
+foreign `vanta-run` and was taken to be the only route. It is not. The
 engine's imports can be answered across the architecture boundary by generated
-thunks: the x86-64 `cordial-run` links the Quest build's arm64 `libroblox.so`,
+thunks: the x86-64 `vanta-run` links the Quest build's arm64 `libroblox.so`,
 runs it under dynarmic and hands its Vulkan and OpenXR calls to the host's own
 driver and runtime ([ADR-053](ADR-053-vr-is-a-mode-of-the-android-runtime.md),
 [design §9.5](../vr/dynarmic-design.md)). The qemu-user measurement above stands
@@ -94,12 +94,12 @@ The page `docs/multiarch.md` began life as the decision record for "Task B (§16
 translation layer.**
 
 Task A established that Roblox ships a complete x86-64 Android build (see
-[`findings.md`](../findings.md) §1). Cordial therefore never translates machine code. This
+[`findings.md`](../findings.md) §1). Vanta therefore never translates machine code. This
 is a build-flag and runtime-dispatch concern, not an architectural one.
 
 *Corrected 2026-10-01:* "never translates machine code" is now true of the phone build
 only. The VR mode runs the Meta Quest build's arm64 engine under dynarmic inside the
-x86-64 `cordial-run` ([ADR-053](ADR-053-vr-is-a-mode-of-the-android-runtime.md)).
+x86-64 `vanta-run` ([ADR-053](ADR-053-vr-is-a-mode-of-the-android-runtime.md)).
 The table below still describes how the phone build is chosen and run.
 
 | Host | APK ships a matching ABI | Strategy | Phase |
@@ -169,15 +169,15 @@ this required reopening Task A. The spike in
 [`analysis/roblox-build-architecture.md`](../analysis/roblox-build-architecture.md) is that
 reopening, and it changes the reasoning without changing the answer: choosing the other
 architecture's `libroblox.so` is the easy half, and running it needs a second
-`cordial-run` with its whole userland under a CPU translator, because the engine is
-loaded into `cordial-run`'s own address space. No route that reaches the GPU was found
+`vanta-run` with its whole userland under a CPU translator, because the engine is
+loaded into `vanta-run`'s own address space. No route that reaches the GPU was found
 (qemu-user's was measured: `vulkaninfo` in an arm64 container lists only llvmpipe, a
 CPU device; FEX and box64 need arm64 hardware nobody here has). Settings therefore shows a read-only "Roblox build" row and
 no dropdown; [ADR-043](ADR-043-the-roblox-build-is-the-binarys-architecture.md)
 records the decision and what would reopen it.
 
-*Corrected 2026-10-01:* "needs a second `cordial-run`" was wrong as a general claim. The
-in-process load does not force it: the x86-64 `cordial-run` links the Quest build's arm64
+*Corrected 2026-10-01:* "needs a second `vanta-run`" was wrong as a general claim. The
+in-process load does not force it: the x86-64 `vanta-run` links the Quest build's arm64
 engine and answers its imports through generated thunks, so the engine reaches the host's
 own Vulkan driver (an RTX 4070 Ti, not llvmpipe) and OpenXR runtime
 ([`vr/dynarmic-design.md`](../vr/dynarmic-design.md) §9.4, §9.5). What the spike measured
@@ -197,24 +197,24 @@ landing panel, 44 to 65 in game. Nothing has been measured on WiVRn or a real he
 
 The x86_64/aarch64 split this document called for in `apk.rs`/`install.rs` was real
 but incomplete: it stopped at the two constants and never reached the code that
-actually *fetches* a build. `crates/cordial-update/src/provider/mirror.rs` hardcoded
+actually *fetches* a build. `crates/vanta-update/src/provider/mirror.rs` hardcoded
 `ABI_EXACT = "x86_64"` and searched archives for the literal path
 `lib/x86_64/libroblox.so` rather than `apk::LIBRARY_IN_APK`; `provider/local.rs` and
-`cordial-shell/src/install.rs` had the same hardcoding for the engine path, the split
+`vanta-shell/src/install.rs` had the same hardcoding for the engine path, the split
 APK filename, and Sober's own package directory. An aarch64 build would have compiled
 clean and then found no build to run, silently, because the acquisition layer never
 asked for or recognised anything but x86_64. Fixed 2026-09-23; see the commits
-touching `provider/mirror.rs`, `provider/local.rs`, `cordial-shell/src/install.rs`,
-`crates/cordial-update/src/deno.rs` and `justfile`.
+touching `provider/mirror.rs`, `provider/local.rs`, `vanta-shell/src/install.rs`,
+`crates/vanta-update/src/deno.rs` and `justfile`.
 
 One of those fixes was a genuine latent bug rather than a missing branch:
-`cordial-shell/src/install.rs` rebuilt the split APK's filename from `HOST_ABI`
-(`arm64-v8a`, hyphenated) instead of using `cordial_update::install::SPLIT_APK`
+`vanta-shell/src/install.rs` rebuilt the split APK's filename from `HOST_ABI`
+(`arm64-v8a`, hyphenated) instead of using `vanta_update::install::SPLIT_APK`
 (`arm64_v8a`, underscored, which is how Play actually spells it). That is invisible on
 x86_64, which has no hyphen to get wrong, and would have made this code path never find
 the split archive on a real aarch64 install.
 
-Packaging gates (`ExclusiveArch: x86_64` in `packaging/rpm/cordial.spec`,
+Packaging gates (`ExclusiveArch: x86_64` in `packaging/rpm/vanta.spec`,
 `Architecture: amd64` in `packaging/deb/control.in`, the AppImage's x86_64-linux-gnu
 WebKitGTK discovery) were the same shape of gap and are fixed in the same batch of
 commits, alongside aarch64 legs in `release.yml`/`flatpak.yml`/`test.yml`/`apt.yml`/
@@ -236,7 +236,7 @@ surface as "newest" on an aarch64 host. Real XAPK support in `held()`/`classify(
 would close that properly; not attempted, since it needs its own synthetic-XAPK tests.
 
 **`pthread_mutex_t`/`pthread_attr_t` needed a real ABI shim, found by building, not by
-inspection.** `crates/cordial-runtime/src/bionic/pthread.rs`'s size table was only
+inspection.** `crates/vanta-runtime/src/bionic/pthread.rs`'s size table was only
 ever measured on x86_64, where bionic and glibc happen to agree on both types'
 sizes. On aarch64 they do not (glibc's `pthread_mutex_t` is 48 bytes against bionic's
 40; `pthread_attr_t` 64 against 56) — handing either straight to glibc, as the
@@ -248,11 +248,11 @@ already was, aarch64-only; x86_64 is untouched.
 closes either, and qemu-user emulation (4K-page x86_64 emulating 4K-page aarch64)
 says nothing about real 16K-page hardware. What the "cheapest next step" paragraph
 below asked for is now half-done rather than not-done: a real, Roblox-signed
-arm64-v8a `libroblox.so` was fetched (via `cordial_update`'s own mirror path,
+arm64-v8a `libroblox.so` was fetched (via `vanta_update`'s own mirror path,
 signature verified, fingerprint matches this module's own documented one) and loaded
 under emulation (a one-off session; **no command line for it was kept, so
 it is not repeatable from this document** -- the spike's section 7 lists what a repeat
-needs) — `cordial-run` got through the bionic linker, `JNI_OnLoad`, GameActivity
+needs) — `vanta-run` got through the bionic linker, `JNI_OnLoad`, GameActivity
 native init, and the engine's own flag initialisation (139 flags, by name) before the
 smoke test's time bound ended, with no crash and no undefined symbol. The specific
 `readelf --dyn-syms`/`DT_TEXTREL`/`p_align` check this paragraph asks for was not
@@ -261,10 +261,10 @@ for that test) — still open, and still cheap: needs one more fetch, not a devi
 
 ### Implementation notes
 
-- Host ABI is fixed at **compile time**, not resolved at launch. `cordial_update::apk::
+- Host ABI is fixed at **compile time**, not resolved at launch. `vanta_update::apk::
   HOST_ABI` is a `#[cfg(target_arch)]` constant, and `LIBRARY_IN_APK` and `SPLIT_APK` are
   spelled per-architecture beside it; an unsupported target fails with a `compile_error!`
-  naming this document. Cordial never translates the phone build's machine code, so the
+  naming this document. Vanta never translates the phone build's machine code, so the
   only phone library it can load is the one for its own architecture (*corrected
   2026-10-01:* this said "never translates machine code"; the Quest build is translated,
   ADR-053, and is stored apart under `builds/arm64-v8a/`) — which makes the ABI a property of the binary
@@ -276,7 +276,7 @@ for that test) — still open, and still cheap: needs one more fetch, not a devi
   load from the matching subdirectory and ignore the others. `apk::holds_with(apk, wanted)`
   already takes the path as a parameter and `engine_candidates` already loops over
   siblings, so this part needed no change.
-- The engine cache is ABI-named — `~/.cache/cordial/lib/<abi>` — so two builds for two
+- The engine cache is ABI-named — `~/.cache/vanta/lib/<abi>` — so two builds for two
   architectures against one home directory cannot overwrite each other.
 - `libbadcpu` is gated on `CMAKE_SYSTEM_PROCESSOR` in `native/CMakeLists.txt`, and its
   `SIGILL` handler is installed only in the Roblox child process. It was **not** gated

@@ -19,9 +19,9 @@ Two separate problems.
 (Deno process spawn plus IPC handshake) is time the user spends looking at nothing.
 
 **Recoverability.** If the UI is a plugin and that plugin fails — corrupt install, bad
-update, protocol mismatch after a Cordial upgrade — the user has no interface. They cannot
+update, protocol mismatch after a Vanta upgrade — the user has no interface. They cannot
 launch, cannot reach settings, and cannot disable the plugin that is broken. The only
-recovery is a terminal, which Cordial's target user does not have open.
+recovery is a terminal, which Vanta's target user does not have open.
 
 ## Decision
 
@@ -30,7 +30,7 @@ recovery is a terminal, which Cordial's target user does not have open.
 Cold-start ordering, with the plugin host warming in parallel rather than in sequence:
 
 ```
-T0  user launches Cordial
+T0  user launches Vanta
 T1  core shell paints the chooser        <100 ms, native GTK, no IPC, no plugin dependency
     └─ plugin host boots in parallel, invisibly
 T2  user picks an entry                  they spend 1-3 s deciding; the host is up by now
@@ -101,21 +101,21 @@ without opening the door.
 
 ### 2. Cross-Flatpak launching is a sandbox hole, not a detail
 
-Launching another Flatpak from inside Cordial's sandbox requires `--talk-name=org.freedesktop.Flatpak`,
+Launching another Flatpak from inside Vanta's sandbox requires `--talk-name=org.freedesktop.Flatpak`,
 which permits running arbitrary commands on the host outside the sandbox. Flathub reviewers
-treat it as such and so should Cordial: it would hand every plugin the escape the previous
+treat it as such and so should Vanta: it would hand every plugin the escape the previous
 section just closed, this time at the manifest level where no broker sees it.
 
 Resolve before building the Studio plugin. Portal-based activation of an installed
 application is the direction to look; if no acceptable mechanism exists, the honest answer
-is that Cordial does not launch Studio, and the entry links to Vinegar's install page.
+is that Vanta does not launch Studio, and the entry links to Vinegar's install page.
 
 ## The Studio note — accepted, with the reason recorded
 
 **Roblox Studio is not this runtime and cannot be.** Studio ships no Android build. It runs
 under Wine, which works because Studio does not carry Hyperion — that is what VinegarHQ's
 Vinegar does, and it is a separate Flatpak from Sober for exactly this reason. A Studio
-entry in Cordial means a Wine-based path beside the Android runtime: different loader,
+entry in Vanta means a Wine-based path beside the Android runtime: different loader,
 different graphics stack, different everything. Two products in one binary.
 
 **Decision: Studio is out of scope for the runtime.** It may exist later as a plugin that
@@ -133,13 +133,13 @@ otherwise assume it is planned.
 - *Extended 2026-08-02:* **the runtime acquires it too, and not by choice.**
   [ADR-011](ADR-011-wayland-and-libadwaita.md) makes the engine's `wl_surface` a
   subsurface of this window, and a Wayland subsurface must share a connection —
-  therefore a process — with its parent. So `cordial-shell` is now a library as well
-  as a binary: `cordial_shell::host_window` builds the window, the shell binary puts
-  the chooser in its content slot, and `cordial-runtime` puts the engine's canvas
+  therefore a process — with its parent. So `vanta-shell` is now a library as well
+  as a binary: `vanta_shell::host_window` builds the window, the shell binary puts
+  the chooser in its content slot, and `vanta-runtime` puts the engine's canvas
   there instead. "That shell and this window are the same window" is now one
   definition rather than two that resemble each other.
-- What that does **not** yet do is join the two processes. `cordial-shell` and
-  `cordial-load` still each build their own instance of that window, and the T1→T3
+- What that does **not** yet do is join the two processes. `vanta-shell` and
+  `vanta-load` still each build their own instance of that window, and the T1→T3
   handoff below remains unspecified and unimplemented. Sharing the definition is
   what makes the handoff expressible later — the header bar, theming and app_id no
   longer differ between the two — not a claim that it exists.

@@ -1,7 +1,7 @@
 //! Where the Roblox build is, and how a launch gets it.
 //!
 //! **A launch resolves to a store entry, or to an explicit developer override,
-//! and to nothing else** ([ADR-054](../../../docs/adr/ADR-054-cordial-owns-its-roblox-builds.md)).
+//! and to nothing else** ([ADR-054](../../../docs/adr/ADR-054-vanta-owns-its-roblox-builds.md)).
 //! It used to look in four places -- the environment, a path chosen in
 //! Settings, Vanta's own download, and Sober's package directory -- and
 //! follow whichever answered, so a machine with Sober silently ran whatever

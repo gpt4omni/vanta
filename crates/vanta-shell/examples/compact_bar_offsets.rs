@@ -99,7 +99,7 @@ fn find_close(w: &gtk::Widget) -> Option<gtk::Button> {
 
 fn main() {
     let app = adw::Application::builder()
-        .application_id("io.github.luohoa97.CompactBarProbe")
+        .application_id("io.github.gpt4omni.CompactBarProbe")
         .build();
 
     app.connect_activate(|app| {

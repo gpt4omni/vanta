@@ -1,4 +1,4 @@
-# ADR-003: Plugins have no memory access to Cordial
+# ADR-003: Plugins have no memory access to Vanta
 
 **Status:** accepted
 **Supersedes:** nothing
@@ -6,7 +6,7 @@
 
 ## Decision
 
-Plugins run in their own address space. They cannot read or write Cordial's
+Plugins run in their own address space. They cannot read or write Vanta's
 memory, and there is no API by which they could ask to. The capability broker is
 the entire surface between a plugin and the core.
 
@@ -30,13 +30,13 @@ without losing the session. That only holds if a plugin's failures are confined
 to its own address space. With shared memory, any plugin bug is a core bug: a
 stray write corrupts the core's heap, and the crash surfaces somewhere else
 entirely, arbitrarily later. The debugging cost of that failure mode is paid by
-Cordial, and the user experiences it as "Cordial is unstable", not as "that
+Vanta, and the user experiences it as "Vanta is unstable", not as "that
 plugin is broken".
 
 **It is ADR-001's principle applied inward.** ADR-001 rejects in-process code
 execution against the Roblox process — no hooking, no memory patching, no
 injected script environment. Granting third-party plugins that same power over
-Cordial would be inconsistent, and worse: plugin code is *ecosystem* code,
+Vanta would be inconsistent, and worse: plugin code is *ecosystem* code,
 installed casually and in volume, from many authors of unknown intent. It
 warrants more isolation than we grant ourselves, not less.
 
@@ -44,7 +44,7 @@ warrants more isolation than we grant ourselves, not less.
 sandboxing of native plugins — a restricted API surface, a scripting runtime, a
 "please don't" in the docs — is a boundary only as strong as the absence of bugs
 in it. An address-space boundary is enforced by the MMU and does not depend on
-Cordial being correct.
+Vanta being correct.
 
 ## Consequences
 
@@ -56,7 +56,7 @@ Cordial being correct.
 - Bulk data (frames, textures, large buffers) needs an explicit shared-memory
   transport if it is ever required — negotiated per use, scoped to a specific
   buffer, and granted by capability. That is a *narrow, named* sharing of one
-  region, not access to Cordial's address space, and it does not weaken this
+  region, not access to Vanta's address space, and it does not weaken this
   decision. It is called out here so it is designed deliberately rather than
   arrived at by erosion.
 - IPC costs latency and serialisation. This is accepted. The cold-start argument
@@ -149,7 +149,7 @@ holds at least one granted capability, and the bare "Off" for one that holds
 none — the sentence exists to answer a fear about losing approvals, and a plugin
 with no approvals has none to lose.
 
-Two states look identical from outside and are not, so Cordial reports them
+Two states look identical from outside and are not, so Vanta reports them
 differently. A plugin with code that has been granted nothing is not started at
 all, and says `no capabilities granted, not started`; a plugin the user switched
 off says `disabled in Settings, not started`. One is "you have not decided what
@@ -166,7 +166,7 @@ plugin <id>: not granted flags.write, presence.set
 because a plugin silently doing less than it asked for is otherwise
 indistinguishable from a plugin that is broken.
 
-One thing the handshake does *not* do is enumerate your grants. `cordial/init`
+One thing the handshake does *not* do is enumerate your grants. `vanta/init`
 carries `settings` and `preferences`, and each is `null` when `settings.read`
 was not granted and `{}` when it was granted but nothing is saved yet — the two
 are told apart deliberately, so a first launch is distinguishable from a missing

@@ -1,4 +1,4 @@
-# ADR-054: Cordial owns its Roblox builds, and Sober's copy is an import
+# ADR-054: Vanta owns its Roblox builds, and Sober's copy is an import
 
 **Status:** accepted, implemented (see "As built" for what is still INFERRED)
 **Date:** 2026-10-04
@@ -14,17 +14,17 @@ is make the store the *only* place a launch gets its build from. Three things
 still run around it, and the maintainer's complaint is all three.
 
 **1. A launch resolves to Sober by reference.** `install::effective_apk`
-(`crates/cordial-shell/src/install.rs`) goes `CORDIAL_APK`, then the Settings
-APK, then `cordial_update::install::managed_base()` (`build/<abi>/base.apk`,
-which exists only after Cordial has installed a build itself), then Sober's
+(`crates/vanta-shell/src/install.rs`) goes `VANTA_APK`, then the Settings
+APK, then `vanta_update::install::managed_base()` (`build/<abi>/base.apk`,
+which exists only after Vanta has installed a build itself), then Sober's
 `.var/app/org.vinegarhq.Sober/data/sober/packages/<abi>/com.roblox.client/base.apk`.
-A machine with Sober and no prior Cordial install therefore never meets the
+A machine with Sober and no prior Vanta install therefore never meets the
 first-run screen and silently follows whatever Sober last downloaded, and
 Settings says "Found in Sober's download". The comment on `locate` gives the
 reason: Sober's copy is "far and away the least painful way for someone to
 obtain" a build. `provider::local` says it "is the source most users should end
 up on" and ADR-025 says the free source is tried first because the README told
-people to install Sober. Those were true when Cordial could not download.
+people to install Sober. Those were true when Vanta could not download.
 
 **2. Even "Download Roblox" prefers Sober.** `provider::all()` puts
 `local::OnThisMachine` ahead of the mirror, and the first-run button asks for
@@ -44,7 +44,7 @@ code; the empty store is observed.)
 
 **What the store cannot yet do is run two versions at once.** The engine
 directory differs per entry, but assets do not: `load.rs::assets_root()` is
-`$XDG_CACHE_HOME/cordial/assets`, one tree per build flavour, stamped with the
+`$XDG_CACHE_HOME/vanta/assets`, one tree per build flavour, stamped with the
 APK's path, size and mtime (`cache::stamp_for`). A second profile on another
 version re-extracts over the first one's tree while it is running, which is
 the failure ADR-053 records for phone against Quest ("rewrite files under a
@@ -57,12 +57,12 @@ because the stamp includes the path. Both are read from the code, not run.
 **A launch resolves to a store entry, or to an explicit developer override,
 and to nothing else.** The sources, in order:
 
-1. `CORDIAL_APK` / `cordial-run --apk`: the developer override, never filed,
+1. `VANTA_APK` / `vanta-run --apk`: the developer override, never filed,
    never updated, labelled as such (unchanged).
 2. The profile's pin, if it has one: that entry, or a refusal (unchanged, ADR-033).
 3. **Latest**: the newest *complete, signature-recorded* entry in the store.
 
-Sober's directory, `CORDIAL_APK_DIR` and the Settings APK path stop being
+Sober's directory, `VANTA_APK_DIR` and the Settings APK path stop being
 launch sources. They become **imports**: a user action that verifies the
 archives, copies them into the store and is then forgotten.
 
@@ -94,21 +94,21 @@ not whatever Sober holds. Updating is "download the newest into the store"
 (`obtain_into_store`, which exists) and moves every Latest profile at their
 next launch, without touching a pinned one.
 
-**Cordial downloads by default.** `provider::all()` is the mirror alone.
+**Vanta downloads by default.** `provider::all()` is the mirror alone.
 The first-run button always downloads. Sober appears only as a second, explicit
 action when its package directory is detected and holds a build the store does
 not (compared by `version::same_build`):
 
-> **Roblox build**, first run: "Cordial downloads Roblox for you and keeps its
+> **Roblox build**, first run: "Vanta downloads Roblox for you and keeps its
 > own copy. It checks Roblox's signing certificate before using it."
 > Below it, only when Sober's build is found: "Sober's Roblox 2.738.0.1397 is
-> on this computer. Copy it into Cordial instead of downloading (about 150 MB;
-> Cordial does not change Sober's files and does not follow its updates)."
+> on this computer. Copy it into Vanta instead of downloading (about 150 MB;
+> Vanta does not change Sober's files and does not follow its updates)."
 >
 > **Settings -> Roblox**, replacing the APK and Engine rows: a store view and two
 > actions, "Import from a file..." and (only when detected and not already kept)
 > "Import from Sober...". An entry from Sober reads "Imported from Sober on 4
-> Oct 2026". Nothing on the page says Cordial depends on Sober.
+> Oct 2026". Nothing on the page says Vanta depends on Sober.
 
 **Two versions at once is made true, not assumed.** Assets are extracted into
 the entry (`builds/<version>/assets/`), derived by the runtime from
@@ -136,10 +136,10 @@ the legacy state found on disk:
 
 | Found | Does | Profiles |
 |---|---|---|
-| Slot already a link into the store (host, Sober or Cordial origin) | nothing to copy; the entry is already there | follow Latest |
+| Slot already a link into the store (host, Sober or Vanta origin) | nothing to copy; the entry is already there | follow Latest |
 | Slot a real directory / unkeyed build (this machine's Flatpak), or `effective_apk` is Sober's | verify, **copy** the archives (not link: the Flatpak sees Sober's directory through a read-only grant, so a hard link across that mount is expected to fail, INFERRED), extract, file as `source=legacy`/`sober` | follow Latest |
 | Settings APK set | import it | **every profile without a pin is pinned to it**, because a user who chose a file meant that file and Latest would otherwise move them off it |
-| `CORDIAL_APK` | nothing; it is a per-run override | unchanged |
+| `VANTA_APK` | nothing; it is a per-run override | unchanged |
 
 It runs when the store has no complete entry and a legacy slot exists. After
 it the store is non-empty and the newest entry cannot be removed, so it cannot
@@ -154,14 +154,14 @@ callers, as today. A pin whose entry is missing is refused with the existing
 message, and the Version page offers its download.
 
 **A pin Roblox no longer accepts.** Roblox enforces a minimum client
-version server-side and Cordial cannot ask what it is: the `AndroidApp`
+version server-side and Vanta cannot ask what it is: the `AndroidApp`
 version endpoint answers 500 (`version.rs`). What the user sees is therefore
-whatever the engine shows when joining is refused, which Cordial has never
+whatever the engine shows when joining is refused, which Vanta has never
 captured (**INFERRED**: an update-required message or a failed join; the doctor
-text assumes "an update message"). Cordial does not guess. A pinned profile's
+text assumes "an update message"). Vanta does not guess. A pinned profile's
 row says "Pinned to Roblox X, N releases behind the newest build on offer"
 when the list is cached, the existing sentence "A pinned build that stops
-joining games was retired by Roblox, not broken by Cordial" stays, and a
+joining games was retired by Roblox, not broken by Vanta" stays, and a
 pinned launch that exits within the early-exit window adds one line to the crash
 page: "This profile is pinned. If Roblox asked you to update, choose Latest."
 A build whose signer is no longer in the pinned certificate set (the set only
@@ -171,7 +171,7 @@ grows, ADR-033) is refused at launch naming the fingerprint.
 A profile records nothing about the build that last ran it. Add
 `profiles/<name>/last-roblox-version`, written when the client is spawned. Pinning
 a build older than it shows: "This profile last ran Roblox X. An older build may
-not understand what a newer one saved. Cordial has not measured what happens;
+not understand what a newer one saved. Vanta has not measured what happens;
 Settings -> Roblox -> Stored data clears it." Per-profile `data/` is not
 snapshotted (`profile.rs` records its cache alone at 2.0 GB) and is not
 touched. Nothing measured says same-flavour downgrades corrupt anything;
@@ -181,16 +181,16 @@ throughout.
 
 ## Consequences
 
-**Cordial depends on nothing of Sober's after one import.** The cost is the
+**Vanta depends on nothing of Sober's after one import.** The cost is the
 one ADR-025 named for the first-run screen: a mirror is a third party that sees
 who asked and can be down. Mitigated as before by the signature check, and by
 Sober remaining an explicit, one-click import for anyone who prefers Google
 Play's route.
 
 **A Sober user's updates change hands.** They used to move when Sober's app
-updated. They now move when Cordial's Updates run, which under ADR-015 does not
+updated. They now move when Vanta's Updates run, which under ADR-015 does not
 download unasked on a metered connection (the default for most desktops).
-Roblox refusing the old build then looks, to them, like Cordial breaking. The
+Roblox refusing the old build then looks, to them, like Vanta breaking. The
 release notes must say this under "what will still bite", and the first launch
 after upgrade should offer Update once.
 
@@ -202,11 +202,11 @@ view shows the number. The engine (118 MB) is derivable from the archive in
 about 0.6 s (the figure in `install.rs`), so non-current entries could keep
 only archives; left out, because it is a second state an entry can be in.
 
-**Flatpak.** The store is `$XDG_DATA_HOME/cordial/builds`, i.e.
-`~/.var/app/io.github.luohoa97.Cordial/data/cordial/builds`, separate from a
+**Flatpak.** The store is `$XDG_DATA_HOME/vanta/builds`, i.e.
+`~/.var/app/io.github.gpt4omni.Vanta/data/vanta/builds`, separate from a
 host install's (ADR-037); nothing is shared and a user with both pays twice. The
 read-only grant `~/.var/app/org.vinegarhq.Sober/data/sober/packages:ro`
-(`packaging/io.github.luohoa97.Cordial.yml:159`) must stay: it is now what the
+(`packaging/io.github.gpt4omni.Vanta.yml:159`) must stay: it is now what the
 import reads, and nothing else.
 
 **Cache semantics are wrong for a pin.** `~/.cache` is what cleaners delete,
@@ -226,11 +226,11 @@ screen" no longer hold. ADR-013's per-profile table gains
 
 1. **`spare = 1`.** The build before the newest stays, for the reason ADR-033
    gives: an update that regresses should be two clicks from undone.
-2. **The store moves to `$XDG_DATA_HOME/cordial/builds`.** A pinned build may
+2. **The store moves to `$XDG_DATA_HOME/vanta/builds`.** A pinned build may
    not be obtainable again, and `~/.cache` is what cleaners delete. The
    migration moves an existing cache store once, with a rename where the two
    are on one filesystem and a copy otherwise. In the Flatpak that is
-   `~/.var/app/io.github.luohoa97.Cordial/data/cordial/builds`.
+   `~/.var/app/io.github.gpt4omni.Vanta/data/vanta/builds`.
 3. **The Settings APK path is imported and cleared,** and every profile with no
    pin is pinned to it, so nobody is moved off a file they chose.
 4. **A Sober user's first launch after the upgrade asks once** whether to
@@ -263,7 +263,7 @@ above, what was measured, and what is still not known.
 
 **Corrected.** Context 3 measured `lib/x86_64` as a real directory naming
 Sober's `base.apk` with `builds/` empty. On the host install, measured again on
-2026-10-04, the slot is a link into `~/.cache/cordial/builds/2.738.0.1397`,
+2026-10-04, the slot is a link into `~/.cache/vanta/builds/2.738.0.1397`,
 which holds that entry with a signer record in the slot's format. The migration
 handles both shapes; the earlier measurement described a machine that has
 since pressed Download.
@@ -272,7 +272,7 @@ since pressed Download.
 first time on real-shaped data: 0.24.1 installed from its bundle, launched once
 on Sober's archives with the read-only grant, then the main build installed
 over it. The old launch had left a *third* shape: an engine-only entry in
-`cache/cordial/builds/<version>` (`.signer`, `.from` naming Sober's archive, no
+`cache/vanta/builds/<version>` (`.signer`, `.from` naming Sober's archive, no
 `base.apk`) and `lib/<abi>` linked to it, because hard linking Sober's archives
 across the read-only mount fails with `EXDEV` -- the log says "kept without its
 archives ... Invalid cross-device link". `relocate` moved the entry and left the
@@ -308,7 +308,7 @@ and a fresh install were measured as designed.
 
 **Not done.** The profile row does not say "N releases behind the newest build
 on offer": that needs the mirror's list cached somewhere, and the Version page
-fetches it fresh. `CORDIAL_APK_DIR`, which was undocumented, is no longer read.
+fetches it fresh. `VANTA_APK_DIR`, which was undocumented, is no longer read.
 
 **Still INFERRED.**
 

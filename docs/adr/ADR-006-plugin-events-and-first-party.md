@@ -1,4 +1,4 @@
-# ADR-006: Plugins may declare their own events, and some plugins ship with Cordial
+# ADR-006: Plugins may declare their own events, and some plugins ship with Vanta
 
 **Status:** accepted
 **Related:** [ADR-002](ADR-002-core-shell-and-ui-handoff.md), [ADR-003](ADR-003-plugin-isolation.md), [ADR-005](ADR-005-flag-service.md)
@@ -19,7 +19,7 @@ capabilities:
 A plugin may only publish on types it declared itself. Namespacing is by plugin
 id and is not optional: `flag-manager/profile-changed`, never `profile-changed`.
 
-**2. Some plugins ship with Cordial as first-party**, installed by default and
+**2. Some plugins ship with Vanta as first-party**, installed by default and
 loaded on demand when something depends on them. They are ordinary plugins —
 same manifest, same capability grants, same isolation — and they are visible and
 individually disableable in settings.
@@ -31,7 +31,7 @@ multi-instance plugin wants to say "an instance started"; a launcher wants to
 hear it. If every such pair needs a new core event type, the core's event
 vocabulary becomes a list of whatever plugins happened to exist, and every new
 integration is a core change. Letting plugins declare their own keeps the core's
-vocabulary about *Cordial*, and lets the ecosystem grow sideways.
+vocabulary about *Vanta*, and lets the ecosystem grow sideways.
 
 **Declaration is separate from publication on purpose.** A plugin that can
 publish on any string can impersonate another plugin's events, and a subscriber
@@ -49,7 +49,7 @@ that only reacts should not have to be trusted to speak.
 **Because "built in" and "a plugin" are not opposites, and pretending otherwise
 costs the architecture.** The moment a behaviour is implemented in core because
 it ships by default, it stops being subject to the capability model, stops being
-inspectable the way a plugin is, and stops being removable. Cordial would then
+inspectable the way a plugin is, and stops being removable. Vanta would then
 have two kinds of behaviour with two sets of rules, and the interesting one would
 be the one users cannot see.
 
@@ -60,7 +60,7 @@ cannot express, that is a signal the API is incomplete — exactly the argument
 
 **Loaded on demand, not eagerly.** A first-party plugin that nothing depends on
 should not be running. Resolution is by dependency: a plugin declares that it
-needs `cordial/multi-instance`, and that plugin starts if it is not already up.
+needs `vanta/multi-instance`, and that plugin starts if it is not already up.
 This is the same shape as an ESM import graph and it should behave like one —
 resolved once, shared, not restarted per dependent.
 
@@ -77,7 +77,7 @@ refuse a publish from anyone else, and survive a plugin restarting without
 letting a different plugin claim its namespace in the gap.
 
 **Accepted:** a first-party plugin ships in the repository and is covered by its
-tests, so the plugin API is exercised by Cordial's own CI rather than only by
+tests, so the plugin API is exercised by Vanta's own CI rather than only by
 third parties.
 
 **Accepted:** dependency resolution introduces a failure mode the current host
@@ -86,7 +86,7 @@ surface as a named error to the dependent, not a silent absence, for the same
 reason `denied` and `error` are distinct in the protocol.
 
 **Rejected:** letting plugins publish on core event types. Core events describe
-what Cordial did; a plugin claiming Cordial did something it did not is a
+what Vanta did; a plugin claiming Vanta did something it did not is a
 correctness problem for every subscriber. Plugins declare their own or say
 nothing.
 
@@ -99,7 +99,7 @@ the subscription to match something that shows up later — a subscriber that
 starts before its dependency has to wait for it, which is the dependency
 resolution this ADR already describes for first-party plugins ("resolved
 once, shared, not restarted per dependent"), not a new problem. See
-`crates/cordial-plugins/src/events.rs`.
+`crates/vanta-plugins/src/events.rs`.
 
 ## What would change this
 
@@ -117,15 +117,15 @@ this before you rely on `dependencies`.** ADR-006 describes dependency-resolved
 loading, and `events.rs`'s own module comment leans on it to explain why
 subscribe-time filtering is acceptable. **That start ordering is not
 implemented.** `plugin_host::start_all` — the only path that starts a plugin in
-the running client, called once from `crates/cordial-runtime/src/bin/load.rs` —
+the running client, called once from `crates/vanta-runtime/src/bin/load.rs` —
 iterates `manifest::discover(&manifest::plugin_root())`, which returns plugins
 sorted by **directory name** (`dirs.sort()` in `manifest.rs`) and nothing else.
 `plugin_host.rs` contains no reference to `dependencies` or `Dependency`
-anywhere in the file, and nothing in it reaches `cordial_plugins::resolve`. (The
+anywhere in the file, and nothing in it reaches `vanta_plugins::resolve`. (The
 word `resolve` does appear there, in `crate::flags::resolve` and a local
 `resolve_within`; grep for the module rather than the word.) The dependency
 planner in
-`crates/cordial-plugins/src/resolve.rs` has non-test callers only in
+`crates/vanta-plugins/src/resolve.rs` has non-test callers only in
 `marketplace.rs` and the settings window's install-confirmation UI: it decides
 what gets *installed*, never what starts first. Nothing refuses to start a
 plugin whose declared dependency is absent, either, so ADR-006's "must surface

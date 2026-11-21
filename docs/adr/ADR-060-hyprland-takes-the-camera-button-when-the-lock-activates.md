@@ -48,15 +48,15 @@ A real Hyprland 0.56.2 cannot start under sway or weston (it wants
 `wl_compositor` and `xdg_wm_base` at version 6; they offer 5), and with
 `WAYLAND_DISPLAY` unset it opens on whatever session it finds. It starts under
 `kwin_wayland --virtual`, which offers 6. `tools/hyprland-drag-e2e.py` builds
-that stack in the `cordial` distrobox under a private `XDG_RUNTIME_DIR`
-(KWin first, with its own session bus; Hyprland inside it; Cordial inside that)
+that stack in the `vanta` distrobox under a private `XDG_RUNTIME_DIR`
+(KWin first, with its own session bus; Hyprland inside it; Vanta inside that)
 and drives a `zwlr_virtual_pointer_v1` into the nested Hyprland only.
 
 Same stack, same virtual pointer, signed out, at the title screen:
 
 | Binary | Right drag |
 |---|---|
-| 0.29.0 with `CORDIAL_DRAG_LOCK=1` (the 0.27 behaviour) | `lock_pointer`, then button release, `leave`, `destroy`, then a discarded `locked`: the reporter's trace, line for line. The engine is told of the press and, under a millisecond later, of a release |
+| 0.29.0 with `VANTA_DRAG_LOCK=1` (the 0.27 behaviour) | `lock_pointer`, then button release, `leave`, `destroy`, then a discarded `locked`: the reporter's trace, line for line. The engine is told of the press and, under a millisecond later, of a release |
 | 0.29.0 default (the 0.28 behaviour) | no lock requested; `confirmed=false` throughout |
 | This change | lock requested, confirmed, held; relative motion reaches the engine (`nativePassMouseMove dx=30`); one release to the engine when the player lets go; lock given back |
 
@@ -69,7 +69,7 @@ of a right drag, a middle drag and twenty drags in a row.
 Keep the lock, and find the release.
 
 1. **A second `wl_pointer` at version 5**, from a second `wl_seat` bound at
-   that version, used only to receive `frame`. Cordial's own pointer is version
+   that version, used only to receive `frame`. Vanta's own pointer is version
    1 because its seat is, and a child cannot be newer than its parent. Binding
    the seat again leaves the keyboard and touch objects as they were.
 2. **A camera-button release that arrives while the lock is still pending is
@@ -86,8 +86,8 @@ Keep the lock, and find the release.
    and not longer.
 
 Only on Hyprland, and only when the second pointer exists. Elsewhere the drag
-lock behaves as before. `CORDIAL_DRAG_LOCK=0` restores 0.28.0 on Hyprland.
-`CORDIAL_DRAG_LOCK=1` used to mean "lock at the press" and now means nothing,
+lock behaves as before. `VANTA_DRAG_LOCK=0` restores 0.28.0 on Hyprland.
+`VANTA_DRAG_LOCK=1` used to mean "lock at the press" and now means nothing,
 because that without the hold is the bug.
 
 ## A second bug, found while measuring
@@ -131,9 +131,9 @@ released early. Elsewhere a lock leaves held buttons alone and nothing changed.
 
 ## Consequences
 
-- The release is inferred from an absence, in a compositor Cordial does not
+- The release is inferred from an absence, in a compositor Vanta does not
   control. If Hyprland stops sending the frame, a drag ends by the silence
-  failsafe or the next click rather than at once. `CORDIAL_DRAG_LOCK=0` is the
+  failsafe or the next click rather than at once. `VANTA_DRAG_LOCK=0` is the
   way out.
 - The tool exercises one virtual pointer in one nested Hyprland. A real mouse
   and a touchpad produce the same `onMouseButton` path; that is `INFERRED`.

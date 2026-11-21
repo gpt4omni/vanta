@@ -7,8 +7,8 @@
 
 > ADR-053's VR mode runs the Quest build's arm64 engine in an in-process
 > translator. It stays inside this record because the engine's code runs
-> unmodified and the translator dispatches only on Cordial's own stub
-> addresses, never on an engine address; `cordial-guest` refuses any other
+> unmodified and the translator dispatches only on Vanta's own stub
+> addresses, never on an engine address; `vanta-guest` refuses any other
 > key, and its tests fail if that refusal is removed.
 
 ---
@@ -16,7 +16,7 @@
 ## Context
 
 During architecture design, an in-process hooking facility was considered: executing
-Cordial-controlled code inside the Roblox process in order to patch its behaviour. Two
+Vanta-controlled code inside the Roblox process in order to patch its behaviour. Two
 things motivated it.
 
 1. **Compatibility gaps.** Roblox's Android build behaves in ways that are wrong on a
@@ -29,7 +29,7 @@ things motivated it.
    "extensible Roblox client" suggests to most people.
 
 The question was not whether it is possible. It is possible. The question was whether it
-should exist in Cordial's binary at all.
+should exist in Vanta's binary at all.
 
 ## Decision
 
@@ -51,7 +51,7 @@ use is asking the fox to audit the henhouse from inside the henhouse.
 
 The general principle, stated in spec §7.3: **enforcement must live outside the boundary
 it enforces**, and nothing lives outside a process from that process's own perspective.
-Cordial's other boundaries work precisely because core sits outside them — core closes a
+Vanta's other boundaries work precisely because core sits outside them — core closes a
 portal grant, core kills a sandboxed process, core stops answering a plugin's bus
 messages. None of those mechanisms have an in-process analogue, because there is no
 "outside" to put them in.
@@ -63,7 +63,7 @@ guarantee into a promise, and users cannot tell the difference until it fails.
 ### There is no root of trust
 
 A trustworthy client-side integrity signal requires something the user does not control —
-TPM attestation, secure boot, a kernel component. Cordial runs on a machine its user owns
+TPM attestation, secure boot, a kernel component. Vanta runs on a machine its user owns
 entirely. That foundation is simply absent.
 
 Consequently any "this client is modified" marker is removable by exactly the actors who
@@ -81,7 +81,7 @@ holds authority, nothing outside can make it relinquish that authority; it can o
 asked, and asking is not enforcement.
 
 This makes mid-run revocation of an in-process capability unenforceable, which puts it in
-a different class from every other capability Cordial grants. Portal capabilities are
+a different class from every other capability Vanta grants. Portal capabilities are
 revoked by closing the grant at the source. Deno sandbox flags are revoked by terminating
 and respawning the process. Core capabilities are revoked by core declining to answer.
 All three are performed *by core, from outside*, and the plugin's cooperation is never
@@ -93,9 +93,9 @@ in the system that a revocation UI could not actually revoke.
 
 Passkeys are a framework-API implementation, not a patch. Roblox calls
 `androidx.credentials.CredentialManager`; that call crosses a JNI boundary that is
-*already Cordial's own code*, because the framework layer must exist for the app to run at
+*already Vanta's own code*, because the framework layer must exist for the app to run at
 all. Implementing the API beneath the app is strictly less work than patching the app —
-it is the layer Cordial is already building, it survives Roblox updates because the
+it is the layer Vanta is already building, it survives Roblox updates because the
 Android API is stable while binary offsets are not, and it requires no offset database
 and no per-release maintenance (spec §4.1, §4.3).
 
@@ -128,7 +128,7 @@ That property is worth more than any feature it costs.
 **Accepted:** full-arbitrary client-UI modification is not offered. A plugin cannot strip
 in-game HUD elements Roblox provides no toggle for, cannot redraw the client's own
 interface, and cannot alter game behaviour. Users who want that will not get it from
-Cordial.
+Vanta.
 
 Everything in the shipped feature set (spec §9b) is achievable without it: launcher
 replacement, FastFlags, UI themes, Discord Rich Presence, external tool integrations,
@@ -145,7 +145,7 @@ with `prot | PROT_WRITE` unconditionally, and the counterpart that is supposed t
 back off after relocation (`phdr_table_protect_segments()`) turned out to have no call site
 reached on `__LP64__` at all: both places that call it are wrapped in `#if !defined(__LP64__)`
 or its own `#if 0`-gated body, legacy scaffolding for the 32-bit `DT_TEXTREL` case. The result,
-observed with `tools/engine-text-diff.py` against a live `cordial-run`, was the engine's ~112 MB
+observed with `tools/engine-text-diff.py` against a live `vanta-run`, was the engine's ~112 MB
 text mapping sitting `rwxp` for the whole process lifetime — not patched (0 differing bytes
 against the file), but writable the entire time regardless.
 
@@ -175,7 +175,7 @@ mocktail patches the engine's flags-loaded byte —
 `ForceNativeFlagsLoadedForTaskScheduler`, writing to
 `g_libroblox_base + 0x75a8250`. Reading that function and stopping there, as I
 did, gives the impression of a project that routinely rewrites engine memory
-and a decision here that costs Cordial capability. Both impressions are wrong.
+and a decision here that costs Vanta capability. Both impressions are wrong.
 
 **It is scaffolding, and it is switched off.** The write is gated behind
 `MOCKTAIL_PATCH_NATIVE_FLAGS_LOADED`, which their `IsEnabled` refuses unless
@@ -196,7 +196,7 @@ push past a gate they did not yet understand and watch what happened downstream.
 The whole apparatus around it — `MOCKTAIL_PATCH_`, `MOCKTAIL_RECOVER_`,
 `MOCKTAIL_STAGE6_`, `MOCKTAIL_TRACE_STAGE6_`, `MOCKTAIL_SEED_STAGE6_` — is a lab
 bench, not a shipping mechanism. From `supported` builds onward it is off. On
-2.734.917, the build in `~/.cache/cordial/lib/x86_64`, mocktail prints `legacy
+2.734.917, the build in `~/.cache/vanta/lib/x86_64`, mocktail prints `legacy
 binary patches: disabled` and its content store still initialises.
 
 ### This strengthens the decision rather than testing it
@@ -209,7 +209,7 @@ is a better one, because it runs on this host rather than inside Android.
 ### And the cost that is real, stated plainly
 
 mocktail had a phase in which it could force the engine forward in order to learn
-from it. Cordial has never had that phase and by this decision never will. That
+from it. Vanta has never had that phase and by this decision never will. That
 is not free. `docs/analysis/flag-init.md` runs to forty-five sections and roughly
 fifty failed reproductions of a single storage bug, much of it inferring
 behaviour that a research patch would have let somebody observe directly in an

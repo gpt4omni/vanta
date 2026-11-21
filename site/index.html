@@ -239,11 +239,9 @@ flatpak install vanta io.github.gpt4omni.Vanta</code></pre>
     if (h.textContent.trim() === 'Vanta') h.textContent = 'Frostbite';
   });
 
-  // The exact per-channel inversion of the mango gradient, which is why the
-  // two read as twins rather than as a recolour:
-  //   #FF1B6B -> #00E494   #FF7A18 -> #0085E7   #B4E600 -> #4B19FF
+  // Shift accents toward frost-silver on Frostbite days.
   var css = document.createElement('style');
-  css.textContent = ':root{--brand-a:#00E494;--brand-b:#0085E7;--brand-c:#4B19FF;}';
+  css.textContent = ':root{--brand-a:#fafafa;--brand-b:#a2adb7;--brand-c:#586571;}';
   document.head.appendChild(css);
   document.documentElement.setAttribute('data-brand', 'frostbite');
 })();

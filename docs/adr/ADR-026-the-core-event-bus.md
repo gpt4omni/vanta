@@ -1,12 +1,12 @@
-# ADR-026: Cordial publishes what it observes, and plugins may never veto it
+# ADR-026: Vanta publishes what it observes, and plugins may never veto it
 
 **Status:** accepted
 **Related:** [ADR-001](ADR-001-in-process-hooking.md), [ADR-003](ADR-003-plugin-isolation.md), [ADR-006](ADR-006-plugin-events-and-first-party.md), [ADR-007](ADR-007-host-resources-are-brokered.md)
 
 ## Decision
 
-Cordial publishes the facts it observes at the platform boundary as **core
-events**, on the registry ADR-006 already built, under the reserved `cordial/`
+Vanta publishes the facts it observes at the platform boundary as **core
+events**, on the registry ADR-006 already built, under the reserved `vanta/`
 owner.
 
 Three rules, and the first is the one the others exist to protect.
@@ -19,7 +19,7 @@ Three rules, and the first is the one the others exist to protect.
 3. **Delivery is lossy and the loss is counted.** Publishing never blocks on a
    plugin.
 
-## Why Cordial can do this without hooking anything
+## Why Vanta can do this without hooking anything
 
 Roblox's build runs on a bionic linker this project ported, against a libc shim
 it wrote, on a JNI VM standing in for ART, talking to a framework layer that
@@ -28,14 +28,14 @@ ours. The surface it draws to is ours. Its sockets, paths, audio streams and
 input events all cross a boundary this codebase owns.
 
 So there is nothing to patch, trace or intercept. Everything a core event
-reports was already coming through Cordial on its way in, and reporting it is
-Cordial describing what it was asked to do. That is why this is compatible with
+reports was already coming through Vanta on its way in, and reporting it is
+Vanta describing what it was asked to do. That is why this is compatible with
 ADR-001, which forbids in-process code execution against the Roblox process
 permanently and absolutely.
 
 **This is a stronger position than the modding buses it resembles.** NeoForge
 and its relatives have to inject themselves into the program they observe.
-Cordial is underneath it already.
+Vanta is underneath it already.
 
 ## Why events are not cancellable, which is the whole of the design
 
@@ -52,12 +52,12 @@ patched instruction, and the distinction would not survive contact with anybody
 who wanted to abuse it — which is the test ADR-001 sets for itself: *not
 disabled, absent, so there is no primitive to extract or re-enable in a fork.*
 
-A plugin that wants an effect asks for one through a capability Cordial performs.
+A plugin that wants an effect asks for one through a capability Vanta performs.
 That is ADR-007, unchanged, and it is a different sentence from "a plugin may
 stop the client doing something".
 
-**Cordial's own decisions are explicitly not covered by this.** Whether
-*Cordial* shows a toast, or opens a URL in its own web view, is not the engine's
+**Vanta's own decisions are explicitly not covered by this.** Whether
+*Vanta* shows a toast, or opens a URL in its own web view, is not the engine's
 behaviour and could sensibly be influenced one day. If that is ever built it
 wants its own name and its own ADR, so that nobody reaches for it as a way to
 make platform events vetoable after all.
@@ -67,7 +67,7 @@ make platform events vetoable after all.
 `lifecycle.read` gates the events that exist today, which are launch, ready,
 shutdown, engine version and window size — all unremarkable.
 
-The events worth adding next are not unremarkable. They are the ones Cordial is
+The events worth adding next are not unremarkable. They are the ones Vanta is
 uniquely placed to see: which paths the engine opened, which addresses it
 connected to, what was typed into a focused field. **Nobody should receive those
 because they were once granted `lifecycle.read` to show a Discord status.** A new
@@ -108,7 +108,7 @@ answer nobody receives is a plugin hung waiting for it.
 
 **Plugins may miss events, and must be written knowing it.** A plugin that
 counts things will undercount under load. A plugin that needs exactly-once
-delivery cannot have it here and should be asking Cordial for state instead.
+delivery cannot have it here and should be asking Vanta for state instead.
 
 **The table is the security surface.** Adding an event is adding a thing some
 plugin can learn; the review question is not "is this useful" but "who should be
@@ -116,12 +116,12 @@ allowed to know it, and does that family already have the right capability".
 
 **Nothing here gives a plugin a UI.** A widget handle is a channel in ADR-007's
 sense — a plugin holding one can walk to its parent, its window, the
-application — so UI stays a set of named effects Cordial performs, as
+application — so UI stays a set of named effects Vanta performs, as
 `notify.send` already is.
 
 ## What would change this
 
-A demonstrated need for a plugin to influence Cordial's *own* behaviour, which
+A demonstrated need for a plugin to influence Vanta's *own* behaviour, which
 is a different ADR and must not be reached by widening this one. Or evidence
 that lossy delivery is losing something that matters, which would argue for a
 deeper queue or a durable side channel for one specific family — not for making
@@ -154,7 +154,7 @@ on. The engine's looper is measured in millions of polls a second. A bus that
 let it queue behind a wedged plugin would be a worse bug than anything it was
 built to observe.
 
-**Cordial's own decisions are explicitly outside this rule.** Whether *Cordial*
+**Vanta's own decisions are explicitly outside this rule.** Whether *Vanta*
 shows a toast or opens a URL in its web view is not the engine's behaviour and
 could sensibly be influenced one day. If that is ever built it gets its own
 name and its own ADR, so nobody reaches for it as a way to make platform events

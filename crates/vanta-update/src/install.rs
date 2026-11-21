@@ -1,6 +1,6 @@
 //! Filing a Roblox build into the store, and where the old layout's pieces are.
 //!
-//! [ADR-054](../../../docs/adr/ADR-054-cordial-owns-its-roblox-builds.md) made
+//! [ADR-054](../../../docs/adr/ADR-054-vanta-owns-its-roblox-builds.md) made
 //! the store the only place a launch gets a build from, and everything that
 //! brings a build in -- the mirror download, an import of Sober's copy or a
 //! chosen file, the first-launch migration -- files it with

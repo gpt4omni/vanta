@@ -5,18 +5,18 @@
 
 ## Decision
 
-Cordial gains an **opt-in development control surface**: a Unix socket, created
-only when `CORDIAL_DEV_CONTROL` is set, which can
+Vanta gains an **opt-in development control surface**: a Unix socket, created
+only when `VANTA_DEV_CONTROL` is set, which can
 
 - capture the frame the engine just presented, read out of the Vulkan
   swapchain, and
-- deliver pointer motion, clicks, keys, text and scroll through Cordial's own
+- deliver pointer motion, clicks, keys, text and scroll through Vanta's own
   `input::pass_*` entry points, and
 - fill a focused Roblox TextBox in one edit rather than one synthetic
   keystroke per character (`paste`/`settext`), for a harness payload too large
   to type.
 
-`tools/cordial-mcp.py` speaks MCP over stdio against that socket and adds
+`tools/vanta-mcp.py` speaks MCP over stdio against that socket and adds
 debugger tools on top of it.
 
 **`paste`/`settext` are the one pair of verbs that do not go through
@@ -25,7 +25,7 @@ on Wayland (see the text-entry sections of `docs/NEXT.md`), so the two verbs
 write that widget directly through ordinary `GtkEditable` calls
 (`insert_text`/`set_text`) and let its own `changed` signal do what a keystroke
 already does -- mirror the write, push it to the engine, redraw. Writing
-Cordial's own mirror buffer and the engine instead, bypassing the widget, was
+Vanta's own mirror buffer and the engine instead, bypassing the widget, was
 tried first and is not what shipped: the widget would not agree with the
 engine until the next pump tick's overlay refresh caught up, and a real
 keystroke landing in that window would revert the edit. X11 has no such
@@ -64,7 +64,7 @@ bisect that should have taken three runs did not happen at all.
 
 Reading the presented image gets a strictly better answer than any screenshot
 API could. It is what the engine drew, so it is unaffected by occlusion, by
-another window covering Cordial, by the window being off-screen or on another
+another window covering Vanta, by the window being off-screen or on another
 workspace, or by the compositor's own colour management. It also needs no
 permission, no portal and no group membership.
 
@@ -91,19 +91,19 @@ engine — which [ADR-001](ADR-001-in-process-hooking.md) and
 rather than disabled. Coordinates and pixels are what a human tester has, and
 they turn out to be enough.
 
-## Why input goes through Cordial and never the compositor
+## Why input goes through Vanta and never the compositor
 
 AGENTS.md already forbids synthesising input with `XTestFake*`, `ydotool`,
 `wlr-virtual-keyboard` or the RemoteDesktop portal, because they land on
 whatever has focus — which is the developer's own session, and one of them has
-already hijacked a cursor mid-session. Cordial *is* the client, so there is
+already hijacked a cursor mid-session. Vanta *is* the client, so there is
 nothing to send through: the socket queues commands and the pump applies them by
-calling `input::pass_*` directly, on the same thread `CORDIAL_SCRIPT` has always
+calling `input::pass_*` directly, on the same thread `VANTA_SCRIPT` has always
 used.
 
 ## Why it is off by default and unreachable from plugins
 
-The socket exists only when `CORDIAL_DEV_CONTROL` is set, and it lives inside
+The socket exists only when `VANTA_DEV_CONTROL` is set, and it lives inside
 the profile directory so [ADR-012](ADR-012-profiles-and-instances.md)'s
 one-instance `flock` already decides who owns it.
 
@@ -115,7 +115,7 @@ development aid for whoever is running the client, not a capability.
 ## Consequences
 
 A freeze is now investigated by asking the client rather than asking a human:
-`cordial_info` twice a few seconds apart separates a wedged engine from a slow
+`vanta_info` twice a few seconds apart separates a wedged engine from a slow
 one, because a wedged engine leaves the present count fixed while everything
 else keeps running. That exact reading — 42 presents against 74 million polls —
 is what finally characterised the 2026-08-21 freeze, and it took seconds once
@@ -128,7 +128,7 @@ permanent cost paid for a rare benefit.
 
 **What this does not settle.** The surface is only as good as the questions
 asked through it, and nothing here prevents a badly chosen instrument — the
-three retracted above were all arithmetic, not tooling. `cordial_backtrace`
+three retracted above were all arithmetic, not tooling. `vanta_backtrace`
 therefore quotes the process's CPU beside the stack, because a spinning pump and
 a blocked one produce byte-identical backtraces and that distinction has been
 read backwards here before.

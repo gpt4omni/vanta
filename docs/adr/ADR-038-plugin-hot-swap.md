@@ -8,7 +8,7 @@
 ## Decision
 
 Installing, updating, removing, enabling, disabling or granting a plugin
-takes effect in a running Cordial client for that profile without a restart.
+takes effect in a running Vanta client for that profile without a restart.
 A background thread inside the client — not the shell, and nothing new
 listening on a socket — polls this profile's discovered plugins, its
 `plugin-enabled.json` and its `plugin-grants.json` once a second, compares
@@ -38,7 +38,7 @@ launched the client and then, ordinarily, stopped watching it. Building a
 push channel means building the very thing ADR-019's `devctl` socket already
 is: a socket inside the profile directory, gated on an environment variable,
 that only exists when asked for. Reusing `devctl` for this was considered and
-rejected — it is explicitly a *development* control surface (`CORDIAL_DEV_CONTROL`,
+rejected — it is explicitly a *development* control surface (`VANTA_DEV_CONTROL`,
 off by default, undocumented to a plugin author), and Settings writing a
 production file is not a development action. Building a second, always-on
 socket for exactly one message ("something changed, go look") duplicates
@@ -62,12 +62,12 @@ it). Second, and more mundane: the polling interval this ADR ships is a
 second, chosen for a Settings toggle to feel roughly immediate to a human,
 and nothing about a hot-swapped *plugin* needs the microsecond-scale reaction
 `inotify` would buy that a one-second poll does not already deliver.
-`CORDIAL_PLUGIN_RECONCILE_INTERVAL_MS` exists specifically so this choice is
+`VANTA_PLUGIN_RECONCILE_INTERVAL_MS` exists specifically so this choice is
 revisited by a number rather than a rewrite if a second ever turns out to be
 too slow for something this ADR did not anticipate.
 
 **A poll generalises a mechanism already in the codebase; `refresh_grant`
-is the specific one.** `crates/cordial-runtime/src/plugin_host.rs` already
+is the specific one.** `crates/vanta-runtime/src/plugin_host.rs` already
 compares a `stat(2)`'s `mtime` against what it last saw and only re-reads and
 re-parses when it differs, on every request a running plugin makes. The
 reconciler in this ADR is the same idea widened from "whenever a request
@@ -78,10 +78,10 @@ request does not exist yet.
 
 ## Why unpacked (Developer-mode) plugins are excluded entirely
 
-`manifest::unpacked_dirs()` — plugins loaded from `CORDIAL_UNPACKED_PLUGINS`
+`manifest::unpacked_dirs()` — plugins loaded from `VANTA_UNPACKED_PLUGINS`
 for someone actively editing one — already reload themselves. `PluginProc::spawn_with`
 passes `reload: true` for these, which starts Deno with `--watch`, and Deno's
-own file watcher restarts the process on a change. `cordial_plugins::reconcile::desired_state`
+own file watcher restarts the process on a change. `vanta_plugins::reconcile::desired_state`
 never returns an unpacked plugin, and the reconciler's own bookkeeping
 (`Shared::running`, populated only by `spawn_one`) is seeded only from what
 `start_all` actually started outside that path — so an unpacked plugin never
@@ -117,7 +117,7 @@ capability written into `plugin-grants.json` by hand, or left there from an
 earlier version of a plugin's manifest, is granted regardless of what the
 current manifest requests. That is safe as a *launch-time* property, because
 the files on disk at launch are the ones a human is choosing to trust when
-they choose to open Cordial at all.
+they choose to open Vanta at all.
 
 It stops being safe the moment a plugin's files can change underneath an
 already-running grant, which is the entire feature this ADR adds. Consider a
@@ -131,8 +131,8 @@ user about version 2 at all; no install prompt runs for an update, by design
 release would train users to click through it). If the restarted process were
 handed the raw grants-file entry the way an ordinary launch is, it would keep
 `flags.write` it never re-requested and, by `docs/plugin-api.md`'s own
-account of that capability, could write into any `Cordial`-prefixed flag key
-including `CordialGraphicsBackend`. `cordial_plugins::reconcile::intersect_for_restart`
+account of that capability, could write into any `Vanta`-prefixed flag key
+including `VantaGraphicsBackend`. `vanta_plugins::reconcile::intersect_for_restart`
 exists to close exactly this: on a restart, and only on a restart, the
 process gets the profile's grant narrowed to what the *new* manifest
 actually requests. `Desired::granted` itself stays the raw, unintersected
@@ -177,7 +177,7 @@ not run, the old version is not run in its place, and no later tick starts it.
 
 Not covered, deliberately: an update that requests *some* of what was granted
 plus something new still runs, with the granted part only, as above. And a
-Cordial relaunch, or a plugin switched off and on, starts from the grants file
+Vanta relaunch, or a plugin switched off and on, starts from the grants file
 as `start_all` always has; the launch-time trust in `docs/plugin-api.md` is
 unchanged.
 
@@ -204,7 +204,7 @@ and then present).
 The same investigation found the message was also wrong on the machine that
 reported it. Inside the Flatpak the sandbox is always `Sandbox::None`, whose
 command ran a bare `deno` resolved against `PATH`, while the check before it
-also accepts Cordial's own downloaded copy. Deno 2.9.6 was in the data
+also accepts Vanta's own downloaded copy. Deno 2.9.6 was in the data
 directory, `interpreter_present` said yes, the spawn said ENOENT, and that was
 reported as "Deno is not installed". The unconfined command now runs the path
 that was found.
@@ -214,7 +214,7 @@ that was found.
 **Asset overlays and a plugin's own `flags.json` do not hot-swap.**
 `register_static_overlays` and `flags::collect` both read every enabled
 plugin's static files fresh at every launch, with no capability check at all
-(ADR-021) — but only at launch. A texture pack installed while Cordial is
+(ADR-021) — but only at launch. A texture pack installed while Vanta is
 running is discovered the *next* time `start_all` runs, not this session.
 Extending this reconciler to re-register overlays and re-collect flag layers
 live is a reasonable next step and was left out of this change because
@@ -230,7 +230,7 @@ here changes that, and a plugin's own `flags.json` layer sits in the
 out-of-scope category above alongside overlays for the same reason.
 
 **No new core event tells other plugins a hot swap happened.** It was
-considered — a `cordial/plugin.changed` event `discord-presence` or a future
+considered — a `vanta/plugin.changed` event `discord-presence` or a future
 plugin could subscribe to — and set aside as a second feature riding on this
 one's name rather than a piece this one needs. If a use for it appears, it is
 a small, separately-reviewable addition in the shape ADR-007 already asks
@@ -238,7 +238,7 @@ every broker to be.
 
 ## Testing
 
-`cordial_plugins::reconcile`'s `desired_state` and `diff` are pure functions
+`vanta_plugins::reconcile`'s `desired_state` and `diff` are pure functions
 with no process, broker or thread involved, and are unit-tested directly:
 a plugin excluded for no grant, excluded for being disabled, excluded for
 being data-only, included when it qualifies, a built-in shadowing a same-id
@@ -256,7 +256,7 @@ refusing to grant something the profile never approved regardless of what
 the new manifest asks for.
 
 **Verified live, on a throwaway signed-out profile**
-(`XDG_DATA_HOME=~/.cache/cordial-agent-plugins`), because `cordial-runtime`
+(`XDG_DATA_HOME=~/.cache/vanta-agent-plugins`), because `vanta-runtime`
 has no standalone way to run the reconciler without a real client. The first
 attempt at this failed, and the failure is the more useful record than a
 clean pass would have been.
@@ -274,7 +274,7 @@ different pid entirely, was the actual session and group leader.
 `kill_process_group`'s `killpg` call was therefore signalling a group with
 nothing in it every time — a syscall that succeeds and changes nothing,
 which looks identical to working right up until something waits for the
-effect. See `kill_process_group`'s own doc in `crates/cordial-plugins/src/host.rs`
+effect. See `kill_process_group`'s own doc in `crates/vanta-plugins/src/host.rs`
 for the fix (send the signal to the pid directly as well as to the group it
 was assumed to lead) and for why `Plugin::kill`'s existing "measured
 directly" comment about needing the group signal is, in hindsight, probably
@@ -317,9 +317,9 @@ repository owns.
 
 ## What would change this
 
-If `CORDIAL_PLUGIN_RECONCILE_INTERVAL_MS`'s default of one second turns out
+If `VANTA_PLUGIN_RECONCILE_INTERVAL_MS`'s default of one second turns out
 to be noticeably slow for a real workflow, the number is a one-line change
-before anything about the mechanism needs revisiting. If Cordial ever grows a
+before anything about the mechanism needs revisiting. If Vanta ever grows a
 production, always-on shell-to-client channel for an unrelated reason,
 routing this feature's notification through it instead of a poll becomes a
 reasonable follow-up — but building that channel *for* this feature, when a

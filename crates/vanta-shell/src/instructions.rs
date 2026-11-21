@@ -28,7 +28,7 @@
 //! Where Sober's package directory holds a build Vanta's store does not, a
 //! second control copies it in instead of downloading. It is below the
 //! download and says what it costs; the download is the default because
-//! Vanta keeps its own builds ([ADR-054](../../../docs/adr/ADR-054-cordial-owns-its-roblox-builds.md)).
+//! Vanta keeps its own builds ([ADR-054](../../../docs/adr/ADR-054-vanta-owns-its-roblox-builds.md)).
 //!
 //! ## It does not download on its own
 //!

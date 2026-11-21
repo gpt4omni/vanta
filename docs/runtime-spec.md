@@ -38,7 +38,7 @@ A port forks the runtime and nothing else. Why the line is here: [ADR-055](adr/A
 
 - `spec` is the protocol **major**, written once. The minor lives only in the handshake, so the two cannot disagree. A manifest naming a major Vanta does not know is shown as "needs a newer Vanta", not hidden.
 - `exec` is relative to the manifest's directory. `arch` is the host architectures the runtime runs on; Vanta hides it on any other and offers no translation ([ADR-043](adr/ADR-043-the-roblox-build-is-the-binarys-architecture.md)).
-- `builds` says who manages Roblox builds. `"vanta"` means the launcher's store ([ADR-054](adr/ADR-054-cordial-owns-its-roblox-builds.md)) picks one and `{build_dir}` is that entry. `"runtime"` means the runtime fetches and keeps its own, and the launcher shows no Version row for it.
+- `builds` says who manages Roblox builds. `"vanta"` means the launcher's store ([ADR-054](adr/ADR-054-vanta-owns-its-roblox-builds.md)) picks one and `{build_dir}` is that entry. `"runtime"` means the runtime fetches and keeps its own, and the launcher shows no Version row for it.
 - `capabilities` has the same shape as the handshake: name to integer version.
 - The manifest is advertisement only, and the handshake is the truth. The launcher's keyring entries and its report use the **manifest's** `id`, never the one the runtime claims while running; a handshake whose `runtime.id` differs from the manifest is refused.
 - Placeholders in `args`: `{socket}`, `{session_dir}`, `{profile_dir}`, `{build_dir}`, `{join_url}`. Each is substituted as a single argument, never through a shell. `{join_url}` is a `roblox-player:` link the launcher has already validated and stripped of its launch ticket ([section 6](#6-what-stays-in-the-launcher)).

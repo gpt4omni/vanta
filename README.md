@@ -20,7 +20,7 @@ container or virtual machine, on x86-64 or aarch64. GPL-3.0-or-later.
          alt="Join the Vanta Discord">
   </a>
   <a href="https://vanta.mintlify.app">
-    <img src="https://img.shields.io/badge/Docs-vanta.mintlify.app-FF1B6B?style=for-the-badge&logo=readthedocs&logoColor=white"
+    <img src="https://img.shields.io/badge/Docs-vanta.mintlify.app-18181B?style=for-the-badge&logo=readthedocs&logoColor=white"
          alt="Read the Vanta documentation">
   </a>
 </p>
@@ -31,24 +31,24 @@ from [`docs/`](docs/README.md).
 ## Demo
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/gpt4omni/vanta/main/docs/media/cordial-doors.gif"
+  <img src="https://raw.githubusercontent.com/gpt4omni/vanta/main/docs/media/vanta-doors.gif"
        alt="Roblox DOORS running under Vanta on Linux"
        width="560">
 </p>
 
 Roblox **DOORS**, unmodified, on Vanta.
-[Full size](https://raw.githubusercontent.com/gpt4omni/vanta/main/docs/media/cordial-doors.mp4),
+[Full size](https://raw.githubusercontent.com/gpt4omni/vanta/main/docs/media/vanta-doors.mp4),
 more in [`docs/media`](docs/media).
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/gpt4omni/vanta/main/docs/media/cordial-vr.webp"
+  <img src="https://raw.githubusercontent.com/gpt4omni/vanta/main/docs/media/vanta-vr.webp"
        alt="Roblox's Meta Quest build in VR on Linux, playing TUNNELER"
        width="360">
 </p>
 
 Roblox's **Meta Quest** build in VR on Linux, playing
 [TUNNELER](https://www.roblox.com/games/4635669637/TUNNELER).
-[Full size](https://raw.githubusercontent.com/gpt4omni/vanta/main/docs/media/cordial-vr.mp4);
+[Full size](https://raw.githubusercontent.com/gpt4omni/vanta/main/docs/media/vanta-vr.mp4);
 setting it up is in [`docs/vr.md`](docs/vr.md).
 
 ## Why Vanta

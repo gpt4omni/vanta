@@ -514,7 +514,7 @@ async function fileIssue(
       context.threadChannelId,
       `#${issue.number} ${title}`.slice(0, 100),
       [
-        container(0xFF7A18, [
+        container(0x9A9CA2, [
           text(`### ${title}\n${issue.html_url}`),
           separator(),
           text(

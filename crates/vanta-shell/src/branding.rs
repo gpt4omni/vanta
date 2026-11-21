@@ -1,18 +1,10 @@
-//! Frostbite: the same client, wearing the other half of the colour wheel, on
+//! Frostbite: the same client, wearing a frost-silver palette, on
 //! two days of the year.
 //!
 //! On the northern hemisphere's first day of winter, and on April Fools' Day,
-//! the window calls itself **Frostbite** and shows an icon whose gradient is
-//! the exact per-channel inversion of Vanta's:
-//!
-//! ```text
-//! #FF1B6B -> #00E494      #FF7A18 -> #0085E7      #B4E600 -> #4B19FF
-//! ```
-//!
-//! Same shape, same paths, opposite palette. Vanta's mark reads as a ripe
-//! mango and a cordial drink; inverted it reads as an unripe lime under frost.
-//! The inversion is arithmetic rather than taste, which is why the two look
-//! like twins rather than like a recolour.
+//! the window calls itself **Frostbite** and shows the frost-tinted obsidian V
+//! icon (`io.github.gpt4omni.Vanta.Frostbite.svg`) alongside the Frostbite
+//! banner. Same shape, same paths, cooler silver tint.
 //!
 //! **It is a joke and it stays inside the application.** The repository never
 //! rebrands: no README, no metainfo, no desktop file, no release artefact, no
@@ -55,7 +47,7 @@ impl Brand {
     /// **Frostbite's icon is a suffix of Vanta's id, not a name of its own,
     /// and that is a hard requirement rather than a naming preference.** Flatpak
     /// exports only files whose names begin with the application id, so
-    /// `io.github.luohoa97.Frostbite` could never be exported and would never
+    /// `io.github.gpt4omni.Frostbite` could never be exported and would never
     /// resolve for an installed build; `io.github.gpt4omni.Vanta.Frostbite`
     /// is exported like any other of the app's own files.
     ///

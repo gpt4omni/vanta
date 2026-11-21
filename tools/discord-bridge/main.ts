@@ -183,7 +183,7 @@ export async function build(source: Env) {
             context.threadChannelId,
             `#${opening.number} ${opening.title}`.slice(0, 100),
             [
-              container(0xFF7A18, [
+              container(0x9A9CA2, [
                 text(`### ${opening.title}\n${opening.url}`),
                 separator(),
                 text(

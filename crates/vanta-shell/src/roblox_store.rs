@@ -1,7 +1,7 @@
 //! The store view on Settings -> Roblox: which builds Vanta keeps, where each
 //! came from, who uses it, and the way to remove one.
 //!
-//! [ADR-054](../../../docs/adr/ADR-054-cordial-owns-its-roblox-builds.md) makes
+//! [ADR-054](../../../docs/adr/ADR-054-vanta-owns-its-roblox-builds.md) makes
 //! the store the only place a launch gets a build from, so the page that says
 //! what Roblox is on this machine has to be a list of the store and not a path.
 //! Each row says a fact read off the entry -- when it was downloaded, or that it
