@@ -689,9 +689,15 @@ int vanta_update_screen_orientation(void* fn, int width, int height, char* err, 
         return -1;
     }
     try {
-        auto cls = env->GetClass("com/roblox/engine/jni/NativeInputInterface");
+        JNIEnv* jni = env->GetJNIEnv();
+        jni->PushLocalFrame(4);
+        struct Pop {
+            JNIEnv* j;
+            ~Pop() { if (j) j->PopLocalFrame(nullptr); }
+        } pop{jni};
+        static const auto cls = env->GetClass("com/roblox/engine/jni/NativeInputInterface");
         jint orientation = width >= height ? kOrientationLandscape : kOrientationPortrait;
-        reinterpret_cast<Call>(fn)(env->GetJNIEnv(), (jclass)vanta::to_jni(env, cls), orientation);
+        reinterpret_cast<Call>(fn)(jni, (jclass)vanta::to_jni(env, cls), orientation);
         return 0;
     } catch (const std::exception& e) {
         snprintf(err, err_len, "%s", e.what());

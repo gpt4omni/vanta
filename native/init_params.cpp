@@ -410,19 +410,27 @@ static constexpr const char kBaseUrl[] = "https://www.roblox.com/";
 /// Everything shared between the arms — memory, resolution, density, engine
 /// version, where those appear at all — is unchanged, because none of it is
 /// Android- or Windows-specific in the first place.
-static std::string build_user_agent() {
-    long ram_mb = 0;
-    if (FILE* f = fopen("/proc/meminfo", "re")) {
-        char line[256];
-        while (fgets(line, sizeof line, f)) {
-            long kb = 0;
-            if (sscanf(line, "MemTotal: %ld kB", &kb) == 1) {
-                ram_mb = kb / 1024;
-                break;
+static long host_total_memory_mb() {
+    static const long cached = []() -> long {
+        long ram_mb = 0;
+        if (FILE* f = fopen("/proc/meminfo", "re")) {
+            char line[256];
+            while (fgets(line, sizeof line, f)) {
+                long kb = 0;
+                if (sscanf(line, "MemTotal: %ld kB", &kb) == 1) {
+                    ram_mb = kb / 1024;
+                    break;
+                }
             }
+            fclose(f);
         }
-        fclose(f);
-    }
+        return ram_mb;
+    }();
+    return cached;
+}
+
+static std::string build_user_agent() {
+    long ram_mb = host_total_memory_mb();
 
     // The engine build is four parts (2.730.0.790); the app version the real
     // client puts in its User-Agent is three (2.732.1043 for engine
@@ -1641,6 +1649,18 @@ public:
         p->displayResolution = S(res);
         p->displayPhysicalWidthPixels = width;
         p->displayPhysicalHeightPixels = height;
+        // Report real host RAM rather than a hardcoded 8 GB mobile ceiling so
+        // Roblox's asset/texture caches do not prematurely evict on desktop
+        // machines with 16-64 GB of RAM.
+        long ram_mb = host_total_memory_mb();
+        if (ram_mb > 0) {
+            long clamped = ram_mb < 2048 ? 2048 : (ram_mb > 65536 ? 65536 : ram_mb);
+            p->deviceTotalMemoryMB = static_cast<jint>(clamped);
+            if (clamped >= 16384) {
+                p->memoryClass = 512;
+                p->largeMemoryClass = 1024;
+            }
+        }
         // Prime the class. Without this the object reaches Roblox with a null
         // clazz, GetObjectClass falls back to FindClass("Invalid"), and every
         // field read against it returns nothing.
@@ -2513,8 +2533,22 @@ int vanta_call_static_bare_bool(void* fn, const char* class_name, int* out_resul
         return -1;
     }
     try {
-        auto cls = env->GetClass(class_name);
-        jboolean r = reinterpret_cast<Call>(fn)(env->GetJNIEnv(),
+        JNIEnv* jni = env->GetJNIEnv();
+        jni->PushLocalFrame(4);
+        struct Pop {
+            JNIEnv* j;
+            ~Pop() { if (j) j->PopLocalFrame(nullptr); }
+        } pop{jni};
+        // Fast path for the hot pump-loop pointer-lock query so it neither
+        // takes libjnivm's class-table mutex nor leaks a local ref per tick.
+        std::shared_ptr<jnivm::Class> cls;
+        if (strcmp(class_name, "com/roblox/engine/jni/NativeInputInterface") == 0) {
+            static const auto input_cls = env->GetClass("com/roblox/engine/jni/NativeInputInterface");
+            cls = input_cls;
+        } else {
+            cls = env->GetClass(class_name);
+        }
+        jboolean r = reinterpret_cast<Call>(fn)(jni,
                                                  (jobject)vanta::to_jni(env, cls));
         if (out_result) {
             *out_result = r ? 1 : 0;
