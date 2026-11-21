@@ -27,22 +27,30 @@ namespace vanta { jnivm::ENV* process_env(); }
 #include <memory>
 
 namespace {
+JNIInvokeInterface g_traced_iface;
+JavaVM g_traced_vm;
+JNIInvokeInterface g_real_iface;
+JavaVM* g_real_vm = nullptr;
+bool g_trace_invoke = false;
+
 class ProcessVM final : public jnivm::VM {
 public:
     ProcessVM() : VM(true) {
         // libjnivm also takes the VM mutex to read this immutable association.
+        // Hand out `&g_traced_vm` so JNIEnv::GetJavaVM stays on the same
+        // wrapper table as JNI_OnLoad: DetachCurrentThread invalidates `t_env`
+        // and libjnivm's own `g_real_vm` (and its `reserved0` pointer) stays
+        // private to this file.
         AddHook([](JNINativeInterface& iface) {
-            iface.GetJavaVM = [](JNIEnv* env, JavaVM** out) -> jint {
+            iface.GetJavaVM = [](JNIEnv*, JavaVM** out) -> jint {
                 if (out) {
-                    *out = jnivm::ENV::FromJNIEnv(env)->GetVM()->GetJavaVM();
+                    *out = &g_traced_vm;
                 }
                 return JNI_OK;
             };
         });
         initialize();
     }
-
-    using jnivm::VM::OverrideJNIInvokeInterface;
 };
 
 // The VM owns every class, object and environment it hands out, so it outlives
@@ -97,22 +105,27 @@ void dump_classes_now() {
 
 namespace {
 
-JNIInvokeInterface g_real_iface;
-JavaVM* g_real_vm = nullptr;
-bool g_trace_invoke = false;
-
 // Even an already-attached thread takes libjnivm's VM-wide mutex to look
 // itself up. The VM still owns the env; detach on this same thread invalidates
 // the cache through the canonical invocation table, also used by GetJavaVM.
 thread_local JNIEnv* t_env = nullptr;
 
-jint attach(JavaVM* vm, JNIEnv** out, void* args) {
+// Always delegate with `g_real_vm` rather than the caller's `vm` argument:
+// libjnivm recovers its `jnivm::VM*` from `vm->functions->reserved0` and throws
+// "Failed to get reference to jnivm::VM" if a caller passes a wrapped/null
+// `JavaVM*` or one whose `reserved0` slot is null (observed inside Roblox's
+// `JNI_OnLoad` on worker thread startup after commit ceb796f stopped routing
+// through `g_real_vm`).
+jint attach(JNIEnv** out, void* args) {
     if (t_env && out) {
         *out = t_env;
         return JNI_OK;
     }
+    if (!g_real_vm) {
+        return JNI_ERR;
+    }
     JNIEnv* env = nullptr;
-    const jint rc = g_real_iface.AttachCurrentThread(vm, out ? &env : nullptr, args);
+    const jint rc = g_real_iface.AttachCurrentThread(g_real_vm, out ? &env : nullptr, args);
     if (rc == JNI_OK && out) {
         t_env = *out = env;
     }
@@ -122,26 +135,26 @@ jint attach(JavaVM* vm, JNIEnv** out, void* args) {
 void note(const char* what, JavaVM* vm) {
     if (g_trace_invoke) {
         fprintf(stderr, "[jni] %s(vm=%p)%s\n", what, (void*)vm,
-                vm == g_real_vm ? " [ours]" : " [NOT ours]");
+                vm == &g_traced_vm ? " [ours]" : " [NOT ours]");
     }
 }
 
 jint traced_destroy(JavaVM* vm) {
     note("DestroyJavaVM", vm);
-    return g_real_iface.DestroyJavaVM(vm);
+    return g_real_vm ? g_real_iface.DestroyJavaVM(g_real_vm) : JNI_ERR;
 }
 jint traced_attach(JavaVM* vm, JNIEnv** env, void* args) {
     note("AttachCurrentThread", vm);
-    return attach(vm, env, args);
+    return attach(env, args);
 }
 jint traced_attach_daemon(JavaVM* vm, JNIEnv** env, void* args) {
     note("AttachCurrentThreadAsDaemon", vm);
     // libjnivm implements daemon attachment as ordinary attachment.
-    return attach(vm, env, args);
+    return attach(env, args);
 }
 jint traced_detach(JavaVM* vm) {
     note("DetachCurrentThread", vm);
-    const jint rc = g_real_iface.DetachCurrentThread(vm);
+    const jint rc = g_real_vm ? g_real_iface.DetachCurrentThread(g_real_vm) : JNI_ERR;
     if (rc == JNI_OK) {
         t_env = nullptr;
     }
@@ -150,12 +163,12 @@ jint traced_detach(JavaVM* vm) {
 jint traced_get_env(JavaVM* vm, void** env, jint version) {
     note("GetEnv", vm);
     if (!env) {
-        return g_real_iface.GetEnv(vm, nullptr, version);
+        return g_real_vm ? g_real_iface.GetEnv(g_real_vm, nullptr, version) : JNI_ERR;
     }
     // libjnivm ignores the requested version and attaches on GetEnv. Keep
     // that behaviour rather than changing the engine's attachment contract.
     JNIEnv* attached = nullptr;
-    const jint rc = attach(vm, &attached, nullptr);
+    const jint rc = attach(&attached, nullptr);
     if (rc == JNI_OK) {
         *env = attached;
     }
@@ -174,25 +187,28 @@ void* vanta_jni_create_vm() {
     }
     std::set_terminate(report_terminate);
     g_vm = std::make_unique<ProcessVM>();
+    g_real_vm = g_vm->GetJavaVM();
+    g_real_iface = *g_real_vm->functions;
+
+    // Keep libjnivm's own JavaVM private and hand out `&g_traced_vm` from both
+    // `JNI_OnLoad` and `JNIEnv::GetJavaVM`, so `g_real_vm->functions->reserved0`
+    // can never be clobbered and every invocation still flows through the TLS
+    // cache and invalidation hooks above.
+    g_traced_iface = g_real_iface;
+    g_traced_iface.DestroyJavaVM = traced_destroy;
+    g_traced_iface.AttachCurrentThread = traced_attach;
+    g_traced_iface.AttachCurrentThreadAsDaemon = traced_attach_daemon;
+    g_traced_iface.DetachCurrentThread = traced_detach;
+    g_traced_iface.GetEnv = traced_get_env;
+    g_traced_vm.functions = &g_traced_iface;
+    g_trace_invoke = getenv("VANTA_JNI_TRACE") != nullptr;
+
     // Vanta's Java side, before Roblox can ask for any of it.
     vanta_register_android_classes(g_vm->GetEnv().get());
     vanta::register_game_activity_classes(g_vm->GetEnv().get());
     vanta::register_init_params_classes(g_vm->GetEnv().get());
-    g_real_vm = g_vm->GetJavaVM();
-    g_real_iface = *g_real_vm->functions;
 
-    // Replace the table on the real VM: a proxy passed to JNI_OnLoad would
-    // let JNIEnv::GetJavaVM hand out an unwrapped detach entry point.
-    auto iface = g_real_iface;
-    iface.DestroyJavaVM = traced_destroy;
-    iface.AttachCurrentThread = traced_attach;
-    iface.AttachCurrentThreadAsDaemon = traced_attach_daemon;
-    iface.DetachCurrentThread = traced_detach;
-    iface.GetEnv = traced_get_env;
-    g_vm->OverrideJNIInvokeInterface(iface);
-    g_trace_invoke = getenv("VANTA_JNI_TRACE") != nullptr;
-
-    JavaVM* vm = g_real_vm;
+    JavaVM* vm = &g_traced_vm;
     // libjnivm recovers its VM from JavaVM::functions->reserved0. If that is not
     // set, every callback Roblox makes throws before it does anything.
     fprintf(stderr, "[jni] JavaVM=%p functions=%p reserved0=%p (expect %p)\n",
@@ -226,7 +242,7 @@ void* vanta_jni_thread_env() {
         return nullptr;
     }
     JNIEnv* env = nullptr;
-    if (attach(g_real_vm, &env, nullptr) != JNI_OK) {
+    if (attach(&env, nullptr) != JNI_OK) {
         return nullptr;
     }
     return env;
@@ -264,7 +280,7 @@ int vanta_jni_call_onload(void* fn, char* err, size_t err_len) {
         return -1;
     }
     try {
-        return reinterpret_cast<OnLoad>(fn)(g_real_vm, nullptr);
+        return reinterpret_cast<OnLoad>(fn)(&g_traced_vm, nullptr);
     } catch (const std::exception& e) {
         snprintf(err, err_len, "%s", e.what());
         return -2;

@@ -68,6 +68,29 @@ void check(JavaVM* vm) {
         worker.join();
     }
     assert(vanta_jni_thread_env() == main_env);
+
+    // Regression: callers may invoke the JNIInvokeInterface entries with a
+    // copied/wrapped JavaVM whose `reserved0` is null, or with a null `vm`
+    // pointer. The shim must still delegate to libjnivm's real VM rather than
+    // throwing "Failed to get reference to jnivm::VM".
+    std::thread wrapped_worker([=] {
+        JNIInvokeInterface copied_iface = *vm->functions;
+        copied_iface.reserved0 = nullptr;
+        JavaVM wrapped_vm{};
+        wrapped_vm.functions = &copied_iface;
+
+        void* env1 = nullptr;
+        assert(wrapped_vm.GetEnv(&env1, JNI_VERSION_1_6) == JNI_OK && env1);
+        assert(wrapped_vm.DetachCurrentThread() == JNI_OK);
+
+        void* env2 = nullptr;
+        assert(vm->functions->GetEnv(nullptr, &env2, JNI_VERSION_1_6) == JNI_OK && env2);
+        JNIEnv* attached = nullptr;
+        assert(vm->functions->AttachCurrentThread(&wrapped_vm, &attached, nullptr) == JNI_OK &&
+               attached == env2);
+        assert(vm->functions->DetachCurrentThread(nullptr) == JNI_OK);
+    });
+    wrapped_worker.join();
 }
 
 double cpu_ns() {
