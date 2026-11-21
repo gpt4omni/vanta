@@ -1709,6 +1709,9 @@ pub fn pass_key_event(down: bool, evdev_code: i32, modifiers: i32) {
 /// This exists for [`idle_keepalive`] — see that function for what it is
 /// tracking held keys *for*.
 static KEYS_HELD: Mutex<Vec<i32>> = Mutex::new(Vec::new());
+/// Lock-free count of `KEYS_HELD` so `idle_keepalive` and `looper::pump` never
+/// take `KEYS_HELD`'s mutex on every pump tick.
+static KEYS_HELD_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 /// Codes whose press was forwarded to the engine and whose release has not
 /// been yet.
@@ -1755,6 +1758,7 @@ fn track_key_held(down: bool, evdev_code: i32) {
     } else {
         held.retain(|&c| c != evdev_code);
     }
+    KEYS_HELD_COUNT.store(held.len(), Ordering::Relaxed);
 }
 
 /// Send a zero-delta `nativePassMouseMove` while a key is held, so the engine's
@@ -1914,12 +1918,21 @@ pub fn keepalive_wanted(policy: ThrottleWhen, focused: Option<bool>, visible: Op
 }
 
 pub fn idle_keepalive() {
-    let any_held = !KEYS_HELD.lock().unwrap_or_else(|e| e.into_inner()).is_empty();
+    let any_held = KEYS_HELD_COUNT.load(Ordering::Relaxed) != 0;
     let now = keepalive_clock_ms();
+    let last_ms = LAST_KEEPALIVE_MS.load(Ordering::Relaxed);
+    // Respect the 4 ms interval even when a key is held: previously `any_held`
+    // bypassed the rate limit completely, injecting up to 1000 extra zero-delta
+    // JNI moves/sec during WASD + high-Hz mouse movement. Genuine mouse moves
+    // also bump `LAST_KEEPALIVE_MS`, so keepalive stays silent while the mouse
+    // is actively moving.
+    if now.saturating_sub(last_ms) < IDLE_KEEPALIVE_INTERVAL_MS {
+        return;
+    }
     if !any_held
         && !keepalive_due(
             now,
-            LAST_KEEPALIVE_MS.load(Ordering::Relaxed),
+            last_ms,
             LAST_GENUINE_INPUT_MS.load(Ordering::Relaxed),
         )
     {
@@ -1928,6 +1941,26 @@ pub fn idle_keepalive() {
     if let Some((x, y)) = mouse_last_position() {
         LAST_KEEPALIVE_MS.store(now, Ordering::Relaxed);
         pass_mouse_move_delta(x, y, 0.0, 0.0);
+    }
+}
+
+/// Poll timeout in milliseconds for `looper::pump` when watching the display
+/// connection. Returns `IDLE_KEEPALIVE_INTERVAL_MS` (4 ms) while keepalive is
+/// actively needed (key held or recent genuine input with pointer on canvas),
+/// so keyboard-only / still-cursor gameplay is not throttled to the 50 ms
+/// (20 Hz) idle pump ceiling.
+pub fn keepalive_poll_timeout_ms(wanted: bool) -> i32 {
+    if !wanted || mouse_last_position().is_none() {
+        return 50;
+    }
+    if KEYS_HELD_COUNT.load(Ordering::Relaxed) != 0 {
+        return IDLE_KEEPALIVE_INTERVAL_MS as i32;
+    }
+    let now = keepalive_clock_ms();
+    if now.saturating_sub(LAST_GENUINE_INPUT_MS.load(Ordering::Relaxed)) <= KEEPALIVE_AFTER_INPUT_MS {
+        IDLE_KEEPALIVE_INTERVAL_MS as i32
+    } else {
+        50
     }
 }
 
@@ -2581,6 +2614,11 @@ pub fn pass_mouse_move(x: f32, y: f32) {
 /// `MOUSE_LAST` is deliberately left alone: it tracks where the *cursor* is,
 /// and while the pointer is locked the cursor is not going anywhere.
 pub fn pass_mouse_move_delta(x: f32, y: f32, dx: f32, dy: f32) {
+    let now = keepalive_clock_ms();
+    LAST_KEEPALIVE_MS.store(now, Ordering::Relaxed);
+    if dx != 0.0 || dy != 0.0 {
+        LAST_GENUINE_INPUT_MS.store(now, Ordering::Relaxed);
+    }
     POINTER_SEEN_AT.store(pack_mouse_position(x, y), Ordering::Release);
     let f = PASS_MOUSE_MOVE.load(std::sync::atomic::Ordering::Relaxed);
     if f.is_null() {

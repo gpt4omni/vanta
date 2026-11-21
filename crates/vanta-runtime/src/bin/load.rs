@@ -1323,66 +1323,83 @@ fn wire_battery_reporting(lib: linker::Library) {
     };
 
     let power_supply_dir = std::path::PathBuf::from("/sys/class/power_supply");
-    let last: Rc<Cell<Option<vanta_runtime::battery::Reading>>> = Rc::new(Cell::new(None));
-
-    let report = move || {
-        let reading = vanta_runtime::battery::scan(&power_supply_dir);
-        let previous = last.take();
-        let changed = previous.as_ref() != Some(&reading);
-        if changed {
-            match vanta_runtime::battery::state_changed_args(&reading) {
-                Some((status, plugged)) => {
-                    // SAFETY: `state_changed_native` is a native resolved via a symbol lookup against the loaded libroblox.so, which is never unloaded.
-                    match unsafe { linker::game_activity::report_battery_state_changed(
-                        state_changed_native,
-                        status,
-                        plugged,
-                    ) } {
-                        Ok(()) => {
-                            println!("  battery: reportBatteryStateChanged({status}, {plugged})")
-                        }
-                        Err(e) => println!("  battery: reportBatteryStateChanged failed: {e}"),
+    let deliver = move |reading: &vanta_runtime::battery::Reading| {
+        match vanta_runtime::battery::state_changed_args(reading) {
+            Some((status, plugged)) => {
+                // SAFETY: `state_changed_native` is a native resolved via a symbol lookup against the loaded libroblox.so, which is never unloaded.
+                match unsafe { linker::game_activity::report_battery_state_changed(
+                    state_changed_native,
+                    status,
+                    plugged,
+                ) } {
+                    Ok(()) => {
+                        println!("  battery: reportBatteryStateChanged({status}, {plugged})")
                     }
+                    Err(e) => println!("  battery: reportBatteryStateChanged failed: {e}"),
                 }
-                // No battery present — see `battery::state_changed_args`'s own
-                // doc for why that skips the call rather than inventing a
-                // reading for a battery that does not exist.
-                None => println!(
-                    "  battery: no present battery; reportBatteryStateChanged skipped"
-                ),
             }
-
-            let b = reading.battery.as_ref();
-            let fields = linker::game_activity::BatteryStatusFields {
-                present: b.map(|b| b.present),
-                percentage: b.and_then(|b| b.percentage).map(|p| p as i32),
-                status: b.map(|b| b.status),
-                health: b.and_then(|b| b.health),
-                voltage_mv: b.and_then(|b| b.voltage_mv),
-                current_now_ua: b.and_then(|b| b.current_now_ua),
-                current_avg_ua: b.and_then(|b| b.current_avg_ua),
-                charge_counter_uah: b.and_then(|b| b.charge_counter_uah),
-                power_now_uw: b.and_then(|b| b.power_now_uw),
-                technology: b.and_then(|b| b.technology.clone()),
-                // The DTO field is `Float`, not `Integer` — a real degree
-                // value, not Android's own tenths-of-a-degree convention. See
-                // `native/battery.cpp`'s `VantaBatteryStatus` doc.
-                temperature_c: b.and_then(|b| b.temperature_tenths_c).map(|t| t as f32 / 10.0),
-                plugged: reading.plugged,
-            };
-            // SAFETY: `status_native` is a native resolved via a symbol lookup against the loaded libroblox.so, which is never unloaded.
-            match unsafe { linker::game_activity::report_battery_status(status_native, &fields) } {
-                Ok(()) => println!("  battery: reportBatteryStatus {fields:?}"),
-                Err(e) => println!("  battery: reportBatteryStatus failed: {e}"),
-            }
+            // No battery present — see `battery::state_changed_args`'s own
+            // doc for why that skips the call rather than inventing a
+            // reading for a battery that does not exist.
+            None => println!(
+                "  battery: no present battery; reportBatteryStateChanged skipped"
+            ),
         }
-        last.set(Some(reading));
+
+        let b = reading.battery.as_ref();
+        let fields = linker::game_activity::BatteryStatusFields {
+            present: b.map(|b| b.present),
+            percentage: b.and_then(|b| b.percentage).map(|p| p as i32),
+            status: b.map(|b| b.status),
+            health: b.and_then(|b| b.health),
+            voltage_mv: b.and_then(|b| b.voltage_mv),
+            current_now_ua: b.and_then(|b| b.current_now_ua),
+            current_avg_ua: b.and_then(|b| b.current_avg_ua),
+            charge_counter_uah: b.and_then(|b| b.charge_counter_uah),
+            power_now_uw: b.and_then(|b| b.power_now_uw),
+            technology: b.and_then(|b| b.technology.clone()),
+            // The DTO field is `Float`, not `Integer` — a real degree
+            // value, not Android's own tenths-of-a-degree convention. See
+            // `native/battery.cpp`'s `VantaBatteryStatus` doc.
+            temperature_c: b.and_then(|b| b.temperature_tenths_c).map(|t| t as f32 / 10.0),
+            plugged: reading.plugged,
+        };
+        // SAFETY: `status_native` is a native resolved via a symbol lookup against the loaded libroblox.so, which is never unloaded.
+        match unsafe { linker::game_activity::report_battery_status(status_native, &fields) } {
+            Ok(()) => println!("  battery: reportBatteryStatus {fields:?}"),
+            Err(e) => println!("  battery: reportBatteryStatus failed: {e}"),
+        }
     };
 
-    report();
+    let initial = vanta_runtime::battery::scan(&power_supply_dir);
+    deliver(&initial);
 
-    gtk4::glib::timeout_add_local(std::time::Duration::from_secs(15), move || {
-        report();
+    // Poll `/sys/class/power_supply` on a background thread so slow laptop
+    // ACPI Embedded Controller sysfs reads never stall the GTK/Wayland pump
+    // thread. Only changed readings are handed back to the main context.
+    let (tx, rx) = std::sync::mpsc::sync_channel::<vanta_runtime::battery::Reading>(4);
+    let _ = std::thread::Builder::new()
+        .name("vanta-battery".into())
+        .spawn(move || {
+            let mut last = initial;
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(15));
+                let reading = vanta_runtime::battery::scan(&power_supply_dir);
+                if reading != last {
+                    last = reading.clone();
+                    if tx.try_send(reading).is_err() {
+                        // Either the main context closed or is backed up;
+                        // check again on the next interval.
+                        continue;
+                    }
+                }
+            }
+        });
+
+    gtk4::glib::timeout_add_local(std::time::Duration::from_secs(1), move || {
+        while let Ok(reading) = rx.try_recv() {
+            deliver(&reading);
+        }
         gtk4::glib::ControlFlow::Continue
     });
 }

@@ -3783,6 +3783,7 @@ unsafe extern "C" fn pointer_button(
                 "[android] wayland: a camera button was pressed that was still believed held \
                  after the compositor released it for the lock; ending that drag first"
             );
+            w.flush_locked_relative_motion();
             w.dispatch_pointer_button(stale, false);
         }
     }
@@ -3816,6 +3817,7 @@ unsafe extern "C" fn pointer_button(
             return;
         }
     }
+    w.flush_locked_relative_motion();
     w.dispatch_pointer_button(android_button, state == 1);
 }
 /// The scroll wheel. Filtered by surface like every other pointer event: the
@@ -4525,12 +4527,15 @@ fn drag_lock_allowed(hyprland: bool, var: Option<&str>) -> bool {
 /// `constrain_toplevel` reads plus the instance signature Hyprland exports to
 /// every client it starts.
 fn on_hyprland() -> bool {
-    let var = |name: &str| std::env::var(name).unwrap_or_default();
-    hyprland_from(
-        &var("XDG_CURRENT_DESKTOP"),
-        &var("XDG_SESSION_DESKTOP"),
-        std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_some(),
-    )
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| {
+        let var = |name: &str| std::env::var(name).unwrap_or_default();
+        hyprland_from(
+            &var("XDG_CURRENT_DESKTOP"),
+            &var("XDG_SESSION_DESKTOP"),
+            std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_some(),
+        )
+    })
 }
 
 fn hyprland_from(current_desktop: &str, session_desktop: &str, has_signature: bool) -> bool {
@@ -4617,6 +4622,7 @@ unsafe extern "C" fn locked_pointer_locked(_data: *mut c_void, _lp: *mut c_void)
 /// relative motion stops being treated as camera movement.
 unsafe extern "C" fn locked_pointer_unlocked(_data: *mut c_void, _lp: *mut c_void) {
     POINTER_LOCK_ACTIVE.store(false, Ordering::Release);
+    let _ = take_pending_locked_delta();
     if let Some(w) = current() {
         // A drag held for the lock cannot outlive it: nothing is left to say when
         // the button comes up.
@@ -4743,7 +4749,7 @@ unsafe extern "C" fn relative_pointer_motion(
         // `shell_config.rs` for that reasoning in full; a `NeverCursor`
         // variant is a small addition if it is ever needed, not a redesign.
         let (dx, dy) = if pointer_acceleration() { (_dx, _dy) } else { (dx_unaccel, dy_unaccel) };
-        w.dispatch_relative_motion(fixed_to_f32(dx), fixed_to_f32(dy));
+        accumulate_locked_delta(fixed_to_f32(dx), fixed_to_f32(dy));
         return;
     }
     // Unlocked: the cursor over Roblox's own interface, which is what the
@@ -4881,10 +4887,38 @@ pub(crate) fn take_pending_title_bar() -> Option<vanta_shell::title_bar::TitleBa
     TITLE_BAR_PENDING.swap(false, Ordering::Relaxed).then(current_title_bar)
 }
 
+/// Coalesced locked-pointer relative motion `(dx, dy, has_sample)` accumulated
+/// across all `zwp_relative_pointer_v1.relative_motion` events received in one
+/// Wayland dispatch batch, flushed once at the end of `pump_window` (and before
+/// any button press/release) so 1000-8000 Hz gaming mice do not flood JNI.
+static PENDING_LOCKED_DELTA: Mutex<(f32, f32, bool)> = Mutex::new((0.0, 0.0, false));
+
+fn accumulate_locked_delta(dx: f32, dy: f32) {
+    let mut pending = PENDING_LOCKED_DELTA.lock().unwrap_or_else(|e| e.into_inner());
+    pending.0 += dx;
+    pending.1 += dy;
+    pending.2 = true;
+}
+
+fn take_pending_locked_delta() -> Option<(f32, f32)> {
+    let mut pending = PENDING_LOCKED_DELTA.lock().unwrap_or_else(|e| e.into_inner());
+    if !pending.2 {
+        return None;
+    }
+    let out = (pending.0, pending.1);
+    *pending = (0.0, 0.0, false);
+    Some(out)
+}
+
 static RELATIVE_POINTER_LISTENER: RelativePointerListener =
     RelativePointerListener { relative_motion: relative_pointer_motion };
 
 impl WaylandWindow {
+    fn flush_locked_relative_motion(&self) {
+        if let Some((dx, dy)) = take_pending_locked_delta() {
+            self.dispatch_relative_motion(dx, dy);
+        }
+    }
     /// One relative movement while the pointer is captured.
     ///
     /// The absolute position stays where the lock caught it, deliberately. A
@@ -5363,6 +5397,7 @@ fn constrain_toplevel() -> bool {
         }
         *slot = std::ptr::null_mut();
         POINTER_LOCK_ACTIVE.store(false, Ordering::Release);
+        let _ = take_pending_locked_delta();
         *self.lock_requested_at.lock().unwrap_or_else(|e| e.into_inner()) = None;
         // The cursor is about to be somewhere again, and where it went is not a
         // movement the user made with it. Nothing should be sitting in the
@@ -6875,6 +6910,7 @@ impl WaylandWindow {
         // minute.
         self.sync_pointer_lock();
         self.read_display();
+        self.flush_locked_relative_motion();
         self.reconcile_pointer_buttons();
     }
 
