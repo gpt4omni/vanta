@@ -41,6 +41,7 @@ mod instructions;
 mod launch;
 mod live;
 mod migration;
+mod mods_ui;
 mod multi_instance_warning;
 mod profile_switcher;
 mod refresh_watch;

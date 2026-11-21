@@ -3544,11 +3544,14 @@ pub fn build_preferences_window(
     add_appearance_groups(&general, config.clone(), config_path.clone());
     window.add(&general);
     let config_for_flags = config.clone();
+    let config_for_mods = config.clone();
+    let config_path_for_mods = config_path.clone();
     let PluginsPage { page: plugins, installed, master } =
         build_plugins_page(&window, config.clone(), config_path.clone());
     add_get_plugins_groups(parent, &window, config.clone(), config_path.clone(), &installed, &plugins, &master);
     add_developer_group(parent, &window, config, config_path, &plugins, &installed, &master);
     window.add(&plugins);
+    window.add(&crate::mods_ui::build_mods_page(parent, &window, config_for_mods, config_path_for_mods));
     window.add(&build_fastflags_page(config_for_flags, &window));
 
     window

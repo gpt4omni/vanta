@@ -561,6 +561,11 @@ pub fn spawn(
         command.env("VANTA_PERF_HUD", "1");
     }
 
+    // Non-destructive asset mods (`<profile>/mods/`): default on; disable via kill switch.
+    if !config.mods_enabled {
+        command.env("VANTA_NO_MODS", "1");
+    }
+
     // Plugin folders being worked on, in the shape of `PATH`. Only when there
     // are some: an empty variable and an absent one mean the same thing to
     // `manifest::unpacked_dirs`, and sending an empty one would put a

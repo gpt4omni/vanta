@@ -170,8 +170,8 @@ pub fn declared_settings() -> BTreeMap<String, Applies> {
 /// profile are settled before engine initialisation, the present mode is a
 /// swapchain field only the engine rebuilds, the Vulkan layers load at instance
 /// creation, and the unpacked-plugin list is built once (ADR-038).
-pub const NEXT_LAUNCH_KEYS: [&str; 6] =
-    ["graphics", "graphics_optimization_mode", "present_mode", "mangohud", "vkbasalt", "unpacked_plugins"];
+pub const NEXT_LAUNCH_KEYS: [&str; 7] =
+    ["graphics", "graphics_optimization_mode", "present_mode", "mangohud", "vkbasalt", "unpacked_plugins", "mods_enabled"];
 
 fn our_caps() -> Capabilities {
     [caps::LIFECYCLE, caps::EVENTS_CORE, caps::EVENTS_PRESENCE, caps::STATE, caps::SETTINGS]

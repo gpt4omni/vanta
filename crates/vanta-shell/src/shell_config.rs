@@ -927,6 +927,12 @@ pub struct ShellConfig {
     /// in the game window's header bar. Also toggleable in-game with F8.
     #[serde(default)]
     pub perf_hud: bool,
+    /// Load non-destructive asset mod packs from `<profile>/mods/<pack>/`.
+    ///
+    /// Default on (zero overhead when the mods folder is empty). No field-level
+    /// `#[serde(default)]` for the same reason as `gamepad`: container default
+    /// fills older configs from `ShellConfig::default()` (`true`).
+    pub mods_enabled: bool,
 }
 
 fn default_fullscreen_accel() -> String {
@@ -965,6 +971,7 @@ impl Default for ShellConfig {
             marketplace_public_key: None,
             multi_instance_warning_seen: false,
             perf_hud: false,
+            mods_enabled: true,
         }
     }
 }
@@ -1614,5 +1621,16 @@ mod tests {
         let p = scratch("perf-hud.json");
         save(&p, &ShellConfig { perf_hud: true, ..Default::default() }).unwrap();
         assert!(load(&p).perf_hud);
+    }
+
+    #[test]
+    fn mods_enabled_defaults_on_and_round_trips() {
+        let older = r#"{"gamemode":true,"profile":"default"}"#;
+        let parsed: ShellConfig = serde_json::from_str(older).expect("older shell.json must load");
+        assert!(parsed.mods_enabled);
+
+        let p = scratch("mods-enabled.json");
+        save(&p, &ShellConfig { mods_enabled: false, ..Default::default() }).unwrap();
+        assert!(!load(&p).mods_enabled);
     }
 }

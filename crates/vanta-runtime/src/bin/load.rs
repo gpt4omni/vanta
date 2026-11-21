@@ -2019,6 +2019,7 @@ fn main() -> ExitCode {
         if n > 0 {
             println!("  {n} plugin asset overlay(s) registered");
         }
+        vanta_runtime::android::mods::init_from_active_profile();
         if vanta_runtime::android::asset::start_watcher() {
             println!("  overlay: watching for changes (VANTA_OVERLAY_WATCH)");
         }

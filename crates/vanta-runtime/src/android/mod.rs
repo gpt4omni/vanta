@@ -27,6 +27,7 @@ pub mod glcount;
 pub mod image_reader;
 pub mod input;
 pub mod looper;
+pub mod mods;
 pub mod surface_params;
 pub mod system;
 pub mod text_geometry;
