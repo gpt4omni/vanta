@@ -923,6 +923,10 @@ pub struct ShellConfig {
     /// why each warning landed on a different answer.
     #[serde(default)]
     pub multi_instance_warning_seen: bool,
+    /// Show the built-in live Performance HUD badge (FPS, 1% lows, frametime)
+    /// in the game window's header bar. Also toggleable in-game with F8.
+    #[serde(default)]
+    pub perf_hud: bool,
 }
 
 fn default_fullscreen_accel() -> String {
@@ -960,6 +964,7 @@ impl Default for ShellConfig {
             vr_openxr_runtime: None,
             marketplace_public_key: None,
             multi_instance_warning_seen: false,
+            perf_hud: false,
         }
     }
 }
@@ -1598,5 +1603,16 @@ mod tests {
         let p = scratch("multi-instance.json");
         save(&p, &ShellConfig { multi_instance_warning_seen: true, ..Default::default() }).unwrap();
         assert!(load(&p).multi_instance_warning_seen);
+    }
+
+    #[test]
+    fn perf_hud_defaults_off_and_round_trips() {
+        let older = r#"{"gamemode":true,"profile":"default"}"#;
+        let parsed: ShellConfig = serde_json::from_str(older).expect("older shell.json must load");
+        assert!(!parsed.perf_hud);
+
+        let p = scratch("perf-hud.json");
+        save(&p, &ShellConfig { perf_hud: true, ..Default::default() }).unwrap();
+        assert!(load(&p).perf_hud);
     }
 }

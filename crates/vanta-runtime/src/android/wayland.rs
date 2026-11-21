@@ -6154,6 +6154,14 @@ impl WaylandWindow {
         ) {
             return;
         }
+        // Built-in Performance HUD toggle (F8 by default), same contract.
+        if crate::perf_hud::hotkey_event(
+            evdev_key as i32,
+            down,
+            meta & (super::input::META_CTRL_ON | super::input::META_ALT_ON) != 0,
+        ) {
+            return;
+        }
 
         let handle = self.active_handle.load(Ordering::Relaxed);
         let now = self.now_ms();
@@ -6989,6 +6997,19 @@ impl WaylandWindow {
             let window = self.host.0.window();
             let base = window.title().map(|t| t.trim_end_matches(MARK).to_string()).unwrap_or_default();
             window.set_title(Some(&if on { format!("{base}{MARK}") } else { base }));
+        }
+        // Built-in live Performance HUD badge (throttled to ~350 ms; one atomic load when off).
+        if let Some(hud) = crate::perf_hud::poll_hud_update() {
+            match hud {
+                crate::perf_hud::HudUpdate::Show { badge, tooltip, stats } => {
+                    self.host.0.set_perf_hud(Some(&badge), Some(&tooltip));
+                    crate::control::perf_stats(stats.map(|s| s.to_protocol_snapshot()));
+                }
+                crate::perf_hud::HudUpdate::Hide => {
+                    self.host.0.set_perf_hud(None, None);
+                    crate::control::perf_stats(None);
+                }
+            }
         }
         let pump_started = std::time::Instant::now();
         self.host.0.pump();

@@ -72,6 +72,7 @@ pub mod identity;
 pub mod control;
 pub mod linking;
 pub mod live_settings;
+pub mod perf_hud;
 pub mod permissions;
 pub mod plugin_host;
 pub mod profile;

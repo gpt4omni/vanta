@@ -556,6 +556,11 @@ pub fn spawn(
         command.env("VANTA_CLOSE_ON_LEAVE", "1");
     }
 
+    // Built-in Performance HUD badge (F8 toggle in-game, live-toggleable).
+    if config.perf_hud {
+        command.env("VANTA_PERF_HUD", "1");
+    }
+
     // Plugin folders being worked on, in the shape of `PATH`. Only when there
     // are some: an empty variable and an absent one mean the same thing to
     // `manifest::unpacked_dirs`, and sending an empty one would put a

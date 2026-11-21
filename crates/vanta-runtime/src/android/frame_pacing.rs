@@ -93,3 +93,31 @@ pub fn summary() -> Option<String> {
         low1_fps
     ))
 }
+
+/// Copy the most recent non-zero frame intervals covering up to `window_us`
+/// microseconds (e.g. `1_000_000` for a rolling 1-second window) into `out`.
+///
+/// Reads the lock-free ring buffer backwards from the latest present without
+/// locking or perturbing `record_present()`. Clears `out` first so callers can
+/// reuse one buffer across HUD ticks with zero heap allocations.
+pub fn snapshot_window_us(window_us: u64, out: &mut Vec<u32>) {
+    out.clear();
+    let head = HEAD.load(Ordering::Relaxed);
+    if head == 0 {
+        return;
+    }
+    let available = head.min(RING);
+    let mut elapsed: u64 = 0;
+    for back in 1..=available {
+        let idx = head.wrapping_sub(back) & (RING - 1);
+        let us = INTERVALS_US[idx].load(Ordering::Relaxed);
+        if us == 0 {
+            continue;
+        }
+        out.push(us);
+        elapsed = elapsed.saturating_add(us as u64);
+        if window_us > 0 && elapsed >= window_us {
+            break;
+        }
+    }
+}

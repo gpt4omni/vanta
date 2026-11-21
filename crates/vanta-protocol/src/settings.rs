@@ -259,6 +259,8 @@ pub enum Update {
     /// engine, through the same re-apply that keeps a flag in force after the
     /// engine's own settings refresh (ADR-051).
     FrameRateLimit(FrameRateLimit),
+    /// Whether the built-in live Performance HUD badge is visible (F8 toggle).
+    PerfHud(bool),
 }
 
 /// A title-bar choice in the words `VANTA_TITLE_BAR` and `shell.json` use.
@@ -282,7 +284,7 @@ pub fn parse_title_bar(word: &str) -> Option<TitleBar> {
 }
 
 /// The keys [`Update`] can carry, which are also the `shell.json` field names.
-pub const KEYS: [&str; 10] = [
+pub const KEYS: [&str; 11] = [
     "pointer_acceleration",
     "throttle",
     "close_on_leave",
@@ -293,6 +295,7 @@ pub const KEYS: [&str; 10] = [
     "gamepad",
     "title_bar",
     "frame_rate_limit",
+    "perf_hud",
 ];
 
 /// Longest sink name accepted. PipeWire node names are short; the bound is
@@ -319,6 +322,7 @@ impl Update {
             Update::Gamepad(_) => "gamepad",
             Update::TitleBar(_) => "title_bar",
             Update::FrameRateLimit(_) => "frame_rate_limit",
+            Update::PerfHud(_) => "perf_hud",
         }
     }
 
@@ -326,9 +330,11 @@ impl Update {
         match self {
             Update::PointerAcceleration(a) => Value::from(a.as_str()),
             Update::Throttle(t) => Value::from(t.as_str()),
-            Update::CloseOnLeave(b) | Update::CarryLaunchTicket(b) | Update::Gamemode(b) | Update::Gamepad(b) => {
-                Value::from(*b)
-            }
+            Update::CloseOnLeave(b)
+            | Update::CarryLaunchTicket(b)
+            | Update::Gamemode(b)
+            | Update::Gamepad(b)
+            | Update::PerfHud(b) => Value::from(*b),
             Update::AudioOutput(name) | Update::AudioInput(name) => Value::from(name.as_str()),
             Update::TitleBar(t) => Value::from(title_bar_word(*t)),
             Update::FrameRateLimit(l) => Value::from(l.as_env()),
@@ -352,6 +358,7 @@ impl Update {
             "carry_launch_ticket" => value.as_bool().map(Update::CarryLaunchTicket).ok_or_else(bad),
             "gamemode" => value.as_bool().map(Update::Gamemode).ok_or_else(bad),
             "gamepad" => value.as_bool().map(Update::Gamepad).ok_or_else(bad),
+            "perf_hud" => value.as_bool().map(Update::PerfHud).ok_or_else(bad),
             "title_bar" => {
                 value.as_str().and_then(parse_title_bar).map(Update::TitleBar).ok_or_else(bad)
             }
@@ -440,6 +447,7 @@ mod tests {
             Update::Gamepad(false),
             Update::TitleBar(TitleBar::Hidden),
             Update::FrameRateLimit(FrameRateLimit::Cap144),
+            Update::PerfHud(true),
         ]
     }
 

@@ -386,6 +386,10 @@ pub struct HostWindow {
     /// `after-paint` has fired since. `None` when no lowering is being
     /// prepared. See [`HostWindow::arm_present_probe`].
     present_probe: std::cell::RefCell<Option<PresentProbe>>,
+    /// Built-in live Performance HUD monospace pill badge in the header bar.
+    perf_hud_label: gtk::Label,
+    /// Base title before any HUD suffix (used when header bar is hidden/fullscreen).
+    perf_hud_title_base: std::cell::RefCell<Option<String>>,
 }
 
 /// What [`HostWindow::arm_present_probe`] remembers between ticks.
@@ -900,6 +904,15 @@ impl HostWindow {
                  border: 1px solid rgba(255, 255, 255, 0.25); \
                  border-radius: 8px; \
                  padding: 6px 10px; \
+             } \
+             .vanta-perf-hud { \
+                 font-family: monospace; \
+                 font-size: 11px; \
+                 font-weight: 600; \
+                 padding: 2px 9px; \
+                 border-radius: 999px; \
+                 background-color: alpha(@window_fg_color, 0.10); \
+                 color: @headerbar_fg_color; \
              }",
         );
         let css = gtk::CssProvider::new();
@@ -933,6 +946,11 @@ impl HostWindow {
 
     pub fn new(title: &str, width: i32, height: i32, content: &impl IsA<gtk::Widget>) -> Self {
         let header = adw::HeaderBar::new();
+        let perf_hud_label = gtk::Label::new(None);
+        perf_hud_label.add_css_class("vanta-perf-hud");
+        perf_hud_label.set_valign(gtk::Align::Center);
+        perf_hud_label.set_visible(false);
+        header.pack_end(&perf_hud_label);
         let toolbar = adw::ToolbarView::new();
         toolbar.add_top_bar(&header);
         install_visibility_anchor(&toolbar);
@@ -1160,6 +1178,8 @@ impl HostWindow {
             dialog_up: std::cell::Cell::new(false),
             canvas_in_input_region: std::cell::Cell::new(false),
             present_probe: std::cell::RefCell::new(None),
+            perf_hud_label,
+            perf_hud_title_base: std::cell::RefCell::new(None),
             editor_seeding,
             editor_changed,
             editor_activated,
@@ -2440,6 +2460,38 @@ impl HostWindow {
     /// The preference in force.
     pub fn title_bar(&self) -> crate::title_bar::TitleBar {
         self.title_bar.get()
+    }
+
+    /// Show or hide the built-in live Performance HUD badge in the header bar.
+    ///
+    /// When the header bar is hidden or the window is fullscreen, also reflects
+    /// the compact stats in the window title so external bars/task switchers
+    /// can display them without perturbing the game surface.
+    pub fn set_perf_hud(&self, badge: Option<&str>, tooltip: Option<&str>) {
+        match badge {
+            Some(text) => {
+                self.perf_hud_label.set_text(text);
+                self.perf_hud_label.set_tooltip_text(tooltip);
+                self.perf_hud_label.set_visible(true);
+                let bar_visible = self.title_bar.get().revealed(self.window.is_fullscreen());
+                if !bar_visible {
+                    let mut base_slot = self.perf_hud_title_base.borrow_mut();
+                    let base = base_slot.get_or_insert_with(|| {
+                        self.window.title().map(|t| t.to_string()).unwrap_or_default()
+                    });
+                    self.window.set_title(Some(&format!("{base} — {text}")));
+                } else if let Some(base) = self.perf_hud_title_base.borrow_mut().take() {
+                    self.window.set_title(Some(&base));
+                }
+            }
+            None => {
+                self.perf_hud_label.set_visible(false);
+                self.perf_hud_label.set_tooltip_text(None);
+                if let Some(base) = self.perf_hud_title_base.borrow_mut().take() {
+                    self.window.set_title(Some(&base));
+                }
+            }
+        }
     }
 }
 

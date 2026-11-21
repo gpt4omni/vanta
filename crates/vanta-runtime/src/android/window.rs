@@ -1682,6 +1682,13 @@ impl HostWindow {
         ) {
             return true;
         }
+        if crate::perf_hud::hotkey_event(
+            keycode as i32 - 8,
+            down,
+            meta & (super::input::META_CTRL_ON | super::input::META_ALT_ON) != 0,
+        ) {
+            return true;
+        }
         if keyval == 0xff1b {
             let now = self.now_ms();
             let handle = super::x11_text::active_handle();
@@ -1743,6 +1750,13 @@ impl HostWindow {
         // The recording hotkey (ADR-059), taken before the engine hears it.
         // `detail` is an X keycode; evdev's is eight lower.
         if crate::recording::hotkey_event(
+            ev.detail as i32 - 8,
+            down,
+            meta & (super::input::META_CTRL_ON | super::input::META_ALT_ON) != 0,
+        ) {
+            return;
+        }
+        if crate::perf_hud::hotkey_event(
             ev.detail as i32 - 8,
             down,
             meta & (super::input::META_CTRL_ON | super::input::META_ALT_ON) != 0,

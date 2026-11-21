@@ -916,6 +916,22 @@ fn build_performance_group(
     }
     group.add(&gamemode);
 
+    let perf_hud = adw::SwitchRow::builder()
+        .title("Performance HUD")
+        .subtitle("Shows live FPS, 1% lows, and frametime in the header bar. Press F8 in-game to toggle.")
+        .active(config.borrow().perf_hud)
+        .build();
+    perf_hud.set_subtitle_lines(2);
+    {
+        let config = config.clone();
+        let config_path = config_path.clone();
+        perf_hud.connect_active_notify(move |row| {
+            config.borrow_mut().perf_hud = row.is_active();
+            persist(&config, &config_path);
+        });
+    }
+    group.add(&perf_hud);
+
 
     // Order has to match ThrottleWhen::index/from_index.
     let throttle_model = gtk::StringList::new(&[
