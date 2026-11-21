@@ -1,4 +1,4 @@
-# ADR-007: Plugins never hold host permissions; Cordial brokers them
+# ADR-007: Plugins never hold host permissions; Vanta brokers them
 
 **Status:** accepted
 **Related:** [ADR-002](ADR-002-core-shell-and-ui-handoff.md), [ADR-003](ADR-003-plugin-isolation.md), [ADR-006](ADR-006-plugin-events-and-first-party.md)
@@ -8,11 +8,11 @@
 A plugin can never cause a Flatpak permission to be granted, and never receives a
 handle to a host resource — no socket, no D-Bus connection, no file descriptor.
 
-Where a capability needs one, **Cordial holds the permission and performs the
-effect**. The plugin sends a payload describing what it wants; Cordial does it.
+Where a capability needs one, **Vanta holds the permission and performs the
+effect**. The plugin sends a payload describing what it wants; Vanta does it.
 
 Discord Rich Presence is the worked example. The capability is `presence.set`
-and its payload is a presence structure. Cordial owns the connection to Discord's
+and its payload is a presence structure. Vanta owns the connection to Discord's
 IPC socket. The plugin never learns where that socket is, never opens it, and
 cannot send anything down it except a presence update.
 
@@ -26,7 +26,7 @@ produce the first, and inventing one would be worse than not having it.
 
 **Because "the manifest declares what plugins need" makes the sandbox as weak as
 the most demanding plugin anyone might install.** If installing a Discord plugin
-means adding socket access to Cordial's manifest, then every plugin — and Cordial
+means adding socket access to Vanta's manifest, then every plugin — and Vanta
 itself — gains that access, permanently, for as long as the manifest says so.
 Uninstalling the plugin does not take it away. The user approved a plugin and
 silently widened the sandbox of the whole application.
@@ -34,7 +34,7 @@ silently widened the sandbox of the whole application.
 **Because the Deno host already makes it impossible, and the architecture should
 agree with itself.** Plugins run with no Deno permissions at all: no file, no
 network, no environment, no subprocess. A plugin *cannot* open a socket even if
-Cordial wanted it to. Brokering is not an extra restriction bolted on; it is the
+Vanta wanted it to. Brokering is not an extra restriction bolted on; it is the
 only thing that works given the containment that already exists.
 
 **Because the resource is fiddly and should be solved once.** Discord's IPC
@@ -42,13 +42,13 @@ socket is `$XDG_RUNTIME_DIR/discord-ipc-0`, except when it is `-1` through `-9`,
 and except when Discord is itself a Flatpak and it lives under
 `app/com.discordapp.Discord/`. Every plugin that wanted presence would
 reimplement that search, and they would each get it subtly wrong. One
-implementation in Cordial is both safer and better.
+implementation in Vanta is both safer and better.
 
 ## Consequences
 
-**Accepted:** the set of host resources Cordial can broker is fixed when the
+**Accepted:** the set of host resources Vanta can broker is fixed when the
 Flatpak manifest is written, not when a plugin is installed. A plugin wanting a
-resource Cordial does not already broker needs a change to Cordial, reviewed and
+resource Vanta does not already broker needs a change to Vanta, reviewed and
 released. That is slower, and it is the point — the manifest is the one place a
 user or packager can read the whole sandbox, and it stays true.
 
@@ -58,7 +58,7 @@ presence, and cannot send arbitrary IPC frames — because the broker exposes a
 presence update and nothing else. That asymmetry is deliberate and should be
 preserved for every future broker: expose the *effect*, never the *channel*.
 
-**Accepted:** Cordial's manifest will grow specific, narrow entries rather than
+**Accepted:** Vanta's manifest will grow specific, narrow entries rather than
 broad ones. `--filesystem=xdg-run/discord-ipc-0` is acceptable; `--filesystem=host`
 is not, and neither is `--talk-name=org.freedesktop.Flatpak`, which is arbitrary
 host command execution and is already refused in
@@ -89,7 +89,7 @@ proposed needs it.
 
 **The Discord broker, as the first plugin to use it.** The plugin never learns
 where Discord's socket is. It sends a payload (an application id, `details`,
-`state`, timestamps and image keys) and Cordial does the rest: searching
+`state`, timestamps and image keys) and Vanta does the rest: searching
 `discord-ipc-0` through `-9` and the nested path Discord's own Flatpak uses,
 performing the handshake and writing the frames. The payload is a closed struct
 that refuses any field Discord does not define, so nothing a plugin invents
@@ -97,15 +97,15 @@ crosses the wire, and `details` and `state` are refused past Discord's own
 128-character limit, so the author hears that from the call rather than from
 Discord quietly dropping the whole activity. A plugin cannot read Discord's state
 and cannot send anything else down the connection. Buttons and picture URLs are
-built or resolved by Cordial, never supplied by the plugin, for the same reason:
-a string that could become a link under Cordial's name and icon would be an
-arbitrary link published as Cordial.
+built or resolved by Vanta, never supplied by the plugin, for the same reason:
+a string that could become a link under Vanta's name and icon would be an
+arbitrary link published as Vanta.
 
 **Retracted: "nothing reaches Discord in an actual session yet".** An earlier
 version of `docs/rich-presence.md` said the client's plugin host answered
 `presence.set` with `not implemented yet` and that nothing outside a test pushed
 a lifecycle event. That stopped being true when the plugin host gained the
-presence handlers (`crates/cordial-runtime/src/plugin_host.rs`) and built-in
+presence handlers (`crates/vanta-runtime/src/plugin_host.rs`) and built-in
 plugins began to be started (v0.13.0 release notes), and the page was not updated.
 The same page also called the Discord application id a placeholder; the plugin now
-carries Cordial's own id and takes an override through its `client_id` preference.
+carries Vanta's own id and takes an override through its `client_id` preference.

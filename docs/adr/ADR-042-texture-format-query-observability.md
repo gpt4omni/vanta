@@ -6,17 +6,17 @@
 
 ## Decision
 
-`crates/cordial-runtime/src/android/vulkan.rs` gains two new interposed Vulkan
+`crates/vanta-runtime/src/android/vulkan.rs` gains two new interposed Vulkan
 entry points:
 
 - `vkGetPhysicalDeviceFormatProperties` — always passthrough, always counted
   (which format family was asked about: ETC2, ASTC, BC, or other; whether the
   driver's answer is fully unsupported), reported through the existing
-  `CORDIAL_COUNT_GL=1`/`glcount` mechanism and traced through the existing
-  `CORDIAL_ANDROID_TRACE=1` switch.
+  `VANTA_COUNT_GL=1`/`glcount` mechanism and traced through the existing
+  `VANTA_ANDROID_TRACE=1` switch.
 - `vkCreateShaderModule` — a passthrough call counter, same two switches.
 
-A third behaviour, `CORDIAL_MASK_MOBILE_TEXTURE_FORMATS=1`, makes the format
+A third behaviour, `VANTA_MASK_MOBILE_TEXTURE_FORMATS=1`, makes the format
 query above report ETC2 and ASTC as **fully unsupported** regardless of the
 real driver's answer. It is off by default, documented in `--help`, and no
 build, packaging script, or default configuration sets it.
@@ -35,32 +35,32 @@ for why: the premise that motivated this work — "shader translation for
 NVIDIA so texture manager v2 works" — did not survive the measurement this
 capability exists to take.
 
-## Why this is Cordial's own code, not a boundary violation
+## Why this is Vanta's own code, not a boundary violation
 
 ADR-001 and ADR-003 rule out in-process hooking and memory patching of the
 engine, permanently. Nothing here does either. `vulkan.rs` already interposes
 Vulkan at the API boundary for five other entry points — `vkCreateInstance`,
 `vkCreateAndroidSurfaceKHR`, `vkCreateDevice`/`vkCreateSwapchainKHR`/
 `vkGetPhysicalDeviceSurfaceCapabilitiesKHR`, and `vkQueuePresentKHR` — because
-that boundary is Cordial's own dispatch table (`vkGetInstanceProcAddr`'s
-result), returned to the engine by Cordial's own code, not a patch applied to
-`libroblox.so`. The engine calls a function pointer Cordial handed it; Cordial
+that boundary is Vanta's own dispatch table (`vkGetInstanceProcAddr`'s
+result), returned to the engine by Vanta's own code, not a patch applied to
+`libroblox.so`. The engine calls a function pointer Vanta handed it; Vanta
 answers the call, forwards to the host's real implementation, and returns
 whatever the host returned (unmodified, in the counting case; a controlled
 false answer, only under the opt-in mask). At no point does this read or write
 the engine's memory, alter its instructions, or run code inside its address
-space — it is argument/return translation at an API boundary Cordial already
+space — it is argument/return translation at an API boundary Vanta already
 owns, the same class of thing the module's existing WSI shims already do, and
 explicitly the boundary this task's brief asked to be argued rather than
 assumed.
 
 The mask is the same category of thing again, narrowed to a test-only switch:
-it changes what Cordial's own shim *says*, in response to a query the engine
-makes of Cordial's own dispatch table, never what runs inside the engine. It
-is the Vulkan-boundary equivalent of `CORDIAL_NO_VULKAN=1` (already
+it changes what Vanta's own shim *says*, in response to a query the engine
+makes of Vanta's own dispatch table, never what runs inside the engine. It
+is the Vulkan-boundary equivalent of `VANTA_NO_VULKAN=1` (already
 shipped, in the same file's `--help` block) telling the engine the host has no
 Vulkan loader at all — a controlled, logged, opt-in false answer at a boundary
-Cordial already owns, used to observe a fallback path this host cannot
+Vanta already owns, used to observe a fallback path this host cannot
 otherwise reach.
 
 ## Why counting, not just tracing
@@ -77,7 +77,7 @@ Vulkan's `vkQueuePresentKHR` alongside the GLES counters for the same reason.
 
 No NVIDIA hardware exists on this project's development host. The two options
 for exercising an NVIDIA-shaped format-support gap without it were: point the
-real client at a real driver that also lacks ETC2/ASTC, or have Cordial's own
+real client at a real driver that also lacks ETC2/ASTC, or have Vanta's own
 shim lie about it. The first was tried and does not work on this host — Mesa's
 `llvmpipe` software rasterizer genuinely lacks both, but Roblox's own
 device-selection code rejects it outright (`Vulkan: Device llvmpipe ... is
@@ -110,8 +110,8 @@ NVIDIA driver reports.
 
 ## What would change this
 
-If someone with real NVIDIA hardware runs `CORDIAL_COUNT_GL=1
-CORDIAL_ANDROID_TRACE=1 cordial-run ...` (mask *off*) and the engine's own
+If someone with real NVIDIA hardware runs `VANTA_COUNT_GL=1
+VANTA_ANDROID_TRACE=1 vanta-run ...` (mask *off*) and the engine's own
 format queries or its `Using TM1`/`Using TM2` log line differ from what this
 document records for Intel, that is the first real data point this
 investigation has been missing, and it would either confirm or retire the mask

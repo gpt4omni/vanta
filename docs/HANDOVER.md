@@ -505,7 +505,7 @@ not. It is not a formality: the ID is what a user's machine trusts for the
 lifetime of the install.
 
 The ID is now **`io.github.gpt4omni.Vanta`**, which needs no domain, matches
-the homepage, and is what `<developer id="io.github.luohoa97">` in the metainfo
+the homepage, and is what `<developer id="io.github.gpt4omni">` in the metainfo
 had been saying all along.
 
 **It was done on the same day the remote first went live, on purpose.** A rename

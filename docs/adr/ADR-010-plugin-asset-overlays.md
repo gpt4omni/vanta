@@ -6,12 +6,12 @@
 
 ## Decision
 
-Plugins, and the user directly, may provide files that Cordial serves in place
+Plugins, and the user directly, may provide files that Vanta serves in place
 of the matching path under the APK's `assets/` tree. Resolution happens before
 every lookup Roblox makes through `AAssetManager`: an overlay is consulted
 first, and only a miss falls through to the APK. Nothing is ever written into
-the APK or into Cordial's own extracted asset tree to make this work — see
-`crates/cordial-runtime/src/android/asset.rs` for the mechanism.
+the APK or into Vanta's own extracted asset tree to make this work — see
+`crates/vanta-runtime/src/android/asset.rs` for the mechanism.
 
 This reverses [ADR-004](ADR-004-plugin-asset-overrides.md), which refused
 plugin asset overrides outright. Two of ADR-004's three supporting claims were
@@ -31,7 +31,7 @@ substitute it advantageously" — but that reasoning assumed a rendering pipelin
 Roblox does not have.
 
 **Claim 2 — "it breaks the claim that keeps Sober viable" — wrong.** Sober is
-the same architecture Cordial is: Roblox's official Android build, run
+the same architecture Vanta is: Roblox's official Android build, run
 unmodified, on Linux. Sober ships an `asset_overlay` directory —
 `~/.var/app/org.vinegarhq.Sober/data/sober/asset_overlay`, mirroring
 `base.apk/assets` exactly — and remains a viable, widely-used project. Bloxstrap
@@ -39,7 +39,7 @@ does the equivalent on Windows through a `Modifications/` folder, and Roblox
 staff have stated publicly that using it is not bannable. Neither project's
 "runs the official build" claim was broken by shipping this. The actual line
 both projects observe, and the one that matters, is **not touching the client
-process** — Cordial's own [ADR-001](ADR-001-in-process-hooking.md) line. An
+process** — Vanta's own [ADR-001](ADR-001-in-process-hooking.md) line. An
 asset file resolved before the engine reads it never executes; it sits on the
 same side of that line as a config file.
 
@@ -76,13 +76,13 @@ unavailable for the same reasons ADR-001 gives.
 
 Overlay roots form a stack: one root per plugin, registered by plugin id, plus
 one root owned by the user directly at
-`$XDG_CONFIG_HOME/cordial/overlay` (falling back to `$HOME/.config/cordial/overlay`,
-overridable with `CORDIAL_OVERLAY`) — the same layout Sober's `asset_overlay`
+`$XDG_CONFIG_HOME/vanta/overlay` (falling back to `$HOME/.config/vanta/overlay`,
+overridable with `VANTA_OVERLAY`) — the same layout Sober's `asset_overlay`
 uses, so a directory built for one is usable, unmodified, for the other.
 
 Resolution order is fixed: the user's root beats every plugin's, and among
 plugins the most recently registered wins. This mirrors the precedence rule
-[`flags.rs`](../../crates/cordial-runtime/src/flags.rs) already uses for
+[`flags.rs`](../../crates/vanta-runtime/src/flags.rs) already uses for
 FastFlags, for the same reason — an explicit choice the user made must not be
 silently overridden by something they installed to do something else.
 
@@ -96,13 +96,13 @@ uses against a hostile zip entry.
 ## Consequences
 
 **Accepted:** plugins and users can now do what ADR-004 refused — replace a
-texture, a sound, a font, anything under `assets/` — without Cordial copying,
+texture, a sound, a font, anything under `assets/` — without Vanta copying,
 patching, or otherwise touching Roblox's own files. Uninstalling a plugin (or
 deleting its overlay root) makes the original resolve again with no cleanup
 step, because nothing was ever overwritten to begin with.
 
 **Accepted, and worth stating plainly:** this makes gameplay-affecting
-substitution possible, same as it is on Sober and Bloxstrap. Cordial documents
+substitution possible, same as it is on Sober and Bloxstrap. Vanta documents
 it and does not build detection for it. See "What is still refused" above.
 
 **A real limitation, not a silent gap:** `extract_to` — used for the CA bundle
@@ -143,9 +143,9 @@ original.
 filesystem redirect, which is the same line ADR-007 draws between an effect and a
 channel.
 
-### What Cordial does not do about it
+### What Vanta does not do about it
 
-**Gameplay-affecting substitution is possible and Cordial builds no detection for
+**Gameplay-affecting substitution is possible and Vanta builds no detection for
 it.** Replacing a collision or hitbox mesh with a smaller or absent one is a
 substantive advantage rather than a cosmetic change, and nothing "non-destructive"
 implies catches it. ADR-010 documents this as the user's own responsibility — the

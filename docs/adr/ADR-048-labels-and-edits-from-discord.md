@@ -37,7 +37,7 @@ from Discord; moderators use GitHub. Everything below describes the picker on.
 
 ### Labels
 
-**A reporter chooses what part of Cordial a report concerns. Only a moderator
+**A reporter chooses what part of Vanta a report concerns. Only a moderator
 may say what the project has decided about it.**
 
 * The report dialog gets a multi-select of the repository's labels, in the

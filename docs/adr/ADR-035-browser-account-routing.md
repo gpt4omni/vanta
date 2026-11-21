@@ -5,7 +5,7 @@
 ## Context
 
 Choosing a profile for every browser Play request is redundant when the browser
-account already has one saved Cordial profile. Profile names are user-chosen, so
+account already has one saved Vanta profile. Profile names are user-chosen, so
 matching a name would be unreliable. Roblox's launch ticket can establish the
 browser account through its authentication and authenticated-user endpoints.
 
@@ -54,11 +54,11 @@ the ticket to Roblox's authentication endpoint and discards the resulting
 session. This distinction is deliberate, but it is still credential use: file
 storage is not evidence that a user previously opted into it. The accepted
 default treats a browser Play request as a request to select that browser
-account. `CORDIAL_BROWSER_ACCOUNT_ROUTING=0` restores the prior manual behaviour.
+account. `VANTA_BROWSER_ACCOUNT_ROUTING=0` restores the prior manual behaviour.
 
 Carry the selected store with the match. After taking ADR-012's profile lock,
 read the same store again and require exact bytes before spawning. Pass an
-explicit `CORDIAL_SECRET_STORE` to the child so a fresh process cannot make a
+explicit `VANTA_SECRET_STORE` to the child so a fresh process cannot make a
 different `auto` choice. `None`, locked, failed, malformed and oversized reads
 fail closed to manual selection. A running profile still uses ADR-012's lock and
 busy-profile recovery, not an IPC that changes the running engine's account or

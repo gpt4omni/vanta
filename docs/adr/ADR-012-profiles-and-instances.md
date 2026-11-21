@@ -10,11 +10,11 @@ Two words, kept distinct, because conflating them designs the wrong thing:
 
 | | |
 |---|---|
-| **Instance** | a running Cordial process — a window. Roblox's own usage. |
+| **Instance** | a running Vanta process — a window. Roblox's own usage. |
 | **Profile** | a directory holding one account's Roblox storage, plugin set and flag overrides. |
 
 An instance *runs* a profile. Profiles live at
-`$XDG_DATA_HOME/cordial/profiles/<name>/`, and **a profile may be held by at most
+`$XDG_DATA_HOME/vanta/profiles/<name>/`, and **a profile may be held by at most
 one instance at a time**, enforced by an advisory lock rather than by convention.
 
 The "plugin set and flag overrides" half of that definition was aspirational
@@ -29,7 +29,7 @@ different profile.
 
 ## Why the distinction is load-bearing
 
-The earlier path was `cordial/instances/default/run`, which held storage. That is
+The earlier path was `vanta/instances/default/run`, which held storage. That is
 the wrong word for what is in it, and the wrong word here is not cosmetic: it
 invites the reader to conclude that a second window needs a second data
 directory, or — worse — that one directory can back two windows. The first is
@@ -41,8 +41,8 @@ windows, and the feature should be named after what they asked for.
 
 ## Why locking, rather than allowing a profile to be shared
 
-Nothing structurally prevents two Cordial processes opening the same profile.
-Unlike Fishstrap on Windows, there is no singleton mutex to defeat — each Cordial
+Nothing structurally prevents two Vanta processes opening the same profile.
+Unlike Fishstrap on Windows, there is no singleton mutex to defeat — each Vanta
 process is genuinely independent, which makes multi-instance nearly free here and
 is a real advantage of controlling the storage location ourselves.
 
@@ -50,14 +50,14 @@ That same freedom is the hazard. Two instances on one profile are two processes
 writing one `appData` and one cookie store concurrently. Roblox's storage is not
 built for that, and the realistic outcomes are a corrupted profile or one session
 silently invalidating the other. Neither presents as "you did something
-unsupported"; both present as bugs in Cordial.
+unsupported"; both present as bugs in Vanta.
 
 So the lock is taken on the profile directory for the lifetime of the instance,
 `LOCK_EX | LOCK_NB`. A second attempt fails immediately with a message naming the
 profile, rather than blocking or racing.
 
 **Advisory, not mandatory, and that is honest.** `flock` does not stop a process
-that never asks. It stops *Cordial* from doing it by accident, which is the
+that never asks. It stops *Vanta* from doing it by accident, which is the
 actual failure mode — a user double-clicking the launcher twice, not an adversary
 bypassing a lock.
 
@@ -71,10 +71,10 @@ bypassing a lock.
 > is fixed by editing a paragraph.
 
 `launch.rs` built a claim and `Claim::hand_to` passed it to the client it
-spawned, so a shell launch was protected. **`cordial-run` contained no claim
-code at all.** A hand-run `cordial-run --profile X` — the invocation AGENTS.md
+spawned, so a shell launch was protected. **`vanta-run` contained no claim
+code at all.** A hand-run `vanta-run --profile X` — the invocation AGENTS.md
 documents, and the one every agent working in this repository is told to type —
-took no lock whatsoever. Measured 2026-08-22: four `--profile CordialTest`
+took no lock whatsoever. Measured 2026-08-22: four `--profile VantaTest`
 engines running at once, not one refused. Found while investigating something
 else, and confirmed in the source afterwards rather than the other way round.
 
@@ -86,7 +86,7 @@ is what made the separate data root read as belt-and-braces when it was in fact
 the only thing standing between two agents and each other's Roblox storage.
 
 **Fixed by giving the client the other end of the same lock, not a second
-lock.** `cordial_shell::profile::claim_for_instance` is what `cordial-run` calls
+lock.** `vanta_shell::profile::claim_for_instance` is what `vanta-run` calls
 now, before anything reads or writes the profile:
 
 - handed a descriptor by a launcher, it **adopts** it — verifying against
@@ -102,13 +102,13 @@ open file description, not to the file and not to the process.** A client that
 simply called `acquire` would open the lock file a second time and be refused by
 the lock it had just inherited — by itself, on every shell launch. Demonstrated
 rather than reasoned: with adoption removed, the test that spawns a real client
-process reports `profile "default" is already open in another Cordial client`,
+process reports `profile "default" is already open in another Vanta client`,
 and the client it is talking about is itself.
 
 Restoring `FD_CLOEXEC` matters for a reason nobody had noticed. `hand_to` clears
 it to get the lock across one `exec`, and nothing had ever put it back, so the
 descriptor kept crossing every later one — including the `bwrap` and `deno`
-execs `cordial_plugins::sandbox` makes. With the restore removed, the test
+execs `vanta_plugins::sandbox` makes. With the restore removed, the test
 observes exactly that: a bare `sleep` grandchild holds the profile after the
 client has exited, and the refusal names `sleep 10` as the holder. Whether a
 real `deno` sandbox outlives a client long enough to matter is **`INFERRED`** —
@@ -124,7 +124,7 @@ are *safe* rather than merely permitted: another profile, or another
 `XDG_DATA_HOME`. A `--force` beside them would buy only the unsafe shape, and a
 flag that disables a correctness guarantee is copied out of a wiki by people who
 do not know what it turns off — at which point the corruption it permits still
-presents as a Cordial bug, and the lock has become documentation. The
+presents as a Vanta bug, and the lock has become documentation. The
 refusal message therefore spends its space naming the two safe recipes instead.
 
 **Accepted: contributors will experience this as a regression.** Several
@@ -151,7 +151,7 @@ Roblox to grant anything, which is also why it cannot be withdrawn.
 > not a record. Credentials *do* go in a keyring; see the second correction at
 > the end of this section. The first argument below also rested on a factual
 > claim about the engine that turned out to be false, and the decision it
-> supported — that Cordial never handles a session token — has been reversed.
+> supported — that Vanta never handles a session token — has been reversed.
 > The original reasoning is kept in full both times, because the shape of the
 > mistake is the useful part; the corrections follow it in order.
 
@@ -159,16 +159,16 @@ Roblox keeps its session cookie inside the profile. The obvious suggestion is to
 put it in the desktop keyring instead, and it is a reasonable instinct, but it is
 rejected for three reasons.
 
-**It would make Cordial the custodian of a token it currently never touches.**
-The engine writes and reads its own session; Cordial only decides which directory
+**It would make Vanta the custodian of a token it currently never touches.**
+The engine writes and reads its own session; Vanta only decides which directory
 that happens in. Reading the cookie out, holding it, and writing it back is a
-large increase in responsibility for this project, and "Cordial never handles
+large increase in responsibility for this project, and "Vanta never handles
 your credentials" is a property worth more than the encryption would be.
 
 **The protection would be mostly illusory.** The engine reads its cookie from a
 file at startup, so a keyring copy would have to be written back to disk before
 every launch and would sit there in plaintext for the whole session. Encryption
-at rest would apply only while Cordial is not running. Meanwhile the keyring is
+at rest would apply only while Vanta is not running. Meanwhile the keyring is
 unlocked at login, so any process running as the user reads it as easily as it
 reads the file.
 
@@ -182,19 +182,19 @@ Users wanting encryption at rest should use full-disk encryption or
 `systemd-homed`, which solve it properly and for everything rather than for one
 application's cookie.
 
-### Correction: Cordial is the custodian of the session token
+### Correction: Vanta is the custodian of the session token
 
 **The engine never writes its cookies to disk.** Both paragraphs above that
 describe it doing so — "the engine writes and reads its own session" and "the
 engine reads its cookie from a file at startup" — are wrong. A complete
-`CORDIAL_TRACE_PATHS=1` inventory of every non-system file the engine opens
+`VANTA_TRACE_PATHS=1` inventory of every non-system file the engine opens
 contains no cookie jar and no credential store of any kind, and
 `grep -rl ROBLOSECURITY` and `grep -rli set-cookie` over real profile trees find
 nothing. The engine holds its cookies in memory for the life of the process.
 
 On Android the **Java** side persists them. The Waydroid capture in
 `docs/traces/` shows `OnSetCookieHandlerImpl.b(): Updated WebViewCookieHandler
-with Cookies from URL ...` among nine cookie lines. Cordial has no Java side, so
+with Cookies from URL ...` among nine cookie lines. Vanta has no Java side, so
 nothing persisted anything, and the symptom was the one this project keeps
 writing down: sign in, quit, restart the same profile, and you are on the
 landing page.
@@ -205,12 +205,12 @@ killed and graceful runs over two passes, which produced no file created or
 updated at shutdown that a killed run does not also produce. The graceful
 teardown descent is real and works and was never the missing piece.
 
-So Cordial now reads the jar out of the engine through
+So Vanta now reads the jar out of the engine through
 `NativeSettingsInterface.nativeGetCookiesForDomain`, writes it into the profile,
 and hands it back on the next launch through `nativeSetMultipleCookies`. **That
-makes Cordial the custodian of a live session token, which the decision above
+makes Vanta the custodian of a live session token, which the decision above
 explicitly set out to avoid.** The trade is accepted because the alternative is
-not "Cordial handles no credentials" but "Cordial cannot stay signed in", and
+not "Vanta handles no credentials" but "Vanta cannot stay signed in", and
 the account switcher this ADR is mostly about is not worth much if every profile
 is signed out at every launch.
 
@@ -221,7 +221,7 @@ service. Everything in this paragraph still describes that fallback, and the
 single file, `cookies`, inside the profile
 directory. It is `0600` and the directory is `0700`, applied wherever a profile
 is chosen rather than only where it is locked — a hand-started
-`cordial-run --profile <name>` previously got the umask's `0755`, which was
+`vanta-run --profile <name>` previously got the umask's `0755`, which was
 survivable when the directory held only Roblox's storage and is not now. It is
 written to a temporary file and renamed, so an interrupted write cannot leave
 half a token that still parses. The value is carried in a type whose `Debug`
@@ -275,12 +275,12 @@ states.
 **Secret Service, not "GNOME keyring", and the distinction is the whole reason
 this is portable.** `org.freedesktop.secrets` is the D-Bus interface;
 `gnome-keyring-daemon` implements it on GNOME, KWallet and KeePassXC implement
-it elsewhere, and libsecret is a client library for it. Cordial targets the
+it elsewhere, and libsecret is a client library for it. Vanta targets the
 interface, so it works wherever one is implemented rather than wherever GNOME
 is installed.
 
 **Not through libsecret, though libsecret is the obvious client.** `zbus` is
-already a dependency of `cordial-runtime`, and `android::accessibility` already
+already a dependency of `vanta-runtime`, and `android::accessibility` already
 hand-rolls `org.a11y.atspi` over it for the same reason. Linking libsecret would
 add glib and gobject and a build-time `libsecret-devel` which is *not installed
 on the owner's machine*, where `pkg-config --libs libsecret-1` resolves to a
@@ -291,7 +291,7 @@ runs on one computer. The API reached is identical; only the client differs.
 constraint, and it is the owner's: *users cannot play Roblox if they have not
 unlocked their keyring*. Losing the stored session must degrade to "sign in
 again" and never to "the client will not start", and never to a dialog standing
-between somebody and the game. So `crates/cordial-shell/src/secrets.rs`, shared
+between somebody and the game. So `crates/vanta-shell/src/secrets.rs`, shared
 with the runtime through its existing `secrets` module:
 
 - reads the default collection's `Locked` property and **never calls `Unlock`**.
@@ -311,11 +311,11 @@ Refusing to persist was considered and rejected: a user on a headless or minimal
 machine is not made safer by being signed out — they sign in every launch *and*
 the next tool they use writes a token to their disk anyway. The fallback names
 the file, says that anything which can read their files can take the account,
-and says how to refuse it, on every launch. `CORDIAL_SECRET_STORE` is the
+and says how to refuse it, on every launch. `VANTA_SECRET_STORE` is the
 setting — `auto` (default), `keyring` (refuse the fallback and accept no saved
 session), `file` (skip the service) — in the same spirit as Sober's
 `use_libsecret`, and the shell should surface it and pass it in the
-environment `launch.rs` builds for the client. (This cited `CORDIAL_WAYLAND`
+environment `launch.rs` builds for the client. (This cited `VANTA_WAYLAND`
 as the example until that variable was removed: `android::backend()` now
 prefers Wayland whenever a compositor is there, per ADR-011, so there is
 nothing for a launcher to opt into.)
@@ -339,10 +339,10 @@ it should not have been should still change their password.
 
 **Measured, 2026-08-02, on a scratch profile with a fabricated token.** With the
 service present, a plaintext store is adopted, the item appears under
-`application=cordial`, `store=cookies`, `profile=<path>`, `xdg:schema=org.cordial.Session`,
-and the file is gone. With `CORDIAL_SECRET_STORE=file` it stays a file and says
+`application=vanta`, `store=cookies`, `profile=<path>`, `xdg:schema=org.vanta.Session`,
+and the file is gone. With `VANTA_SECRET_STORE=file` it stays a file and says
 so. With the bus removed the fallback fires, warns, and the session still loads.
-With the bus removed and `CORDIAL_SECRET_STORE=keyring` nothing is saved, the
+With the bus removed and `VANTA_SECRET_STORE=keyring` nothing is saved, the
 plaintext file is named and ignored rather than silently used or deleted, and the
 launch continues. **`INFERRED`:** that a *locked but present* collection takes
 the same path as an absent one is not measured — both collections on the machine
@@ -390,7 +390,7 @@ plugins" is not a use case worth the cost of explaining which combinations are
 legal.
 
 **Accepted:** the account switcher is a profile switcher. It does not
-authenticate or know anything about accounts — it selects a directory. Cordial
+authenticate or know anything about accounts — it selects a directory. Vanta
 never sees a password.
 
 **Extended by [ADR-035](ADR-035-browser-account-routing.md):** the manual
@@ -401,7 +401,7 @@ describes every selection path in the shell.
 
 > The rest of this point read "and never stores a session token itself; Roblox
 > does that, inside the profile." That is no longer true and was never true of
-> the engine: Cordial stores the session token, because nothing else does. See
+> the engine: Vanta stores the session token, because nothing else does. See
 > the correction above. What is unchanged is the part that matters to this
 > ADR — the switcher still only selects a directory, and authentication still
 > happens in Roblox's own UI.

@@ -5,7 +5,7 @@
 
 ## Decision
 
-There is one installable thing in Cordial and it is a plugin. A texture pack is
+There is one installable thing in Vanta and it is a plugin. A texture pack is
 a plugin. A flag preset is a plugin. A Discord presence integration is a plugin.
 There is no second import path, no "mods" folder beside the plugins folder, no
 separate list in Settings, and no `type` key in `plugin.json` saying which sort
@@ -40,17 +40,17 @@ each asset as bytes at an offset inside that single mapping, then interposing on
 `open` buys nothing, because no asset ever gets an fd of its own.
 
 It does not happen here. `/proc/<pid>/maps` and `/proc/<pid>/fd` were sampled
-every 400 ms across **two complete cold launches** of `cordial-run` (`--profile
-CordialTest --host-libc --game-activity --join-url roblox://experiences/start`),
+every 400 ms across **two complete cold launches** of `vanta-run` (`--profile
+VantaTest --host-libc --game-activity --join-url roblox://experiences/start`),
 136 samples, with `libroblox.so` present in the mapping list in **every one** of
 them so it is certain the engine was loaded throughout:
 
 ```
-apk fds: 0    asset-dir fds: 0    apk maps: 0    cordial/assets maps: 0
+apk fds: 0    asset-dir fds: 0    apk maps: 0    vanta/assets maps: 0
 ```
 
 Zero mappings of `base.apk`. Zero file descriptors on it. Zero mappings of
-`~/.cache/cordial/assets`, the extracted content tree. A mmap-by-offset scheme
+`~/.cache/vanta/assets`, the extracted content tree. A mmap-by-offset scheme
 requires a mapping that persists for the life of the reads; there was never one
 to find.
 
@@ -105,7 +105,7 @@ those are `stat`, `lstat` and `access` — all three of which are already in the
 intercept table, alongside `open`, `fopen`, `opendir`, `realpath` and
 `readlink`. So the invariant has a precise statement:
 
-> **Every path-taking call in `cordial_system_symbols`'s table consults one
+> **Every path-taking call in `vanta_system_symbols`'s table consults one
 > resolver, or none of them do.** `fstat` is exempt because it is not
 > path-taking. `mmap` is exempt for the same reason.
 
@@ -154,22 +154,22 @@ Bloxstrap mod in existence — replacing the death sound — **silently does
 nothing**, because it ships `ouch.ogg` and this build reads `oof.ogg`.
 
 That is the finding that makes orphan detection load-bearing rather than a
-nicety. Without it, "Bloxstrap mods work in Cordial" is a claim that is
+nicety. Without it, "Bloxstrap mods work in Vanta" is a claim that is
 two-thirds true and fails in the case users will try first, with no error
-anywhere. **Cordial must not advertise Bloxstrap compatibility without shipping
+anywhere. **Vanta must not advertise Bloxstrap compatibility without shipping
 the report that says which files landed.** The two are one feature.
 
 ## The instrument comes first
 
-`CORDIAL_TRACE_ASSETS=1` already printed one line per lookup to stderr. It is
+`VANTA_TRACE_ASSETS=1` already printed one line per lookup to stderr. It is
 promoted here to the primary instrument, because one cold launch plus one game
 join yields the **ground-truth list of every asset path this build actually
 asks for** — which is the missing half of the Windows-to-Android mapping table
 above, and is derived rather than guessed.
 
 ```
-CORDIAL_TRACE_ASSETS=1 XDG_DATA_HOME=~/.cache/cordial-agent-x just client --run 60
-sort -u ~/.cache/cordial-agent-x/cordial/asset-trace.log
+VANTA_TRACE_ASSETS=1 XDG_DATA_HOME=~/.cache/vanta-agent-x just client --run 60
+sort -u ~/.cache/vanta-agent-x/vanta/asset-trace.log
 ```
 
 The recorder is separate from the stderr tracing and always on, because it costs
@@ -187,7 +187,7 @@ to be constant across all runs.
 
 ### One resolver, two routes
 
-**Route 1, `AAssetManager`** — Cordial's own code, already the mechanism ADR-010
+**Route 1, `AAssetManager`** — Vanta's own code, already the mechanism ADR-010
 describes, and the route that carries textures, sounds, fonts and models. This
 is covered, in Rust, in `android/asset.rs`.
 
@@ -254,7 +254,7 @@ This fell out of implementation and is the piece that makes "a texture pack is
 a plugin" true rather than aspirational, so it belongs in the decision rather
 than in a comment.
 
-A plugin's `overlay/` directory is registered by Cordial when the plugin is
+A plugin's `overlay/` directory is registered by Vanta when the plugin is
 installed and enabled. It needs no `assets.override` grant, and this is not a
 hole — it is the precedent `flags.rs` already set. `flags::collect` reads every
 enabled plugin's own `flags.json` **with no capability check at all**, because a
@@ -262,7 +262,7 @@ static file a plugin ships is not a request a process is making. It is what the
 plugin *is*, and installing and enabling it is the consent.
 
 `assets.override` gates something genuinely different: a **running** plugin
-asking Cordial to register a directory of its choosing at runtime. That is a
+asking Vanta to register a directory of its choosing at runtime. That is a
 request from a process and is brokered like every other one, per ADR-007.
 
 Confusing the two would mean a texture pack that cannot work without a
@@ -321,7 +321,7 @@ from "the overlay is broken", and is the question that will be asked most.
 Interception makes reload cheap: rebuild the index and swap the `Arc`. Nothing
 is remounted and nothing is copied.
 
-It is off by default and enabled with `CORDIAL_OVERLAY_WATCH=1`, for the reason
+It is off by default and enabled with `VANTA_OVERLAY_WATCH=1`, for the reason
 this codebase has a standing rule about: **watching a directory tree costs
 wakeups**, and a texture pack that nobody is editing must not cost a single one.
 The default reload is explicit — a call, from the Settings page or the
@@ -340,12 +340,12 @@ precisely the stub-that-lies failure AGENTS.md forbids, so the reload reports
 how many *cached* names it could not affect.
 
 **The watcher is a development instrument and is not load-bearing.** If it
-misses an event the fix is to press reload. Nothing in Cordial's correctness
+misses an event the fix is to press reload. Nothing in Vanta's correctness
 depends on it firing.
 
 ### What the implementation settled that the design did not
 
-**The stale check runs without a client.** `cordial-run --check-overlays` sets
+**The stale check runs without a client.** `vanta-run --check-overlays` sets
 the APK, registers the overlay stack, diffs it against the archive's entry list
 and exits before the engine is loaded. That matters more than convenience: it
 is the only orphan signal that can be produced without playing, and it is the
@@ -406,9 +406,9 @@ spirit of ADR-003's default deny. An installed plugin with code is written into
 is, and the wording it deserves follows from that record rather than from the
 capability's name:
 
-> **Change how Cordial itself renders and behaves.** Sets Roblox FastFlags, and
-> also Cordial's own settings including the graphics backend
-> (`CordialGraphicsBackend`) and present mode (`CordialPresentMode`). Takes
+> **Change how Vanta itself renders and behaves.** Sets Roblox FastFlags, and
+> also Vanta's own settings including the graphics backend
+> (`VantaGraphicsBackend`) and present mode (`VantaPresentMode`). Takes
 > effect at the next launch. Your own choices in Settings still win.
 
 "Change some Roblox settings" would be technically true and materially
@@ -471,7 +471,7 @@ presentation of what they installed, and filtering is a UI affordance to add
 later rather than a reason for a second list — two lists is how the two import
 paths grow back.
 
-**Accepted:** the libc route makes Cordial's resolver load-bearing for
+**Accepted:** the libc route makes Vanta's resolver load-bearing for
 `ssl/cacert.pem`. A resolver bug there does not produce a wrong texture, it
 produces a TLS failure three layers from anything mentioning certificates —
 which is a failure this project has already paid for once. The prefix check
@@ -479,7 +479,7 @@ therefore fails *closed* to the original path: anything the resolver is not
 certain about is forwarded untouched.
 
 **Not yet wired, and stated rather than implied:** the filesystem route's
-resolver, its write rule and its C ABI entry point (`cordial_overlay_resolve`)
+resolver, its write rule and its C ABI entry point (`vanta_overlay_resolve`)
 are implemented and tested, and `native/system_paths.cpp` does not call them
 yet. Its table holds `stat`, `lstat`, `access`, `opendir`, `realpath`,
 `readlink`, `fopen`, `statvfs` and `open`, and all of them must be routed

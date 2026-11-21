@@ -10,7 +10,7 @@
 //! So the slot becomes a store. `$XDG_DATA_HOME/vanta/builds/<version>/` holds
 //! the extracted library, the archives it came from and what proves them (who
 //! signed them, where they came from, which bytes), and a launch resolves to an
-//! entry and to nothing else ([ADR-054](../../../docs/adr/ADR-054-cordial-owns-its-roblox-builds.md);
+//! entry and to nothing else ([ADR-054](../../../docs/adr/ADR-054-vanta-owns-its-roblox-builds.md);
 //! it was `~/.cache/vanta/builds` until then). The old single-slot path
 //! `~/.cache/vanta/lib/<abi>` is kept as a symlink to the newest entry so
 //! that `justfile` and every `--lib-dir` anybody has typed keep working, but a
@@ -73,7 +73,7 @@ pub const CONTENT_SHA256: &str = ".content-sha256";
 /// fingerprint and the archive's size and mtime, nothing about where it sits.
 /// A record in the slot's format fails to parse as this one and reads as "not
 /// checked", which costs one verification and is the safe direction.
-/// [ADR-054](../../../docs/adr/ADR-054-cordial-owns-its-roblox-builds.md).
+/// [ADR-054](../../../docs/adr/ADR-054-vanta-owns-its-roblox-builds.md).
 pub const SIGNER: &str = crate::cache::SIGNER;
 
 /// Where the entry came from: `mirror`, `sober`, `file` or `legacy`, then the
@@ -836,7 +836,7 @@ pub fn is_in_use(dir: &Path) -> bool {
 /// deleted, so a client that started between the plan and the delete is not
 /// failed under: it holds the entry, the claim is refused and the entry stays.
 /// Run after a filing and from the store view, never at launch with a window
-/// open. [ADR-054](../../../docs/adr/ADR-054-cordial-owns-its-roblox-builds.md).
+/// open. [ADR-054](../../../docs/adr/ADR-054-vanta-owns-its-roblox-builds.md).
 pub fn gc_in(root: &Path, pins: &[String], spare: usize) -> Vec<String> {
     let Ok(_lock) = lock(root) else { return Vec::new() };
     let entries = list_in(root);

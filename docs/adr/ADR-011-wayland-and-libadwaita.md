@@ -1,12 +1,12 @@
 # ADR-011: Wayland is the display backend, and the window is libadwaita
 
 **Status:** superseded in part by [ADR-024](ADR-024-x11-is-supported-again.md), which restores X11 as a supported backend. Everything else here stands: Wayland is still primary, and the window is still GTK4 + libadwaita.
-**Supersedes:** the X11-first choice recorded in [`android/window.rs`](../../crates/cordial-runtime/src/android/window.rs)
+**Supersedes:** the X11-first choice recorded in [`android/window.rs`](../../crates/vanta-runtime/src/android/window.rs)
 **Related:** [ADR-002](ADR-002-core-shell-and-ui-handoff.md), [ADR-009](ADR-009-capture-yes-overlay-injection-no.md)
 
 ## Decision
 
-Cordial targets **Wayland natively**. The window is a GTK4 + libadwaita window,
+Vanta targets **Wayland natively**. The window is a GTK4 + libadwaita window,
 and the engine renders into a Wayland surface belonging to it.
 
 X11 is not developed further.
@@ -20,7 +20,7 @@ frame". That was a correct judgement about reaching a first frame fastest. It is
 the wrong judgement about the client people actually use, and two symptoms made
 that concrete.
 
-**Resize.** Dragging Cordial's window flashes flat colour for about a tenth of a
+**Resize.** Dragging Vanta's window flashes flat colour for about a tenth of a
 second before the engine catches up. Sober, which is native Wayland, resizes
 cleanly. On Xwayland the compositor cannot know when the client's new-size
 content is ready, so it shows *something* in the meantime; on Wayland the
@@ -29,14 +29,14 @@ atomic and the surface never appears in a half-updated state. The X11 path can b
 patched to flash less. It cannot be made correct, because the protocol has no way
 to express what is needed.
 
-**Text entry.** The remaining sign-in blocker is that Cordial has to act as the
+**Text entry.** The remaining sign-in blocker is that Vanta has to act as the
 IME. On Wayland there is a protocol for exactly this — `zwp_text_input_v3` —
 which is how squeekboard, Maliit, ibus and fcitx all deliver text. Bridging to it
 gets Linux phones and CJK input for the same work, rather than hand-rolling an
 input method against raw X keysyms. That was already the plan; Wayland is where
 the plan is expressible.
 
-*Still open, and not settled by the subsurface work below.* Cordial's own
+*Still open, and not settled by the subsurface work below.* Vanta's own
 `zwp_text_input_v3` client has a live bug — `interface 'zwp_text_input_v3' has
 no event 8`, which freezes the landing page — and it was neither fixed nor
 removed when the window changed hands to GTK. Removing it was considered and
@@ -63,7 +63,7 @@ same window. Building the engine's host window as a bare Wayland surface would
 mean building the shell twice, and the second one would have to inherit the
 theme anyway.
 
-It also settles the light/dark question without a portal round-trip of Cordial's
+It also settles the light/dark question without a portal round-trip of Vanta's
 own: `AdwStyleManager` already tracks `org.freedesktop.appearance color-scheme`
 and updates live when the user switches.
 
@@ -83,14 +83,14 @@ connection that created them, so a subsurface cannot parent to a surface on
 another connection — and a connection cannot be shared between processes. GTK
 opens the connection; `wayland.rs` takes `gdk_wayland_display_get_wl_display`
 rather than calling `wl_display_connect`, and Mesa is handed the same pointer it
-already was. So `cordial-load` links GTK4 and libadwaita. ADR-002 accepted core
+already was. So `vanta-load` links GTK4 and libadwaita. ADR-002 accepted core
 taking a GTK dependency; this is the runtime taking it too, and it is not
 avoidable by any amount of process separation. Sober's shape — a GTK process
 beside a toolkit-free engine process — is a different arrangement that buys
 different things; it cannot produce one window with the engine inside it.
 
-**The window definition is shared, not duplicated.** `cordial-shell` becomes a
-library as well as a binary, and `cordial_shell::host_window` is the one place
+**The window definition is shared, not duplicated.** `vanta-shell` becomes a
+library as well as a binary, and `vanta_shell::host_window` is the one place
 the `AdwWindow`/`AdwToolbarView`/`AdwHeaderBar` are built. The shell binary puts
 the chooser in the content slot; the runtime puts the engine's subsurface over
 it. This ADR's "that shell and this window are the same window" was an intention
@@ -107,7 +107,7 @@ canvas requires asking GTK to repaint.
 25-second runs with 547-550 `vkQueuePresentKHR` calls each, and a screenshot
 shows the libadwaita header bar above Roblox's landing page. `WAYLAND_DEBUG=1`
 confirms `get_subsurface`, `set_desync`, `set_position(25, 71)` and
-`xdg_toplevel.set_app_id("Cordial")` on the wire.
+`xdg_toplevel.set_app_id("Vanta")` on the wire.
 
 **Not verified:** anything needing a keystroke or a drag — window resize with
 the engine live, and text entry. See `docs/NEXT.md` §1a.
@@ -132,7 +132,7 @@ first frame sooner and that was worth having; it is not worth keeping two.
 protocol XML was available to generate from. GTK owns the toplevel now, so that
 code is gone and with it two of the three crashes this file's history records.
 `text-input-unstable-v3` is still hand-written and still the one interface whose
-event table is Cordial's assertion rather than libwayland's.
+event table is Vanta's assertion rather than libwayland's.
 
 **Accepted, with a hard trigger:** the existing X11 code stays only until the
 Wayland path runs the sign-in flow end to end, and **is deleted in that same
@@ -166,19 +166,19 @@ matching the desktop entry for the reasons in
 [ADR-009](ADR-009-capture-yes-overlay-injection-no.md). The test that pins them
 together needs to follow.
 
-That string is not the id WebKit uses. `Cordial` is not a valid application id,
-so `cordial-run` had WebKit name itself `org.webkit.app-<hash of the executable
+That string is not the id WebKit uses. `Vanta` is not a valid application id,
+so `vanta-run` had WebKit name itself `org.webkit.app-<hash of the executable
 path>`, and inside the Flatpak the portal refuses a web process whose a11y bus
 name is not prefixed by the real app id: opening any in-app web window aborted
 the client. `host_window::claim_webkit_application_id` gives WebKit the
 Flatpak's id through an unregistered default `GApplication`, and leaves the
-`xdg_toplevel` app_id as `Cordial` -- GTK4 reads that from the program name
+`xdg_toplevel` app_id as `Vanta` -- GTK4 reads that from the program name
 unless a `GtkApplication` is associated with the window.
 
 **Rejected: Wayland with an X11 fallback maintained in parallel.** Two backends
 means every input and surface bug is asked "on which one?", and the fallback
 rots because nobody runs it. Xwayland exists for hosts without a Wayland
-compositor and Cordial does not need to reimplement it.
+compositor and Vanta does not need to reimplement it.
 
 ## What would change this
 

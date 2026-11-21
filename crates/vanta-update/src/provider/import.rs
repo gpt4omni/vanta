@@ -8,7 +8,7 @@
 //! never met the first-run screen. Those were the right behaviours while the
 //! mirror was a risk and Sober was the only road. They are the wrong ones now
 //! that Vanta keeps its own store and downloads into it
-//! ([ADR-054](../../../docs/adr/ADR-054-cordial-owns-its-roblox-builds.md)),
+//! ([ADR-054](../../../docs/adr/ADR-054-vanta-owns-its-roblox-builds.md)),
 //! because Vanta's builds then change when Sober's app happens to.
 //!
 //! So this module finds, and the caller decides. It is an *action*: the user

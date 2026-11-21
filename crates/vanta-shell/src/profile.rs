@@ -828,7 +828,7 @@ pub fn set_pinned_version(profile_dir: &Path, version: Option<&str>) -> Result<(
 ///
 /// A plain file beside [`PIN`], written when the client is spawned. A profile
 /// recorded nothing about the build that last ran it, so moving it to an older
-/// one could not be noticed ([ADR-054](../../../docs/adr/ADR-054-cordial-owns-its-roblox-builds.md)).
+/// one could not be noticed ([ADR-054](../../../docs/adr/ADR-054-vanta-owns-its-roblox-builds.md)).
 /// Per-profile `data/` is not snapshotted and is not touched by a move between
 /// builds; this only lets the Version page say what is being moved from.
 pub const LAST_BUILD: &str = "last-roblox-version";

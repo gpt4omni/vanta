@@ -9,7 +9,7 @@
 Core X11 input stays only where XI2 does not reach, and as the degradation path
 on a server too old to negotiate XI 2.0.
 
-**That degradation path is [PR #22](https://github.com/luohoa97/cordial/pull/22)'s
+**That degradation path is [PR #22](https://github.com/gpt4omni/vanta/pull/22)'s
 warp-based pointer lock, by HaltingMachine, retained rather than deleted.**
 When `XIQueryVersion` refuses, the lock falls back to grab, hide, warp to the
 centre and filter the synthetic motion — the mechanism that change introduces.
@@ -18,15 +18,15 @@ rather than asking its author to wait for XI2: the work is not a stopgap that
 gets thrown away, it is the branch that runs when the modern one is
 unavailable.
 
-Concretely, in `crates/cordial-runtime/src/android/window.rs`:
+Concretely, in `crates/vanta-runtime/src/android/window.rs`:
 
 - **Pointer motion comes from `XI_RawMotion`**, not `MotionNotify`, and the
   pointer lock stops warping. `XIQueryVersion` negotiates, `XISelectEvents`
   subscribes on the root window, and each event arrives as a `GenericEvent`
   read through `XGetEventData` / `XFreeEventData`.
 - **The grab and the cursor hiding do not change.** `XGrabPointer` with
-  `confine_to` set to Cordial's own window, and `XDefineCursor` with a 1×1
-  bitmap. Not `XFixesHideCursor`: the bitmap needs no library Cordial does not
+  `confine_to` set to Vanta's own window, and `XDefineCursor` with a 1×1
+  bitmap. Not `XFixesHideCursor`: the bitmap needs no library Vanta does not
   already have open, and `window.rs` loads Xlib by `dlsym` by hand rather than
   through a crate, so every additional `.so` is a new failure mode on somebody
   else's distribution.
@@ -44,7 +44,7 @@ server has already put through its own acceleration curve. Subtracting two of
 them gives an accelerated delta. There is no core request that recovers what
 the device actually reported.
 
-That matters here because Cordial's own pointer acceleration is meant to apply
+That matters here because Vanta's own pointer acceleration is meant to apply
 to the cursor over Roblox's UI and *not* when the pointer is locked, where the
 camera wants what the mouse actually did. On core X11 that setting can only ever
 be our curve stacked on the server's.
@@ -81,8 +81,8 @@ deduce; on XI2 it is a field.
   same session, or the claim that it still works is unmeasured.
 - **Raw events ignore focus and grabs.** `XI_RawMotion` on the root window
   reports the pointer moving whatever has focus, including when that is not
-  Cordial. They must be consumed only while the lock is held. Reading them
-  otherwise would mean Cordial recording the user's mouse across their whole
+  Vanta. They must be consumed only while the lock is held. Reading them
+  otherwise would mean Vanta recording the user's mouse across their whole
   session, which is a privacy failure and not merely a bug.
 - **Cookie lifetime is a real trap.** The data behind a `GenericEvent` is only
   valid between `XGetEventData` and `XFreeEventData`, and nothing in the type
@@ -105,7 +105,7 @@ and the camera follows the desktop profile whatever the row says.
 Greying the row while it still displayed "Only the cursor" would therefore
 state something false about the running system. Disabling it *and* moving it to
 "Cursor and camera" states the truth, and the subtitle carries the reason —
-that this X session offers no XInput2, so Cordial cannot separate the
+that this X session offers no XInput2, so Vanta cannot separate the
 acceleration the server already applied.
 
 This is the same judgement `settings.rs` already made one step away, and its
@@ -123,7 +123,7 @@ when the greying goes in, and the fix is the same code.
 
 ## Sequencing
 
-**After [PR #22](https://github.com/luohoa97/cordial/pull/22) lands, not
+**After [PR #22](https://github.com/gpt4omni/vanta/pull/22) lands, not
 alongside it.** That change rewrites the same pointer path, and CLAUDE.md names
 `window.rs` as a file parallel work has already collided on more than once.
 PR #22's warp-based lock is a working improvement on the grab-only capture that

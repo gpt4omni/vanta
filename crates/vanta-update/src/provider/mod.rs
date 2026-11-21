@@ -69,7 +69,7 @@
 //! with Sober never seeing the first-run screen. A build already on the
 //! disk is now an *import* ([`import`]): the user asks for it, it is verified
 //! like any download, copied into the store and forgotten.
-//! [ADR-054](../../../docs/adr/ADR-054-cordial-owns-its-roblox-builds.md)
+//! [ADR-054](../../../docs/adr/ADR-054-vanta-owns-its-roblox-builds.md)
 //! amends ADR-025's "free source first" ordering accordingly.
 
 use crate::Unreachable;

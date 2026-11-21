@@ -8,9 +8,9 @@
 [vinegarhq/sober](https://github.com/vinegarhq/sober) is a different project
 running Roblox on Linux. It is closed source, so its GitHub repo is purely
 an issue tracker — but that tracker is prior art in a narrow, valuable
-sense: real users hitting real problems on the same engine Cordial loads,
+sense: real users hitting real problems on the same engine Vanta loads,
 with a maintainer's actual answer attached to most of them. When a new
-Cordial issue looks like a graphics glitch, an audio failure, or a login
+Vanta issue looks like a graphics glitch, an audio failure, or a login
 hang, the useful question is often "has someone already hit this against
 Sober, and what fixed it" — and until now the only way to answer that was
 to search GitHub by hand, every time.
@@ -57,8 +57,8 @@ hostnames show up constantly. `pii.ts` strips all of it, plus
 secret-shaped substrings (bearer tokens, provider API keys, JWTs, URL
 userinfo credentials), on write, before a record is ever appended to
 `raw.jsonl`. This matters more here than a typical internal log-redaction
-pass would: Cordial is a public repository, and this corpus is third-party
-users' content with no license grant to Cordial. Redaction is defence in
+pass would: Vanta is a public repository, and this corpus is third-party
+users' content with no license grant to Vanta. Redaction is defence in
 depth; the actual thing that keeps this data off GitHub is the next
 paragraph.
 
@@ -70,7 +70,7 @@ sense ADR-015 draws for a fetched Roblox build: fetching something for
 local use is not the same act as shipping it.
 
 **Deno, not Node.** This reaffirms ADR-008 rather than opening a new
-question: Deno is already a Cordial dependency for the plugin runtime, so a
+question: Deno is already a Vanta dependency for the plugin runtime, so a
 Deno tool here adds no new toolchain, no `package.json`, no
 `node_modules`. A Node/`tsx` port would have added exactly the dependency
 ADR-008 chose not to carry, for a tool that gains nothing from being Node.
@@ -82,8 +82,8 @@ library at all.
 An earlier version of this idea paired the fetched corpus with an
 LLM-scoring harness — evaluate a subject model's diagnosis against the
 maintainer's real one, judge it, and triage which findings apply to
-Cordial. That harness (`evaluate.ts`, `model.ts`, `sampling.ts`, and a
-Cordial-specific context builder) is not part of this change. It called an
+Vanta. That harness (`evaluate.ts`, `model.ts`, `sampling.ts`, and a
+Vanta-specific context builder) is not part of this change. It called an
 external LLM API, which is out of scope here on its own terms, and was
 explicitly not something to build. What ships is the fetcher and the
 maintainer-reply quality filter (`triage.ts`) that makes the raw corpus
@@ -123,7 +123,7 @@ this fetcher uses does not leak pull requests into the corpus.
 
 **Accepted:** the corpus is a maintenance surface tied to Sober's tracker
 staying reachable and GitHub's GraphQL schema staying stable. Neither is
-under Cordial's control; if either breaks, the fetcher should fail loudly
+under Vanta's control; if either breaks, the fetcher should fail loudly
 naming what it could not reach, the same standard ADR-015 sets for the
 build fetcher.
 
