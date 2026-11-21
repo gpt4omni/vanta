@@ -474,11 +474,17 @@ int vanta_getaddrinfo(const char* node, const char* service,
 
     // Singleflight: if another thread is already resolving this exact key,
     // wait for it to populate the cache instead of issuing duplicate NSS RPCs.
+    // Re-check the cache while holding `inflight_mu` so a thread racing right
+    // after a leader finishes (and erases its `inflight` entry) always observes
+    // the freshly stored cache entry instead of issuing a second lookup.
     auto& cache = dns_cache();
     std::shared_ptr<InFlight> leader;
     bool is_leader = false;
     {
         std::lock_guard<std::mutex> lk(cache.inflight_mu);
+        if (try_cache_lookup(key, port_agnostic, numeric_port, res, &cached_rc)) {
+            return cached_rc;
+        }
         auto it = cache.inflight.find(key);
         if (it != cache.inflight.end()) {
             leader = it->second;
