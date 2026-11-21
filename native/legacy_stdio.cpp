@@ -49,13 +49,17 @@ extern size_t vanta_legacy_sf_stride(void);
 /// caller that computed `&__sF[1]` and a caller that took `stdout` as a macro
 /// arrive at the same place by different arithmetic and both must be caught.
 static FILE* translate(FILE* f) {
-    const unsigned char* base = vanta_legacy_sf_base();
-    if (!f || !base) {
+    if (!f) {
+        return f;
+    }
+    // Both values are process-lifetime constants from Rust's static `LEGACY_SF`;
+    // caching them avoids two cross-FFI calls on every fread/fwrite/fseek/fprintf.
+    static const uintptr_t lo = reinterpret_cast<uintptr_t>(vanta_legacy_sf_base());
+    static const size_t stride = vanta_legacy_sf_stride();
+    if (!lo || !stride) {
         return f;
     }
     const auto addr = reinterpret_cast<uintptr_t>(f);
-    const auto lo = reinterpret_cast<uintptr_t>(base);
-    const size_t stride = vanta_legacy_sf_stride();
     if (addr < lo || addr >= lo + stride * 3) {
         return f;
     }

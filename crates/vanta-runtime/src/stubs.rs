@@ -7,57 +7,47 @@
 //! `VANTA_STUB_ABORT=1` aborts on the first hit instead, for bisecting a
 //! specific failure.
 
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Mutex, OnceLock};
 
 include!(concat!(env!("OUT_DIR"), "/generated_stubs.rs"));
 
-struct Hits {
-    /// Call count per symbol index.
-    counts: Vec<u32>,
-    /// Symbol indices in first-hit order.
-    order: Vec<usize>,
+/// Lock-free call counts per stub index. Only the very first hit (`prev == 0`)
+/// acquires `FIRST_ORDER` to record first-hit ordering and report once.
+fn counts() -> &'static [AtomicU32] {
+    static COUNTS: OnceLock<Box<[AtomicU32]>> = OnceLock::new();
+    COUNTS.get_or_init(|| (0..SYMBOLS.len()).map(|_| AtomicU32::new(0)).collect())
 }
 
-static HITS: Mutex<Option<Hits>> = Mutex::new(None);
+static FIRST_ORDER: Mutex<Vec<usize>> = Mutex::new(Vec::new());
 
 fn abort_on_hit() -> bool {
-    std::env::var_os("VANTA_STUB_ABORT").is_some()
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("VANTA_STUB_ABORT").is_some())
 }
 
 fn quiet() -> bool {
-    std::env::var_os("VANTA_STUB_QUIET").is_some()
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("VANTA_STUB_QUIET").is_some())
 }
 
 /// Called by every generated stub.
 pub fn hit(index: usize) -> i64 {
-    let first = {
-        let mut guard = HITS.lock().unwrap_or_else(|e| e.into_inner());
-        let hits = guard.get_or_insert_with(|| Hits {
-            counts: vec![0; SYMBOLS.len()],
-            order: Vec::new(),
-        });
-        let first = hits.counts[index] == 0;
-        hits.counts[index] += 1;
-        if first {
-            hits.order.push(index);
-        }
-        first
-    };
+    let prev = counts()[index].fetch_add(1, Ordering::Relaxed);
+    if prev == 0 {
+        let mut order = FIRST_ORDER.lock().unwrap_or_else(|e| e.into_inner());
+        order.push(index);
+        drop(order);
 
-    // Once per symbol into the central register, so the end-of-run report can
-    // put libc stubs beside the JNI and framework gaps rather than in a table of
-    // their own that has to be correlated by hand.
-    //
-    // Except where returning zero *is* the documented answer. That report exists
-    // to name gaps, and a symbol whose contract says zero means "not enabled" is
-    // not a gap -- listing it sends whoever reads the log to implement something
-    // that is already correct, which is how ZSTD_trace_compress_begin came to be
-    // reported as missing when it was answering properly.
-    if first && !answering_correctly(SYMBOLS[index].0) {
-        crate::unimplemented::record(crate::unimplemented::Kind::LibcStub, SYMBOLS[index].0);
-    }
-    if first && !quiet() {
-        eprintln!("[stub] {}", SYMBOLS[index].0);
+        // Once per symbol into the central register, so the end-of-run report
+        // can put libc stubs beside the JNI and framework gaps rather than in a
+        // table of their own that has to be correlated by hand.
+        if !answering_correctly(SYMBOLS[index].0) {
+            crate::unimplemented::record(crate::unimplemented::Kind::LibcStub, SYMBOLS[index].0);
+        }
+        if !quiet() {
+            eprintln!("[stub] {}", SYMBOLS[index].0);
+        }
     }
     if abort_on_hit() {
         eprintln!("[stub] VANTA_STUB_ABORT set — aborting on {}", SYMBOLS[index].0);
@@ -156,16 +146,16 @@ fn answering_correctly(symbol: &str) -> bool {
 }
 
 pub fn report() {
-    let guard = HITS.lock().unwrap_or_else(|e| e.into_inner());
-    let Some(hits) = guard.as_ref() else {
+    let order = FIRST_ORDER.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    if order.is_empty() {
         eprintln!("\n=== no stubs were called ===");
         return;
-    };
+    }
 
-    let mut called: Vec<(usize, u32)> = hits
-        .order
+    let c = counts();
+    let mut called: Vec<(usize, u32)> = order
         .iter()
-        .map(|&i| (i, hits.counts[i]))
+        .map(|&i| (i, c[i].load(Ordering::Relaxed)))
         .collect();
     called.sort_by(|a, b| b.1.cmp(&a.1));
 

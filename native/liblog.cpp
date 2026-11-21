@@ -21,13 +21,19 @@
 // variadic, and forwarding a C variadic to a real `vsnprintf` is the one thing
 // C does better here.
 
+#include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <ctime>
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <cstddef>
+#include <deque>
+#include <mutex>
+#include <string>
+#include <thread>
 
 extern "C" {
 
@@ -114,19 +120,111 @@ int minimum_priority() {
 /// Built with `localtime_r` and `snprintf` rather than `std::format` or
 /// `put_time`: this runs on every log line, including inside the engine's
 /// startup, and it must not allocate.
+static long local_utc_offset_secs() {
+    static const long offset = []() -> long {
+        std::time_t now = std::time(nullptr);
+        struct tm tmv {};
+        if (!localtime_r(&now, &tmv)) {
+            return 0;
+        }
+        return tmv.tm_gmtoff;
+    }();
+    return offset;
+}
+
+static void write_two_digits(char* p, int v) {
+    p[0] = static_cast<char>('0' + (v / 10));
+    p[1] = static_cast<char>('0' + (v % 10));
+}
+
 static void stamp(char* out, size_t n) {
-    auto now = std::chrono::system_clock::now();
-    auto since = now.time_since_epoch();
-    auto secs = std::chrono::duration_cast<std::chrono::seconds>(since);
-    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(since - secs);
-    std::time_t t = static_cast<std::time_t>(secs.count());
-    struct tm tmv {};
-    if (!localtime_r(&t, &tmv)) {
-        snprintf(out, n, "??:??:??.???");
+    if (n < 13) {
+        if (n > 0) out[0] = '\0';
         return;
     }
-    snprintf(out, n, "%02d:%02d:%02d.%03d", tmv.tm_hour, tmv.tm_min, tmv.tm_sec,
-             static_cast<int>(ms.count()));
+    auto now = std::chrono::system_clock::now();
+    auto since = now.time_since_epoch();
+    auto secs = std::chrono::duration_cast<std::chrono::seconds>(since).count();
+    int ms = static_cast<int>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(since).count() - secs * 1000);
+    if (ms < 0) {
+        ms += 1000;
+        secs -= 1;
+    }
+    long local_secs = static_cast<long>(secs) + local_utc_offset_secs();
+    long tod = local_secs % 86400;
+    if (tod < 0) tod += 86400;
+    int hour = static_cast<int>(tod / 3600);
+    int min = static_cast<int>((tod % 3600) / 60);
+    int sec = static_cast<int>(tod % 60);
+    write_two_digits(out + 0, hour);
+    out[2] = ':';
+    write_two_digits(out + 3, min);
+    out[5] = ':';
+    write_two_digits(out + 6, sec);
+    out[8] = '.';
+    out[9] = static_cast<char>('0' + (ms / 100));
+    out[10] = static_cast<char>('0' + ((ms / 10) % 10));
+    out[11] = static_cast<char>('0' + (ms % 10));
+    out[12] = '\0';
+}
+
+// Asynchronous stderr writer so Roblox render, simulation and worker threads
+// never stall on a synchronous unbuffered `write(2)` to a slow pipe/terminal.
+// Errors and fatals flush synchronously so crash output is never lost.
+struct AsyncLogWriter {
+    static constexpr size_t kMaxQueued = 512;
+    std::mutex mtx;
+    std::condition_variable cv;
+    std::deque<std::string> queue;
+    size_t dropped = 0;
+
+    AsyncLogWriter() {
+        std::thread([this]() { run(); }).detach();
+    }
+
+    void run() {
+        std::deque<std::string> batch;
+        for (;;) {
+            size_t dropped_now = 0;
+            {
+                std::unique_lock<std::mutex> lk(mtx);
+                cv.wait(lk, [&]() { return !queue.empty() || dropped > 0; });
+                batch.swap(queue);
+                dropped_now = dropped;
+                dropped = 0;
+            }
+            for (const auto& line : batch) {
+                fwrite(line.data(), 1, line.size(), stderr);
+            }
+            if (dropped_now > 0) {
+                fprintf(stderr, "[liblog] dropped %zu log line(s) while stderr was backed up\n",
+                        dropped_now);
+            }
+            batch.clear();
+        }
+    }
+
+    void push(std::string&& line) {
+        bool wake = false;
+        {
+            std::lock_guard<std::mutex> lk(mtx);
+            if (queue.size() >= kMaxQueued) {
+                ++dropped;
+                return;
+            }
+            wake = queue.empty();
+            queue.push_back(std::move(line));
+        }
+        if (wake) {
+            cv.notify_one();
+        }
+    }
+};
+
+static AsyncLogWriter& async_writer() {
+    static AsyncLogWriter* w = new AsyncLogWriter();
+    return *w;
 }
 
 void emit(int prio, const char* tag, const char* text) {
@@ -135,16 +233,41 @@ void emit(int prio, const char* tag, const char* text) {
     }
     char ts[16];
     stamp(ts, sizeof(ts));
-    fprintf(stderr, "%s %c/%-24s %s\n", ts, priority_letter(prio), tag ? tag : "(no tag)",
-            text ? text : "(null)");
+    const char* safe_tag = tag ? tag : "(no tag)";
+    const char* safe_text = text ? text : "(null)";
+    if (prio >= ANDROID_LOG_ERROR) {
+        fprintf(stderr, "%s %c/%-24s %s\n", ts, priority_letter(prio), safe_tag, safe_text);
+        return;
+    }
+    char stack_buf[512];
+    int n = snprintf(stack_buf, sizeof(stack_buf), "%s %c/%-24s %s\n",
+                     ts, priority_letter(prio), safe_tag, safe_text);
+    if (n <= 0) {
+        return;
+    }
+    std::string line;
+    if (static_cast<size_t>(n) < sizeof(stack_buf)) {
+        line.assign(stack_buf, static_cast<size_t>(n));
+    } else {
+        line.resize(static_cast<size_t>(n));
+        snprintf(line.data(), line.size() + 1, "%s %c/%-24s %s\n",
+                 ts, priority_letter(prio), safe_tag, safe_text);
+    }
+    async_writer().push(std::move(line));
 }
 
 int __android_log_write(int prio, const char* tag, const char* text) {
+    if (prio < minimum_priority()) {
+        return 1;
+    }
     emit(prio, tag, text);
     return 1;
 }
 
 int __android_log_buf_write(int /*bufID*/, int prio, const char* tag, const char* text) {
+    if (prio < minimum_priority()) {
+        return 1;
+    }
     // Android routes to main/radio/system/crash buffers. One stream is fine here;
     // nothing downstream distinguishes them.
     emit(prio, tag, text);
@@ -152,6 +275,12 @@ int __android_log_buf_write(int /*bufID*/, int prio, const char* tag, const char
 }
 
 int __android_log_vprint(int prio, const char* tag, const char* fmt, va_list ap) {
+    // Check the priority gate before formatting: VERBOSE is off by default and
+    // chatty, so formatting first wastes 4 KiB stack + full vsnprintf on every
+    // discarded log call on engine threads.
+    if (prio < minimum_priority()) {
+        return 1;
+    }
     char buf[4096];
     vsnprintf(buf, sizeof(buf), fmt, ap);
     emit(prio, tag, buf);
@@ -159,6 +288,9 @@ int __android_log_vprint(int prio, const char* tag, const char* fmt, va_list ap)
 }
 
 int __android_log_print(int prio, const char* tag, const char* fmt, ...) {
+    if (prio < minimum_priority()) {
+        return 1;
+    }
     va_list ap;
     va_start(ap, fmt);
     int rc = __android_log_vprint(prio, tag, fmt, ap);

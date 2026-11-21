@@ -26,7 +26,7 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::fd::{FromRawFd, IntoRawFd, OwnedFd};
 use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 /// One opened asset. The pointer handed back to Roblox is a `Box::into_raw` of
 /// this, which is what an `AAsset*` is as far as the engine is concerned.
@@ -66,26 +66,80 @@ struct Asset {
 /// directory once per pooled archive, but it needs a lock to hand one out, a
 /// cap to bound memory, and a policy for what happens when the pool is empty.
 /// This needs none of the three, because there is nothing to hand out.
-#[derive(Clone)]
 struct ApkReader {
     file: Arc<File>,
     pos: u64,
     len: u64,
+    /// Small read-ahead window so zip central-directory and local-header reads
+    /// do not issue a separate `pread(2)` syscall for every 4-30 byte field.
+    buf: Vec<u8>,
+    buf_start: u64,
+    buf_len: usize,
+}
+
+impl Clone for ApkReader {
+    fn clone(&self) -> Self {
+        Self {
+            file: Arc::clone(&self.file),
+            pos: self.pos,
+            len: self.len,
+            buf: Vec::new(),
+            buf_start: 0,
+            buf_len: 0,
+        }
+    }
 }
 
 impl ApkReader {
+    const BUF_CAP: usize = 8192;
+
     fn open(path: &Path) -> std::io::Result<ApkReader> {
         let file = File::open(path)?;
         let len = file.metadata()?.len();
-        Ok(ApkReader { file: Arc::new(file), pos: 0, len })
+        Ok(ApkReader {
+            file: Arc::new(file),
+            pos: 0,
+            len,
+            buf: Vec::new(),
+            buf_start: 0,
+            buf_len: 0,
+        })
     }
 }
 
 impl Read for ApkReader {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        let n = self.file.read_at(buf, self.pos)?;
-        self.pos += n as u64;
-        Ok(n)
+    fn read(&mut self, dst: &mut [u8]) -> std::io::Result<usize> {
+        if dst.is_empty() {
+            return Ok(0);
+        }
+        // Serve directly from the read-ahead window when `pos` lands inside it.
+        if self.buf_len > 0
+            && self.pos >= self.buf_start
+            && self.pos < self.buf_start + self.buf_len as u64
+        {
+            let off = (self.pos - self.buf_start) as usize;
+            let avail = self.buf_len - off;
+            let n = avail.min(dst.len());
+            dst[..n].copy_from_slice(&self.buf[off..off + n]);
+            self.pos += n as u64;
+            return Ok(n);
+        }
+        // Large reads bypass the small header buffer to avoid an extra copy.
+        if dst.len() >= Self::BUF_CAP {
+            let n = self.file.read_at(dst, self.pos)?;
+            self.pos += n as u64;
+            return Ok(n);
+        }
+        if self.buf.len() < Self::BUF_CAP {
+            self.buf.resize(Self::BUF_CAP, 0);
+        }
+        let n = self.file.read_at(&mut self.buf[..Self::BUF_CAP], self.pos)?;
+        self.buf_start = self.pos;
+        self.buf_len = n;
+        let copy = n.min(dst.len());
+        dst[..copy].copy_from_slice(&self.buf[..copy]);
+        self.pos += copy as u64;
+        Ok(copy)
     }
 }
 
@@ -130,13 +184,10 @@ struct Manager {
     /// have traded one bug for a worse one. A `OnceLock` of a *template* that
     /// each read clones keeps the concurrency and removes the re-parse.
     archive: OnceLock<Option<zip::ZipArchive<ApkReader>>>,
-    /// Decompressed contents, keyed by path inside `assets/`.
-    ///
-    /// Roblox reopens the same assets repeatedly during startup, and zip
-    /// decompression is not free. Caching also means `AAsset_getBuffer` can hand
-    /// out a pointer that stays valid after the asset is closed, which the API
-    /// does not promise but callers routinely assume.
-    cache: Mutex<HashMap<String, &'static [u8]>>,
+    /// Decompressed contents (and negative misses as `None`), keyed by path
+    /// inside `assets/`. Read-mostly `RwLock` allows all ~20 engine threads to
+    /// hit the cache in parallel without serialising on an exclusive mutex.
+    cache: RwLock<HashMap<String, Option<&'static [u8]>>>,
 }
 
 impl Manager {
@@ -171,7 +222,7 @@ pub fn set_apk(path: &Path) -> Result<(), String> {
         .set(Manager {
             apk: path.to_path_buf(),
             archive: OnceLock::new(),
-            cache: Mutex::new(HashMap::new()),
+            cache: RwLock::new(HashMap::new()),
         })
         .map_err(|_| "an APK is already set".to_string())
 }
@@ -216,14 +267,18 @@ impl Manager {
     /// miss — is traced under `VANTA_TRACE_ASSETS=1` so a miss is visible,
     /// not just a hit.
     fn read(&self, name: &str) -> Option<&'static [u8]> {
-        if let Some(bytes) = self.cache.lock().ok()?.get(name) {
+        if let Some(&cached) = self.cache.read().ok()?.get(name) {
             if trace_assets_enabled() {
-                eprintln!("[asset] hit (cache): {name}");
+                if cached.is_some() {
+                    eprintln!("[asset] hit (cache): {name}");
+                } else {
+                    eprintln!("[asset] miss (cache): {name}");
+                }
             }
             // Not re-recorded: the first request for this name already
             // recorded which layer answered it, and overwriting that with
             // "cache" would erase the one fact the recorder exists to keep.
-            return Some(bytes);
+            return cached;
         }
 
         if let Some((source, path)) = resolve_overlay(name) {
@@ -245,7 +300,7 @@ impl Manager {
                 }
                 record(name, Served::Overlay(source));
                 let leaked: &'static [u8] = Vec::leak(bytes);
-                self.cache.lock().ok()?.insert(name.to_string(), leaked);
+                self.cache.write().ok()?.insert(name.to_string(), Some(leaked));
                 return Some(leaked);
             }
         }
@@ -264,6 +319,9 @@ impl Manager {
                 eprintln!("[asset] miss: {name}");
             }
             record(name, Served::Missing);
+            if let Ok(mut cache) = self.cache.write() {
+                cache.insert(name.to_string(), None);
+            }
             return None;
         };
 
@@ -277,7 +335,7 @@ impl Manager {
         // AAsset handle is far cheaper than a dangling buffer, and the total is
         // bounded by what the APK contains.
         let leaked: &'static [u8] = Vec::leak(bytes);
-        self.cache.lock().ok()?.insert(name.to_string(), leaked);
+        self.cache.write().ok()?.insert(name.to_string(), Some(leaked));
         Some(leaked)
     }
 }
@@ -471,6 +529,13 @@ fn invalidate() {
     if let Ok(mut held) = INDEX.lock() {
         *held = None;
     }
+    // Clear cached negative misses so newly registered overlay files become
+    // visible immediately without disturbing already-served positive entries.
+    if let Some(m) = MANAGER.get() {
+        if let Ok(mut cache) = m.cache.write() {
+            cache.retain(|_, v| v.is_some());
+        }
+    }
 }
 
 /// The layer stack in precedence order, **lowest first**: plugins in
@@ -599,7 +664,12 @@ pub fn reload() -> Reload {
     let index = index();
     let already_cached = MANAGER
         .get()
-        .and_then(|m| m.cache.lock().ok().map(|c| index.files.keys().filter(|n| c.contains_key(*n)).count()))
+        .and_then(|m| {
+            m.cache
+                .read()
+                .ok()
+                .map(|c| index.files.keys().filter(|n| c.get(*n).is_some_and(Option::is_some)).count())
+        })
         .unwrap_or(0);
     Reload { files: index.len(), layers: index.layers.len(), already_cached }
 }
