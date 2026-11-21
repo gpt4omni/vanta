@@ -1,6 +1,6 @@
 pkgbase = vanta
 	pkgdesc = Roblox's official Android build, run natively on Linux -- Vanta ships no Roblox code and fetches a signature-verified one
-	pkgver = 0.34.1
+	pkgver = 0.35.0
 	pkgrel = 1
 	url = https://github.com/gpt4omni/vanta
 	install = vanta.install
@@ -43,7 +43,7 @@ pkgbase = vanta
 	conflicts = vanta-git
 	conflicts = vanta-bin
 	options = !lto
-	source = vanta::git+https://github.com/gpt4omni/vanta.git#tag=v0.34.1
+	source = vanta::git+https://github.com/gpt4omni/vanta.git#tag=v0.35.0
 	source = mcpelauncher-linker::git+https://github.com/minecraft-linux/mcpelauncher-linker.git
 	source = android_bionic::git+https://github.com/minecraft-linux/android_bionic.git
 	source = android_core::git+https://github.com/minecraft-linux/android_core.git

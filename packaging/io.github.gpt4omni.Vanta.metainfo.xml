@@ -78,6 +78,18 @@
       and is not this change. AppStream shows the newest entry as "what's new",
       so the important one is the top.
     -->
+    <release version="0.35.0" date="2026-11-21">
+      <url type="details">https://github.com/gpt4omni/vanta/releases/tag/v0.35.0</url>
+      <description>
+        <p>
+          First published Vanta release and Flatpak stable channel. Adds a
+          Vulkan compute shader ETC2/EAC texture decoder with pooled staging,
+          fixes JNI local-reference leaks and high-rate input/keepalive storms,
+          removes hot-path lock and logging contention, and builds release
+          binaries with ThinLTO.
+        </p>
+      </description>
+    </release>
     <release version="0.34.1" date="2026-11-06">
       <url type="details">https://github.com/gpt4omni/vanta/releases/tag/v0.34.1</url>
       <description>
