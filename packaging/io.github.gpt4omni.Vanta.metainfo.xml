@@ -78,6 +78,16 @@
       and is not this change. AppStream shows the newest entry as "what's new",
       so the important one is the top.
     -->
+    <release version="0.35.1" date="2026-11-21">
+      <url type="details">https://github.com/gpt4omni/vanta/releases/tag/v0.35.1</url>
+      <description>
+        <p>
+          Fixes an immediate startup crash inside Roblox's JNI_OnLoad
+          ("Failed to get reference to jnivm::VM") and cleans up remaining old
+          logos, palette colours, and naming leftovers across docs and web pages.
+        </p>
+      </description>
+    </release>
     <release version="0.35.0" date="2026-11-21">
       <url type="details">https://github.com/gpt4omni/vanta/releases/tag/v0.35.0</url>
       <description>
