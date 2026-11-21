@@ -60,6 +60,7 @@ counters! {
     CREATE_SHADER_MODULE     => "vkCreateShaderModule",
     ETC_IMAGE_EMULATED       => "vkCreateImage(ETC2/EAC, emulated)",
     ETC_REGION_DECODED       => "vkCmdCopyBufferToImage(ETC2/EAC regions decoded)",
+    ETC_REGION_GPU           => "  ...decoded on GPU compute shader",
     ETC_LATE_WRITE           => "  ...re-decoded at submit (source changed after recording)",
     ETC_UNHANDLED            => "ETC2/EAC emulation: unhandled calls (see trace)",
 }

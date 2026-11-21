@@ -1,0 +1,395 @@
+#version 450
+
+// Vulkan 1.0 compute decoder for the seven ETC2/EAC block formats supported by
+// `etc_decode.rs`. One invocation decodes one 4x4 block at (bx, by, layer),
+// reading compressed bytes directly from the application's upload buffer and
+// writing tightly-packed texels into a device-local scratch buffer that is then
+// copied into the substitute VkImage.
+//
+// Recompile to `etc_decode_spv.rs` with:
+//   glslc -O --target-env=vulkan1.0 etc_decode_gpu.comp -o /tmp/etc_decode.spv
+//   spirv-val /tmp/etc_decode.spv
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, std430) readonly buffer SrcBuf {
+    uint data[];
+} src_buf;
+
+layout(set = 0, binding = 1, std430) writeonly buffer DstBuf {
+    uint data[];
+} dst_buf;
+
+layout(push_constant) uniform Params {
+    uint src_byte_offset; // byte offset into src_buf
+    uint dst_word_offset; // u32 word offset into dst_buf (dst_byte_offset / 4)
+    uint width;           // texel width
+    uint height;          // texel height
+    uint row_blocks;      // source row stride in 4x4 blocks
+    uint layer_stride;    // source byte stride per array layer
+    uint dst_row_words;   // output u32 words per row (width for 4B texels; ceil(width/2) for R11)
+    uint fmt_and_layers;  // bits 0..7: format (0..6), bits 8..31: layer count
+} pc;
+
+const uint FMT_RGB8       = 0u;
+const uint FMT_RGB8_A1    = 1u;
+const uint FMT_RGBA8      = 2u;
+const uint FMT_R11        = 3u;
+const uint FMT_R11_SIGNED = 4u;
+const uint FMT_RG11       = 5u;
+const uint FMT_RG11_SIGNED = 6u;
+
+const int INTENSITY[16] = int[16](
+    2, 8,
+    5, 17,
+    9, 29,
+    13, 42,
+    18, 60,
+    24, 80,
+    33, 106,
+    47, 183
+);
+
+const int DISTANCE[8] = int[8](3, 6, 11, 16, 23, 32, 41, 64);
+
+const int EAC_MODIFIERS[128] = int[128](
+    -3, -6, -9, -15, 2, 5, 8, 14,
+    -3, -7, -10, -13, 2, 6, 9, 12,
+    -2, -5, -8, -13, 1, 4, 7, 12,
+    -2, -4, -6, -13, 1, 3, 5, 12,
+    -3, -6, -8, -12, 2, 5, 7, 11,
+    -3, -7, -9, -11, 2, 6, 8, 10,
+    -4, -7, -8, -11, 3, 6, 7, 10,
+    -3, -5, -8, -11, 2, 4, 7, 10,
+    -2, -6, -8, -10, 1, 5, 7, 9,
+    -2, -5, -8, -10, 1, 4, 7, 9,
+    -2, -4, -8, -10, 1, 3, 7, 9,
+    -2, -5, -7, -10, 1, 4, 6, 9,
+    -3, -4, -7, -10, 2, 3, 6, 9,
+    -1, -2, -3, -10, 0, 1, 2, 9,
+    -4, -6, -8, -9, 3, 5, 7, 8,
+    -3, -5, -7, -9, 2, 4, 6, 8
+);
+
+uint load_u32_le(uint byte_off) {
+    uint idx = byte_off >> 2u;
+    uint rem = byte_off & 3u;
+    uint w0 = src_buf.data[idx];
+    if (rem == 0u) {
+        return w0;
+    }
+    uint w1 = src_buf.data[idx + 1u];
+    return (w0 >> (rem * 8u)) | (w1 << ((4u - rem) * 8u));
+}
+
+uint bswap32(uint v) {
+    return ((v & 0xFFu) << 24u)
+         | ((v & 0xFF00u) << 8u)
+         | ((v >> 8u) & 0xFF00u)
+         | (v >> 24u);
+}
+
+uint clamp8(int v) {
+    return uint(clamp(v, 0, 255));
+}
+
+uint pack_rgba(int r, int g, int b, int a) {
+    return clamp8(r) | (clamp8(g) << 8u) | (clamp8(b) << 16u) | (clamp8(a) << 24u);
+}
+
+int ext4(uint v) { return int(v) * 17; }
+int ext5(int v)  { return (v << 3) | (v >> 2); }
+int ext6(uint v) { int iv = int(v); return (iv << 2) | (iv >> 4); }
+int ext7(uint v) { int iv = int(v); return (iv << 1) | (iv >> 6); }
+
+int signed3(uint v) {
+    int iv = int(v & 7u);
+    return (iv >= 4) ? (iv - 8) : iv;
+}
+
+uint pixel_index(uint lo, uint x, uint y) {
+    uint i = x * 4u + y;
+    uint msb = (lo >> (16u + i)) & 1u;
+    uint lsb = (lo >> i) & 1u;
+    return (msb << 1u) | lsb;
+}
+
+uint eac_index(uint hi16, uint lo32, uint x, uint y) {
+    uint i = x * 4u + y;
+    uint s = 45u - 3u * i;
+    if (s >= 32u) {
+        return (hi16 >> (s - 32u)) & 7u;
+    } else if (s <= 29u) {
+        return (lo32 >> s) & 7u;
+    } else {
+        // s == 30 (i == 5): bits 30, 31 in lo32 and bit 32 in hi16 bit 0.
+        return ((lo32 >> 30u) & 3u) | ((hi16 & 1u) << 2u);
+    }
+}
+
+void decode_etc2_rgb(uint byte_off, bool punchthrough, out uint px[16]) {
+    uint w0 = load_u32_le(byte_off);
+    uint w1 = load_u32_le(byte_off + 4u);
+    uint b0 = w0 & 0xFFu;
+    uint b1 = (w0 >> 8u) & 0xFFu;
+    uint b2 = (w0 >> 16u) & 0xFFu;
+    uint b3 = w0 >> 24u;
+    uint lo = bswap32(w1);
+
+    bool bit33 = ((b3 >> 1u) & 1u) != 0u;
+    bool differential = punchthrough ? true : bit33;
+    bool opaque = punchthrough ? bit33 : true;
+
+    if (!differential) {
+        ivec3 c1 = ivec3(ext4(b0 >> 4u), ext4(b1 >> 4u), ext4(b2 >> 4u));
+        ivec3 c2 = ivec3(ext4(b0 & 0xFu), ext4(b1 & 0xFu), ext4(b2 & 0xFu));
+        uint cw0 = b3 >> 5u;
+        uint cw1 = (b3 >> 2u) & 7u;
+        bool flip = (b3 & 1u) != 0u;
+        uint paint[8];
+        for (uint s = 0u; s < 2u; ++s) {
+            ivec3 base = (s == 0u) ? c1 : c2;
+            uint cw = (s == 0u) ? cw0 : cw1;
+            int t0 = INTENSITY[cw * 2u];
+            int t1 = INTENSITY[cw * 2u + 1u];
+            int mods[4] = int[4](t0, t1, -t0, -t1);
+            for (uint k = 0u; k < 4u; ++k) {
+                int m = mods[k];
+                paint[s * 4u + k] = pack_rgba(base.r + m, base.g + m, base.b + m, 255);
+            }
+        }
+        for (uint y = 0u; y < 4u; ++y) {
+            for (uint x = 0u; x < 4u; ++x) {
+                uint s = (flip ? (y >= 2u) : (x >= 2u)) ? 1u : 0u;
+                px[y * 4u + x] = paint[s * 4u + pixel_index(lo, x, y)];
+            }
+        }
+        return;
+    }
+
+    int r = int(b0 >> 3u);
+    int g = int(b1 >> 3u);
+    int b = int(b2 >> 3u);
+    int r2 = r + signed3(b0);
+    int g2 = g + signed3(b1);
+    int b2c = b + signed3(b2);
+
+    if (r2 < 0 || r2 > 31) {
+        // T mode
+        ivec3 c1 = ivec3(
+            ext4((((b0 >> 3u) & 3u) << 2u) | (b0 & 3u)),
+            ext4(b1 >> 4u),
+            ext4(b1 & 0xFu)
+        );
+        ivec3 c2 = ivec3(ext4(b2 >> 4u), ext4(b2 & 0xFu), ext4(b3 >> 4u));
+        int d = DISTANCE[(((b3 >> 2u) & 3u) << 1u) | (b3 & 1u)];
+        uint paint[4];
+        paint[0] = pack_rgba(c1.r, c1.g, c1.b, 255);
+        paint[1] = pack_rgba(c2.r + d, c2.g + d, c2.b + d, 255);
+        paint[2] = opaque ? pack_rgba(c2.r, c2.g, c2.b, 255) : 0u;
+        paint[3] = pack_rgba(c2.r - d, c2.g - d, c2.b - d, 255);
+        for (uint y = 0u; y < 4u; ++y) {
+            for (uint x = 0u; x < 4u; ++x) {
+                px[y * 4u + x] = paint[pixel_index(lo, x, y)];
+            }
+        }
+    } else if (g2 < 0 || g2 > 31) {
+        // H mode
+        uint r1 = (b0 >> 3u) & 0xFu;
+        uint g1 = ((b0 & 7u) << 1u) | ((b1 >> 4u) & 1u);
+        uint bl1 = (b1 & 8u) | ((b1 & 3u) << 1u) | (b2 >> 7u);
+        uint r2h = (b2 >> 3u) & 0xFu;
+        uint g2h = ((b2 & 7u) << 1u) | (b3 >> 7u);
+        uint bl2 = (b3 >> 3u) & 0xFu;
+        uint v1 = (r1 << 8u) | (g1 << 4u) | bl1;
+        uint v2 = (r2h << 8u) | (g2h << 4u) | bl2;
+        uint idx = (((b3 >> 2u) & 1u) << 2u) | ((b3 & 1u) << 1u) | (v1 >= v2 ? 1u : 0u);
+        int d = DISTANCE[idx];
+        ivec3 c1 = ivec3(ext4(r1), ext4(g1), ext4(bl1));
+        ivec3 c2 = ivec3(ext4(r2h), ext4(g2h), ext4(bl2));
+        uint paint[4];
+        paint[0] = pack_rgba(c1.r + d, c1.g + d, c1.b + d, 255);
+        paint[1] = pack_rgba(c1.r - d, c1.g - d, c1.b - d, 255);
+        paint[2] = opaque ? pack_rgba(c2.r + d, c2.g + d, c2.b + d, 255) : 0u;
+        paint[3] = pack_rgba(c2.r - d, c2.g - d, c2.b - d, 255);
+        for (uint y = 0u; y < 4u; ++y) {
+            for (uint x = 0u; x < 4u; ++x) {
+                px[y * 4u + x] = paint[pixel_index(lo, x, y)];
+            }
+        }
+    } else if (b2c < 0 || b2c > 31) {
+        // Planar mode
+        int ro = ext6((b0 >> 1u) & 0x3Fu);
+        int go = ext7(((b0 & 1u) << 6u) | ((b1 >> 1u) & 0x3Fu));
+        int bo = ext6(((b1 & 1u) << 5u) | (((b2 >> 3u) & 3u) << 3u) | ((b2 & 3u) << 1u) | (b3 >> 7u));
+        int rh = ext6((((b3 >> 2u) & 0x1Fu) << 1u) | (b3 & 1u));
+        int gh = ext7((lo >> 25u) & 0x7Fu);
+        int bh = ext6((lo >> 19u) & 0x3Fu);
+        int rv = ext6((lo >> 13u) & 0x3Fu);
+        int gv = ext7((lo >> 6u) & 0x7Fu);
+        int bv = ext6(lo & 0x3Fu);
+        for (int y = 0; y < 4; ++y) {
+            for (int x = 0; x < 4; ++x) {
+                int pr = (x * (rh - ro) + y * (rv - ro) + 4 * ro + 2) >> 2;
+                int pg = (x * (gh - go) + y * (gv - go) + 4 * go + 2) >> 2;
+                int pb = (x * (bh - bo) + y * (bv - bo) + 4 * bo + 2) >> 2;
+                px[uint(y * 4 + x)] = pack_rgba(pr, pg, pb, 255);
+            }
+        }
+    } else {
+        // Differential mode
+        ivec3 c1 = ivec3(ext5(r), ext5(g), ext5(b));
+        ivec3 c2 = ivec3(ext5(r2), ext5(g2), ext5(b2c));
+        uint cw0 = b3 >> 5u;
+        uint cw1 = (b3 >> 2u) & 7u;
+        bool flip = (b3 & 1u) != 0u;
+        uint paint[8];
+        for (uint s = 0u; s < 2u; ++s) {
+            ivec3 base = (s == 0u) ? c1 : c2;
+            uint cw = (s == 0u) ? cw0 : cw1;
+            int t0 = INTENSITY[cw * 2u];
+            int t1 = INTENSITY[cw * 2u + 1u];
+            int mods[4] = int[4](opaque ? t0 : 0, t1, -t0, -t1);
+            for (uint k = 0u; k < 4u; ++k) {
+                if (!opaque && k == 2u) {
+                    paint[s * 4u + k] = 0u;
+                } else {
+                    int m = mods[k];
+                    paint[s * 4u + k] = pack_rgba(base.r + m, base.g + m, base.b + m, 255);
+                }
+            }
+        }
+        for (uint y = 0u; y < 4u; ++y) {
+            for (uint x = 0u; x < 4u; ++x) {
+                uint s = (flip ? (y >= 2u) : (x >= 2u)) ? 1u : 0u;
+                px[y * 4u + x] = paint[s * 4u + pixel_index(lo, x, y)];
+            }
+        }
+    }
+}
+
+void decode_eac_alpha(uint byte_off, inout uint px[16]) {
+    uint w0 = load_u32_le(byte_off);
+    uint w1 = load_u32_le(byte_off + 4u);
+    int base = int(w0 & 0xFFu);
+    uint b1 = (w0 >> 8u) & 0xFFu;
+    int mult = int(b1 >> 4u);
+    uint tab = (b1 & 0xFu) * 8u;
+    uint hi16 = (((w0 >> 16u) & 0xFFu) << 8u) | (w0 >> 24u);
+    uint lo32 = bswap32(w1);
+
+    uint paint[8];
+    for (uint k = 0u; k < 8u; ++k) {
+        paint[k] = clamp8(base + EAC_MODIFIERS[tab + k] * mult) << 24u;
+    }
+    for (uint y = 0u; y < 4u; ++y) {
+        for (uint x = 0u; x < 4u; ++x) {
+            uint idx = y * 4u + x;
+            px[idx] = (px[idx] & 0x00FFFFFFu) | paint[eac_index(hi16, lo32, x, y)];
+        }
+    }
+}
+
+void decode_eac11(uint byte_off, bool is_signed, out uint ch[16]) {
+    uint w0 = load_u32_le(byte_off);
+    uint w1 = load_u32_le(byte_off + 4u);
+    uint b0 = w0 & 0xFFu;
+    uint b1 = (w0 >> 8u) & 0xFFu;
+    int mult = int(b1 >> 4u);
+    uint tab = (b1 & 0xFu) * 8u;
+    uint hi16 = (((w0 >> 16u) & 0xFFu) << 8u) | (w0 >> 24u);
+    uint lo32 = bswap32(w1);
+
+    int scale = (mult == 0) ? 1 : (mult * 8);
+    int b;
+    if (is_signed) {
+        int sb = (b0 >= 128u) ? (int(b0) - 256) : int(b0);
+        b = max(sb, -127) * 8;
+    } else {
+        b = int(b0) * 8 + 4;
+    }
+
+    uint paint[8];
+    for (uint k = 0u; k < 8u; ++k) {
+        int val = b + EAC_MODIFIERS[tab + k] * scale;
+        if (is_signed) {
+            int v = clamp(val, -1023, 1023);
+            int mag = abs(v);
+            int wide = (mag << 5) | (mag >> 5);
+            int res = (v < 0) ? -wide : wide;
+            paint[k] = uint(res) & 0xFFFFu;
+        } else {
+            int v = clamp(val, 0, 2047);
+            paint[k] = uint((v << 5) | (v >> 6)) & 0xFFFFu;
+        }
+    }
+    for (uint y = 0u; y < 4u; ++y) {
+        for (uint x = 0u; x < 4u; ++x) {
+            ch[y * 4u + x] = paint[eac_index(hi16, lo32, x, y)];
+        }
+    }
+}
+
+void main() {
+    uint bx = gl_GlobalInvocationID.x;
+    uint by = gl_GlobalInvocationID.y;
+    uint layer = gl_GlobalInvocationID.z;
+
+    uint bw = (pc.width + 3u) >> 2u;
+    uint bh = (pc.height + 3u) >> 2u;
+    uint layers = pc.fmt_and_layers >> 8u;
+    if (bx >= bw || by >= bh || layer >= layers) {
+        return;
+    }
+
+    uint fmt = pc.fmt_and_layers & 0xFFu;
+    uint block_bytes = (fmt == FMT_RGBA8 || fmt == FMT_RG11 || fmt == FMT_RG11_SIGNED) ? 16u : 8u;
+    uint block_off = pc.src_byte_offset + layer * pc.layer_stride + (by * pc.row_blocks + bx) * block_bytes;
+
+    uint max_y = min(4u, pc.height - by * 4u);
+    uint max_x = min(4u, pc.width - bx * 4u);
+    uint layer_word_base = pc.dst_word_offset + layer * pc.height * pc.dst_row_words;
+
+    if (fmt == FMT_RGB8 || fmt == FMT_RGB8_A1 || fmt == FMT_RGBA8) {
+        uint px[16];
+        if (fmt == FMT_RGBA8) {
+            decode_etc2_rgb(block_off + 8u, false, px);
+            decode_eac_alpha(block_off, px);
+        } else {
+            decode_etc2_rgb(block_off, fmt == FMT_RGB8_A1, px);
+        }
+        for (uint y = 0u; y < max_y; ++y) {
+            uint row_base = layer_word_base + (by * 4u + y) * pc.dst_row_words + bx * 4u;
+            for (uint x = 0u; x < max_x; ++x) {
+                dst_buf.data[row_base + x] = px[y * 4u + x];
+            }
+        }
+    } else if (fmt == FMT_R11 || fmt == FMT_R11_SIGNED) {
+        uint r[16];
+        decode_eac11(block_off, fmt == FMT_R11_SIGNED, r);
+        for (uint y = 0u; y < max_y; ++y) {
+            uint row_base = layer_word_base + (by * 4u + y) * pc.dst_row_words + bx * 2u;
+            uint r0 = r[y * 4u + 0u];
+            uint r1 = (max_x > 1u) ? r[y * 4u + 1u] : 0u;
+            dst_buf.data[row_base] = r0 | (r1 << 16u);
+            if (max_x > 2u) {
+                uint r2 = r[y * 4u + 2u];
+                uint r3 = (max_x > 3u) ? r[y * 4u + 3u] : 0u;
+                dst_buf.data[row_base + 1u] = r2 | (r3 << 16u);
+            }
+        }
+    } else {
+        uint r[16];
+        uint g[16];
+        bool is_signed = (fmt == FMT_RG11_SIGNED);
+        decode_eac11(block_off, is_signed, r);
+        decode_eac11(block_off + 8u, is_signed, g);
+        for (uint y = 0u; y < max_y; ++y) {
+            uint row_base = layer_word_base + (by * 4u + y) * pc.dst_row_words + bx * 4u;
+            for (uint x = 0u; x < max_x; ++x) {
+                uint idx = y * 4u + x;
+                dst_buf.data[row_base + x] = r[idx] | (g[idx] << 16u);
+            }
+        }
+    }
+}
