@@ -137,6 +137,10 @@ pub const WINDOW_RESIZED: &str = "window.resized";
 /// `bloxstrap_rpc::Presence`'s job, not every subscriber's.
 pub const GAME_PRESENCE: &str = "game.presence";
 
+/// The client connected to a Roblox game server (local CIDR region detection)
+/// or left the game (empty object).
+pub const GAME_SERVER: &str = "game.server";
+
 /// Every core event, with the capability that gates it.
 ///
 /// **A closed table rather than a prefix convention**, for the reason
@@ -151,6 +155,7 @@ pub const ALL: &[(&str, Capability)] = &[
     (ENGINE_VERSION, Capability::LifecycleRead),
     (WINDOW_RESIZED, Capability::LifecycleRead),
     (GAME_PRESENCE, Capability::PresenceSet),
+    (GAME_SERVER, Capability::LifecycleRead),
 ];
 
 /// Which capability a plugin needs to hear `name`, or `None` if unknown.

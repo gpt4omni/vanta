@@ -153,25 +153,23 @@ impl TitleBar {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum FrameRateLimit {
-    /// Sets nothing. The engine's own default, and what every Vanta before
-    /// this row shipped.
+    /// Follow the display refresh (with headroom under replacing present modes).
     #[default]
     Display,
     Cap90,
     Cap120,
     Cap144,
     Cap165,
-    /// `unlimited` is what a pre-release build wrote here, when the row had one;
-    /// a config that names it still has to load, and 240 is where the engine
-    /// stops anyway.
-    #[serde(alias = "unlimited")]
     Cap240,
     Cap360,
     Cap480,
+    /// Uncapped scheduler target (`DFIntTaskSchedulerTargetFps = 999`).
+    #[serde(alias = "unlimited")]
+    Uncapped,
 }
 
 impl FrameRateLimit {
-    pub const ALL: [FrameRateLimit; 8] = [
+    pub const ALL: [FrameRateLimit; 9] = [
         FrameRateLimit::Display,
         FrameRateLimit::Cap90,
         FrameRateLimit::Cap120,
@@ -180,6 +178,7 @@ impl FrameRateLimit {
         FrameRateLimit::Cap240,
         FrameRateLimit::Cap360,
         FrameRateLimit::Cap480,
+        FrameRateLimit::Uncapped,
     ];
 
     /// Order matches the `AdwComboRow` model in `settings.rs`, as
@@ -205,10 +204,14 @@ impl FrameRateLimit {
             FrameRateLimit::Cap240 => "240",
             FrameRateLimit::Cap360 => "360",
             FrameRateLimit::Cap480 => "480",
+            FrameRateLimit::Uncapped => "uncapped",
         }
     }
 
     pub fn parse(word: &str) -> Option<Self> {
+        if word == "unlimited" {
+            return Some(FrameRateLimit::Uncapped);
+        }
         Self::ALL.iter().copied().find(|c| c.as_env() == word)
     }
 
@@ -222,6 +225,7 @@ impl FrameRateLimit {
             FrameRateLimit::Cap240 => "240 fps",
             FrameRateLimit::Cap360 => "360 fps",
             FrameRateLimit::Cap480 => "480 fps",
+            FrameRateLimit::Uncapped => "Uncapped",
         }
     }
 }
@@ -255,6 +259,10 @@ pub enum Update {
     /// engine, through the same re-apply that keeps a flag in force after the
     /// engine's own settings refresh (ADR-051).
     FrameRateLimit(FrameRateLimit),
+    /// Whether the built-in live Performance HUD badge is visible (F8 toggle).
+    PerfHud(bool),
+    /// Whether desktop notifications are sent on game join with detected server region.
+    ServerRegionNotify(bool),
 }
 
 /// A title-bar choice in the words `VANTA_TITLE_BAR` and `shell.json` use.
@@ -278,7 +286,7 @@ pub fn parse_title_bar(word: &str) -> Option<TitleBar> {
 }
 
 /// The keys [`Update`] can carry, which are also the `shell.json` field names.
-pub const KEYS: [&str; 10] = [
+pub const KEYS: [&str; 12] = [
     "pointer_acceleration",
     "throttle",
     "close_on_leave",
@@ -289,6 +297,8 @@ pub const KEYS: [&str; 10] = [
     "gamepad",
     "title_bar",
     "frame_rate_limit",
+    "perf_hud",
+    "server_region_notify",
 ];
 
 /// Longest sink name accepted. PipeWire node names are short; the bound is
@@ -315,6 +325,8 @@ impl Update {
             Update::Gamepad(_) => "gamepad",
             Update::TitleBar(_) => "title_bar",
             Update::FrameRateLimit(_) => "frame_rate_limit",
+            Update::PerfHud(_) => "perf_hud",
+            Update::ServerRegionNotify(_) => "server_region_notify",
         }
     }
 
@@ -322,9 +334,12 @@ impl Update {
         match self {
             Update::PointerAcceleration(a) => Value::from(a.as_str()),
             Update::Throttle(t) => Value::from(t.as_str()),
-            Update::CloseOnLeave(b) | Update::CarryLaunchTicket(b) | Update::Gamemode(b) | Update::Gamepad(b) => {
-                Value::from(*b)
-            }
+            Update::CloseOnLeave(b)
+            | Update::CarryLaunchTicket(b)
+            | Update::Gamemode(b)
+            | Update::Gamepad(b)
+            | Update::PerfHud(b)
+            | Update::ServerRegionNotify(b) => Value::from(*b),
             Update::AudioOutput(name) | Update::AudioInput(name) => Value::from(name.as_str()),
             Update::TitleBar(t) => Value::from(title_bar_word(*t)),
             Update::FrameRateLimit(l) => Value::from(l.as_env()),
@@ -348,6 +363,8 @@ impl Update {
             "carry_launch_ticket" => value.as_bool().map(Update::CarryLaunchTicket).ok_or_else(bad),
             "gamemode" => value.as_bool().map(Update::Gamemode).ok_or_else(bad),
             "gamepad" => value.as_bool().map(Update::Gamepad).ok_or_else(bad),
+            "perf_hud" => value.as_bool().map(Update::PerfHud).ok_or_else(bad),
+            "server_region_notify" => value.as_bool().map(Update::ServerRegionNotify).ok_or_else(bad),
             "title_bar" => {
                 value.as_str().and_then(parse_title_bar).map(Update::TitleBar).ok_or_else(bad)
             }
@@ -436,6 +453,8 @@ mod tests {
             Update::Gamepad(false),
             Update::TitleBar(TitleBar::Hidden),
             Update::FrameRateLimit(FrameRateLimit::Cap144),
+            Update::PerfHud(true),
+            Update::ServerRegionNotify(false),
         ]
     }
 

@@ -341,6 +341,37 @@ pub struct GamePresence {
     pub small_text: Option<String>,
 }
 
+/// Live frame-pacing statistics published when the Performance HUD is active.
+///
+/// Stored as integer microseconds and tenths-of-FPS so [`StateSnapshot`] keeps
+/// exact `Eq` semantics across JSON round-trips.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct PerfStatsSnapshot {
+    pub fps_x10: u32,
+    pub low_1_fps_x10: u32,
+    pub low_01_fps_x10: u32,
+    pub avg_frametime_us: u32,
+    pub p99_frametime_us: u32,
+    pub samples: u32,
+}
+
+/// Detected game server session and local region label, exposed in `state.get`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct ServerInfo {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub place_id: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_ip: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_port: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub region_label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub joined_at: Option<u64>,
+}
+
 /// The reply to `state.get`: the latest value of each event above, for a
 /// launcher that reattached. A field is absent until its event has happened.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -355,6 +386,10 @@ pub struct StateSnapshot {
     pub engine_version: Option<EngineVersion>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub game_presence: Option<GamePresence>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub perf_stats: Option<PerfStatsSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server: Option<ServerInfo>,
 }
 
 // ---- settings ---------------------------------------------------------------

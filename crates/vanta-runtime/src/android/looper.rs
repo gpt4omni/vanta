@@ -319,8 +319,6 @@ const IDLE_SPIN_THRESHOLD: u64 = 64;
 ///
 /// with median frame rates of 240 and 237. A whole core, and the frames are the
 /// same. `vanta_loopers` is where those poll rates come from.
-const BACKOFF_AFTER_PRESENTS: u64 = 120;
-
 #[repr(C)]
 struct Timespec {
     tv_sec: i64,
@@ -1366,9 +1364,44 @@ pub fn pump(duration: std::time::Duration, game_activity_handle: Option<i64>) {
                 }
             }
 
+            // Cache GDK toplevel focus/visibility queries across rapid 1000 Hz
+            // mouse packets (re-query every 16 ms instead of performing two
+            // GObject downcasts per packet).
+            static LAST_STATE_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            static CACHED_FOCUSED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(2); // 0=false, 1=true, 2=None
+            static CACHED_VISIBLE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(2);
+            let now_ms = clock_ms();
+            let refresh_state = focus_override.is_none()
+                && visible_override.is_none()
+                && (CACHED_FOCUSED.load(Ordering::Relaxed) == 2
+                    || now_ms.saturating_sub(LAST_STATE_MS.load(Ordering::Relaxed)) >= 16);
+            if refresh_state {
+                LAST_STATE_MS.store(now_ms, Ordering::Relaxed);
+                CACHED_FOCUSED.store(
+                    match super::backend_focused() {
+                        Some(false) => 0,
+                        Some(true) => 1,
+                        None => 2,
+                    },
+                    Ordering::Relaxed,
+                );
+                CACHED_VISIBLE.store(
+                    match super::backend_visible() {
+                        Some(false) => 0,
+                        Some(true) => 1,
+                        None => 2,
+                    },
+                    Ordering::Relaxed,
+                );
+            }
+            let decode_opt = |v: u32| match v {
+                0 => Some(false),
+                1 => Some(true),
+                _ => None,
+            };
             let observed = match focus_override {
                 Some(f) => Some(f),
-                None => super::backend_focused(),
+                None => decode_opt(CACHED_FOCUSED.load(Ordering::Relaxed)),
             };
             if let Some(now) = observed {
                 if focus_reported != Some(now) {
@@ -1402,7 +1435,7 @@ pub fn pump(duration: std::time::Duration, game_activity_handle: Option<i64>) {
             // `input::ThrottleWhen`.
             let visible = match visible_override {
                 Some(v) => Some(v),
-                None => super::backend_visible(),
+                None => decode_opt(CACHED_VISIBLE.load(Ordering::Relaxed)),
             };
             let mut keepalive_active = false;
             policy = super::input::throttle_policy();
@@ -1931,11 +1964,27 @@ extern "C" fn looper_poll_once(
     // actually gives the core back. Any poll that finds something, and any
     // wake, resets the streak to zero, so a burst of real events is never
     // slowed -- only an idle spin is.
-    let backoff_ns = zero_timeout_coalesce_ns();
-    let use_backoff = timeout_millis == 0
-        && backoff_ns > 0
-        && super::glcount::frames() >= BACKOFF_AFTER_PRESENTS
-        && l.empty_zero_streak.load(Ordering::Relaxed) >= IDLE_SPIN_THRESHOLD;
+    let base_backoff_ns = zero_timeout_coalesce_ns();
+    let streak = if timeout_millis == 0 {
+        l.empty_zero_streak.load(Ordering::Relaxed)
+    } else {
+        0
+    };
+    // Adaptive exponential backoff via epoll_pwait2 (wakes instantly on any fd
+    // or ALooper_wake event) — active from startup so loading never burns a
+    // full core spinning 9.6M syscalls/s.
+    let adaptive_backoff_ns = if timeout_millis == 0 && base_backoff_ns > 0 && streak >= IDLE_SPIN_THRESHOLD {
+        if streak < IDLE_SPIN_THRESHOLD * 2 {
+            (base_backoff_ns / 4).max(25_000)
+        } else if streak < IDLE_SPIN_THRESHOLD * 4 {
+            base_backoff_ns
+        } else {
+            (base_backoff_ns * 4).min(1_000_000)
+        }
+    } else {
+        0
+    };
+    let use_backoff = adaptive_backoff_ns > 0;
 
     let mut events = [EpollEvent { events: 0, data: 0 }; 16];
     // Time the syscall on one call in 1024. Timing every call would cost two
@@ -1946,13 +1995,13 @@ extern "C" fn looper_poll_once(
     let n = if use_backoff {
         POLLS_COALESCED.fetch_add(1, Ordering::Relaxed);
         // Prefer `epoll_pwait2` (Linux 5.11+, syscall 441 on x86_64/aarch64):
-        // it sleeps for `backoff_ns` inside the kernel epoll wait itself, so
+        // it sleeps for `adaptive_backoff_ns` inside the kernel epoll wait itself, so
         // `ALooper_wake()` or any ready fd wakes the thread instantaneously
         // instead of stalling behind an uninterruptible `nanosleep`, and does
         // so in one syscall instead of two. Falls back cleanly on ENOSYS.
         const SYS_EPOLL_PWAIT2: std::ffi::c_long = 441;
         static EPOLL_PWAIT2_OK: AtomicBool = AtomicBool::new(true);
-        let ts = Timespec { tv_sec: 0, tv_nsec: backoff_ns as i64 };
+        let ts = Timespec { tv_sec: 0, tv_nsec: adaptive_backoff_ns as i64 };
         if EPOLL_PWAIT2_OK.load(Ordering::Relaxed) {
             extern "C" {
                 fn syscall(num: std::ffi::c_long, ...) -> std::ffi::c_long;
@@ -1994,14 +2043,15 @@ extern "C" fn looper_poll_once(
     if n < 0 {
         return POLL_ERROR;
     }
-    // Remember an empty zero-timeout poll so the next few can be answered
-    // without the kernel; forget it the moment anything is actually ready, so
-    // input in flight is never delayed by the damper. Saturate at the
-    // threshold to avoid repeated RMWs while idle.
+    // Remember an empty zero-timeout poll so the adaptive backoff ladder can
+    // climb through all three tiers (64 -> 128 -> 256); forget it the moment
+    // anything is actually ready, so input in flight is never delayed by the
+    // damper. Saturate at IDLE_SPIN_THRESHOLD * 4 to avoid repeated RMWs while
+    // idle.
     if timeout_millis == 0 {
         if n == 0 {
             let cur = l.empty_zero_streak.load(Ordering::Relaxed);
-            if cur < IDLE_SPIN_THRESHOLD {
+            if cur < IDLE_SPIN_THRESHOLD * 4 {
                 l.empty_zero_streak.store(cur + 1, Ordering::Relaxed);
             }
         } else if l.empty_zero_streak.load(Ordering::Relaxed) != 0 {

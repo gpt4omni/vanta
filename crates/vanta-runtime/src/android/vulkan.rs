@@ -1699,6 +1699,30 @@ pub(crate) fn instance_fn(name: &CStr) -> Option<*mut c_void> {
     (!p.is_null()).then_some(p)
 }
 
+/// Desired swapchain image count for `chosen_mode`, given the engine's `asked`
+/// count and the surface's `max_image_count` (`Some(0)` means unlimited per the
+/// Vulkan spec, `None` means the query failed so `asked` is left untouched).
+///
+/// Under replacing modes (`MAILBOX` / `IMMEDIATE`) on Wayland compositors, the
+/// compositor can hold one image on scanout plus one queued while a third is
+/// still retiring on GPU fences; asking for 4 images (clamped to the driver's
+/// maximum, never lowering `asked`) keeps a spare image ready so
+/// `vkAcquireNextImageKHR` does not stall waiting on compositor release fences.
+fn target_swapchain_image_count(asked: u32, chosen_mode: i32, max_image_count: Option<u32>) -> u32 {
+    if matches!(chosen_mode, VK_PRESENT_MODE_FIFO_KHR | VK_PRESENT_MODE_FIFO_RELAXED_KHR) {
+        return asked;
+    }
+    const REPLACING_TARGET_IMAGES: u32 = 4;
+    if asked >= REPLACING_TARGET_IMAGES {
+        return asked;
+    }
+    match max_image_count {
+        Some(0) => REPLACING_TARGET_IMAGES,
+        Some(max) => REPLACING_TARGET_IMAGES.min(max).max(asked),
+        None => asked,
+    }
+}
+
 extern "C" fn vk_create_swapchain_inner(
     device: *mut c_void,
     create_info: *const VkSwapchainCreateInfoKHR,
@@ -1760,62 +1784,27 @@ extern "C" fn vk_create_swapchain_inner(
             present_mode_name(asked),
             advertised.join(", ")
         );
-        return f(device, create_info, allocator, swapchain_out);
+    } else {
+        println!(
+            "[android] vulkan: swapchain present mode {} -> {} (driver offers {})",
+            present_mode_name(asked),
+            present_mode_name(chosen),
+            advertised.join(", ")
+        );
     }
-
-    println!(
-        "[android] vulkan: swapchain present mode {} -> {} (driver offers {})",
-        present_mode_name(asked),
-        present_mode_name(chosen),
-        advertised.join(", ")
-    );
-    // Substituting the mode alone leaves the swapchain sized for the mode the
-    // engine asked for, and that is not the same swapchain. FIFO is a queue:
-    // two images is enough, because the presentation engine hands one back
-    // every refresh. MAILBOX and IMMEDIATE are not queues -- the pending image
-    // is *replaced*, so with two images the only spare is the one on screen and
-    // the renderer stalls in `vkAcquireNextImageKHR` waiting for a refresh it
-    // was substituted in specifically to stop waiting for. Three is the count
-    // that makes the substitution mean anything.
-    //
-    // Raised, never lowered, and clamped to what the driver will hold:
-    // `maxImageCount == 0` is the specification's own "no limit" and not a
-    // limit of zero.
-    //
-    // Measured rather than assumed, and the answer is that this has never
-    // fired. On 2026-08-20 the engine asked for `minImageCount 3` on every
-    // swapchain; **on 2026-08-25, on the same build of Vanta and a current
-    // APK, every swapchain in the log asks for 4** -- first creation and
-    // recreation alike. The engine's request is not a constant and the older
-    // note read as though it were. The conclusion survives the correction,
-    // because both numbers are already at least three, so the raise below stays
-    // untaken; but nobody should quote "the engine asks for three" as a fact
-    // about this engine. Kept because the substitution is what makes three a
-    // *requirement* rather than the engine's preference, and a build that asked
-    // for two would otherwise stall silently.
-    let mut images = info.min_image_count;
-    if !matches!(chosen, VK_PRESENT_MODE_FIFO_KHR | VK_PRESENT_MODE_FIFO_RELAXED_KHR)
-        && images < 3
-    {
-        match surface_image_count_limits(info.surface) {
-            Some((_, max)) if max != 0 && max < 3 => println!(
-                "[android] vulkan: minImageCount stays {images}; {} wants three and the driver \
-                 caps this surface at {max}",
-                present_mode_name(chosen),
-            ),
-            Some(_) => {
-                println!(
-                    "[android] vulkan: minImageCount {images} -> 3 (a replacement mode needs a \
-                     spare image; two would stall the renderer on the refresh {} exists to skip)",
-                    present_mode_name(chosen),
-                );
-                images = 3;
-            }
-            None => println!(
-                "[android] vulkan: minImageCount stays {images}; could not ask the driver how \
-                 many images this surface allows"
-            ),
-        }
+    let max_images = surface_image_count_limits(info.surface).map(|(_, max)| max);
+    let images = target_swapchain_image_count(info.min_image_count, chosen, max_images);
+    if images != info.min_image_count {
+        println!(
+            "[android] vulkan: minImageCount {} -> {} ({} benefits from a 4-image ring on Wayland \
+             so vkAcquireNextImageKHR does not stall on compositor release fences)",
+            info.min_image_count,
+            images,
+            present_mode_name(chosen),
+        );
+    }
+    if chosen == asked && images == info.min_image_count {
+        return f(device, create_info, allocator, swapchain_out);
     }
     let patched =
         VkSwapchainCreateInfoKHR { present_mode: chosen, min_image_count: images, ..*info };
@@ -2384,10 +2373,24 @@ extern "C" fn vk_get_physical_device_surface_capabilities_khr(
             // its swapchain at each one (issue #39: nine in under half a
             // second); holding all of them back until the pointer paused left
             // an interactive drag showing the old size.
-            let settled = {
+            // Lock-free steady-state fast path: once committed == pending, skip
+            // both the mutex and Instant::now() as long as raw stays unchanged.
+            static STEADY_EXTENT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let raw_packed = ((raw.0 as u64) << 32) | raw.1 as u64;
+            let settled = if raw_packed != 0
+                && STEADY_EXTENT.load(std::sync::atomic::Ordering::Relaxed) == raw_packed
+            {
+                raw
+            } else {
                 let mut guard = RESIZE_SETTLE_STATE.lock().unwrap_or_else(|e| e.into_inner());
                 let (reported, next) = settle_resize_extent(*guard, raw, std::time::Instant::now(), resize_max_lag());
                 *guard = Some(next);
+                let steady = if next.committed == next.pending {
+                    ((reported.0 as u64) << 32) | reported.1 as u64
+                } else {
+                    0
+                };
+                STEADY_EXTENT.store(steady, std::sync::atomic::Ordering::Relaxed);
                 reported
             };
             caps.current_extent.width = settled.0;
@@ -2990,5 +2993,22 @@ mod tests {
                 "format {format} (family {family}) maskability"
             );
         }
+    }
+
+    #[test]
+    fn replacing_modes_raise_swapchain_images_to_four_clamped_to_driver_max() {
+        // FIFO / FIFO_RELAXED leave the requested count untouched.
+        assert_eq!(target_swapchain_image_count(2, VK_PRESENT_MODE_FIFO_KHR, Some(0)), 2);
+        assert_eq!(target_swapchain_image_count(3, VK_PRESENT_MODE_FIFO_RELAXED_KHR, Some(8)), 3);
+        // MAILBOX and IMMEDIATE raise 2 or 3 up to 4 when max is unlimited (0) or >= 4.
+        assert_eq!(target_swapchain_image_count(2, VK_PRESENT_MODE_MAILBOX_KHR, Some(0)), 4);
+        assert_eq!(target_swapchain_image_count(3, VK_PRESENT_MODE_IMMEDIATE_KHR, Some(0)), 4);
+        assert_eq!(target_swapchain_image_count(3, VK_PRESENT_MODE_MAILBOX_KHR, Some(8)), 4);
+        // Clamped to driver max when max is non-zero and < 4; never lowers asked.
+        assert_eq!(target_swapchain_image_count(2, VK_PRESENT_MODE_MAILBOX_KHR, Some(3)), 3);
+        assert_eq!(target_swapchain_image_count(3, VK_PRESENT_MODE_IMMEDIATE_KHR, Some(3)), 3);
+        assert_eq!(target_swapchain_image_count(5, VK_PRESENT_MODE_MAILBOX_KHR, Some(8)), 5);
+        // Unknown surface capability leaves asked untouched.
+        assert_eq!(target_swapchain_image_count(3, VK_PRESENT_MODE_IMMEDIATE_KHR, None), 3);
     }
 }

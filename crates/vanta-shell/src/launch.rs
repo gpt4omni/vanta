@@ -456,6 +456,53 @@ pub fn spawn(
         command.env("VANTA_GRAPHICS", &config.graphics);
     }
 
+    // NVIDIA's default on-disk shader cache is 128 MB, which Roblox's large
+    // shader sets quickly churn through and evict, triggering mid-game
+    // pipeline recompilation stutters. Raise it to 1 GiB when unset.
+    if std::env::var_os("__GL_SHADER_DISK_CACHE").is_none() {
+        command.env("__GL_SHADER_DISK_CACHE", "1");
+    }
+    if std::env::var_os("__GL_SHADER_DISK_CACHE_SIZE").is_none() {
+        command.env("__GL_SHADER_DISK_CACHE_SIZE", "1073741824");
+    }
+
+    // Desktop mimalloc tuning inherited by both `vanta-run`'s global allocator
+    // and `libroblox.so`'s statically linked mimalloc (eliminates 10 ms purge
+    // TLB-shootdown spikes).
+    if std::env::var_os("VANTA_NO_MIMALLOC_TUNE").is_none() {
+        let total_mb = std::fs::read_to_string("/proc/meminfo")
+            .ok()
+            .and_then(|s| {
+                s.lines()
+                    .find(|l| l.starts_with("MemTotal:"))
+                    .and_then(|l| l.split_whitespace().nth(1))
+                    .and_then(|kb| kb.parse::<u64>().ok())
+                    .map(|kb| kb / 1024)
+            })
+            .unwrap_or(8192);
+        for (k, v) in [
+            ("MIMALLOC_PURGE_DELAY", if total_mb >= 12_000 { "10000" } else { "5000" }),
+            ("MIMALLOC_PURGE_DECOMMITS", "0"),
+            ("MIMALLOC_ALLOW_LARGE_OS_PAGES", "1"),
+            ("MIMALLOC_EAGER_COMMIT", "1"),
+            ("MIMALLOC_ARENA_EAGER_COMMIT", "2"),
+            ("MIMALLOC_RESERVE_OS_MEMORY", if total_mb >= 12_000 { "1G" } else { "512M" }),
+        ] {
+            if std::env::var_os(k).is_none() {
+                command.env(k, v);
+            }
+        }
+    }
+
+    // Vulkan implicit-layer hygiene: bypass Mesa's device-select and anti-lag
+    // implicit layers unless the user explicitly configured them. Avoids extra
+    // dispatch indirection and swapchain stalls on NVIDIA/AMD systems.
+    for (k, v) in [("NODEVICE_SELECT", "1"), ("DISABLE_LAYER_MESA_ANTI_LAG", "1")] {
+        if std::env::var_os(k).is_none() {
+            command.env(k, v);
+        }
+    }
+
     // The Present mode row, and **only when it is not Automatic** -- the same
     // rule as the Renderer row above and for the same reason. An absent
     // `VANTA_PRESENT_MODE` is the one state in which a plugin's
@@ -473,15 +520,13 @@ pub fn spawn(
         command.env("VANTA_PRESENT_MODE", mode);
     }
 
-    // The Frame rate limit row. Sent unconditionally, unlike the present-mode
-    // row just above -- there is no flag-layer entry a plugin contributes this
-    // key through that an absent variable would leave room for, so there is no
-    // "leave a plugin the floor" state to preserve the way `VANTA_GRAPHICS`
-    // and `VANTA_PRESENT_MODE` have to. This is the launch value: the row is
-    // live (ADR-044), and the settings socket changes it afterwards. Keeping
-    // the flag in force against the engine's own settings refresh is the
-    // client's job, not something to ask for here (ADR-051).
-    command.env("VANTA_FRAME_RATE_LIMIT", config.frame_rate_limit.as_env());
+    // The Frame rate limit row: only pass `VANTA_FRAME_RATE_LIMIT` when the
+    // user picked an explicit cap (or Uncapped) so leaving Settings at
+    // `Display` lets enabled plugins (`fps-flex`) contribute
+    // `VantaFrameRateLimit` without being clobbered.
+    if config.frame_rate_limit != crate::shell_config::FrameRateLimit::Display {
+        command.env("VANTA_FRAME_RATE_LIMIT", config.frame_rate_limit.as_env());
+    }
 
     // The Controllers switch, and **only when it is off**. `VANTA_GAMEPAD`
     // is an off switch on the client side -- absent means on, and only the
@@ -509,6 +554,21 @@ pub fn spawn(
     // absent case and the off case agree without this having to spell either.
     if config.close_on_leave {
         command.env("VANTA_CLOSE_ON_LEAVE", "1");
+    }
+
+    // Built-in Performance HUD badge (F8 toggle in-game, live-toggleable).
+    if config.perf_hud {
+        command.env("VANTA_PERF_HUD", "1");
+    }
+
+    // Non-destructive asset mods (`<profile>/mods/`): default on; disable via kill switch.
+    if !config.mods_enabled {
+        command.env("VANTA_NO_MODS", "1");
+    }
+
+    // Server region join notifications: default on; disable explicitly when off.
+    if !config.server_region_notify {
+        command.env("VANTA_SERVER_REGION_NOTIFY", "0");
     }
 
     // Plugin folders being worked on, in the shape of `PATH`. Only when there

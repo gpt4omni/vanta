@@ -500,6 +500,8 @@ struct PlaybackStream::Impl {
 
     mutable std::mutex mutex;
     std::deque<PendingBuffer> pending;
+    // Pre-reserved RT scratch for drained callback contexts (zero heap alloc on RT thread).
+    std::vector<void*> drained_scratch;
     PlaybackStream::DrainCallback drain_cb = nullptr;
     void* drain_user = nullptr;
     uint32_t enqueued_index = 0;
@@ -553,17 +555,18 @@ struct PlaybackStream::Impl {
 
         DrainCallback cb;
         void* user;
-        // Contexts of buffers this cycle fully drained. The callback for each
-        // fires after `mutex` is released — see the header comment on why:
-        // the ordinary OpenSL pattern is to re-enqueue the next buffer from
-        // inside this callback, which would deadlock against its own lock.
-        std::vector<void*> drained;
+        // Contexts of buffers this cycle fully drained. Reuse pre-reserved
+        // scratch storage so PipeWire's RT thread never allocates on the heap.
+        if (drained_scratch.capacity() < 64) {
+            drained_scratch.reserve(64);
+        }
+        drained_scratch.clear();
         uint32_t padded;
         {
             std::lock_guard<std::mutex> lock(mutex);
             cb = drain_cb;
             user = drain_user;
-            padded = testing::fill_pcm(pending, dst, want, drained);
+            padded = testing::fill_pcm(pending, dst, want, drained_scratch);
         }
         if (padded != 0) {
             underrun_frames += padded / (bytes_per_frame ? bytes_per_frame : 1);
@@ -581,12 +584,12 @@ struct PlaybackStream::Impl {
         g_lib.stream_queue_buffer(stream, b);
 
         if (cb) {
-            for (void* ctx : drained) cb(ctx, user);
+            for (void* ctx : drained_scratch) cb(ctx, user);
         }
 
         if (trace_audio_enabled()) {
             ++trace_process_cycles;
-            trace_drains += drained.size();
+            trace_drains += drained_scratch.size();
             auto now = std::chrono::steady_clock::now();
             if (now - trace_last_report >= std::chrono::seconds(1)) {
                 trace_last_report = now;

@@ -850,6 +850,22 @@ fn build_session_group(
     }
     group.add(&close_on_leave);
 
+    let region_notify = adw::SwitchRow::builder()
+        .title("Server region notifications")
+        .subtitle("Shows a desktop notification with the detected server region when joining a game. Resolved 100% locally.")
+        .active(config.borrow().server_region_notify)
+        .build();
+    region_notify.set_subtitle_lines(2);
+    {
+        let config = config.clone();
+        let config_path = config_path.clone();
+        region_notify.connect_active_notify(move |row| {
+            config.borrow_mut().server_region_notify = row.is_active();
+            persist(&config, &config_path);
+        });
+    }
+    group.add(&region_notify);
+
     // **In Session rather than anywhere else**, because it is about what
     // happens when a launch arrives rather than about graphics or plugins.
     let ticket = adw::SwitchRow::builder()
@@ -915,6 +931,22 @@ fn build_performance_group(
         });
     }
     group.add(&gamemode);
+
+    let perf_hud = adw::SwitchRow::builder()
+        .title("Performance HUD")
+        .subtitle("Shows live FPS, 1% lows, and frametime in the header bar. Press F8 in-game to toggle.")
+        .active(config.borrow().perf_hud)
+        .build();
+    perf_hud.set_subtitle_lines(2);
+    {
+        let config = config.clone();
+        let config_path = config_path.clone();
+        perf_hud.connect_active_notify(move |row| {
+            config.borrow_mut().perf_hud = row.is_active();
+            persist(&config, &config_path);
+        });
+    }
+    group.add(&perf_hud);
 
 
     // Order has to match ThrottleWhen::index/from_index.
@@ -3528,11 +3560,14 @@ pub fn build_preferences_window(
     add_appearance_groups(&general, config.clone(), config_path.clone());
     window.add(&general);
     let config_for_flags = config.clone();
+    let config_for_mods = config.clone();
+    let config_path_for_mods = config_path.clone();
     let PluginsPage { page: plugins, installed, master } =
         build_plugins_page(&window, config.clone(), config_path.clone());
     add_get_plugins_groups(parent, &window, config.clone(), config_path.clone(), &installed, &plugins, &master);
     add_developer_group(parent, &window, config, config_path, &plugins, &installed, &master);
     window.add(&plugins);
+    window.add(&crate::mods_ui::build_mods_page(parent, &window, config_for_mods, config_path_for_mods));
     window.add(&build_fastflags_page(config_for_flags, &window));
 
     window

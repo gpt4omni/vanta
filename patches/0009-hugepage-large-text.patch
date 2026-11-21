@@ -1,0 +1,98 @@
+--- a/linker/linker_phdr.cpp
++++ b/linker/linker_phdr.cpp
+@@ -624,7 +624,14 @@
+              load_size_ - address_space->reserved_size, load_size_, name_.c_str());
+       return false;
+     }
+-    start = ReserveAligned(load_size_, kLibraryAlignment);
++    // Vanta, patches/0009: align large libraries (>= 4 MiB, e.g. libroblox.so's
++    // ~105 MiB .text) to 2 MiB so their read-only / executable interiors can be
++    // backed by 2 MiB Transparent Huge Pages instead of ~27,000 4 KiB pages.
++    size_t align = kLibraryAlignment;
++#if defined(__linux__) && defined(__LP64__)
++    if (load_size_ >= (4ULL << 20)) align = (2ULL << 20);
++#endif
++    start = ReserveAligned(load_size_, align);
+     if (start == nullptr) {
+       DL_ERR("couldn't reserve %zd bytes of address space for \"%s\"", load_size_, name_.c_str());
+       return false;
+@@ -820,9 +827,17 @@
+         add_dlwarning(name_.c_str(), "W+E load segments");
+       }
+ #endif
++      int map_prot = prot | PROT_WRITE;
++#if defined(__linux__) && defined(__LP64__)
++      // On 64-bit Linux (no DT_TEXTREL), map non-writable segments at their
++      // real permissions rather than leaving .text rwxp for the process life.
++      if ((phdr->p_flags & PF_W) == 0) {
++        map_prot = prot;
++      }
++#endif
+       void* seg_addr = mmap64(reinterpret_cast<void*>(seg_page_start),
+                             file_length,
+-                            prot | PROT_WRITE,
++                            map_prot,
+                             MAP_FIXED|MAP_PRIVATE,
+                             fd_,
+                             file_offset_ + file_page_start);
+@@ -830,6 +845,60 @@
+         DL_ERR("couldn't map \"%s\" segment %zd: %s", name_.c_str(), i, strerror(errno));
+         return false;
+       }
++#if defined(__linux__) && defined(__LP64__) && defined(MADV_HUGEPAGE)
++      // Vanta, patches/0009: back the 2 MiB-aligned interior of large
++      // non-writable segments (>= 4 MiB, such as libroblox.so's 105 MiB .text)
++      // with anonymous 2 MiB Transparent Huge Pages populated verbatim from the
++      // ELF file via pread64 and sealed at `prot` (r-xp / r--p). Keeps the base
++      // VMA file-backed so /proc/self/maps still identifies the library at its
++      // load base, while collapsing ~27,000 4 KiB iTLB entries to ~52 2 MiB
++      // entries across all engine threads. VANTA_NO_HUGEPAGE_TEXT=1 disables.
++      if ((phdr->p_flags & PF_W) == 0 && file_length >= (4ULL << 20) &&
++          getenv("VANTA_NO_HUGEPAGE_TEXT") == nullptr) {
++        constexpr uintptr_t kHuge = 2ULL << 20;
++        uintptr_t h_start = (static_cast<uintptr_t>(seg_page_start) + kHuge - 1) & ~(kHuge - 1);
++        if (h_start == reinterpret_cast<uintptr_t>(load_start_)) {
++          h_start += kHuge;
++        }
++        uintptr_t h_end = (static_cast<uintptr_t>(seg_page_start) + static_cast<uintptr_t>(file_length)) & ~(kHuge - 1);
++        if (h_end > h_start) {
++          size_t h_len = static_cast<size_t>(h_end - h_start);
++          void* h_map = mmap(reinterpret_cast<void*>(h_start), h_len,
++                             PROT_READ | PROT_WRITE,
++                             MAP_FIXED | MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
++          if (h_map != MAP_FAILED) {
++            madvise(h_map, h_len, MADV_HUGEPAGE);
++            off64_t foff = static_cast<off64_t>(file_offset_ + file_page_start + (h_start - seg_page_start));
++            uint8_t* dst = static_cast<uint8_t*>(h_map);
++            size_t done = 0;
++            bool read_ok = true;
++            while (done < h_len) {
++              ssize_t n = pread64(fd_, dst + done, h_len - done, foff + static_cast<off64_t>(done));
++              if (n > 0) {
++                done += static_cast<size_t>(n);
++              } else if (n < 0 && errno == EINTR) {
++                continue;
++              } else {
++                read_ok = false;
++                break;
++              }
++            }
++            if (read_ok) {
++#ifdef MADV_COLLAPSE
++              (void)madvise(h_map, h_len, MADV_COLLAPSE);
++#endif
++              if (mprotect(h_map, h_len, prot) != 0) {
++                read_ok = false;
++              }
++            }
++            if (!read_ok) {
++              (void)mmap64(reinterpret_cast<void*>(h_start), h_len, map_prot,
++                           MAP_FIXED | MAP_PRIVATE, fd_, foff);
++            }
++          }
++        }
++      }
++#endif
+ #if defined(__APPLE__) && defined(__x86_64__)
+       // Patch access to the fs:0x28 register to read gs:0x28 instead to avoid an 0x28 access error
+       // which cannot be ignored to handle it in a signal handler in lldb

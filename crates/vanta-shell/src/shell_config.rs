@@ -923,6 +923,22 @@ pub struct ShellConfig {
     /// why each warning landed on a different answer.
     #[serde(default)]
     pub multi_instance_warning_seen: bool,
+    /// Show the built-in live Performance HUD badge (FPS, 1% lows, frametime)
+    /// in the game window's header bar. Also toggleable in-game with F8.
+    #[serde(default)]
+    pub perf_hud: bool,
+    /// Load non-destructive asset mod packs from `<profile>/mods/<pack>/`.
+    ///
+    /// Default on (zero overhead when the mods folder is empty). No field-level
+    /// `#[serde(default)]` for the same reason as `gamepad`: container default
+    /// fills older configs from `ShellConfig::default()` (`true`).
+    pub mods_enabled: bool,
+    /// Show a desktop notification naming the locally detected server region
+    /// whenever joining a Roblox experience.
+    ///
+    /// Default on; no field-level `#[serde(default)]` so older configs inherit
+    /// `ShellConfig::default()` (`true`).
+    pub server_region_notify: bool,
 }
 
 fn default_fullscreen_accel() -> String {
@@ -960,6 +976,9 @@ impl Default for ShellConfig {
             vr_openxr_runtime: None,
             marketplace_public_key: None,
             multi_instance_warning_seen: false,
+            perf_hud: false,
+            mods_enabled: true,
+            server_region_notify: true,
         }
     }
 }
@@ -1534,13 +1553,14 @@ mod tests {
             (FrameRateLimit::Cap240, "240"),
             (FrameRateLimit::Cap360, "360"),
             (FrameRateLimit::Cap480, "480"),
+            (FrameRateLimit::Uncapped, "uncapped"),
         ] {
             assert_eq!(mode.as_env(), spelling);
             assert_eq!(FrameRateLimit::parse(spelling), Some(mode));
         }
-        assert_eq!(FrameRateLimit::parse("unlimited"), None, "there is no unlimited choice");
+        assert_eq!(FrameRateLimit::parse("unlimited"), Some(FrameRateLimit::Uncapped));
         assert_eq!(FrameRateLimit::parse("9999"), None);
-        assert_eq!(FrameRateLimit::parse("1000"), None, "rows stop at 480");
+        assert_eq!(FrameRateLimit::parse("1000"), None);
         assert_eq!(FrameRateLimit::parse(""), None);
     }
 
@@ -1567,7 +1587,7 @@ mod tests {
     fn a_prerelease_config_that_says_unlimited_still_loads() {
         let older = r#"{"frame_rate_limit":"unlimited"}"#;
         let parsed: ShellConfig = serde_json::from_str(older).expect("must load");
-        assert_eq!(parsed.frame_rate_limit, FrameRateLimit::Cap240);
+        assert_eq!(parsed.frame_rate_limit, FrameRateLimit::Uncapped);
     }
 
     #[test]
@@ -1597,5 +1617,38 @@ mod tests {
         let p = scratch("multi-instance.json");
         save(&p, &ShellConfig { multi_instance_warning_seen: true, ..Default::default() }).unwrap();
         assert!(load(&p).multi_instance_warning_seen);
+    }
+
+    #[test]
+    fn perf_hud_defaults_off_and_round_trips() {
+        let older = r#"{"gamemode":true,"profile":"default"}"#;
+        let parsed: ShellConfig = serde_json::from_str(older).expect("older shell.json must load");
+        assert!(!parsed.perf_hud);
+
+        let p = scratch("perf-hud.json");
+        save(&p, &ShellConfig { perf_hud: true, ..Default::default() }).unwrap();
+        assert!(load(&p).perf_hud);
+    }
+
+    #[test]
+    fn mods_enabled_defaults_on_and_round_trips() {
+        let older = r#"{"gamemode":true,"profile":"default"}"#;
+        let parsed: ShellConfig = serde_json::from_str(older).expect("older shell.json must load");
+        assert!(parsed.mods_enabled);
+
+        let p = scratch("mods-enabled.json");
+        save(&p, &ShellConfig { mods_enabled: false, ..Default::default() }).unwrap();
+        assert!(!load(&p).mods_enabled);
+    }
+
+    #[test]
+    fn server_region_notify_defaults_on_and_round_trips() {
+        let older = r#"{"gamemode":true,"profile":"default"}"#;
+        let parsed: ShellConfig = serde_json::from_str(older).expect("older shell.json must load");
+        assert!(parsed.server_region_notify);
+
+        let p = scratch("server-region-notify.json");
+        save(&p, &ShellConfig { server_region_notify: false, ..Default::default() }).unwrap();
+        assert!(!load(&p).server_region_notify);
     }
 }

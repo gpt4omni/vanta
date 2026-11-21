@@ -31,28 +31,44 @@ pub fn function_overrides() -> Vec<(&'static str, *mut c_void)> {
         };
     }
     let mut v = vec![
-        f!("__errno", bionic_errno),
+        // Bind straight to the host C symbols on x86-64/aarch64 where the
+        // ABI matches or trailing unused bound parameters sit in ignored
+        // argument registers — zero Rust trampoline call/ret overhead.
+        f!("__errno", __errno_location),
         f!("__assert", bionic_assert),
         f!("__assert2", bionic_assert2),
-        f!("__gnu_strerror_r", gnu_strerror_r),
-        f!("strerror_r", bionic_strerror_r),
-        // FORTIFY wrappers.
-        f!("__strlen_chk", strlen_chk),
-        f!("__strchr_chk", strchr_chk),
-        f!("__strrchr_chk", strrchr_chk),
-        f!("__strncpy_chk2", strncpy_chk2),
-        f!("__write_chk", write_chk),
-        f!("__umask_chk", umask_chk),
-        f!("__poll_chk", poll_chk),
-        f!("__readlink_chk", readlink_chk),
-        f!("__fread_chk", fread_chk),
+        f!("__gnu_strerror_r", glibc_gnu_strerror_r),
+        f!("strerror_r", __xpg_strerror_r),
+        // FORTIFY wrappers: trailing `_bound` arguments are ignored by the
+        // unchecked host C functions in both x86-64 SysV and AAPCS64 ABIs.
+        f!("__strlen_chk", strlen),
+        f!("__strchr_chk", strchr),
+        f!("__strrchr_chk", strrchr),
+        f!("__strncpy_chk2", strncpy),
+        f!("__write_chk", write),
+        f!("__umask_chk", umask),
+        f!("__poll_chk", poll),
+        f!("__readlink_chk", readlink),
+        f!("__fread_chk", fread),
+        // TLS-cached gettid/getpid (1 ns vs ~250 ns raw syscall in glibc).
+        f!("gettid", bionic_gettid),
+        f!("getpid", bionic_getpid),
+        // Promote >= 2 MiB anonymous RW allocations (Luau GC, mimalloc arenas,
+        // large mesh buffers) to 2 MiB transparent huge pages to slash dTLB misses.
+        f!("mmap", bionic_mmap),
+        f!("mmap64", bionic_mmap),
+        // Elide small (< 4 MiB) advisory MADV_FREE purges on >= 8 GiB desktops.
+        // libroblox.so forces mimalloc mi_option_purge_delay=0 (with purge_decommits=0),
+        // triggering constant madvise(MADV_FREE) mmap_lock + TLB-shootdown IPI storms.
+        // MADV_DONTNEED (zeroing guarantee) and >= 4 MiB purges are always forwarded.
+        f!("madvise", bionic_madvise),
         // Android system properties. Desktop values, so Roblox stops believing
         // it is on a phone. Framework-layer policy, implemented here because the
         // native side reads it through libc.
         f!("__system_property_get", system_property_get),
         // See each function's own comment for the divergence it translates.
         f!("mallinfo", bionic_mallinfo),
-        f!("__cxa_thread_atexit_impl", bionic_cxa_thread_atexit_impl),
+        f!("__cxa_thread_atexit_impl", host_cxa_thread_atexit_impl),
         // Stubbed until now, and a stub here answers 0 — which reads as an
         // impossibly old Android rather than an unknown one.
         f!("android_get_device_api_level", android_get_device_api_level),
@@ -109,9 +125,16 @@ pub fn function_overrides() -> Vec<(&'static str, *mut c_void)> {
     // OpenSL ES. Data symbols, so a missing one fails the DT_NEEDED walk rather
     // than the first audio call — see `opensles_overrides`.
     v.extend(opensles_overrides());
-    // `pthread_create`, forwarded untouched unless `VANTA_TRACE_THREADS=1` —
-    // see `thread_overrides` and `native/thread_trace.cpp`.
+    // `pthread_create`, forwarded untouched unless `VANTA_TRACE_THREADS=1`
+    // (or on aarch64 where `pthread_attr_t` translation is required).
+    #[cfg(target_arch = "aarch64")]
     v.extend(thread_overrides());
+    #[cfg(not(target_arch = "aarch64"))]
+    if std::env::var_os("VANTA_TRACE_THREADS").is_some() {
+        v.extend(thread_overrides());
+    } else {
+        v.push(("pthread_create", libc::pthread_create as *const () as *mut c_void));
+    }
     if std::env::var_os("VANTA_TRACE_PATHS").is_some() {
         extern "C" {
             fn vanta_set_path_trace(on: c_int);
@@ -315,32 +338,129 @@ extern "C" fn bionic_mallinfo() -> BionicMallinfo {
     host_mallinfo2().map_or(BionicMallinfo::ZERO, |f| f())
 }
 
-/// `__cxa_thread_atexit_impl` — **not a divergence, simply absent.**
-///
-/// Issue #14 lists this beside `mallinfo` as an ABI divergence and it is not
-/// one: bionic and glibc declare the identical
-/// `int (*)(void (*)(void*), void*, void*)`, so the only problem was that
-/// `libc` is not host-resolved by default and this was therefore reaching a
-/// stub. A stub here means every `thread_local` with a destructor in the
-/// engine never runs it -- a leak per thread, silent, and not a crash, which
-/// is why nothing pointed at it.
-///
-/// Forwarded rather than reimplemented. glibc's own implementation is what
-/// registers the callback with the thread's exit path, and there is no second
-/// place to put it.
-extern "C" fn bionic_cxa_thread_atexit_impl(
-    func: *mut c_void,
-    arg: *mut c_void,
-    dso_handle: *mut c_void,
-) -> c_int {
-    // SAFETY: the three pointers are passed straight through to the host
-    // implementation of the same function, with the same signature.
-    unsafe { host_cxa_thread_atexit_impl(func, arg, dso_handle) }
+// ------------------------------------------------ TLS-cached gettid / getpid
+
+std::thread_local! {
+    static CACHED_TID: std::cell::Cell<libc::pid_t> = const { std::cell::Cell::new(0) };
+}
+static CACHED_PID: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+static ATFORK_REGISTERED: std::sync::Once = std::sync::Once::new();
+
+extern "C" fn reset_tid_pid_after_fork() {
+    CACHED_PID.store(0, std::sync::atomic::Ordering::Relaxed);
+    CACHED_TID.with(|c| c.set(0));
 }
 
-extern "C" fn bionic_errno() -> *mut c_int {
-    // SAFETY: glibc's per-thread errno slot; the same contract as bionic's.
-    unsafe { __errno_location() }
+fn ensure_atfork_registered() {
+    ATFORK_REGISTERED.call_once(|| {
+        // SAFETY: async-signal-safe child handler clearing cached pid/tid.
+        unsafe { libc::pthread_atfork(None, None, Some(reset_tid_pid_after_fork)) };
+    });
+}
+
+extern "C" fn bionic_gettid() -> libc::pid_t {
+    CACHED_TID.with(|c| {
+        let tid = c.get();
+        if tid != 0 {
+            return tid;
+        }
+        ensure_atfork_registered();
+        // SAFETY: raw Linux SYS_gettid returns the calling kernel thread id.
+        let fresh = unsafe { libc::syscall(libc::SYS_gettid) } as libc::pid_t;
+        c.set(fresh);
+        fresh
+    })
+}
+
+extern "C" fn bionic_getpid() -> libc::pid_t {
+    let pid = CACHED_PID.load(std::sync::atomic::Ordering::Relaxed);
+    if pid != 0 {
+        return pid;
+    }
+    ensure_atfork_registered();
+    // SAFETY: POSIX getpid.
+    let fresh = unsafe { libc::getpid() };
+    CACHED_PID.store(fresh, std::sync::atomic::Ordering::Relaxed);
+    fresh
+}
+
+// ------------------------------------------------ Large anonymous THP mmap
+
+fn hugepage_heap_disabled() -> bool {
+    static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *OFF.get_or_init(|| std::env::var_os("VANTA_NO_HUGEPAGE_HEAP").is_some())
+}
+
+extern "C" fn bionic_mmap(
+    addr: *mut c_void,
+    len: usize,
+    prot: c_int,
+    flags: c_int,
+    fd: c_int,
+    offset: libc::off_t,
+) -> *mut c_void {
+    // SAFETY: forwards caller arguments unchanged to host libc mmap.
+    let p = unsafe { libc::mmap(addr, len, prot, flags, fd, offset) };
+    const TWO_MIB: usize = 2 << 20;
+    if p != libc::MAP_FAILED
+        && len >= TWO_MIB
+        && (flags & libc::MAP_ANONYMOUS) != 0
+        && (prot & (libc::PROT_READ | libc::PROT_WRITE)) == (libc::PROT_READ | libc::PROT_WRITE)
+        && (prot & libc::PROT_EXEC) == 0
+        && !hugepage_heap_disabled()
+    {
+        let start = (p as usize + TWO_MIB - 1) & !(TWO_MIB - 1);
+        let end = (p as usize + len) & !(TWO_MIB - 1);
+        if end > start {
+            // SAFETY: [start, end) lies strictly inside the just-mapped anonymous RW region.
+            unsafe { libc::madvise(start as *mut c_void, end - start, libc::MADV_HUGEPAGE) };
+        }
+    }
+    p
+}
+
+// ------------------------------------------------ Advisory MADV_FREE elision
+
+/// Sub-4 MiB `MADV_FREE` hints from mimalloc (`mi_option_purge_delay=0`,
+/// `mi_option_purge_decommits=0`) are elided on desktops with >= 8 GiB RAM.
+/// Larger (>= 4 MiB) `MADV_FREE` calls still reach the kernel so leaving a
+/// place / DataModel teardown reclaims bulk RAM, and `MADV_DONTNEED` is NEVER
+/// elided because callers may rely on its zero-fill guarantee.
+const MADVISE_FREE_ELIDE_MAX_BYTES: usize = 4 << 20;
+const MADVISE_FILTER_MIN_RAM_BYTES: u64 = 8 << 30;
+
+fn madvise_free_filter_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        if std::env::var_os("VANTA_NO_MADVISE_FILTER")
+            .is_some_and(|v| !v.is_empty() && v != "0")
+        {
+            return false;
+        }
+        // SAFETY: glibc `_SC_PHYS_PAGES` (85) and `_SC_PAGESIZE` (30).
+        let pages = unsafe { libc::sysconf(libc::_SC_PHYS_PAGES) };
+        let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+        if pages <= 0 || page_size <= 0 {
+            return false;
+        }
+        (pages as u64).saturating_mul(page_size as u64) >= MADVISE_FILTER_MIN_RAM_BYTES
+    })
+}
+
+#[inline]
+fn should_elide_madvise(advice: c_int, len: usize, filter_enabled: bool) -> bool {
+    filter_enabled && advice == libc::MADV_FREE && len < MADVISE_FREE_ELIDE_MAX_BYTES
+}
+
+extern "C" fn bionic_madvise(addr: *mut c_void, len: usize, advice: c_int) -> c_int {
+    if should_elide_madvise(advice, len, madvise_free_filter_enabled()) {
+        // Per Linux madvise(2), MADV_FREE is strictly advisory and the kernel
+        // is allowed to keep the pages untouched without discarding or zeroing
+        // them; mimalloc's `_mi_os_reset` sets `is_zero = false` for MADV_FREE.
+        return 0;
+    }
+    // SAFETY: forwards caller arguments unchanged to host libc madvise.
+    unsafe { libc::madvise(addr, len, advice) }
 }
 
 /// Set this thread's `errno`.
@@ -402,51 +522,25 @@ extern "C" fn bionic_assert2(
 /// as it stands. This used to ignore the result and hand back `buf`, which
 /// glibc leaves unwritten for a known errno (it returns a pointer to a static
 /// string instead), so the engine read an uninitialised buffer.
-extern "C" fn gnu_strerror_r(errnum: c_int, buf: *mut c_char, buflen: usize) -> *mut c_char {
-    // SAFETY: caller-supplied buffer of at least `buflen` bytes.
-    unsafe { glibc_gnu_strerror_r(errnum, buf, buflen) }
-}
-
-/// bionic's plain `strerror_r`, which is POSIX's: fills `buf`, returns 0, or
-/// an error number (`EINVAL` for an unknown errno, `ERANGE` if truncated).
-///
-/// Left to the host this resolved to glibc's GNU `strerror_r`, which returns
-/// a pointer. libc++'s `system_category().message()` reads that return as an
-/// int, sees the low half of an address, and calls `abort()` while the
-/// `std::system_error` is still being built, so a `catch` never sees it.
-/// INFERRED for a caught exception: the abort was read off the 2.738.1397
-/// arm64 and x86-64 builds' `message()`, and observed only through a
-/// coredump of an uncaught one.
-extern "C" fn bionic_strerror_r(errnum: c_int, buf: *mut c_char, buflen: usize) -> c_int {
-    // SAFETY: caller-supplied buffer of at least `buflen` bytes.
-    unsafe { __xpg_strerror_r(errnum, buf.cast(), buflen) }
-}
-
-// The FORTIFY wrappers below are forwarded as they are, on purpose. Each is its
-// unchecked counterpart minus a bound, and the contract that matters is the
-// host function's own: a null `s` is as much a fault in `strlen` here as it
-// was on Android. Turning that into a quiet 0 or an `EINVAL` would make a
-// caller's bug look like an answer, which is the kind of lie a stub must not
-// tell, so they are validated by the host and not re-validated here.
-
+#[cfg(test)]
 extern "C" fn strlen_chk(s: *const c_char, _bound: usize) -> usize {
     // SAFETY: the caller's NUL-terminated string, forwarded to the host.
     unsafe { strlen(s) }
 }
 
+#[cfg(test)]
 extern "C" fn strchr_chk(s: *const c_char, c: c_int, _bound: usize) -> *mut c_char {
     // SAFETY: the caller's NUL-terminated string, forwarded to the host.
     unsafe { strchr(s, c) }
 }
 
-/// Absent until Roblox 2.702.0.622, whose `libroblox.so` imports it: glibc has
-/// no `__strrchr_chk`, so the load stopped at "cannot locate symbol" before a
-/// single engine instruction ran. Same contract as `__strchr_chk`.
+#[cfg(test)]
 extern "C" fn strrchr_chk(s: *const c_char, c: c_int, _bound: usize) -> *mut c_char {
     // SAFETY: the caller's NUL-terminated string, forwarded to the host.
     unsafe { strrchr(s, c) }
 }
 
+#[cfg(test)]
 extern "C" fn strncpy_chk2(
     dst: *mut c_char,
     src: *const c_char,
@@ -458,21 +552,7 @@ extern "C" fn strncpy_chk2(
     unsafe { strncpy(dst, src, n) }
 }
 
-extern "C" fn write_chk(fd: c_int, buf: *const c_void, count: usize, _bound: usize) -> isize {
-    // SAFETY: the caller's buffer and count; the kernel reports a bad one as EFAULT.
-    unsafe { write(fd, buf, count) }
-}
-
-extern "C" fn umask_chk(mode: u32) -> u32 {
-    // SAFETY: a plain scalar.
-    unsafe { umask(mode) }
-}
-
-extern "C" fn poll_chk(fds: *mut c_void, nfds: u64, timeout: c_int, _bound: usize) -> c_int {
-    // SAFETY: the caller's `struct pollfd` array, identical in both libcs.
-    unsafe { poll(fds, nfds, timeout) }
-}
-
+#[cfg(test)]
 extern "C" fn readlink_chk(
     path: *const c_char,
     buf: *mut c_char,
@@ -481,17 +561,6 @@ extern "C" fn readlink_chk(
 ) -> isize {
     // SAFETY: the caller's path and buffer, forwarded with the caller's own size.
     unsafe { readlink(path, buf, size) }
-}
-
-extern "C" fn fread_chk(
-    ptr: *mut c_void,
-    size: usize,
-    n: usize,
-    stream: *mut c_void,
-    _bound: usize,
-) -> usize {
-    // SAFETY: the caller's buffer and `FILE*`, forwarded with the caller's own counts.
-    unsafe { fread(ptr, size, n, stream) }
 }
 
 /// What Vanta reports for `ro.*` system properties.
@@ -622,14 +691,67 @@ extern "C" {
     fn sysconf(name: c_int) -> i64;
 }
 
-/// bionic's `sysconf`, translated.
-///
-/// The selectors are not shared: bionic's `_SC_PAGESIZE` is 39, glibc's is 30,
-/// and glibc reads 39 as `_SC_BC_STRING_MAX`. Roblox asks for the page size
-/// during static initialisation and, untranslated, is told 1000 — which is not a
-/// power of two, so the allocator that asked aborts. Nothing about that failure
-/// points back at `sysconf`, which is why the translation is worth its table.
+/// O(1) translation table from bionic `_SC_*` selector (0..256) to glibc
+/// selector (`-1` when not mapped). Built once on first use.
+fn sysconf_fast_table() -> &'static [c_int; 256] {
+    static TABLE: std::sync::OnceLock<[c_int; 256]> = std::sync::OnceLock::new();
+    TABLE.get_or_init(|| {
+        let mut t = [-1 as c_int; 256];
+        for &(bionic, glibc, _) in sysconf_table::SYSCONF_MAP {
+            if (0..256).contains(&bionic) {
+                t[bionic as usize] = glibc;
+            }
+        }
+        t
+    })
+}
+
+/// bionic's `sysconf`, translated via O(1) lookup with cached process-invariant
+/// values (`_SC_PAGESIZE`, `_SC_CLK_TCK`, `_SC_NPROCESSORS_*`, `_SC_PHYS_PAGES`).
 extern "C" fn bionic_sysconf(name: c_int) -> i64 {
+    // Fast-path invariant process constants (avoiding repeated glibc syscalls/file reads).
+    match name {
+        39 => {
+            static V: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+            let c = V.load(std::sync::atomic::Ordering::Relaxed);
+            if c != 0 { return c; }
+            let v = unsafe { sysconf(30) };
+            if v > 0 { V.store(v, std::sync::atomic::Ordering::Relaxed); }
+            return v;
+        }
+        6 => {
+            static V: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+            let c = V.load(std::sync::atomic::Ordering::Relaxed);
+            if c != 0 { return c; }
+            let v = unsafe { sysconf(2) };
+            if v > 0 { V.store(v, std::sync::atomic::Ordering::Relaxed); }
+            return v;
+        }
+        96 | 97 => {
+            static V: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+            let c = V.load(std::sync::atomic::Ordering::Relaxed);
+            if c != 0 { return c; }
+            let v = unsafe { sysconf(if name == 96 { 83 } else { 84 }) };
+            if v > 0 { V.store(v, std::sync::atomic::Ordering::Relaxed); }
+            return v;
+        }
+        98 => {
+            static V: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+            let c = V.load(std::sync::atomic::Ordering::Relaxed);
+            if c != 0 { return c; }
+            let v = unsafe { sysconf(85) };
+            if v > 0 { V.store(v, std::sync::atomic::Ordering::Relaxed); }
+            return v;
+        }
+        _ => {}
+    }
+    if (0..256).contains(&name) {
+        let glibc = sysconf_fast_table()[name as usize];
+        if glibc >= 0 {
+            // SAFETY: `glibc` came from the generated table and is a valid selector.
+            return unsafe { sysconf(glibc) };
+        }
+    }
     match classify_sysconf(name) {
         // SAFETY: `glibc` came from the generated table and is a valid selector.
         Sysconf::Host(glibc) => unsafe { sysconf(glibc) },
@@ -991,6 +1113,45 @@ mod pathconf_tests {
         }
         assert_eq!(bionic_isxdigit(-1), 0);
         assert_eq!(bionic_isxdigit(0x1_30), 0);
+    }
+
+    #[test]
+    fn madvise_filter_only_elides_sub_4mib_advisory_madv_free() {
+        assert!(should_elide_madvise(libc::MADV_FREE, 64 * 1024, true));
+        assert!(should_elide_madvise(libc::MADV_FREE, MADVISE_FREE_ELIDE_MAX_BYTES - 1, true));
+        assert!(!should_elide_madvise(libc::MADV_FREE, MADVISE_FREE_ELIDE_MAX_BYTES, true));
+        assert!(!should_elide_madvise(libc::MADV_FREE, 8 << 20, true));
+        assert!(!should_elide_madvise(libc::MADV_FREE, 64 * 1024, false));
+        // MADV_DONTNEED carries a zero-fill guarantee and must never be elided.
+        assert!(!should_elide_madvise(libc::MADV_DONTNEED, 64 * 1024, true));
+        assert!(!should_elide_madvise(libc::MADV_HUGEPAGE, 2 << 20, true));
+        assert!(!should_elide_madvise(libc::MADV_DONTDUMP, 64 * 1024, true));
+    }
+
+    #[test]
+    fn bionic_madvise_preserves_madv_dontneed_zeroing_and_accepts_madv_free() {
+        let len = 64 * 1024;
+        // SAFETY: anonymous private RW mapping of 64 KiB.
+        let p = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                len,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                -1,
+                0,
+            )
+        };
+        assert_ne!(p, libc::MAP_FAILED);
+        unsafe {
+            std::ptr::write_bytes(p as *mut u8, 0xAB, len);
+            assert_eq!(bionic_madvise(p, len, libc::MADV_FREE), 0);
+            assert_eq!(bionic_madvise(p, len, libc::MADV_DONTNEED), 0);
+            // MADV_DONTNEED must have forwarded to the kernel and zeroed the page.
+            let bytes = std::slice::from_raw_parts(p as *const u8, len);
+            assert!(bytes.iter().all(|&b| b == 0), "MADV_DONTNEED must zero anonymous private pages");
+            libc::munmap(p, len);
+        }
     }
 }
 

@@ -1264,26 +1264,35 @@ pub fn poll() {
         return;
     }
 
+    // Lock-free fast path: when no gamepad is connected and the hotplug rescan
+    // interval has not elapsed, skip both `PADS` and `LAST_SCAN` mutexes
+    // completely (avoids two mutex locks on every 1000 Hz mouse packet).
+    static HAS_PADS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    static NEXT_SCAN_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    static EPOCH: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    let now_ms = EPOCH.get_or_init(std::time::Instant::now).elapsed().as_millis() as u64;
+    if !HAS_PADS.load(std::sync::atomic::Ordering::Relaxed)
+        && now_ms < NEXT_SCAN_MS.load(std::sync::atomic::Ordering::Relaxed)
+    {
+        return;
+    }
+
     let mut pads = PADS.lock().unwrap_or_else(|e| e.into_inner());
 
-    static LAST_SCAN: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
-    let due = {
-        let mut last = LAST_SCAN.lock().unwrap_or_else(|e| e.into_inner());
-        let now = std::time::Instant::now();
-        match *last {
-            Some(t) if now.duration_since(t) < RESCAN => false,
-            _ => {
-                *last = Some(now);
-                true
-            }
-        }
-    };
+    let due = now_ms >= NEXT_SCAN_MS.load(std::sync::atomic::Ordering::Relaxed);
     if due {
-        for node in visible_nodes() {
+        NEXT_SCAN_MS.store(now_ms.saturating_add(RESCAN.as_millis() as u64), std::sync::atomic::Ordering::Relaxed);
+        static REJECTED_NODES: std::sync::Mutex<Vec<i32>> = std::sync::Mutex::new(Vec::new());
+        let visible = visible_nodes();
+        let mut rejected = REJECTED_NODES.lock().unwrap_or_else(|e| e.into_inner());
+        // Drop any cached rejection whose `/dev/input/js*` node disappeared so
+        // a newly hot-plugged controller reusing the same index is inspected.
+        rejected.retain(|n| visible.contains(n));
+        for node in visible {
             if pads.len() >= MAX_PADS as usize {
                 break;
             }
-            if pads.iter().any(|p| p.node == node) {
+            if pads.iter().any(|p| p.node == node) || rejected.contains(&node) {
                 continue;
             }
             if let Some(file) = open_pad(node) {
@@ -1299,8 +1308,11 @@ pub fn poll() {
                     layout: read_layout(node),
                     sticks: AxisState::default(),
                 });
+            } else {
+                rejected.push(node);
             }
         }
+        HAS_PADS.store(!pads.is_empty(), std::sync::atomic::Ordering::Relaxed);
     }
 
     let mut gone: Vec<i32> = Vec::new();

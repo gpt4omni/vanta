@@ -158,6 +158,11 @@ pub fn parse_line(line: &str) -> Option<Event> {
         let port = field_after(rest, "Port = ", &[',', ' ', '|'])?.parse().ok()?;
         return Some(Event::Server { address: address.to_owned(), port });
     }
+    if line.contains("Connection accepted from ") {
+        if let Some((address, port)) = crate::server_region::parse_connection_accepted(line) {
+            return Some(Event::Server { address, port });
+        }
+    }
     None
 }
 
@@ -562,7 +567,9 @@ pub fn poll() {
                 // Told to the launcher from the same update that wrote the state,
                 // so the snapshot it can ask for and the event it hears are one
                 // thing seen twice (ADR-055).
-                crate::control::game_joined(&session_state());
+                let snap = session_state();
+                crate::server_region::on_joined(place_id, snap.joined_at);
+                crate::control::game_joined(&snap);
                 crate::plugin_host::publish_core(
                     vanta_plugins::core_events::GAME_PRESENCE,
                     presence_payload(),
@@ -571,6 +578,7 @@ pub fn poll() {
             }
             Event::Joining { job_id, place_id } => {
                 println!("[vanta] game: joining server {job_id} of place {place_id}");
+                crate::server_region::on_joining(place_id, &job_id);
                 let mut state = STATE.lock().unwrap_or_else(|e| e.into_inner());
                 // A different place means a different visit, so nothing from
                 // the last one carries over. Same place is a rejoin of the
@@ -583,10 +591,12 @@ pub fn poll() {
             }
             Event::Server { address, port } => {
                 println!("[vanta] game: server {address}:{port}");
+                crate::server_region::on_server(&address, port);
                 STATE.lock().unwrap_or_else(|e| e.into_inner()).server_address = Some(address);
             }
             Event::Left => {
                 println!("[vanta] game: left");
+                crate::server_region::on_left();
                 // The experience's presence goes with the experience. Without
                 // this, leaving a game that set a presence would leave its
                 // details on the Discord profile until another game replaced
@@ -744,6 +754,16 @@ mod tests {
         assert_eq!(
             parse_line(UDMUX),
             Some(Event::Server { address: "128.116.51.33".into(), port: 50363 })
+        );
+    }
+
+    #[test]
+    fn connection_accepted_from_real_2745_log_yields_server_event() {
+        let line = "2026-11-21T13:47:22.467Z,105.467804,a5fbc6c0,6,Info [DFLog::NetworkClient] \
+                    Connection accepted from 128.116.14.33|59539";
+        assert_eq!(
+            parse_line(line),
+            Some(Event::Server { address: "128.116.14.33".into(), port: 59539 })
         );
     }
 

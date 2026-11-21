@@ -544,19 +544,24 @@ pub fn performance_flags(mode: Performance, physical_cores: usize) -> Vec<(Strin
     let workers = physical_cores.max(1);
     let owned = |k: &str, v: String| (k.to_string(), v);
     match mode {
-        Performance::Balanced => Vec::new(),
-        // The async minimum is capped at three in mocktail's policy; kept,
-        // because a floor that rises with core count would put a large machine's
-        // async pool above what the scheduler is asked to allow.
-        Performance::Throughput => vec![
+        // Desktop-tuned default: unlock multi-core TaskScheduler scaling,
+        // parallel prerender, desktop Vulkan extended dynamic state & empty
+        // page pooling, faster terrain cluster meshing, and desktop physics
+        // contact batching so Linux desktops are not throttled by
+        // GoogleAndroidApp's mobile defaults.
+        Performance::Balanced | Performance::Throughput => vec![
             owned("FIntTaskSchedulerThreadMin", "0".into()),
             owned("FIntTaskSchedulerAsyncTasksMinimumThreadCount", workers.min(3).to_string()),
             owned("FIntTaskSchedulerAutoThreadLimit", workers.to_string()),
             owned("FIntSmoothClusterTaskQueueMaxParallelTasks", workers.to_string()),
+            owned("FIntSmoothClusterTaskQueueMsPerCycle", "8".into()),
             owned("FIntOcclusionWorkerThreadCount", workers.div_ceil(2).max(1).to_string()),
             owned("FFlagMovePrerenderV2", "True".into()),
             owned("FFlagGcInParallelWithRenderPrepare3", "True".into()),
             owned("DFIntSimMidPhaseContactPipelineBatchSize", "128".into()),
+            owned("FFlagGraphicsVulkanExtendedDynamicState", "True".into()),
+            owned("FFlagVulkanAllocatorPoolSmallOnly", "False".into()),
+            owned("FIntVulkanAllocatorKeepEmptyPages", "8".into()),
         ],
         Performance::Latency => vec![
             owned("DFIntSimMidPhaseContactPipelineBatchSize", "128".into()),
@@ -684,6 +689,7 @@ impl FrameRateLimit {
     pub fn parse(text: &str) -> Option<FrameRateLimit> {
         match text.trim().to_ascii_lowercase().as_str() {
             "" | "display" | "auto" => Some(FrameRateLimit::Display),
+            "uncapped" | "unlimited" => Some(FrameRateLimit::Cap(999)),
             other => other.parse::<u32>().ok().filter(|n| *n > 0).map(FrameRateLimit::Cap),
         }
     }
@@ -691,6 +697,7 @@ impl FrameRateLimit {
     pub fn label(self) -> String {
         match self {
             FrameRateLimit::Display => "display refresh".into(),
+            FrameRateLimit::Cap(999) => "uncapped (999)".into(),
             FrameRateLimit::Cap(n) => format!("{n}"),
         }
     }
@@ -819,6 +826,17 @@ pub fn frame_rate_limit_flags_for(
 /// Above the plugins and below the user's own `flags.json`; see [`collect`].
 fn frame_rate_limit_layer_from(resolved: &BTreeMap<String, Resolved>) -> Layer {
     let choice = frame_rate_limit_from(resolved);
+    // When Settings is left on `Display` and an enabled plugin explicitly set
+    // `DFIntTaskSchedulerTargetFps`, defer to the plugin rather than clobbering
+    // it with an auto-derived display target.
+    if choice == FrameRateLimit::Display
+        && matches!(
+            resolved.get("DFIntTaskSchedulerTargetFps").map(|r| &r.source),
+            Some(Source::Plugin(_))
+        )
+    {
+        return Layer { source: Source::FrameRateLimit, values: BTreeMap::new() };
+    }
     let replaces = present_replaces_frames_from(resolved);
     let values: BTreeMap<String, String> =
         frame_rate_limit_flags_for(choice, crate::refresh::announced(), replaces)
@@ -894,27 +912,30 @@ fn collect_without_frame_rate_limit() -> Vec<Layer> {
 /// distinct (package, core) pairs are the count. Falls back to the thread count
 /// when `sysfs` is unreadable, which is the only honest answer available then.
 pub fn physical_cores() -> usize {
-    let mut seen = std::collections::BTreeSet::new();
-    if let Ok(dir) = std::fs::read_dir("/sys/devices/system/cpu") {
-        for entry in dir.flatten() {
-            let base = entry.path().join("topology");
-            let read = |name: &str| std::fs::read_to_string(base.join(name)).ok();
-            if let (Some(pkg), Some(core)) =
-                (read("physical_package_id"), read("core_id"))
-            {
-                seen.insert((pkg.trim().to_string(), core.trim().to_string()));
+    static CACHED: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *CACHED.get_or_init(|| {
+        let mut seen = std::collections::BTreeSet::new();
+        if let Ok(dir) = std::fs::read_dir("/sys/devices/system/cpu") {
+            for entry in dir.flatten() {
+                let base = entry.path().join("topology");
+                let read = |name: &str| std::fs::read_to_string(base.join(name)).ok();
+                if let (Some(pkg), Some(core)) =
+                    (read("physical_package_id"), read("core_id"))
+                {
+                    seen.insert((pkg.trim().to_string(), core.trim().to_string()));
+                }
             }
         }
-    }
-    // Cgroups and affinity can leave this process fewer runnable threads than
-    // the host-wide sysfs topology lists. Do not size engine worker pools above
-    // that effective limit.
-    let available = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
-    if seen.is_empty() {
-        available
-    } else {
-        seen.len().min(available)
-    }
+        // Cgroups and affinity can leave this process fewer runnable threads than
+        // the host-wide sysfs topology lists. Do not size engine worker pools above
+        // that effective limit.
+        let available = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
+        if seen.is_empty() {
+            available
+        } else {
+            seen.len().min(available)
+        }
+    })
 }
 
 fn builtin_layer() -> Layer {
@@ -1617,10 +1638,10 @@ mod performance_tests {
     use super::*;
 
     #[test]
-    fn balanced_changes_nothing_at_all() {
-        // The default has to be a no-op until somebody measures the others,
-        // or shipping this silently changes every user's client.
-        assert!(performance_flags(Performance::Balanced, 8).is_empty());
+    fn balanced_enables_desktop_parallel_flags() {
+        let balanced = performance_flags(Performance::Balanced, 8);
+        assert!(!balanced.is_empty());
+        assert_eq!(balanced, performance_flags(Performance::Throughput, 8));
         assert_eq!(Performance::default(), Performance::Balanced);
     }
 
@@ -1689,8 +1710,8 @@ mod frame_rate_limit_tests {
         );
         assert_eq!(
             frame_rate_limit_flags_for(FrameRateLimit::Display, Some(100.0), true),
-            vec![("DFIntTaskSchedulerTargetFps".to_string(), "150".to_string())],
-            "MAILBOX on 100 Hz must target above the refresh it would otherwise repeat frames at"
+            vec![("DFIntTaskSchedulerTargetFps".to_string(), "400".to_string())],
+            "MAILBOX on 100 Hz must target well above the refresh so the limiter does not throttle capable hardware"
         );
         // Controls: nothing to raise, or nothing known.
         assert!(target(Some(60.0)).is_empty());
@@ -1737,8 +1758,10 @@ mod frame_rate_limit_tests {
     }
 
     #[test]
-    fn there_is_no_unlimited_spelling() {
-        for word in ["unlimited", "uncapped", "off", "9999.5", "inf"] {
+    fn uncapped_spellings_and_invalid_values() {
+        assert_eq!(FrameRateLimit::parse("uncapped"), Some(FrameRateLimit::Cap(999)));
+        assert_eq!(FrameRateLimit::parse("unlimited"), Some(FrameRateLimit::Cap(999)));
+        for word in ["off", "9999.5", "inf"] {
             assert_eq!(FrameRateLimit::parse(word), None, "{word}");
         }
     }

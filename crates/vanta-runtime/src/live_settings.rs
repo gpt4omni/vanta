@@ -86,6 +86,14 @@ pub fn apply(update: &Update) -> Option<String> {
         // the one thread the settings document is built and handed over on. A
         // choice that is already in force asks for nothing.
         Update::FrameRateLimit(l) => set_frame_rate_limit(*l),
+        Update::PerfHud(on) => {
+            crate::perf_hud::set_enabled(*on);
+            None
+        }
+        Update::ServerRegionNotify(on) => {
+            crate::server_region::set_notify_enabled(*on);
+            None
+        }
     };
     // Narrated because this project debugs by reading the client's output, and
     // "the setting reached the process" is the fact worth being able to see.
@@ -104,9 +112,12 @@ fn value_word(update: &Update) -> String {
     match update {
         Update::PointerAcceleration(a) => a.as_str().to_string(),
         Update::Throttle(t) => t.as_str().to_string(),
-        Update::CloseOnLeave(b) | Update::CarryLaunchTicket(b) | Update::Gamemode(b) | Update::Gamepad(b) => {
-            b.to_string()
-        }
+        Update::CloseOnLeave(b)
+        | Update::CarryLaunchTicket(b)
+        | Update::Gamemode(b)
+        | Update::Gamepad(b)
+        | Update::PerfHud(b)
+        | Update::ServerRegionNotify(b) => b.to_string(),
         Update::TitleBar(t) => vanta_protocol::settings::title_bar_word(*t).to_string(),
         Update::FrameRateLimit(l) => l.as_env().to_string(),
         Update::AudioOutput(name) if name.is_empty() => "the system default".to_string(),
@@ -266,6 +277,8 @@ pub fn current() -> BTreeMap<String, Value> {
         Value::from(vanta_protocol::settings::title_bar_word(crate::android::wayland::current_title_bar())),
     );
     m.insert("frame_rate_limit".into(), Value::from(frame_rate_limit_word()));
+    m.insert("perf_hud".into(), Value::from(crate::perf_hud::enabled()));
+    m.insert("server_region_notify".into(), Value::from(crate::server_region::notify_enabled()));
     m
 }
 
@@ -322,6 +335,8 @@ mod tests {
         // the requests did.
         let _gm = crate::gamemode::TEST_GUARD.lock().unwrap_or_else(|e| e.into_inner());
         let _gp = crate::android::gamepad::TEST_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        let _ph = crate::perf_hud::TEST_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        let _sr = crate::server_region::TEST_GUARD.lock().unwrap_or_else(|e| e.into_inner());
         // `current()` also reads the frame-rate choice, which depends on the
         // environment and the flag files other tests rewrite.
         let _env = crate::flags::tests::ENV.lock().unwrap_or_else(|e| e.into_inner());
@@ -334,7 +349,7 @@ mod tests {
             serde_json::json!({"gamemode": "yes"}),
             serde_json::json!({"gamepad": 1}),
             serde_json::json!({"title_bar": "tiny"}),
-            serde_json::json!({"frame_rate_limit": "unlimited"}),
+            serde_json::json!({"frame_rate_limit": "infinity"}),
             serde_json::json!({"frame_rate_limit": "9999"}),
             serde_json::json!({"audio_output": "a\u{0}b"}),
             // One bad value refuses the whole message, so the good key beside it
@@ -496,5 +511,37 @@ mod tests {
         let before = audio::current();
         assert!(SettingsSet::from_payload(&serde_json::json!({"audio_output": "two\nlines"})).is_err());
         assert_eq!(audio::current(), before);
+    }
+
+    #[test]
+    fn a_perf_hud_toggle_reaches_the_hud_and_get_reports_it() {
+        let _g = GLOBALS.lock().unwrap_or_else(|e| e.into_inner());
+        let _ph = crate::perf_hud::TEST_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        let before = crate::perf_hud::enabled();
+
+        let r = set(&[Update::PerfHud(!before)]);
+        assert_eq!(r.applied, vec!["perf_hud".to_string()]);
+        assert_eq!(r.values["perf_hud"], !before);
+        assert_eq!(crate::perf_hud::enabled(), !before);
+
+        let back = set(&[Update::PerfHud(before)]);
+        assert_eq!(back.values["perf_hud"], before);
+        assert_eq!(crate::perf_hud::enabled(), before);
+    }
+
+    #[test]
+    fn a_server_region_notify_toggle_reaches_server_region_and_get_reports_it() {
+        let _g = GLOBALS.lock().unwrap_or_else(|e| e.into_inner());
+        let _sr = crate::server_region::TEST_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        let before = crate::server_region::notify_enabled();
+
+        let r = set(&[Update::ServerRegionNotify(!before)]);
+        assert_eq!(r.applied, vec!["server_region_notify".to_string()]);
+        assert_eq!(r.values["server_region_notify"], !before);
+        assert_eq!(crate::server_region::notify_enabled(), !before);
+
+        let back = set(&[Update::ServerRegionNotify(before)]);
+        assert_eq!(back.values["server_region_notify"], before);
+        assert_eq!(crate::server_region::notify_enabled(), before);
     }
 }

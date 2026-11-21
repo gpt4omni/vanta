@@ -191,6 +191,10 @@ pub enum Source {
     EngineDocumentCached,
     /// The default since 2026-09-24, live fetch.
     EngineDocumentFetched,
+    /// Minimal delta containing only Vanta's overridden Roblox flags
+    /// (`{"applicationSettings": {...}}`), sent after the engine's own
+    /// `DynamicFastVariableReloader` has already applied the full document.
+    Delta,
 }
 
 impl std::fmt::Display for Source {
@@ -203,6 +207,7 @@ impl std::fmt::Display for Source {
             Source::EngineDocumentFetched => write!(f, "engine document, fetched"),
             Source::StaleCache => write!(f, "stale cache, fetch failed"),
             Source::Nothing(why) => write!(f, "nothing: {why}"),
+            Source::Delta => write!(f, "delta overrides"),
         }
     }
 }
@@ -502,6 +507,31 @@ pub struct Reapply {
 /// fetch -- that one is not reachable without touching the engine -- so a key
 /// Roblox changed since this process started goes back to the older value for
 /// as long as the re-apply holds, which is the same trade the launch makes.
+/// Build a minimal `{"applicationSettings":{...}}` delta document carrying
+/// only the overridden flags. `nativeInitClientSettings` merges incoming keys
+/// without clearing unmentioned flags (ADR-051), so periodic post-refresh
+/// re-applies hand the engine ~300 bytes instead of 1.5 MB of JSON (~26,000
+/// keys), eliminating the 120-second JSON parse hitch without clobbering fresh
+/// flags `DynamicFastVariableReloader` just fetched.
+fn build_delta_document(
+    overrides: serde_json::Map<String, serde_json::Value>,
+) -> Result<(String, usize), &'static str> {
+    let mut app = serde_json::Map::with_capacity(overrides.len());
+    for (k, v) in overrides {
+        let as_string = match v {
+            serde_json::Value::String(s) => s,
+            other => other.to_string(),
+        };
+        app.insert(k, serde_json::Value::String(as_string));
+    }
+    let count = app.len();
+    let mut root = serde_json::Map::with_capacity(1);
+    root.insert("applicationSettings".to_string(), serde_json::Value::Object(app));
+    let out = serde_json::to_string(&serde_json::Value::Object(root))
+        .map_err(|_| "the delta document did not serialise")?;
+    Ok((out, count))
+}
+
 pub fn reapply_document(force: bool) -> Result<Option<Reapply>, String> {
     // Resolved before anything is read, so a profile with nothing to keep costs
     // a few small file reads and not a 1.3 MB document.
@@ -511,6 +541,23 @@ pub fn reapply_document(force: bool) -> Result<Option<Reapply>, String> {
         return Ok(None);
     }
     let resolve_time = t0.elapsed();
+    // Periodic post-refresh and fallback re-applies (`force == false`) only
+    // need to re-assert Vanta's overridden keys on top of the full document
+    // the engine just loaded — skipping disk read and 1.5 MB JSON parse/emit.
+    // Live UI changes (`force == true`) still send the full merged base so a
+    // flag reverted back to default restores Roblox's base value immediately.
+    if !force {
+        let t2 = std::time::Instant::now();
+        let (body, overrides) =
+            build_delta_document(roblox_overrides(&resolved)).map_err(str::to_string)?;
+        return Ok(Some(Reapply {
+            body,
+            overrides,
+            source: Source::Delta,
+            load: Duration::ZERO,
+            merge: resolve_time + t2.elapsed(),
+        }));
+    }
     let t1 = std::time::Instant::now();
     let (base, source) = load_base(None);
     let load = t1.elapsed();
@@ -523,29 +570,80 @@ pub fn reapply_document(force: bool) -> Result<Option<Reapply>, String> {
     Ok(Some(Reapply { body, overrides, source, load, merge: resolve_time + t2.elapsed() }))
 }
 
+struct CachedBase {
+    len: usize,
+    hash: u64,
+    parsed: serde_json::Value,
+}
+
+fn fnv1a_64(bytes: &[u8]) -> u64 {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for &b in bytes {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    h
+}
+
+static MERGE_BASE_CACHE: std::sync::Mutex<Option<CachedBase>> = std::sync::Mutex::new(None);
+
 /// Merge overrides into `applicationSettings`, returning the document and how
 /// many were applied. Split out from layer resolution so it can be tested.
+///
+/// Caches the parsed ~1.5 MB base document in memory keyed by `(len, fnv1a)`
+/// and mutates/restores only the overridden keys in place, eliminating repeated
+/// 1.5 MB JSON parses on every 120 s `DynamicFastVariableReloader` re-apply.
 fn merge(
     doc: &str,
     overrides: serde_json::Map<String, serde_json::Value>,
 ) -> Result<(String, usize), &'static str> {
-    let mut parsed: serde_json::Value =
-        serde_json::from_str(doc).map_err(|_| "the settings document did not parse")?;
+    let len = doc.len();
+    let hash = fnv1a_64(doc.as_bytes());
+    let mut guard = MERGE_BASE_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    let hit = guard.as_ref().is_some_and(|c| c.len == len && c.hash == hash);
+    if !hit {
+        let parsed: serde_json::Value =
+            serde_json::from_str(doc).map_err(|_| "the settings document did not parse")?;
+        if parsed.get("applicationSettings").and_then(serde_json::Value::as_object).is_none() {
+            return Err("no applicationSettings object");
+        }
+        *guard = Some(CachedBase { len, hash, parsed });
+    }
+    let parsed = &mut guard.as_mut().unwrap().parsed;
     let app = parsed
         .get_mut("applicationSettings")
         .and_then(serde_json::Value::as_object_mut)
         .ok_or("no applicationSettings object")?;
 
     let mut applied = 0usize;
+    let mut originals: Vec<(String, Option<serde_json::Value>)> = Vec::with_capacity(overrides.len());
     for (k, v) in overrides {
         let as_string = match v {
             serde_json::Value::String(s) => s,
             other => other.to_string(),
         };
-        app.insert(k, serde_json::Value::String(as_string));
+        let prev = app.insert(k.clone(), serde_json::Value::String(as_string));
+        originals.push((k, prev));
         applied += 1;
     }
-    let out = serde_json::to_string(&parsed).map_err(|_| "the merged document did not serialise")?;
+    let out = serde_json::to_string(parsed);
+    // Restore the cached base document to its exact unmerged state.
+    if let Some(app_restore) = parsed
+        .get_mut("applicationSettings")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        for (k, prev) in originals {
+            match prev {
+                Some(old) => {
+                    app_restore.insert(k, old);
+                }
+                None => {
+                    app_restore.remove(&k);
+                }
+            }
+        }
+    }
+    let out = out.map_err(|_| "the merged document did not serialise")?;
     Ok((out, applied))
 }
 
@@ -660,6 +758,7 @@ mod history {
                 Source::Nothing(_) => "vanta-androidapp-nothing",
                 Source::EngineDocumentCached => "vanta-enginedoc-cached",
                 Source::EngineDocumentFetched => "vanta-enginedoc-fetched",
+                Source::Delta => "vanta-delta",
             };
             save(dir, tag, body.as_bytes());
         }
@@ -805,6 +904,22 @@ mod tests {
     #[test]
     fn a_document_without_application_settings_is_refused() {
         assert!(merge(r#"{"nope":{}}"#, map(&[("FFlagX", serde_json::json!(1))])).is_err());
+    }
+
+    #[test]
+    fn delta_document_contains_only_stringified_overrides_in_application_settings() {
+        let (out, n) = build_delta_document(map(&[
+            ("DFIntTaskSchedulerTargetFps", serde_json::json!(400)),
+            ("FFlagVulkanAllocatorPoolSmallOnly", serde_json::json!("False")),
+        ]))
+        .unwrap();
+        assert_eq!(n, 2);
+        assert!(plausible(&out));
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        let obj = v["applicationSettings"].as_object().unwrap();
+        assert_eq!(obj.len(), 2);
+        assert_eq!(obj["DFIntTaskSchedulerTargetFps"], "400");
+        assert_eq!(obj["FFlagVulkanAllocatorPoolSmallOnly"], "False");
     }
 
     #[test]

@@ -170,8 +170,8 @@ pub fn declared_settings() -> BTreeMap<String, Applies> {
 /// profile are settled before engine initialisation, the present mode is a
 /// swapchain field only the engine rebuilds, the Vulkan layers load at instance
 /// creation, and the unpacked-plugin list is built once (ADR-038).
-pub const NEXT_LAUNCH_KEYS: [&str; 6] =
-    ["graphics", "graphics_optimization_mode", "present_mode", "mangohud", "vkbasalt", "unpacked_plugins"];
+pub const NEXT_LAUNCH_KEYS: [&str; 7] =
+    ["graphics", "graphics_optimization_mode", "present_mode", "mangohud", "vkbasalt", "unpacked_plugins", "mods_enabled"];
 
 fn our_caps() -> Capabilities {
     [caps::LIFECYCLE, caps::EVENTS_CORE, caps::EVENTS_PRESENCE, caps::STATE, caps::SETTINGS]
@@ -279,6 +279,7 @@ impl Shared {
             // Leaving an experience clears what was said about it; whether
             // somebody is signed in is not about the experience and stays.
             st.game_presence = None;
+            st.server = None;
         }
         self.publish(names::GAME_LEFT, to_value(&left));
     }
@@ -292,6 +293,14 @@ impl Shared {
     fn game_presence(&self, presence: msg::GamePresence) {
         self.state().game_presence = Some(presence.clone());
         self.publish(names::GAME_PRESENCE, to_value(&presence));
+    }
+
+    fn perf_stats(&self, stats: Option<msg::PerfStatsSnapshot>) {
+        self.state().perf_stats = stats;
+    }
+
+    fn server_info(&self, info: Option<msg::ServerInfo>) {
+        self.state().server = info;
     }
 }
 
@@ -487,6 +496,20 @@ pub fn game_joined(state: &vanta_plugins::state::SessionState) {
 pub fn game_left() {
     if let Some(server) = SERVER.get() {
         server.publish_game_left(msg::GameLeft { at: now_ms() });
+    }
+}
+
+/// Update the live Performance HUD snapshot exposed via `state.get`.
+pub fn perf_stats(stats: Option<msg::PerfStatsSnapshot>) {
+    if let Some(server) = SERVER.get() {
+        server.shared.perf_stats(stats);
+    }
+}
+
+/// Update the detected game server region/session exposed via `state.get`.
+pub fn server_info(info: Option<msg::ServerInfo>) {
+    if let Some(server) = SERVER.get() {
+        server.shared.server_info(info);
     }
 }
 

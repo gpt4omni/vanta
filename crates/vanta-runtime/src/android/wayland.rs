@@ -509,6 +509,48 @@ static RELATIVE_POINTER_INTERFACE: WlInterface = WlInterface {
     events: RELATIVE_POINTER_EVENTS.as_ptr(),
 };
 
+// -------------------------------------------- wp_tearing_control_manager_v1
+//
+// Lets Wayland compositors (Hyprland, KWin, Sway) honour async tearing flips
+// when the user selects `immediate` or `uncapped` present mode (or sets
+// `VANTA_TEARING=1`), eliminating compositor vsync wait latency.
+static TEARING_CONTROL_MANAGER_METHODS: [WlMessage; 2] = [
+    WlMessage { name: c"destroy".as_ptr(), signature: c"".as_ptr(), types: NO_TYPES.0.as_ptr() },
+    WlMessage {
+        name: c"get_tearing_control".as_ptr(),
+        signature: c"no".as_ptr(),
+        types: NO_TYPES.0.as_ptr(),
+    },
+];
+static TEARING_CONTROL_MANAGER_INTERFACE: WlInterface = WlInterface {
+    name: c"wp_tearing_control_manager_v1".as_ptr(),
+    version: 1,
+    method_count: 2,
+    methods: TEARING_CONTROL_MANAGER_METHODS.as_ptr(),
+    event_count: 0,
+    events: std::ptr::null(),
+};
+const TEARING_CONTROL_MANAGER_GET: u32 = 1;
+
+static TEARING_CONTROL_METHODS: [WlMessage; 2] = [
+    WlMessage {
+        name: c"set_presentation_hint".as_ptr(),
+        signature: c"u".as_ptr(),
+        types: NO_TYPES.0.as_ptr(),
+    },
+    WlMessage { name: c"destroy".as_ptr(), signature: c"".as_ptr(), types: NO_TYPES.0.as_ptr() },
+];
+static TEARING_CONTROL_INTERFACE: WlInterface = WlInterface {
+    name: c"wp_tearing_control_v1".as_ptr(),
+    version: 1,
+    method_count: 2,
+    methods: TEARING_CONTROL_METHODS.as_ptr(),
+    event_count: 0,
+    events: std::ptr::null(),
+};
+const TEARING_CONTROL_SET_PRESENTATION_HINT: u32 = 0;
+const WP_TEARING_CONTROL_V1_PRESENTATION_HINT_ASYNC: u32 = 1;
+
 // ----------------------------------------------------- subsurface opcodes
 //
 // `wl_subcompositor`/`wl_subsurface` are core protocol, so their
@@ -1363,6 +1405,7 @@ struct Globals {
     text_input_manager: Option<(u32, u32)>,
     pointer_constraints: Option<(u32, u32)>,
     relative_pointer_manager: Option<(u32, u32)>,
+    tearing_control_manager: Option<(u32, u32)>,
     /// Only whether it exists, never bound: GDK binds `wp_presentation` for the
     /// window's own frames, and the question here is whether GDK's frame
     /// timings can report a presentation at all. See
@@ -1391,6 +1434,7 @@ unsafe extern "C" fn registry_global(
         "zwp_text_input_manager_v3" => globals.text_input_manager = Some((name, version)),
         "zwp_pointer_constraints_v1" => globals.pointer_constraints = Some((name, version)),
         "zwp_relative_pointer_manager_v1" => globals.relative_pointer_manager = Some((name, version)),
+        "wp_tearing_control_manager_v1" => globals.tearing_control_manager = Some((name, version)),
         "wp_presentation" => globals.presentation = true,
         _ => {}
     }
@@ -1737,6 +1781,49 @@ pub fn open(width: u32, height: u32, title: &str) -> Result<&'static WaylandWind
 
     println!("[android] wayland: canvas {cw}x{ch} at ({cx},{cy}) as a subsurface of the libadwaita window");
 
+    // Opt into Wayland async tearing (`wp_tearing_control_v1`) when the user
+    // asked for an immediate/uncapped present mode or `VANTA_TEARING=1`.
+    let want_tearing = std::env::var("VANTA_TEARING").ok().as_deref() == Some("1")
+        || matches!(
+            std::env::var("VANTA_PRESENT_MODE").ok().as_deref().map(str::trim),
+            Some("immediate" | "uncapped")
+        );
+    if want_tearing {
+        if let Some((name, ver)) = globals.tearing_control_manager {
+            let mgr = bind(name, 1, ver, &TEARING_CONTROL_MANAGER_INTERFACE, "wp_tearing_control_manager_v1");
+            if !mgr.is_null() {
+                // SAFETY: `mgr` and `surface` are live proxies on this display;
+                // `get_tearing_control` has signature "no" and
+                // `set_presentation_hint` has signature "u".
+                let tc = unsafe {
+                    (wl.marshal_flags)(
+                        mgr,
+                        TEARING_CONTROL_MANAGER_GET,
+                        &TEARING_CONTROL_INTERFACE,
+                        1,
+                        0,
+                        std::ptr::null_mut::<c_void>(),
+                        surface,
+                    )
+                };
+                if !tc.is_null() {
+                    unsafe {
+                        (wl.marshal_flags)(
+                            tc,
+                            TEARING_CONTROL_SET_PRESENTATION_HINT,
+                            std::ptr::null(),
+                            1,
+                            0,
+                            WP_TEARING_CONTROL_V1_PRESENTATION_HINT_ASYNC,
+                        );
+                        (wl.marshal_flags)(surface, WL_SURFACE_COMMIT, std::ptr::null(), 1, 0);
+                    }
+                    println!("[android] wayland: wp_tearing_control_v1 async presentation enabled");
+                }
+            }
+        }
+    }
+
     // ---- wl_seat: pointer + keyboard. Vanta takes input from the seat
     // directly rather than through GTK, because what the engine wants is
     // Android `MotionEvent`/`KeyEvent` shapes and GTK's controllers would only
@@ -2014,6 +2101,12 @@ pub fn open(width: u32, height: u32, title: &str) -> Result<&'static WaylandWind
         let Some(which) = vanta_linker_sys::game_activity::focused_textbox() else { return };
         w.send_current_text(which);
         super::input::return_pressed(which);
+    });
+    host.host.0.connect_rejoin(|| {
+        match crate::server_region::trigger_rejoin() {
+            Ok(()) => println!("[vanta] quick rejoin triggered"),
+            Err(e) => println!("[vanta] quick rejoin unavailable: {e}"),
+        }
     });
 
     // Listeners that dereference `current()` can only be installed now.
@@ -4887,27 +4980,39 @@ pub(crate) fn take_pending_title_bar() -> Option<vanta_shell::title_bar::TitleBa
     TITLE_BAR_PENDING.swap(false, Ordering::Relaxed).then(current_title_bar)
 }
 
-/// Coalesced locked-pointer relative motion `(dx, dy, has_sample)` accumulated
-/// across all `zwp_relative_pointer_v1.relative_motion` events received in one
-/// Wayland dispatch batch, flushed once at the end of `pump_window` (and before
-/// any button press/release) so 1000-8000 Hz gaming mice do not flood JNI.
-static PENDING_LOCKED_DELTA: Mutex<(f32, f32, bool)> = Mutex::new((0.0, 0.0, false));
+/// Lock-free coalesced locked-pointer relative motion `(dx, dy)` packed as two
+/// `f32` bit patterns inside a single `AtomicU64`, paired with an `AtomicBool`
+/// presence flag so 1000-8000 Hz gaming mice never contend on a mutex.
+static PENDING_LOCKED_DELTA_XY: AtomicU64 = AtomicU64::new(0);
+static PENDING_LOCKED_DELTA_HAS: AtomicBool = AtomicBool::new(false);
 
 fn accumulate_locked_delta(dx: f32, dy: f32) {
-    let mut pending = PENDING_LOCKED_DELTA.lock().unwrap_or_else(|e| e.into_inner());
-    pending.0 += dx;
-    pending.1 += dy;
-    pending.2 = true;
+    let mut cur = PENDING_LOCKED_DELTA_XY.load(Ordering::Relaxed);
+    loop {
+        let old_dx = f32::from_bits(cur as u32);
+        let old_dy = f32::from_bits((cur >> 32) as u32);
+        let next = ((old_dx + dx).to_bits() as u64) | (((old_dy + dy).to_bits() as u64) << 32);
+        match PENDING_LOCKED_DELTA_XY.compare_exchange_weak(
+            cur,
+            next,
+            Ordering::AcqRel,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => {
+                PENDING_LOCKED_DELTA_HAS.store(true, Ordering::Release);
+                return;
+            }
+            Err(actual) => cur = actual,
+        }
+    }
 }
 
 fn take_pending_locked_delta() -> Option<(f32, f32)> {
-    let mut pending = PENDING_LOCKED_DELTA.lock().unwrap_or_else(|e| e.into_inner());
-    if !pending.2 {
+    if !PENDING_LOCKED_DELTA_HAS.swap(false, Ordering::AcqRel) {
         return None;
     }
-    let out = (pending.0, pending.1);
-    *pending = (0.0, 0.0, false);
-    Some(out)
+    let bits = PENDING_LOCKED_DELTA_XY.swap(0, Ordering::AcqRel);
+    Some((f32::from_bits(bits as u32), f32::from_bits((bits >> 32) as u32)))
 }
 
 static RELATIVE_POINTER_LISTENER: RelativePointerListener =
@@ -4986,7 +5091,23 @@ impl WaylandWindow {
         // control run answers "what would it have done" rather than only "it
         // did nothing". A control that also turns off the instrumentation is
         // not a control, it is a second unknown.
-        let engine_says = super::input::engine_wants_pointer_lock() == Some(true);
+        // Throttle the JNI `nativeGetMainWindowIsMouseLockedCenter` getter to
+        // ~30 Hz (32 ms) instead of firing on every mouse motion event (up to
+        // 1000+ Hz), while still polling immediately whenever a right-drag
+        // unlock latch is waiting to clear.
+        static LAST_LOCK_POLL_MS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+        static CACHED_ENGINE_WANTS_LOCK: AtomicBool = AtomicBool::new(false);
+        let now_ms = self.now_ms();
+        let awaiting_unlock = AWAIT_ENGINE_UNLOCK_AFTER_RIGHT_DRAG.load(Ordering::Acquire);
+        let last_ms = LAST_LOCK_POLL_MS.load(Ordering::Relaxed);
+        let engine_says = if awaiting_unlock || now_ms.saturating_sub(last_ms) >= 32 {
+            LAST_LOCK_POLL_MS.store(now_ms, Ordering::Relaxed);
+            let wants = super::input::engine_wants_pointer_lock() == Some(true);
+            CACHED_ENGINE_WANTS_LOCK.store(wants, Ordering::Relaxed);
+            wants
+        } else {
+            CACHED_ENGINE_WANTS_LOCK.load(Ordering::Relaxed)
+        };
         // A `true` left over from a right-button drag is not a request. See
         // `lock_wanted_before_right_drag`: the engine answers true from the
         // moment it sees the press, so after a drag that was only a drag its
@@ -6039,6 +6160,14 @@ impl WaylandWindow {
         ) {
             return;
         }
+        // Built-in Performance HUD toggle (F8 by default), same contract.
+        if crate::perf_hud::hotkey_event(
+            evdev_key as i32,
+            down,
+            meta & (super::input::META_CTRL_ON | super::input::META_ALT_ON) != 0,
+        ) {
+            return;
+        }
 
         let handle = self.active_handle.load(Ordering::Relaxed);
         let now = self.now_ms();
@@ -6875,6 +7004,23 @@ impl WaylandWindow {
             let base = window.title().map(|t| t.trim_end_matches(MARK).to_string()).unwrap_or_default();
             window.set_title(Some(&if on { format!("{base}{MARK}") } else { base }));
         }
+        // Built-in live Performance HUD badge (throttled to ~350 ms; one atomic load when off).
+        if let Some(hud) = crate::perf_hud::poll_hud_update() {
+            match hud {
+                crate::perf_hud::HudUpdate::Show { badge, tooltip, stats } => {
+                    self.host.0.set_perf_hud(Some(&badge), Some(&tooltip));
+                    crate::control::perf_stats(stats.map(|s| s.to_protocol_snapshot()));
+                }
+                crate::perf_hud::HudUpdate::Hide => {
+                    self.host.0.set_perf_hud(None, None);
+                    crate::control::perf_stats(None);
+                }
+            }
+        }
+        // Server region quick-actions pill (one atomic load when unchanged).
+        if let Some(banner) = crate::server_region::take_ui_update() {
+            self.host.0.set_server_banner(banner);
+        }
         let pump_started = std::time::Instant::now();
         self.host.0.pump();
         let gtk_ms = pump_started.elapsed().as_millis() as u64;
@@ -6891,24 +7037,37 @@ impl WaylandWindow {
         if self.host.0.wl_surface().is_none() {
             return;
         }
-        self.sync_canvas_geometry();
-        self.sync_ime_focus();
-        self.sync_text_overlay();
-        // Every tick, not only on the edges: a lowering waits for GTK to commit
-        // a frame and is decided here, and one that timed out is retried here.
-        self.reconcile_stacking();
+        // Split fast input from GTK/layout/JNI housekeeping: a 1000 Hz gaming
+        // mouse wakes `pump_window` on every packet, and running geometry sync,
+        // IME/stacking mutexes, and pointer-lock polling on every 1 ms packet
+        // wastes significant CPU. Run housekeeping at most every 16 ms (60 Hz)
+        // unless initial placement or a stacking probe is actively in flight,
+        // while keeping Wayland input drain and locked relative motion 100%
+        // immediate on every single wakeup.
+        static LAST_HOUSEKEEPING_MS: AtomicI64 = AtomicI64::new(0);
+        let now_ms = self.now_ms();
+        let last_hk = LAST_HOUSEKEEPING_MS.load(Ordering::Relaxed);
+        let run_housekeeping = !EVER_PLACED.load(Ordering::Relaxed)
+            || self.host.0.is_probe_armed()
+            || now_ms.saturating_sub(last_hk) >= 16;
+        if run_housekeeping {
+            LAST_HOUSEKEEPING_MS.store(now_ms, Ordering::Relaxed);
+            self.sync_canvas_geometry();
+            self.sync_ime_focus();
+            self.sync_text_overlay();
+            // Every housekeeping tick, not only on the edges: a lowering waits
+            // for GTK to commit a frame and is decided here, and one that timed
+            // out is retried here.
+            self.reconcile_stacking();
+        }
         if !engine {
             self.read_display();
             self.reconcile_pointer_buttons();
             return;
         }
-        // Polled rather than driven by an event, because the engine's own
-        // request for a locked centre is a *getter* — `nativeGetMainWindow
-        // IsMouseLockedCenter` — with nothing that calls out when it changes.
-        // Once per pump is roughly 20 times a second, which is a JNI call and
-        // an atomic load against a decision a person makes a few times a
-        // minute.
-        self.sync_pointer_lock();
+        if run_housekeeping {
+            self.sync_pointer_lock();
+        }
         self.read_display();
         self.flush_locked_relative_motion();
         self.reconcile_pointer_buttons();

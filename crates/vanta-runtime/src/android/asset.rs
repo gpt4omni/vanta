@@ -35,6 +35,8 @@ struct Asset {
     /// repeatedly; copying each time would double the memory for no benefit,
     /// since the cached bytes already live for the process.
     bytes: &'static [u8],
+    /// Current streaming cursor for `AAsset_read` / `AAsset_seek`.
+    pos: usize,
 }
 
 /// A reader over the APK that can be cloned cheaply and used from any thread
@@ -281,6 +283,18 @@ impl Manager {
             return cached;
         }
 
+        if let Some(mod_path) = super::mods::lookup(name) {
+            if let Ok(bytes) = std::fs::read(&mod_path) {
+                if trace_assets_enabled() {
+                    eprintln!("[asset] hit (mod): {name} from {}", mod_path.display());
+                }
+                record(name, Served::Overlay(OverlaySource::Mod));
+                let leaked: &'static [u8] = Vec::leak(bytes);
+                self.cache.write().ok()?.insert(name.to_string(), Some(leaked));
+                return Some(leaked);
+            }
+        }
+
         if let Some((source, path)) = resolve_overlay(name) {
             // A file that resolved a moment ago and is gone now (removed
             // mid-registration-change, races with `unregister_plugin_root`) is
@@ -387,6 +401,8 @@ pub enum OverlaySource {
     Plugin(String),
     /// The user's own overlay root — see [`user_root`].
     User,
+    /// A per-profile mod pack under `<profile>/mods/<pack>/`.
+    Mod,
 }
 
 impl OverlaySource {
@@ -394,6 +410,7 @@ impl OverlaySource {
         match self {
             OverlaySource::User => "user".into(),
             OverlaySource::Plugin(id) => format!("plugin:{id}"),
+            OverlaySource::Mod => "mod".into(),
         }
     }
 }
@@ -874,6 +891,9 @@ pub fn resolve_asset_path(path: &str, write: bool) -> Option<PathBuf> {
     if name.is_empty() || rel.components().any(|c| !matches!(c, std::path::Component::Normal(_))) {
         return None;
     }
+    if let Some(mod_path) = super::mods::lookup(&name) {
+        return Some(mod_path);
+    }
     index().get(&name).map(|r| r.path.clone())
 }
 
@@ -965,6 +985,10 @@ impl Served {
 static REQUESTED: Mutex<Option<BTreeMap<String, Served>>> = Mutex::new(None);
 
 fn record(name: &str, served: Served) {
+    #[cfg(not(test))]
+    if !trace_assets_enabled() {
+        return;
+    }
     if let Ok(mut held) = REQUESTED.lock() {
         held.get_or_insert_with(BTreeMap::new).insert(name.to_string(), served);
     }
@@ -1328,7 +1352,52 @@ extern "C" fn asset_manager_open(
 /// missing asset and callers probe for optional files. `read` already traced
 /// the miss (under `VANTA_TRACE_ASSETS=1`) with the name.
 fn open_asset(manager: &Manager, name: &str) -> Option<Asset> {
-    manager.read(name).map(|bytes| Asset { bytes })
+    manager.read(name).map(|bytes| Asset { bytes, pos: 0 })
+}
+
+extern "C" fn asset_read(asset: *mut c_void, buf: *mut c_void, count: usize) -> c_int {
+    if buf.is_null() {
+        return -1;
+    }
+    // SAFETY: `asset` is null or came from `asset_manager_open` and has not been closed.
+    let Some(a) = (unsafe { handle_mut::<Asset>(asset) }) else {
+        return -1;
+    };
+    let rem = a.bytes.len().saturating_sub(a.pos);
+    let n = count.min(rem).min(c_int::MAX as usize);
+    if n > 0 {
+        // SAFETY: `buf` is caller-owned writable memory of at least `count` bytes (`>= n`).
+        unsafe {
+            std::ptr::copy_nonoverlapping(a.bytes.as_ptr().add(a.pos), buf as *mut u8, n);
+        }
+        a.pos += n;
+    }
+    n as c_int
+}
+
+extern "C" fn asset_seek64(asset: *mut c_void, offset: i64, whence: c_int) -> i64 {
+    // SAFETY: `asset` is null or came from `asset_manager_open` and has not been closed.
+    let Some(a) = (unsafe { handle_mut::<Asset>(asset) }) else {
+        return -1;
+    };
+    let base: i64 = match whence {
+        libc::SEEK_SET => 0,
+        libc::SEEK_CUR => a.pos as i64,
+        libc::SEEK_END => a.bytes.len() as i64,
+        _ => return -1,
+    };
+    let Some(next) = base.checked_add(offset) else {
+        return -1;
+    };
+    if next < 0 || next as usize > a.bytes.len() {
+        return -1;
+    }
+    a.pos = next as usize;
+    next
+}
+
+extern "C" fn asset_seek(asset: *mut c_void, offset: libc::off_t, whence: c_int) -> libc::off_t {
+    asset_seek64(asset, offset as i64, whence) as libc::off_t
 }
 
 extern "C" fn asset_get_buffer(asset: *mut c_void) -> *const c_void {
@@ -1340,6 +1409,12 @@ extern "C" fn asset_get_buffer(asset: *mut c_void) -> *const c_void {
 extern "C" fn asset_get_length(asset: *mut c_void) -> i64 {
     // SAFETY: as above.
     unsafe { handle_ref::<Asset>(asset) }.map_or(0, |a| a.bytes.len() as i64)
+}
+
+extern "C" fn asset_get_remaining_length(asset: *mut c_void) -> i64 {
+    // SAFETY: as above.
+    unsafe { handle_ref::<Asset>(asset) }
+        .map_or(0, |a| a.bytes.len().saturating_sub(a.pos) as i64)
 }
 
 extern "C" fn asset_close(asset: *mut c_void) {
@@ -1505,8 +1580,14 @@ pub fn overrides() -> Vec<(&'static str, *mut c_void)> {
     vec![
         f!("AAssetManager_fromJava", asset_manager_from_java),
         f!("AAssetManager_open", asset_manager_open),
+        f!("AAsset_read", asset_read),
+        f!("AAsset_seek", asset_seek),
+        f!("AAsset_seek64", asset_seek64),
         f!("AAsset_getBuffer", asset_get_buffer),
         f!("AAsset_getLength", asset_get_length),
+        f!("AAsset_getLength64", asset_get_length),
+        f!("AAsset_getRemainingLength", asset_get_remaining_length),
+        f!("AAsset_getRemainingLength64", asset_get_remaining_length),
         f!("AAsset_close", asset_close),
         f!("AAsset_openFileDescriptor", asset_open_file_descriptor),
         f!("AAssetManager_openDir", asset_manager_open_dir),
@@ -1629,7 +1710,7 @@ mod overlay_tests {
 
     /// An `AAsset*` holding `bytes`, as `asset_manager_open` would hand out.
     fn handle_to(bytes: &'static [u8]) -> *mut c_void {
-        into_handle(Asset { bytes })
+        into_handle(Asset { bytes, pos: 0 })
     }
 
     #[test]
@@ -2328,5 +2409,77 @@ mod overlay_tests {
         assert_eq!(report, vec!["user wins over plugin:retro-ui   content/fonts/x.ttf".to_string()]);
 
         unregister_plugin_root("retro-ui");
+    }
+
+    #[test]
+    fn mod_overlay_serves_full_aasset_read_seek_length_and_buffer_parity() {
+        let _guard = GLOBAL.lock().unwrap_or_else(|e| e.into_inner());
+        let _mods = super::super::mods::TEST_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        let profile = scratch("mod-aasset-parity");
+        let pack = vanta_shell::mods::mods_dir(&profile).join("oof-pack");
+        std::fs::create_dir_all(pack.join("content/sounds")).unwrap();
+        let payload = b"OggS-custom-modded-ouch-sound-bytes";
+        std::fs::write(pack.join("content/sounds/ouch.ogg"), payload).unwrap();
+
+        // Build a minimal APK with an original sound so we prove the mod overrides it.
+        let apk_path = profile.join("base.apk");
+        {
+            let file = File::create(&apk_path).unwrap();
+            let mut z = zip::ZipWriter::new(file);
+            let opts = zip::write::SimpleFileOptions::default();
+            z.start_file("assets/content/sounds/ouch.ogg", opts).unwrap();
+            z.write_all(b"ORIGINAL_APK_SOUND").unwrap();
+            z.start_file("assets/content/sounds/untouched.ogg", opts).unwrap();
+            z.write_all(b"UNTOUCHED_APK_SOUND").unwrap();
+            z.finish().unwrap();
+        }
+
+        assert_eq!(super::super::mods::init_for_profile(&profile), 1);
+        let mgr = Manager {
+            apk: apk_path,
+            archive: OnceLock::new(),
+            cache: RwLock::new(HashMap::new()),
+        };
+
+        // Overlaid file comes from the mod pack and passes full AAsset API parity.
+        let asset_handle = into_handle(open_asset(&mgr, "content/sounds/ouch.ogg").expect("mod asset"));
+        assert_eq!(asset_get_length(asset_handle), payload.len() as i64);
+        assert_eq!(asset_get_remaining_length(asset_handle), payload.len() as i64);
+
+        let ptr = asset_get_buffer(asset_handle);
+        assert!(!ptr.is_null());
+        let full = unsafe { std::slice::from_raw_parts(ptr as *const u8, payload.len()) };
+        assert_eq!(full, payload);
+
+        let mut head = [0u8; 4];
+        assert_eq!(asset_read(asset_handle, head.as_mut_ptr() as *mut c_void, head.len()), 4);
+        assert_eq!(&head, b"OggS");
+        assert_eq!(asset_get_remaining_length(asset_handle), (payload.len() - 4) as i64);
+
+        // Seek from current (+1 skips '-'), read 6 bytes ("custom").
+        assert_eq!(asset_seek(asset_handle, 1, libc::SEEK_CUR), 5);
+        let mut word = [0u8; 6];
+        assert_eq!(asset_read(asset_handle, word.as_mut_ptr() as *mut c_void, word.len()), 6);
+        assert_eq!(&word, b"custom");
+
+        // Seek from end (-5 -> "bytes").
+        assert_eq!(asset_seek(asset_handle, -5, libc::SEEK_END), (payload.len() - 5) as libc::off_t);
+        let mut tail = [0u8; 16];
+        assert_eq!(asset_read(asset_handle, tail.as_mut_ptr() as *mut c_void, tail.len()), 5);
+        assert_eq!(&tail[..5], b"bytes");
+        assert_eq!(asset_get_remaining_length(asset_handle), 0);
+
+        // Seek out of bounds fails cleanly without moving cursor.
+        assert_eq!(asset_seek(asset_handle, -1, libc::SEEK_SET), -1);
+        assert_eq!(asset_seek(asset_handle, (payload.len() + 1) as libc::off_t, libc::SEEK_SET), -1);
+        asset_close(asset_handle);
+
+        // Non-overlaid APK asset still reads cleanly from base.apk.
+        let orig = into_handle(open_asset(&mgr, "content/sounds/untouched.ogg").expect("apk asset"));
+        assert_eq!(asset_get_length(orig), b"UNTOUCHED_APK_SOUND".len() as i64);
+        asset_close(orig);
+
+        super::super::mods::clear();
+        let _ = std::fs::remove_dir_all(&profile);
     }
 }

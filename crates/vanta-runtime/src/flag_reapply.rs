@@ -256,6 +256,11 @@ pub fn start(hooks: Hooks) {
 }
 
 fn worker(s: &'static Shared, hooks: Hooks) {
+    // Deprioritize the periodic flag re-apply worker so background flag work
+    // never preempts RenderThread, TaskScheduler, or Audio.
+    unsafe {
+        libc::setpriority(libc::PRIO_PROCESS, 0, 10);
+    }
     loop {
         let reason = {
             let mut t = s.trigger.lock().unwrap_or_else(|e| e.into_inner());

@@ -104,6 +104,9 @@ pub const CLASSIFICATION: &[(&str, Applies, &str)] = &[
     ("marketplace_index_dir", Applies::Shell, "read when the Plugins page loads"),
     ("marketplace_public_key", Applies::Shell, "read when the Plugins page loads"),
     ("multi_instance_warning_seen", Applies::Shell, "shell state, not a setting"),
+    ("perf_hud", Applies::Live, "toggles the built-in live Performance HUD badge in place (also F8 in-game)"),
+    ("mods_enabled", Applies::NextLaunch, "asset mod packs are indexed once at client startup before the engine loads assets"),
+    ("server_region_notify", Applies::Live, "consulted when the log watcher detects a new game server connection"),
 ];
 
 pub fn classify(key: &str) -> Option<Applies> {
@@ -135,6 +138,8 @@ pub fn live_updates(config: &ShellConfig) -> Vec<Update> {
         Update::Gamepad(config.gamepad),
         Update::TitleBar(config.title_bar),
         Update::FrameRateLimit(config.frame_rate_limit),
+        Update::PerfHud(config.perf_hud),
+        Update::ServerRegionNotify(config.server_region_notify),
     ]
 }
 

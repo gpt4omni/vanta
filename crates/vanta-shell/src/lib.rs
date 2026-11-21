@@ -50,6 +50,7 @@ pub mod host_window;
 pub mod x11_editor;
 pub mod json_highlight;
 pub mod log_export;
+pub mod mods;
 pub mod runtime_session;
 pub mod session_log;
 pub mod startup_watch;

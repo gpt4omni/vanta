@@ -77,16 +77,47 @@ pub fn summary() -> Option<String> {
         v[i] as f64 / 1000.0
     };
     let p50 = at(0.50);
+    let p99 = at(0.99);
     // The rate everyone quotes, derived from the median interval rather than
     // from a count over a window, so a stall cannot average itself away.
     let fps = if p50 > 0.0 { 1000.0 / p50 } else { 0.0 };
+    let low1_fps = if p99 > 0.0 { 1000.0 / p99 } else { 0.0 };
     Some(format!(
-        "frames n={} p50={:.1}ms p95={:.1}ms p99={:.1}ms max={:.1}ms median_fps={:.0}",
+        "frames n={} p50={:.1}ms p95={:.1}ms p99={:.1}ms max={:.1}ms median_fps={:.0} low1_fps={:.0}",
         v.len(),
         p50,
         at(0.95),
-        at(0.99),
+        p99,
         v[v.len() - 1] as f64 / 1000.0,
-        fps
+        fps,
+        low1_fps
     ))
+}
+
+/// Copy the most recent non-zero frame intervals covering up to `window_us`
+/// microseconds (e.g. `1_000_000` for a rolling 1-second window) into `out`.
+///
+/// Reads the lock-free ring buffer backwards from the latest present without
+/// locking or perturbing `record_present()`. Clears `out` first so callers can
+/// reuse one buffer across HUD ticks with zero heap allocations.
+pub fn snapshot_window_us(window_us: u64, out: &mut Vec<u32>) {
+    out.clear();
+    let head = HEAD.load(Ordering::Relaxed);
+    if head == 0 {
+        return;
+    }
+    let available = head.min(RING);
+    let mut elapsed: u64 = 0;
+    for back in 1..=available {
+        let idx = head.wrapping_sub(back) & (RING - 1);
+        let us = INTERVALS_US[idx].load(Ordering::Relaxed);
+        if us == 0 {
+            continue;
+        }
+        out.push(us);
+        elapsed = elapsed.saturating_add(us as u64);
+        if window_us > 0 && elapsed >= window_us {
+            break;
+        }
+    }
 }
