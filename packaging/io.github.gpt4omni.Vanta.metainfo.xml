@@ -78,6 +78,27 @@
       and is not this change. AppStream shows the newest entry as "what's new",
       so the important one is the top.
     -->
+    <release version="0.40.0" date="2026-11-21">
+      <url type="details">https://github.com/gpt4omni/vanta/releases/tag/v0.40.0</url>
+      <description>
+        <p>
+          Major performance and 1% lows release plus three new built-in features:
+          a live Performance HUD (F8) showing FPS, 1% lows, 0.1% lows, and P99
+          frametime; a non-destructive Asset Modding Manager in Settings → Mods;
+          and a local Server Region detector with headerbar Copy Invite Link and
+          Quick Rejoin actions.
+        </p>
+        <p>
+          Under the hood, adds GPU compute ETC2/EAC to hardware BC1–BC5
+          transcoding, zero-contention counting Bloom filters, pre-warmed GPU
+          scratch pools, 2 MiB huge pages for libroblox.so, sub-4 MiB advisory
+          MADV_FREE elision, adaptive mutexes, 1 ns kernel timer slack, 4-image
+          swapchain rings, Wayland wp_tearing_control_v1, Uncapped FPS settings,
+          libjnivm Rocket hooks, a singleflight positive/negative DNS cache, and
+          300-byte delta periodic flag re-applies.
+        </p>
+      </description>
+    </release>
     <release version="0.35.1" date="2026-11-21">
       <url type="details">https://github.com/gpt4omni/vanta/releases/tag/v0.35.1</url>
       <description>
