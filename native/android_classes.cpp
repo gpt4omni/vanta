@@ -18,15 +18,17 @@
 #include <atomic>
 #include <chrono>
 #include <cctype>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <map>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
-#include <memory>
 
 /// Set when the engine reports `gameDidLeave`; taken by `game_launch::tick`.
 static std::atomic<bool> g_game_left{false};
@@ -1826,18 +1828,86 @@ public:
         fclose(f);
     }
 
-    /// Written whole and renamed over the old file. A half-written preferences
-    /// file would be indistinguishable from a corrupt one on the next launch,
-    /// and this is the store an engine restart reads its own state back out of.
-    void save() {
-        std::string tmp = path() + ".tmp";
+    static void write_snapshot(const std::string& target,
+                               const std::map<std::string, std::string>& snap) {
+        std::string tmp = target + ".tmp";
         FILE* f = fopen(tmp.c_str(), "we");
         if (!f) return;
-        for (auto& [k, v] : values) {
+        for (const auto& [k, v] : snap) {
             fprintf(f, "S\t%s\t%s\n", k.c_str(), escape(v).c_str());
         }
         fclose(f);
-        rename(tmp.c_str(), path().c_str());
+        rename(tmp.c_str(), target.c_str());
+    }
+
+    struct AsyncPrefsWriter {
+        std::mutex mtx;
+        std::mutex io_mtx;
+        std::condition_variable cv;
+        std::deque<std::pair<std::string, std::map<std::string, std::string>>> queue;
+
+        AsyncPrefsWriter() {
+            std::thread([this]() {
+                for (;;) {
+                    std::pair<std::string, std::map<std::string, std::string>> item;
+                    {
+                        std::unique_lock<std::mutex> lk(mtx);
+                        cv.wait(lk, [&]() { return !queue.empty(); });
+                        item = std::move(queue.front());
+                        queue.pop_front();
+                    }
+                    std::lock_guard<std::mutex> io(io_mtx);
+                    write_snapshot(item.first, item.second);
+                }
+            }).detach();
+        }
+
+        void enqueue(std::string target, std::map<std::string, std::string> snap) {
+            {
+                std::lock_guard<std::mutex> lk(mtx);
+                // Coalesce back-to-back apply() calls to the same prefs file.
+                for (auto& pending : queue) {
+                    if (pending.first == target) {
+                        pending.second = std::move(snap);
+                        return;
+                    }
+                }
+                queue.emplace_back(std::move(target), std::move(snap));
+            }
+            cv.notify_one();
+        }
+
+        void write_sync(const std::string& target,
+                        const std::map<std::string, std::string>& snap) {
+            {
+                std::lock_guard<std::mutex> lk(mtx);
+                for (auto it = queue.begin(); it != queue.end(); ) {
+                    if (it->first == target) {
+                        it = queue.erase(it);
+                    } else {
+                        ++it;
+                    }
+                }
+            }
+            std::lock_guard<std::mutex> io(io_mtx);
+            write_snapshot(target, snap);
+        }
+    };
+
+    static AsyncPrefsWriter& writer() {
+        static AsyncPrefsWriter* w = new AsyncPrefsWriter();
+        return *w;
+    }
+
+    /// Written whole and renamed over the old file. A half-written preferences
+    /// file would be indistinguishable from a corrupt one on the next launch,
+    /// and this is the store an engine restart reads its own state back out of.
+    void save_sync(const std::string& target, const std::map<std::string, std::string>& snap) {
+        writer().write_sync(target, snap);
+    }
+
+    void save_async(std::string target, std::map<std::string, std::string> snap) {
+        writer().enqueue(std::move(target), std::move(snap));
     }
 };
 
@@ -1887,25 +1957,35 @@ public:
         clear_all = true;
         return self(env);
     }
-    void flush() {
+    void flush(bool async) {
         if (!owner) return;
-        std::lock_guard<std::mutex> g(owner->lock);
-        if (clear_all) owner->values.clear();
-        for (auto& k : removed) owner->values.erase(k);
-        for (auto& [k, v] : staged) owner->values[k] = v;
-        owner->save();
-        staged.clear();
-        removed.clear();
-        clear_all = false;
+        std::string target;
+        std::map<std::string, std::string> snap;
+        {
+            std::lock_guard<std::mutex> g(owner->lock);
+            if (clear_all) owner->values.clear();
+            for (auto& k : removed) owner->values.erase(k);
+            for (auto& [k, v] : staged) owner->values[k] = v;
+            target = owner->path();
+            snap = owner->values;
+            staged.clear();
+            removed.clear();
+            clear_all = false;
+        }
+        if (async) {
+            owner->save_async(std::move(target), std::move(snap));
+        } else {
+            owner->save_sync(target, snap);
+        }
     }
-    void apply(ENV*) { flush(); }
+    void apply(ENV*) { flush(true); }
     /// `commit` returns whether the write happened. It is written to disk
     /// synchronously here, so `true` is the truth rather than optimism — but
     /// only when there is a store behind it, which is why the null case says
     /// false instead of pretending.
     jboolean commitEditor(ENV*) {
         if (!owner) return JNI_FALSE;
-        flush();
+        flush(false);
         return JNI_TRUE;
     }
 

@@ -1,9 +1,10 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::{c_char, c_void, CStr};
 use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering::Acquire, Ordering::Relaxed, Ordering::Release};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use super::etc_decode::{self, EtcFormat, Surface};
+use super::etc_decode_spv::ETC_DECODE_SPV;
 use super::glcount;
 
 const VK_SUCCESS: i32 = 0;
@@ -12,6 +13,15 @@ const VK_ERROR_FORMAT_NOT_SUPPORTED: i32 = -11;
 
 const ST_BUFFER_CREATE_INFO: u32 = 12;
 const ST_MEMORY_ALLOCATE_INFO: u32 = 5;
+const ST_SHADER_MODULE_CREATE_INFO: u32 = 16;
+const ST_PIPELINE_SHADER_STAGE_CREATE_INFO: u32 = 18;
+const ST_COMPUTE_PIPELINE_CREATE_INFO: u32 = 29;
+const ST_PIPELINE_LAYOUT_CREATE_INFO: u32 = 30;
+const ST_DESCRIPTOR_SET_LAYOUT_CREATE_INFO: u32 = 32;
+const ST_DESCRIPTOR_POOL_CREATE_INFO: u32 = 33;
+const ST_DESCRIPTOR_SET_ALLOCATE_INFO: u32 = 34;
+const ST_WRITE_DESCRIPTOR_SET: u32 = 35;
+const ST_BUFFER_MEMORY_BARRIER: u32 = 44;
 const ST_PHYSICAL_DEVICE_FEATURES_2: u32 = 1_000_059_000;
 const ST_FORMAT_PROPERTIES_3: u32 = 1_000_360_000;
 const ST_IMAGE_FORMAT_LIST_CREATE_INFO: u32 = 1_000_147_000;
@@ -38,17 +48,46 @@ const IMAGE_TILING_OPTIMAL: u32 = 0;
 const SAMPLE_COUNT_1: u32 = 0x1;
 
 const BUFFER_USAGE_TRANSFER_SRC: u32 = 0x1;
+const BUFFER_USAGE_STORAGE_BUFFER: u32 = 0x20;
 const MEMORY_DEVICE_LOCAL: u32 = 0x1;
 const MEMORY_HOST_VISIBLE: u32 = 0x2;
 const MEMORY_HOST_COHERENT: u32 = 0x4;
+const MEMORY_HOST_CACHED: u32 = 0x8;
 const WHOLE_SIZE: u64 = u64::MAX;
+
+const DESCRIPTOR_TYPE_STORAGE_BUFFER: u32 = 7;
+const SHADER_STAGE_COMPUTE_BIT: u32 = 0x20;
+const PIPELINE_BIND_POINT_COMPUTE: u32 = 1;
+const PIPELINE_STAGE_COMPUTE_SHADER_BIT: u32 = 0x0800;
+const PIPELINE_STAGE_TRANSFER_BIT: u32 = 0x1000;
+const PIPELINE_STAGE_HOST_BIT: u32 = 0x4000;
+const ACCESS_SHADER_READ_BIT: u32 = 0x20;
+const ACCESS_SHADER_WRITE_BIT: u32 = 0x40;
+const ACCESS_TRANSFER_READ_BIT: u32 = 0x800;
+const ACCESS_TRANSFER_WRITE_BIT: u32 = 0x1000;
+const ACCESS_HOST_WRITE_BIT: u32 = 0x4000;
+const QUEUE_COMPUTE_BIT: u32 = 0x2;
+const QUEUE_FAMILY_IGNORED: u32 = u32::MAX;
 
 const STAGING_CHUNK: u64 = 8 << 20;
 const STAGING_ALIGN: u64 = 16;
+const MAX_POOLED_CHUNKS: usize = 8;
+const DS_POOL_SETS: u32 = 64;
+const MAX_POOLED_DS_POOLS: usize = 8;
+/// Regions at or below this texel count decode inline on the CPU fallback
+/// without paying snapshot allocation, mutex/condvar and thread wake overhead.
+const CPU_INLINE_TEXELS: usize = 64 * 64;
 
 pub fn disabled() -> bool {
     static OFF: OnceLock<bool> = OnceLock::new();
     *OFF.get_or_init(|| std::env::var_os("VANTA_NO_ETC_EMULATION").is_some_and(|v| v != "0"))
+}
+
+/// `VANTA_NO_GPU_ETC_DECODE=1`: keep ETC2/EAC emulation on the CPU fallback
+/// path even when the Vulkan device has compute queues. Diagnostic A/B switch.
+pub fn gpu_decode_disabled() -> bool {
+    static OFF: OnceLock<bool> = OnceLock::new();
+    *OFF.get_or_init(|| std::env::var_os("VANTA_NO_GPU_ETC_DECODE").is_some_and(|v| v != "0"))
 }
 
 /// `VANTA_FORCE_ETC_EMULATION=1`: emulate on a driver that has native ETC2
@@ -148,6 +187,7 @@ slots!(
     H_CMD_BLIT_IMAGE2,
     H_CMD_COPY_IMAGE_TO_BUFFER,
     H_CMD_COPY_IMAGE_TO_BUFFER2,
+    H_CREATE_BUFFER,
     H_BIND_BUFFER_MEMORY,
     H_BIND_BUFFER_MEMORY2,
     H_DESTROY_BUFFER,
@@ -157,12 +197,14 @@ slots!(
     H_FREE_MEMORY,
     H_QUEUE_SUBMIT,
     H_QUEUE_SUBMIT2,
+    H_CREATE_COMMAND_POOL,
     H_ALLOCATE_COMMAND_BUFFERS,
     H_BEGIN_COMMAND_BUFFER,
     H_RESET_COMMAND_BUFFER,
     H_FREE_COMMAND_BUFFERS,
     H_RESET_COMMAND_POOL,
     H_DESTROY_COMMAND_POOL,
+    H_CMD_BIND_PIPELINE,
     H_DESTROY_DEVICE,
 );
 
@@ -171,13 +213,23 @@ slots!(
 /// the engine was told ETC2 works on these, so a call on one that cannot be
 /// served has to fail rather than reach the driver with a raw ETC format.
 static EMULATING: Mutex<Vec<usize>> = Mutex::new(Vec::new());
+/// Fast-path cache of the single active emulating device handle so hot hooks
+/// avoid locking `EMULATING`.
+static EMULATING_FAST: AtomicUsize = AtomicUsize::new(0);
 
 fn emulating() -> MutexGuard<'static, Vec<usize>> {
     EMULATING.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 fn device_emulates(device: *mut c_void) -> bool {
-    !device.is_null() && emulating().contains(&(device as usize))
+    if device.is_null() {
+        return false;
+    }
+    let d = device as usize;
+    if EMULATING_FAST.load(Relaxed) == d {
+        return true;
+    }
+    emulating().contains(&d)
 }
 
 /// `device` is the handle the name was resolved against, null from
@@ -231,6 +283,7 @@ pub fn hook(name: &[u8], host: *mut c_void, device: *mut c_void) -> Option<*mut 
         b"vkCmdCopyImageToBuffer2" | b"vkCmdCopyImageToBuffer2KHR" => {
             (&H_CMD_COPY_IMAGE_TO_BUFFER2, cmd_copy_image_to_buffer2 as *const ())
         }
+        b"vkCreateBuffer" => (&H_CREATE_BUFFER, create_buffer as *const ()),
         b"vkBindBufferMemory" => (&H_BIND_BUFFER_MEMORY, bind_buffer_memory as *const ()),
         b"vkBindBufferMemory2" | b"vkBindBufferMemory2KHR" => {
             (&H_BIND_BUFFER_MEMORY2, bind_buffer_memory2 as *const ())
@@ -242,12 +295,14 @@ pub fn hook(name: &[u8], host: *mut c_void, device: *mut c_void) -> Option<*mut 
         b"vkFreeMemory" => (&H_FREE_MEMORY, free_memory as *const ()),
         b"vkQueueSubmit" => (&H_QUEUE_SUBMIT, queue_submit as *const ()),
         b"vkQueueSubmit2" | b"vkQueueSubmit2KHR" => (&H_QUEUE_SUBMIT2, queue_submit2 as *const ()),
+        b"vkCreateCommandPool" => (&H_CREATE_COMMAND_POOL, create_command_pool as *const ()),
         b"vkAllocateCommandBuffers" => (&H_ALLOCATE_COMMAND_BUFFERS, allocate_command_buffers as *const ()),
         b"vkBeginCommandBuffer" => (&H_BEGIN_COMMAND_BUFFER, begin_command_buffer as *const ()),
         b"vkResetCommandBuffer" => (&H_RESET_COMMAND_BUFFER, reset_command_buffer as *const ()),
         b"vkFreeCommandBuffers" => (&H_FREE_COMMAND_BUFFERS, free_command_buffers as *const ()),
         b"vkResetCommandPool" => (&H_RESET_COMMAND_POOL, reset_command_pool as *const ()),
         b"vkDestroyCommandPool" => (&H_DESTROY_COMMAND_POOL, destroy_command_pool as *const ()),
+        b"vkCmdBindPipeline" => (&H_CMD_BIND_PIPELINE, cmd_bind_pipeline as *const ()),
         b"vkDestroyDevice" => (&H_DESTROY_DEVICE, destroy_device as *const ()),
         _ => return None,
     };
@@ -577,6 +632,397 @@ fn strip_with(emulate: bool, info: *const c_void) -> Option<Stripped> {
     Some(s)
 }
 
+#[repr(C)]
+struct VkShaderModuleCreateInfo {
+    s_type: u32,
+    _pad: u32,
+    p_next: *const c_void,
+    flags: u32,
+    _pad2: u32,
+    code_size: usize,
+    p_code: *const u32,
+}
+
+#[repr(C)]
+struct VkDescriptorSetLayoutBinding {
+    binding: u32,
+    descriptor_type: u32,
+    descriptor_count: u32,
+    stage_flags: u32,
+    p_immutable_samplers: *const u64,
+}
+
+#[repr(C)]
+struct VkDescriptorSetLayoutCreateInfo {
+    s_type: u32,
+    _pad: u32,
+    p_next: *const c_void,
+    flags: u32,
+    binding_count: u32,
+    p_bindings: *const VkDescriptorSetLayoutBinding,
+}
+
+#[repr(C)]
+struct VkPushConstantRange {
+    stage_flags: u32,
+    offset: u32,
+    size: u32,
+}
+
+#[repr(C)]
+struct VkPipelineLayoutCreateInfo {
+    s_type: u32,
+    _pad: u32,
+    p_next: *const c_void,
+    flags: u32,
+    set_layout_count: u32,
+    p_set_layouts: *const u64,
+    push_constant_range_count: u32,
+    _pad2: u32,
+    p_push_constant_ranges: *const VkPushConstantRange,
+}
+
+#[repr(C)]
+struct VkPipelineShaderStageCreateInfo {
+    s_type: u32,
+    _pad: u32,
+    p_next: *const c_void,
+    flags: u32,
+    stage: u32,
+    module: u64,
+    p_name: *const c_char,
+    p_specialization_info: *const c_void,
+}
+
+#[repr(C)]
+struct VkComputePipelineCreateInfo {
+    s_type: u32,
+    _pad: u32,
+    p_next: *const c_void,
+    flags: u32,
+    _pad2: u32,
+    stage: VkPipelineShaderStageCreateInfo,
+    layout: u64,
+    base_pipeline_handle: u64,
+    base_pipeline_index: i32,
+    _pad3: u32,
+}
+
+#[repr(C)]
+struct VkDescriptorPoolSize {
+    ty: u32,
+    descriptor_count: u32,
+}
+
+#[repr(C)]
+struct VkDescriptorPoolCreateInfo {
+    s_type: u32,
+    _pad: u32,
+    p_next: *const c_void,
+    flags: u32,
+    max_sets: u32,
+    pool_size_count: u32,
+    _pad2: u32,
+    p_pool_sizes: *const VkDescriptorPoolSize,
+}
+
+#[repr(C)]
+struct VkDescriptorSetAllocateInfo {
+    s_type: u32,
+    _pad: u32,
+    p_next: *const c_void,
+    descriptor_pool: u64,
+    descriptor_set_count: u32,
+    _pad2: u32,
+    p_set_layouts: *const u64,
+}
+
+#[repr(C)]
+struct VkDescriptorBufferInfo {
+    buffer: u64,
+    offset: u64,
+    range: u64,
+}
+
+#[repr(C)]
+struct VkWriteDescriptorSet {
+    s_type: u32,
+    _pad: u32,
+    p_next: *const c_void,
+    dst_set: u64,
+    dst_binding: u32,
+    dst_array_element: u32,
+    descriptor_count: u32,
+    descriptor_type: u32,
+    p_image_info: *const c_void,
+    p_buffer_info: *const VkDescriptorBufferInfo,
+    p_texel_buffer_view: *const u64,
+}
+
+#[repr(C)]
+struct VkBufferMemoryBarrier {
+    s_type: u32,
+    _pad: u32,
+    p_next: *const c_void,
+    src_access_mask: u32,
+    dst_access_mask: u32,
+    src_queue_family_index: u32,
+    dst_queue_family_index: u32,
+    buffer: u64,
+    offset: u64,
+    size: u64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct VkQueueFamilyProperties {
+    queue_flags: u32,
+    queue_count: u32,
+    timestamp_valid_bits: u32,
+    min_image_transfer_granularity: [u32; 3],
+}
+
+#[repr(C)]
+struct GpuPushConstants {
+    src_byte_offset: u32,
+    dst_word_offset: u32,
+    width: u32,
+    height: u32,
+    row_blocks: u32,
+    layer_stride: u32,
+    dst_row_words: u32,
+    fmt_and_layers: u32,
+}
+
+struct DsPool {
+    pool: u64,
+    used: u32,
+    cap: u32,
+}
+
+struct GpuDecoder {
+    shader_module: u64,
+    ds_layout: u64,
+    pipeline_layout: u64,
+    pipeline: u64,
+    compute_queue_families: Vec<bool>,
+    destroy_shader_module: extern "C" fn(usize, u64, *const c_void),
+    destroy_ds_layout: extern "C" fn(usize, u64, *const c_void),
+    destroy_pipeline_layout: extern "C" fn(usize, u64, *const c_void),
+    destroy_pipeline: extern "C" fn(usize, u64, *const c_void),
+    create_ds_pool: extern "C" fn(usize, *const VkDescriptorPoolCreateInfo, *const c_void, *mut u64) -> i32,
+    destroy_ds_pool: extern "C" fn(usize, u64, *const c_void),
+    reset_ds_pool: extern "C" fn(usize, u64, u32) -> i32,
+    alloc_ds: extern "C" fn(usize, *const VkDescriptorSetAllocateInfo, *mut u64) -> i32,
+    update_ds: extern "C" fn(usize, u32, *const VkWriteDescriptorSet, u32, *const c_void),
+    cmd_bind_pipeline: extern "C" fn(*mut c_void, u32, u64),
+    cmd_bind_ds: extern "C" fn(*mut c_void, u32, u64, u32, u32, *const u64, u32, *const u32),
+    cmd_push_constants: extern "C" fn(*mut c_void, u64, u32, u32, u32, *const c_void),
+    cmd_dispatch: extern "C" fn(*mut c_void, u32, u32, u32),
+    cmd_pipeline_barrier: extern "C" fn(
+        *mut c_void, u32, u32, u32,
+        u32, *const c_void,
+        u32, *const VkBufferMemoryBarrier,
+        u32, *const c_void,
+    ),
+    free_gpu_chunks: Mutex<Vec<Chunk>>,
+    free_ds_pools: Mutex<Vec<DsPool>>,
+}
+
+impl GpuDecoder {
+    fn init(
+        pd: *mut c_void,
+        device: usize,
+        get: &dyn Fn(&CStr) -> usize,
+    ) -> Option<Self> {
+        if gpu_decode_disabled() {
+            return None;
+        }
+        let qf_fn: extern "C" fn(*mut c_void, *mut u32, *mut VkQueueFamilyProperties) =
+            as_fn(super::vulkan::host_instance_proc(c"vkGetPhysicalDeviceQueueFamilyProperties") as usize)?;
+        let mut qf_count = 0u32;
+        qf_fn(pd, &mut qf_count, std::ptr::null_mut());
+        let mut qf_props = vec![VkQueueFamilyProperties::default(); qf_count as usize];
+        if qf_count > 0 {
+            qf_fn(pd, &mut qf_count, qf_props.as_mut_ptr());
+        }
+        let compute_queue_families: Vec<bool> =
+            qf_props.iter().map(|q| q.queue_flags & QUEUE_COMPUTE_BIT != 0).collect();
+        if !compute_queue_families.iter().any(|&c| c) {
+            return None;
+        }
+
+        let create_shader_module: extern "C" fn(usize, *const VkShaderModuleCreateInfo, *const c_void, *mut u64) -> i32 =
+            as_fn(get(c"vkCreateShaderModule"))?;
+        let destroy_shader_module: extern "C" fn(usize, u64, *const c_void) =
+            as_fn(get(c"vkDestroyShaderModule"))?;
+        let create_ds_layout: extern "C" fn(usize, *const VkDescriptorSetLayoutCreateInfo, *const c_void, *mut u64) -> i32 =
+            as_fn(get(c"vkCreateDescriptorSetLayout"))?;
+        let destroy_ds_layout: extern "C" fn(usize, u64, *const c_void) =
+            as_fn(get(c"vkDestroyDescriptorSetLayout"))?;
+        let create_pipeline_layout: extern "C" fn(usize, *const VkPipelineLayoutCreateInfo, *const c_void, *mut u64) -> i32 =
+            as_fn(get(c"vkCreatePipelineLayout"))?;
+        let destroy_pipeline_layout: extern "C" fn(usize, u64, *const c_void) =
+            as_fn(get(c"vkDestroyPipelineLayout"))?;
+        let create_compute_pipelines: extern "C" fn(usize, u64, u32, *const VkComputePipelineCreateInfo, *const c_void, *mut u64) -> i32 =
+            as_fn(get(c"vkCreateComputePipelines"))?;
+        let destroy_pipeline: extern "C" fn(usize, u64, *const c_void) =
+            as_fn(get(c"vkDestroyPipeline"))?;
+        let create_ds_pool = as_fn(get(c"vkCreateDescriptorPool"))?;
+        let destroy_ds_pool = as_fn(get(c"vkDestroyDescriptorPool"))?;
+        let reset_ds_pool = as_fn(get(c"vkResetDescriptorPool"))?;
+        let alloc_ds = as_fn(get(c"vkAllocateDescriptorSets"))?;
+        let update_ds = as_fn(get(c"vkUpdateDescriptorSets"))?;
+        let cmd_bind_pipeline = as_fn(get(c"vkCmdBindPipeline"))?;
+        let cmd_bind_ds = as_fn(get(c"vkCmdBindDescriptorSets"))?;
+        let cmd_push_constants = as_fn(get(c"vkCmdPushConstants"))?;
+        let cmd_dispatch = as_fn(get(c"vkCmdDispatch"))?;
+        let cmd_pipeline_barrier = as_fn(get(c"vkCmdPipelineBarrier"))?;
+
+        let sm_ci = VkShaderModuleCreateInfo {
+            s_type: ST_SHADER_MODULE_CREATE_INFO,
+            _pad: 0,
+            p_next: std::ptr::null(),
+            flags: 0,
+            _pad2: 0,
+            code_size: std::mem::size_of_val(ETC_DECODE_SPV),
+            p_code: ETC_DECODE_SPV.as_ptr(),
+        };
+        let mut shader_module = 0u64;
+        if create_shader_module(device, &sm_ci, std::ptr::null(), &mut shader_module) != VK_SUCCESS {
+            return None;
+        }
+
+        let bindings = [
+            VkDescriptorSetLayoutBinding {
+                binding: 0,
+                descriptor_type: DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                descriptor_count: 1,
+                stage_flags: SHADER_STAGE_COMPUTE_BIT,
+                p_immutable_samplers: std::ptr::null(),
+            },
+            VkDescriptorSetLayoutBinding {
+                binding: 1,
+                descriptor_type: DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                descriptor_count: 1,
+                stage_flags: SHADER_STAGE_COMPUTE_BIT,
+                p_immutable_samplers: std::ptr::null(),
+            },
+        ];
+        let dsl_ci = VkDescriptorSetLayoutCreateInfo {
+            s_type: ST_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+            _pad: 0,
+            p_next: std::ptr::null(),
+            flags: 0,
+            binding_count: 2,
+            p_bindings: bindings.as_ptr(),
+        };
+        let mut ds_layout = 0u64;
+        if create_ds_layout(device, &dsl_ci, std::ptr::null(), &mut ds_layout) != VK_SUCCESS {
+            destroy_shader_module(device, shader_module, std::ptr::null());
+            return None;
+        }
+
+        let pc_range = VkPushConstantRange {
+            stage_flags: SHADER_STAGE_COMPUTE_BIT,
+            offset: 0,
+            size: std::mem::size_of::<GpuPushConstants>() as u32,
+        };
+        let pl_ci = VkPipelineLayoutCreateInfo {
+            s_type: ST_PIPELINE_LAYOUT_CREATE_INFO,
+            _pad: 0,
+            p_next: std::ptr::null(),
+            flags: 0,
+            set_layout_count: 1,
+            p_set_layouts: &ds_layout,
+            push_constant_range_count: 1,
+            _pad2: 0,
+            p_push_constant_ranges: &pc_range,
+        };
+        let mut pipeline_layout = 0u64;
+        if create_pipeline_layout(device, &pl_ci, std::ptr::null(), &mut pipeline_layout) != VK_SUCCESS {
+            destroy_ds_layout(device, ds_layout, std::ptr::null());
+            destroy_shader_module(device, shader_module, std::ptr::null());
+            return None;
+        }
+
+        let cp_ci = VkComputePipelineCreateInfo {
+            s_type: ST_COMPUTE_PIPELINE_CREATE_INFO,
+            _pad: 0,
+            p_next: std::ptr::null(),
+            flags: 0,
+            _pad2: 0,
+            stage: VkPipelineShaderStageCreateInfo {
+                s_type: ST_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                _pad: 0,
+                p_next: std::ptr::null(),
+                flags: 0,
+                stage: SHADER_STAGE_COMPUTE_BIT,
+                module: shader_module,
+                p_name: c"main".as_ptr(),
+                p_specialization_info: std::ptr::null(),
+            },
+            layout: pipeline_layout,
+            base_pipeline_handle: 0,
+            base_pipeline_index: -1,
+            _pad3: 0,
+        };
+        let mut pipeline = 0u64;
+        if create_compute_pipelines(device, 0, 1, &cp_ci, std::ptr::null(), &mut pipeline) != VK_SUCCESS {
+            destroy_pipeline_layout(device, pipeline_layout, std::ptr::null());
+            destroy_ds_layout(device, ds_layout, std::ptr::null());
+            destroy_shader_module(device, shader_module, std::ptr::null());
+            return None;
+        }
+
+        Some(Self {
+            shader_module,
+            ds_layout,
+            pipeline_layout,
+            pipeline,
+            compute_queue_families,
+            destroy_shader_module,
+            destroy_ds_layout,
+            destroy_pipeline_layout,
+            destroy_pipeline,
+            create_ds_pool,
+            destroy_ds_pool,
+            reset_ds_pool,
+            alloc_ds,
+            update_ds,
+            cmd_bind_pipeline,
+            cmd_bind_ds,
+            cmd_push_constants,
+            cmd_dispatch,
+            cmd_pipeline_barrier,
+            free_gpu_chunks: Mutex::new(Vec::new()),
+            free_ds_pools: Mutex::new(Vec::new()),
+        })
+    }
+
+    fn destroy(&self, dev: &Dev) {
+        let chunks: Vec<Chunk> = {
+            let mut pool = self.free_gpu_chunks.lock().unwrap_or_else(|e| e.into_inner());
+            std::mem::take(&mut *pool)
+        };
+        for c in chunks {
+            (dev.destroy_buffer)(dev.device, c.buffer, std::ptr::null());
+            (dev.free_memory)(dev.device, c.memory, std::ptr::null());
+        }
+        let ds_pools: Vec<DsPool> = {
+            let mut pool = self.free_ds_pools.lock().unwrap_or_else(|e| e.into_inner());
+            std::mem::take(&mut *pool)
+        };
+        for p in ds_pools {
+            (self.destroy_ds_pool)(dev.device, p.pool, std::ptr::null());
+        }
+        (self.destroy_pipeline)(dev.device, self.pipeline, std::ptr::null());
+        (self.destroy_pipeline_layout)(dev.device, self.pipeline_layout, std::ptr::null());
+        (self.destroy_ds_layout)(dev.device, self.ds_layout, std::ptr::null());
+        (self.destroy_shader_module)(dev.device, self.shader_module, std::ptr::null());
+    }
+}
+
 struct Dev {
     device: usize,
     create_buffer: extern "C" fn(usize, *const c_void, *const c_void, *mut u64) -> i32,
@@ -588,6 +1034,8 @@ struct Dev {
     map_memory: extern "C" fn(usize, u64, u64, u64, u32, *mut *mut c_void) -> i32,
     copy_buffer_to_image: extern "C" fn(*mut c_void, u64, u64, i32, u32, *const c_void),
     memory_types: Vec<u32>,
+    free_cpu_chunks: Mutex<Vec<Chunk>>,
+    gpu: Option<GpuDecoder>,
 }
 
 static DEV: AtomicPtr<Dev> = AtomicPtr::new(std::ptr::null_mut());
@@ -598,6 +1046,7 @@ pub fn device_created(pd: *mut c_void, device: *mut c_void) {
     }
     if !device_emulates(device) {
         emulating().push(device as usize);
+        EMULATING_FAST.store(device as usize, Relaxed);
     }
     let gdpa = super::vulkan::host_instance_proc(c"vkGetDeviceProcAddr");
     let Some(gdpa) = as_fn::<extern "C" fn(*mut c_void, *const c_char) -> *mut c_void>(gdpa as usize) else {
@@ -616,6 +1065,7 @@ pub fn device_created(pd: *mut c_void, device: *mut c_void) {
             let o = 4 + i * 8;
             memory_types.push(u32::from_ne_bytes(raw[o..o + 4].try_into().ok()?));
         }
+        let gpu = GpuDecoder::init(pd, device as usize, &get);
         Some(Dev {
             device: device as usize,
             create_buffer: as_fn(get(c"vkCreateBuffer"))?,
@@ -627,13 +1077,16 @@ pub fn device_created(pd: *mut c_void, device: *mut c_void) {
             map_memory: as_fn(get(c"vkMapMemory"))?,
             copy_buffer_to_image: as_fn(get(c"vkCmdCopyBufferToImage"))?,
             memory_types,
+            free_cpu_chunks: Mutex::new(Vec::new()),
+            gpu,
         })
     })();
     match dev {
         Some(d) => {
             trace(format_args!(
-                "device {device:p}: ETC2/EAC emulation active ({} memory types)",
-                d.memory_types.len()
+                "device {device:p}: ETC2/EAC emulation active ({} memory types, gpu compute: {})",
+                d.memory_types.len(),
+                if d.gpu.is_some() { "on" } else { "off" }
             ));
             forget_device();
             DEV.store(Box::into_raw(Box::new(d)), Release);
@@ -654,18 +1107,34 @@ fn active_device(device: usize) -> Option<&'static Dev> {
 fn forget_device() {
     let Some(dev) = active() else { return };
     let cmds: Vec<SharedCmd> = {
-        let mut st = state();
+        let mut st = state_write();
         st.images.clear();
         st.buffers.clear();
-        st.mapped.clear();
+        st.storage_buffers.clear();
+        st.pool_compute.clear();
         st.cmd_pool.clear();
+        st.pool_cmds.clear();
+        st.compute_bound.clear();
         st.cmds.drain().map(|(_, c)| c).collect()
     };
+    mapped_write().clear();
     LIVE_CMDS.store(0, Relaxed);
+    LIVE_CPU_CMDS.store(0, Relaxed);
     LIVE_IMAGES.store(0, Relaxed);
     let n = cmds.len();
     for c in cmds {
-        release_cmd(dev, c);
+        release_cmd(dev, c, false);
+    }
+    let pooled_cpu: Vec<Chunk> = {
+        let mut pool = dev.free_cpu_chunks.lock().unwrap_or_else(|e| e.into_inner());
+        std::mem::take(&mut *pool)
+    };
+    for c in pooled_cpu {
+        (dev.destroy_buffer)(dev.device, c.buffer, std::ptr::null());
+        (dev.free_memory)(dev.device, c.memory, std::ptr::null());
+    }
+    if let Some(gpu) = dev.gpu.as_ref() {
+        gpu.destroy(dev);
     }
     DEV.store(std::ptr::null_mut(), Release);
     trace(format_args!("device 0x{:x}: emulation state dropped, {n} command buffer(s) of staging freed", dev.device));
@@ -675,7 +1144,10 @@ extern "C" fn destroy_device(device: *mut c_void, alloc: *const c_void) {
     if active_device(device as usize).is_some() {
         forget_device();
     }
-    emulating().retain(|&d| d != device as usize);
+    let mut list = emulating();
+    list.retain(|&d| d != device as usize);
+    EMULATING_FAST.store(list.last().copied().unwrap_or(0), Relaxed);
+    drop(list);
     if let Some(f) = as_fn::<extern "C" fn(*mut c_void, *const c_void)>(H_DESTROY_DEVICE.load(Relaxed)) {
         f(device, alloc);
     }
@@ -742,8 +1214,11 @@ struct Job {
 #[derive(Default)]
 struct CmdState {
     chunks: Vec<Chunk>,
+    gpu_chunks: Vec<Chunk>,
+    ds_pools: Vec<DsPool>,
     pending: Vec<Pending>,
     secondaries: Vec<usize>,
+    has_cpu_work: bool,
     retired: bool,
 }
 
@@ -757,24 +1232,58 @@ fn command(cmd: &SharedCmd) -> MutexGuard<'_, CmdState> {
 struct State {
     images: HashMap<u64, EmuImage>,
     buffers: HashMap<u64, (u64, u64)>,
-    mapped: HashMap<u64, (usize, u64, u64)>,
+    storage_buffers: HashSet<u64>,
+    pool_compute: HashMap<u64, bool>,
     cmd_pool: HashMap<usize, u64>,
+    pool_cmds: HashMap<u64, Vec<usize>>,
+    compute_bound: HashSet<usize>,
     cmds: HashMap<usize, SharedCmd>,
 }
 
-fn state() -> MutexGuard<'static, State> {
-    static STATE: OnceLock<Mutex<State>> = OnceLock::new();
-    STATE.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner())
+fn state_lock() -> &'static RwLock<State> {
+    static STATE: OnceLock<RwLock<State>> = OnceLock::new();
+    STATE.get_or_init(Default::default)
+}
+
+fn state_read() -> RwLockReadGuard<'static, State> {
+    state_lock().read().unwrap_or_else(|e| e.into_inner())
+}
+
+fn state_write() -> RwLockWriteGuard<'static, State> {
+    state_lock().write().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Separate read-mostly lock for active `vkMapMemory` ranges so snapshot copies
+/// and submit-time hashes can run concurrently without blocking image/buffer/
+/// command metadata, while `vkUnmapMemory` takes a write lock and waits for
+/// in-flight readers before forwarding to the driver.
+fn mapped_lock() -> &'static RwLock<HashMap<u64, (usize, u64, u64)>> {
+    static MAPPED: OnceLock<RwLock<HashMap<u64, (usize, u64, u64)>>> = OnceLock::new();
+    MAPPED.get_or_init(Default::default)
+}
+
+fn mapped_read() -> RwLockReadGuard<'static, HashMap<u64, (usize, u64, u64)>> {
+    mapped_lock().read().unwrap_or_else(|e| e.into_inner())
+}
+
+fn mapped_write() -> RwLockWriteGuard<'static, HashMap<u64, (usize, u64, u64)>> {
+    mapped_lock().write().unwrap_or_else(|e| e.into_inner())
+}
+
+#[cfg(test)]
+fn state() -> RwLockWriteGuard<'static, State> {
+    state_write()
 }
 
 static LIVE_CMDS: AtomicUsize = AtomicUsize::new(0);
+static LIVE_CPU_CMDS: AtomicUsize = AtomicUsize::new(0);
 static LIVE_IMAGES: AtomicUsize = AtomicUsize::new(0);
 
 fn is_emulated(image: u64) -> Option<EmuImage> {
     if LIVE_IMAGES.load(Relaxed) == 0 {
         return None;
     }
-    state().images.get(&image).copied()
+    state_read().images.get(&image).copied()
 }
 
 /// A `VkDeviceImageMemoryRequirements` and the `VkImageCreateInfo` it points at,
@@ -853,10 +1362,12 @@ extern "C" fn create_image(device: *mut c_void, info: *const c_void, alloc: *con
     let extent: [u32; 3] = rd(info, 28);
     let (mips, layers, samples, tiling, usage): (u32, u32, u32, u32, u32) =
         (rd(info, 40), rd(info, 44), rd(info, 48), rd(info, 52), rd(info, 56));
-    let describe = format!(
-        "{name} type={image_type} {}x{}x{} mips={mips} layers={layers} samples={samples} tiling={tiling} usage=0x{usage:x} flags=0x{flags:x}",
-        extent[0], extent[1], extent[2]
-    );
+    let describe = || {
+        format!(
+            "{name} type={image_type} {}x{}x{} mips={mips} layers={layers} samples={samples} tiling={tiling} usage=0x{usage:x} flags=0x{flags:x}",
+            extent[0], extent[1], extent[2]
+        )
+    };
     if active_device(device as usize).is_none() {
         if device_emulates(device) {
             // The engine was told ETC2 works on this device and the state to
@@ -865,40 +1376,45 @@ extern "C" fn create_image(device: *mut c_void, info: *const c_void, alloc: *con
             // this one's). Passing the raw format on is a driver that lacks it
             // being asked to create the image; failing here says so by name.
             unhandled(format_args!(
-                "vkCreateImage({describe}): device {device:p} is emulating ETC2/EAC but has no emulation state; refused"
+                "vkCreateImage({}): device {device:p} is emulating ETC2/EAC but has no emulation state; refused",
+                describe()
             ));
             return VK_ERROR_FORMAT_NOT_SUPPORTED;
         }
         let rc = f(device, info, alloc, out);
-        trace(format_args!("vkCreateImage({describe}): passthrough rc={rc}"));
+        if crate::android::tracing() {
+            trace(format_args!("vkCreateImage({}): passthrough rc={rc}", describe()));
+        }
         return rc;
     }
     if !image_request_ok(tiling, usage, flags) {
-        unhandled(format_args!("vkCreateImage({describe}): usage/tiling/flags beyond what is advertised"));
+        unhandled(format_args!("vkCreateImage({}): usage/tiling/flags beyond what is advertised", describe()));
     }
     if !chain_find(rd::<*const c_void>(info, 8), ST_IMAGE_FORMAT_LIST_CREATE_INFO).is_null() {
-        unhandled(format_args!("vkCreateImage({describe}): VkImageFormatListCreateInfo is forwarded unchanged"));
+        unhandled(format_args!("vkCreateImage({}): VkImageFormatListCreateInfo is forwarded unchanged", describe()));
     }
     let mut copy: [u8; 88] = rd(info, 0);
     copy[24..28].copy_from_slice(&sub.to_ne_bytes());
     let rc = f(device, copy.as_ptr() as *const c_void, alloc, out);
     if rc == VK_SUCCESS && !out.is_null() {
         let image: u64 = rd(out as *const c_void, 0);
-        state().images.insert(
+        state_write().images.insert(
             image,
             EmuImage { format: kind, etc: format, substitute: sub, width: extent[0], height: extent[1] },
         );
         LIVE_IMAGES.fetch_add(1, Relaxed);
         glcount::ETC_IMAGE_EMULATED.fetch_add(1, Relaxed);
-        trace(format_args!("vkCreateImage({describe}): EMULATED as format {sub}, image=0x{image:x}"));
-    } else {
-        trace(format_args!("vkCreateImage({describe}): substitute format {sub} FAILED rc={rc}"));
+        if crate::android::tracing() {
+            trace(format_args!("vkCreateImage({}): EMULATED as format {sub}, image=0x{image:x}", describe()));
+        }
+    } else if crate::android::tracing() {
+        trace(format_args!("vkCreateImage({}): substitute format {sub} FAILED rc={rc}", describe()));
     }
     rc
 }
 
 extern "C" fn destroy_image(device: *mut c_void, image: u64, alloc: *const c_void) {
-    if LIVE_IMAGES.load(Relaxed) != 0 && state().images.remove(&image).is_some() {
+    if LIVE_IMAGES.load(Relaxed) != 0 && state_write().images.remove(&image).is_some() {
         LIVE_IMAGES.fetch_sub(1, Relaxed);
     }
     if let Some(f) = as_fn::<extern "C" fn(*mut c_void, u64, *const c_void)>(H_DESTROY_IMAGE.load(Relaxed)) {
@@ -1097,7 +1613,12 @@ impl DecodePool {
 
     fn prepare(&self, job: &Job, source: DecodeSource) -> Arc<DecodeWork> {
         let block_rows = job.height.div_ceil(4);
-        let band_rows = block_rows.div_ceil(self.helpers + 1);
+        let max_bands = if job.width * job.height <= CPU_INLINE_TEXELS {
+            1
+        } else {
+            self.helpers + 1
+        };
+        let band_rows = block_rows.div_ceil(max_bands).max(1);
         let bands_per_layer = block_rows.div_ceil(band_rows);
         Arc::new(DecodeWork {
             job: *job,
@@ -1112,8 +1633,13 @@ impl DecodePool {
     }
 
     fn publish(&self, work: &Arc<DecodeWork>) {
+        let total_bands = work.bands_per_layer * work.job.layers;
         self.queue.ready.lock().unwrap_or_else(|e| e.into_inner()).push_back(Arc::clone(work));
-        self.queue.available.notify_all();
+        if total_bands <= 1 {
+            self.queue.available.notify_one();
+        } else {
+            self.queue.available.notify_all();
+        }
     }
 
     fn enqueue(&self, job: &Job, snapshot: Box<[u8]>) -> Arc<DecodeWork> {
@@ -1214,12 +1740,40 @@ fn source_bytes(
     Ok(slice((ptr + (mem_offset - map_offset) as usize) as *const c_void, len))
 }
 
+fn etc_format_code(format: EtcFormat) -> u32 {
+    match format {
+        EtcFormat::Rgb8 => 0,
+        EtcFormat::Rgb8A1 => 1,
+        EtcFormat::Rgba8 => 2,
+        EtcFormat::R11 => 3,
+        EtcFormat::R11Signed => 4,
+        EtcFormat::Rg11 => 5,
+        EtcFormat::Rg11Signed => 6,
+    }
+}
+
 fn staging(dev: &Dev, cmd: &mut CmdState, len: u64) -> Result<(u64, u64, usize), String> {
     if let Some(c) = cmd.chunks.last_mut() {
         let at = c.used.div_ceil(STAGING_ALIGN) * STAGING_ALIGN;
         if at + len <= c.size {
             c.used = at + len;
             return Ok((c.buffer, at, c.mapped + at as usize));
+        }
+    }
+    if len <= STAGING_CHUNK {
+        let recycled = {
+            let mut pool = dev.free_cpu_chunks.lock().unwrap_or_else(|e| e.into_inner());
+            pool.pop()
+        };
+        if let Some(mut c) = recycled {
+            if len <= c.size {
+                let (buffer, mapped) = (c.buffer, c.mapped);
+                c.used = len;
+                cmd.chunks.push(c);
+                return Ok((buffer, 0, mapped));
+            }
+            (dev.destroy_buffer)(dev.device, c.buffer, std::ptr::null());
+            (dev.free_memory)(dev.device, c.memory, std::ptr::null());
         }
     }
     let size = len.max(STAGING_CHUNK);
@@ -1236,14 +1790,19 @@ fn staging(dev: &Dev, cmd: &mut CmdState, len: u64) -> Result<(u64, u64, usize),
     (dev.buffer_requirements)(dev.device, buffer, &mut req);
     let bits = req[2] as u32;
     let wanted = MEMORY_HOST_VISIBLE | MEMORY_HOST_COHERENT;
-    let pick = |avoid: u32| {
+    let cached = wanted | MEMORY_HOST_CACHED;
+    let pick = |req_flags: u32, avoid: u32| {
         dev.memory_types
             .iter()
             .enumerate()
-            .find(|(i, &f)| bits & (1 << i) != 0 && f & wanted == wanted && f & avoid == 0)
+            .find(|(i, &f)| bits & (1 << i) != 0 && f & req_flags == req_flags && f & avoid == 0)
             .map(|(i, _)| i as u32)
     };
-    let Some(type_index) = pick(MEMORY_DEVICE_LOCAL).or_else(|| pick(0)) else {
+    let Some(type_index) = pick(cached, MEMORY_DEVICE_LOCAL)
+        .or_else(|| pick(cached, 0))
+        .or_else(|| pick(wanted, MEMORY_DEVICE_LOCAL))
+        .or_else(|| pick(wanted, 0))
+    else {
         (dev.destroy_buffer)(dev.device, buffer, std::ptr::null());
         return Err("no host-visible coherent memory type for staging".into());
     };
@@ -1269,7 +1828,142 @@ fn staging(dev: &Dev, cmd: &mut CmdState, len: u64) -> Result<(u64, u64, usize),
     Ok((buffer, 0, mapped as usize))
 }
 
-fn release_cmd(dev: &Dev, cmd: SharedCmd) {
+fn gpu_staging(dev: &Dev, gpu: &GpuDecoder, cmd: &mut CmdState, len: u64) -> Result<(u64, u64), String> {
+    if let Some(c) = cmd.gpu_chunks.last_mut() {
+        let at = c.used.div_ceil(STAGING_ALIGN) * STAGING_ALIGN;
+        if at + len <= c.size {
+            c.used = at + len;
+            return Ok((c.buffer, at));
+        }
+    }
+    if len <= STAGING_CHUNK {
+        let recycled = {
+            let mut pool = gpu.free_gpu_chunks.lock().unwrap_or_else(|e| e.into_inner());
+            pool.pop()
+        };
+        if let Some(mut c) = recycled {
+            if len <= c.size {
+                let buffer = c.buffer;
+                c.used = len;
+                cmd.gpu_chunks.push(c);
+                return Ok((buffer, 0));
+            }
+            (dev.destroy_buffer)(dev.device, c.buffer, std::ptr::null());
+            (dev.free_memory)(dev.device, c.memory, std::ptr::null());
+        }
+    }
+    let size = len.max(STAGING_CHUNK);
+    let mut bci = [0u8; 56];
+    bci[0..4].copy_from_slice(&ST_BUFFER_CREATE_INFO.to_ne_bytes());
+    bci[24..32].copy_from_slice(&size.to_ne_bytes());
+    let usage = BUFFER_USAGE_TRANSFER_SRC | BUFFER_USAGE_STORAGE_BUFFER;
+    bci[32..36].copy_from_slice(&usage.to_ne_bytes());
+    let mut buffer = 0u64;
+    let rc = (dev.create_buffer)(dev.device, bci.as_ptr() as *const c_void, std::ptr::null(), &mut buffer);
+    if rc != VK_SUCCESS {
+        return Err(format!("vkCreateBuffer(gpu scratch {size}) rc={rc}"));
+    }
+    let mut req = [0u64; 3];
+    (dev.buffer_requirements)(dev.device, buffer, &mut req);
+    let bits = req[2] as u32;
+    let pick = |req_flags: u32| {
+        dev.memory_types
+            .iter()
+            .enumerate()
+            .find(|(i, &f)| bits & (1 << i) != 0 && f & req_flags == req_flags)
+            .map(|(i, _)| i as u32)
+    };
+    let Some(type_index) = pick(MEMORY_DEVICE_LOCAL).or_else(|| pick(0)) else {
+        (dev.destroy_buffer)(dev.device, buffer, std::ptr::null());
+        return Err("no memory type for GPU scratch buffer".into());
+    };
+    let mut mai = [0u8; 32];
+    mai[0..4].copy_from_slice(&ST_MEMORY_ALLOCATE_INFO.to_ne_bytes());
+    mai[16..24].copy_from_slice(&req[0].to_ne_bytes());
+    mai[24..28].copy_from_slice(&type_index.to_ne_bytes());
+    let mut memory = 0u64;
+    let rc = (dev.allocate_memory)(dev.device, mai.as_ptr() as *const c_void, std::ptr::null(), &mut memory);
+    if rc != VK_SUCCESS {
+        (dev.destroy_buffer)(dev.device, buffer, std::ptr::null());
+        return Err(format!("vkAllocateMemory(gpu scratch {}) rc={rc}", req[0]));
+    }
+    let rc_bind = (dev.bind_buffer_memory)(dev.device, buffer, memory, 0);
+    if rc_bind != VK_SUCCESS {
+        (dev.destroy_buffer)(dev.device, buffer, std::ptr::null());
+        (dev.free_memory)(dev.device, memory, std::ptr::null());
+        return Err(format!("gpu scratch bind rc={rc_bind}"));
+    }
+    cmd.gpu_chunks.push(Chunk { buffer, memory, mapped: 0, size, used: len });
+    Ok((buffer, 0))
+}
+
+fn alloc_ds(dev: &Dev, gpu: &GpuDecoder, cmd: &mut CmdState) -> Result<u64, String> {
+    if let Some(p) = cmd.ds_pools.last_mut() {
+        if p.used < p.cap {
+            let ai = VkDescriptorSetAllocateInfo {
+                s_type: ST_DESCRIPTOR_SET_ALLOCATE_INFO,
+                _pad: 0,
+                p_next: std::ptr::null(),
+                descriptor_pool: p.pool,
+                descriptor_set_count: 1,
+                _pad2: 0,
+                p_set_layouts: &gpu.ds_layout,
+            };
+            let mut ds = 0u64;
+            if (gpu.alloc_ds)(dev.device, &ai, &mut ds) == VK_SUCCESS {
+                p.used += 1;
+                return Ok(ds);
+            }
+        }
+    }
+    let mut pool = {
+        let mut free = gpu.free_ds_pools.lock().unwrap_or_else(|e| e.into_inner());
+        free.pop()
+    }
+    .map(Ok)
+    .unwrap_or_else(|| {
+        let size = VkDescriptorPoolSize {
+            ty: DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            descriptor_count: DS_POOL_SETS * 2,
+        };
+        let ci = VkDescriptorPoolCreateInfo {
+            s_type: ST_DESCRIPTOR_POOL_CREATE_INFO,
+            _pad: 0,
+            p_next: std::ptr::null(),
+            flags: 0,
+            max_sets: DS_POOL_SETS,
+            pool_size_count: 1,
+            _pad2: 0,
+            p_pool_sizes: &size,
+        };
+        let mut handle = 0u64;
+        let rc = (gpu.create_ds_pool)(dev.device, &ci, std::ptr::null(), &mut handle);
+        if rc != VK_SUCCESS {
+            return Err(format!("vkCreateDescriptorPool rc={rc}"));
+        }
+        Ok(DsPool { pool: handle, used: 0, cap: DS_POOL_SETS })
+    })?;
+    let ai = VkDescriptorSetAllocateInfo {
+        s_type: ST_DESCRIPTOR_SET_ALLOCATE_INFO,
+        _pad: 0,
+        p_next: std::ptr::null(),
+        descriptor_pool: pool.pool,
+        descriptor_set_count: 1,
+        _pad2: 0,
+        p_set_layouts: &gpu.ds_layout,
+    };
+    let mut ds = 0u64;
+    let rc = (gpu.alloc_ds)(dev.device, &ai, &mut ds);
+    if rc != VK_SUCCESS {
+        (gpu.destroy_ds_pool)(dev.device, pool.pool, std::ptr::null());
+        return Err(format!("vkAllocateDescriptorSets rc={rc}"));
+    }
+    pool.used = 1;
+    cmd.ds_pools.push(pool);
+    Ok(ds)
+}
+
+fn release_cmd(dev: &Dev, cmd: SharedCmd, recycle: bool) {
     let mut cmd = command(&cmd);
     cmd.retired = true;
     for mut pending in cmd.pending.drain(..) {
@@ -1277,21 +1971,72 @@ fn release_cmd(dev: &Dev, cmd: SharedCmd) {
             unhandled(format_args!("retiring command buffer: decode failed: {error}"));
         }
     }
-    for c in cmd.chunks.drain(..) {
+    if cmd.has_cpu_work {
+        cmd.has_cpu_work = false;
+        LIVE_CPU_CMDS.fetch_sub(1, Relaxed);
+    }
+    for mut c in cmd.chunks.drain(..) {
+        if recycle && c.size <= STAGING_CHUNK {
+            c.used = 0;
+            let mut pool = dev.free_cpu_chunks.lock().unwrap_or_else(|e| e.into_inner());
+            if pool.len() < MAX_POOLED_CHUNKS {
+                pool.push(c);
+                continue;
+            }
+        }
         (dev.destroy_buffer)(dev.device, c.buffer, std::ptr::null());
         (dev.free_memory)(dev.device, c.memory, std::ptr::null());
+    }
+    if let Some(gpu) = dev.gpu.as_ref() {
+        for mut c in cmd.gpu_chunks.drain(..) {
+            if recycle && c.size <= STAGING_CHUNK {
+                c.used = 0;
+                let mut pool = gpu.free_gpu_chunks.lock().unwrap_or_else(|e| e.into_inner());
+                if pool.len() < MAX_POOLED_CHUNKS {
+                    pool.push(c);
+                    continue;
+                }
+            }
+            (dev.destroy_buffer)(dev.device, c.buffer, std::ptr::null());
+            (dev.free_memory)(dev.device, c.memory, std::ptr::null());
+        }
+        for mut p in cmd.ds_pools.drain(..) {
+            if recycle && (gpu.reset_ds_pool)(dev.device, p.pool, 0) == VK_SUCCESS {
+                p.used = 0;
+                let mut pool = gpu.free_ds_pools.lock().unwrap_or_else(|e| e.into_inner());
+                if pool.len() < MAX_POOLED_DS_POOLS {
+                    pool.push(p);
+                    continue;
+                }
+            }
+            (gpu.destroy_ds_pool)(dev.device, p.pool, std::ptr::null());
+        }
     }
 }
 
 fn release_cmds(cmds: &[usize]) {
+    if cmds.is_empty() {
+        return;
+    }
     if LIVE_CMDS.load(Relaxed) == 0 {
+        if COMPUTE_BOUND_CMDS.load(Relaxed) != 0 {
+            let mut st = state_write();
+            for c in cmds {
+                if st.compute_bound.remove(c) {
+                    COMPUTE_BOUND_CMDS.fetch_sub(1, Relaxed);
+                }
+            }
+        }
         return;
     }
     let Some(dev) = active() else { return };
     let mut released = Vec::new();
     {
-        let mut st = state();
+        let mut st = state_write();
         for c in cmds {
+            if st.compute_bound.remove(c) {
+                COMPUTE_BOUND_CMDS.fetch_sub(1, Relaxed);
+            }
             if let Some(s) = st.cmds.remove(c) {
                 released.push(s);
             }
@@ -1301,16 +2046,24 @@ fn release_cmds(cmds: &[usize]) {
         return;
     }
     LIVE_CMDS.fetch_sub(released.len(), Relaxed);
-    let bytes: u64 = released.iter().map(|c| command(c).chunks.iter().map(|c| c.size).sum::<u64>()).sum();
-    let regions: usize = released.iter().map(|c| command(c).pending.len()).sum();
-    trace(format_args!(
-        "staging released: {} command buffer(s), {regions} region(s), {} KiB; {} still holding staging",
-        released.len(),
-        bytes / 1024,
-        LIVE_CMDS.load(Relaxed)
-    ));
+    if crate::android::tracing() {
+        let bytes: u64 = released
+            .iter()
+            .map(|c| {
+                let g = command(c);
+                g.chunks.iter().chain(g.gpu_chunks.iter()).map(|c| c.size).sum::<u64>()
+            })
+            .sum();
+        let regions: usize = released.iter().map(|c| command(c).pending.len()).sum();
+        trace(format_args!(
+            "staging released: {} command buffer(s), {regions} cpu region(s), {} KiB; {} still holding staging",
+            released.len(),
+            bytes / 1024,
+            LIVE_CMDS.load(Relaxed)
+        ));
+    }
     for s in released {
-        release_cmd(dev, s);
+        release_cmd(dev, s, true);
     }
 }
 
@@ -1348,6 +2101,193 @@ fn record_work(job: &Job, bytes: Box<[u8]>) -> Result<(Option<Arc<DecodeWork>>, 
     }
 }
 
+static COMPUTE_BOUND_CMDS: AtomicUsize = AtomicUsize::new(0);
+
+fn can_gpu_decode(
+    dev: &Dev,
+    cmd: usize,
+    src_buffer: u64,
+    buffer_offset: u64,
+    src_len: usize,
+    layer_stride: usize,
+    w: usize,
+    h: usize,
+    layers: usize,
+) -> bool {
+    if dev.gpu.is_none()
+        || w == 0
+        || h == 0
+        || layers == 0
+        || layers > 0x00FF_FFFF
+        || buffer_offset % 4 != 0
+        || layer_stride % 4 != 0
+        || buffer_offset.checked_add(src_len as u64).is_none_or(|e| e > u32::MAX as u64)
+    {
+        return false;
+    }
+    let st = state_read();
+    if !st.storage_buffers.contains(&src_buffer) || st.compute_bound.contains(&cmd) {
+        return false;
+    }
+    st.cmd_pool
+        .get(&cmd)
+        .and_then(|pool| st.pool_compute.get(pool).copied())
+        .unwrap_or(false)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emulate_copy_gpu(
+    dev: &Dev,
+    gpu: &GpuDecoder,
+    entry: &mut CmdState,
+    cmd: *mut c_void,
+    src_buffer: u64,
+    image: u64,
+    fmt: EtcFormat,
+    layout: i32,
+    region: &BufferImageCopy,
+    w: usize,
+    h: usize,
+    layers: usize,
+    row_blocks: usize,
+    layer_stride: usize,
+    src_len: usize,
+) -> Result<(), String> {
+    let dst_row_words = match fmt {
+        EtcFormat::R11 | EtcFormat::R11Signed => w.div_ceil(2),
+        _ => w,
+    };
+    let dst_row_texels = match fmt {
+        EtcFormat::R11 | EtcFormat::R11Signed => dst_row_words * 2,
+        _ => w,
+    };
+    let dst_bytes = (dst_row_words as u64) * 4 * (h as u64) * (layers as u64);
+    let (scratch_buf, scratch_off) = gpu_staging(dev, gpu, entry, dst_bytes)?;
+    let ds = alloc_ds(dev, gpu, entry)?;
+
+    let src_info = VkDescriptorBufferInfo { buffer: src_buffer, offset: 0, range: WHOLE_SIZE };
+    let dst_info = VkDescriptorBufferInfo { buffer: scratch_buf, offset: 0, range: WHOLE_SIZE };
+    let writes = [
+        VkWriteDescriptorSet {
+            s_type: ST_WRITE_DESCRIPTOR_SET,
+            _pad: 0,
+            p_next: std::ptr::null(),
+            dst_set: ds,
+            dst_binding: 0,
+            dst_array_element: 0,
+            descriptor_count: 1,
+            descriptor_type: DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            p_image_info: std::ptr::null(),
+            p_buffer_info: &src_info,
+            p_texel_buffer_view: std::ptr::null(),
+        },
+        VkWriteDescriptorSet {
+            s_type: ST_WRITE_DESCRIPTOR_SET,
+            _pad: 0,
+            p_next: std::ptr::null(),
+            dst_set: ds,
+            dst_binding: 1,
+            dst_array_element: 0,
+            descriptor_count: 1,
+            descriptor_type: DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            p_image_info: std::ptr::null(),
+            p_buffer_info: &dst_info,
+            p_texel_buffer_view: std::ptr::null(),
+        },
+    ];
+    (gpu.update_ds)(dev.device, writes.len() as u32, writes.as_ptr(), 0, std::ptr::null());
+
+    // Make prior host or transfer writes to `src_buffer` visible to compute.
+    let pre = VkBufferMemoryBarrier {
+        s_type: ST_BUFFER_MEMORY_BARRIER,
+        _pad: 0,
+        p_next: std::ptr::null(),
+        src_access_mask: ACCESS_HOST_WRITE_BIT | ACCESS_TRANSFER_WRITE_BIT,
+        dst_access_mask: ACCESS_SHADER_READ_BIT,
+        src_queue_family_index: QUEUE_FAMILY_IGNORED,
+        dst_queue_family_index: QUEUE_FAMILY_IGNORED,
+        buffer: src_buffer,
+        offset: region.buffer_offset,
+        size: (src_len as u64).max(4),
+    };
+    (gpu.cmd_pipeline_barrier)(
+        cmd,
+        PIPELINE_STAGE_HOST_BIT | PIPELINE_STAGE_TRANSFER_BIT,
+        PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        0,
+        0,
+        std::ptr::null(),
+        1,
+        &pre,
+        0,
+        std::ptr::null(),
+    );
+
+    let pc = GpuPushConstants {
+        src_byte_offset: region.buffer_offset as u32,
+        dst_word_offset: (scratch_off / 4) as u32,
+        width: w as u32,
+        height: h as u32,
+        row_blocks: row_blocks as u32,
+        layer_stride: layer_stride as u32,
+        dst_row_words: dst_row_words as u32,
+        fmt_and_layers: etc_format_code(fmt) | ((layers as u32) << 8),
+    };
+    (gpu.cmd_bind_pipeline)(cmd, PIPELINE_BIND_POINT_COMPUTE, gpu.pipeline);
+    (gpu.cmd_bind_ds)(cmd, PIPELINE_BIND_POINT_COMPUTE, gpu.pipeline_layout, 0, 1, &ds, 0, std::ptr::null());
+    (gpu.cmd_push_constants)(
+        cmd,
+        gpu.pipeline_layout,
+        SHADER_STAGE_COMPUTE_BIT,
+        0,
+        std::mem::size_of::<GpuPushConstants>() as u32,
+        &pc as *const GpuPushConstants as *const c_void,
+    );
+    (gpu.cmd_dispatch)(
+        cmd,
+        (w.div_ceil(4).div_ceil(8)) as u32,
+        (h.div_ceil(4).div_ceil(8)) as u32,
+        layers as u32,
+    );
+
+    // Synchronise compute shader writes into scratch before copying to the image.
+    let post = VkBufferMemoryBarrier {
+        s_type: ST_BUFFER_MEMORY_BARRIER,
+        _pad: 0,
+        p_next: std::ptr::null(),
+        src_access_mask: ACCESS_SHADER_WRITE_BIT,
+        dst_access_mask: ACCESS_TRANSFER_READ_BIT,
+        src_queue_family_index: QUEUE_FAMILY_IGNORED,
+        dst_queue_family_index: QUEUE_FAMILY_IGNORED,
+        buffer: scratch_buf,
+        offset: scratch_off,
+        size: dst_bytes,
+    };
+    (gpu.cmd_pipeline_barrier)(
+        cmd,
+        PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        PIPELINE_STAGE_TRANSFER_BIT,
+        0,
+        0,
+        std::ptr::null(),
+        1,
+        &post,
+        0,
+        std::ptr::null(),
+    );
+
+    let out = BufferImageCopy {
+        buffer_offset: scratch_off,
+        buffer_row_length: if dst_row_texels == w { 0 } else { dst_row_texels as u32 },
+        buffer_image_height: 0,
+        ..*region
+    };
+    (dev.copy_buffer_to_image)(cmd, scratch_buf, image, layout, 1, &out as *const BufferImageCopy as *const c_void);
+    glcount::ETC_REGION_DECODED.fetch_add(1, Relaxed);
+    glcount::ETC_REGION_GPU.fetch_add(1, Relaxed);
+    Ok(())
+}
+
 fn emulate_copy(
     dev: &Dev,
     cmd: *mut c_void,
@@ -1374,26 +2314,57 @@ fn emulate_copy(
     let dst_len = w * h * layers * fmt.texel_bytes();
 
     let shared = {
-        let mut st = state();
-        Arc::clone(st.cmds.entry(cmd as usize).or_insert_with(|| {
-            LIVE_CMDS.fetch_add(1, Relaxed);
-            SharedCmd::default()
-        }))
+        let existing = state_read().cmds.get(&(cmd as usize)).cloned();
+        match existing {
+            Some(c) => c,
+            None => {
+                let mut st = state_write();
+                Arc::clone(st.cmds.entry(cmd as usize).or_insert_with(|| {
+                    LIVE_CMDS.fetch_add(1, Relaxed);
+                    SharedCmd::default()
+                }))
+            }
+        }
     };
     let mut entry = command(&shared);
     if entry.retired {
         return Err("command buffer was retired during recording".into());
     }
+
+    if can_gpu_decode(dev, cmd as usize, src_buffer, region.buffer_offset, src_len, layer_stride, w, h, layers) {
+        if let Some(gpu) = dev.gpu.as_ref() {
+            if emulate_copy_gpu(
+                dev, gpu, &mut entry, cmd, src_buffer, image, fmt, layout, region,
+                w, h, layers, row_blocks, layer_stride, src_len,
+            ).is_ok() {
+                return Ok(if crate::android::tracing() {
+                    format!(
+                        "gpu compute: src buffer 0x{src_buffer:x}+{} {src_len} B, rowLength={} imageHeight={} -> {dst_len} B",
+                        region.buffer_offset, region.buffer_row_length, region.buffer_image_height
+                    )
+                } else {
+                    String::new()
+                });
+            }
+        }
+    }
+
     let (buffer, offset, dst) = staging(dev, &mut entry, dst_len as u64)?;
     let job = Job { format: fmt, row_blocks, rows_of_blocks, layer_stride, layers, width: w, height: h, dst, dst_len };
-    let (memory, mem_offset, snapshot) = {
-        let st = state();
-        let &(memory, bind_offset) = st.buffers.get(&src_buffer)
-            .ok_or_else(|| format!("source buffer 0x{src_buffer:x} has no recorded binding"))?;
-        let mem_offset = bind_offset + region.buffer_offset;
-        // Pinning a mapping does not prevent legal writes after recording.
-        let snapshot = source_bytes(&st.mapped, memory, mem_offset, src_len).map(|bytes| bytes.to_vec().into_boxed_slice());
-        (memory, mem_offset, snapshot)
+    let (memory, bind_offset) = {
+        let st = state_read();
+        *st.buffers
+            .get(&src_buffer)
+            .ok_or_else(|| format!("source buffer 0x{src_buffer:x} has no recorded binding"))?
+    };
+    let mem_offset = bind_offset + region.buffer_offset;
+    // Pinning a mapping does not prevent legal writes after recording. Taking
+    // a shared read lock on `MAPPED` lets concurrent uploads copy in parallel
+    // without blocking image/buffer metadata, while `vkUnmapMemory` takes a
+    // write lock and waits for in-flight readers.
+    let snapshot = {
+        let mapped = mapped_read();
+        source_bytes(&mapped, memory, mem_offset, src_len).map(|bytes| bytes.to_vec().into_boxed_slice())
     };
     let (work, decoded, h64, note) = match snapshot {
         Ok(bytes) => {
@@ -1406,6 +2377,10 @@ fn emulate_copy(
             (None, false, 0, "deferred to submit")
         }
     };
+    if !entry.has_cpu_work {
+        entry.has_cpu_work = true;
+        LIVE_CPU_CMDS.fetch_add(1, Relaxed);
+    }
     entry.pending.push(Pending { memory, mem_offset, len: src_len, hash: h64, decoded, job, work: work.clone(), error: None });
     let out = BufferImageCopy { buffer_offset: offset, buffer_row_length: 0, buffer_image_height: 0, ..*region };
     (dev.copy_buffer_to_image)(cmd, buffer, image, layout, 1, &out as *const BufferImageCopy as *const c_void);
@@ -1413,10 +2388,14 @@ fn emulate_copy(
         DecodePool::get().publish(&work);
     }
     glcount::ETC_REGION_DECODED.fetch_add(1, Relaxed);
-    Ok(format!(
-        "{note}: src buffer 0x{src_buffer:x} mem 0x{memory:x}+{mem_offset} {src_len} B, rowLength={} imageHeight={} -> staging 0x{buffer:x}+{offset} {dst_len} B",
-        region.buffer_row_length, region.buffer_image_height
-    ))
+    Ok(if crate::android::tracing() {
+        format!(
+            "{note}: src buffer 0x{src_buffer:x} mem 0x{memory:x}+{mem_offset} {src_len} B, rowLength={} imageHeight={} -> staging 0x{buffer:x}+{offset} {dst_len} B",
+            region.buffer_row_length, region.buffer_image_height
+        )
+    } else {
+        String::new()
+    })
 }
 
 type CopyBufferToImageFn = extern "C" fn(*mut c_void, u64, u64, i32, u32, *const c_void);
@@ -1433,6 +2412,11 @@ extern "C" fn cmd_copy_buffer_to_image(
     let (Some(emu), Some(dev)) = (is_emulated(image), active()) else {
         return f(cmd, src, image, layout, count, regions);
     };
+    if count == 1 {
+        let r: BufferImageCopy = rd(regions, 0);
+        copy_regions(dev, cmd, src, image, emu, layout, std::slice::from_ref(&r), "vkCmdCopyBufferToImage");
+        return;
+    }
     let regions: Vec<BufferImageCopy> =
         (0..count as usize).map(|i| rd(regions, i * std::mem::size_of::<BufferImageCopy>())).collect();
     copy_regions(dev, cmd, src, image, emu, layout, &regions, "vkCmdCopyBufferToImage");
@@ -1449,23 +2433,30 @@ fn copy_regions(
     regions: &[BufferImageCopy],
     via: &str,
 ) {
+    let tracing = crate::android::tracing();
     for r in regions {
-        let what = format!(
-            "{via}(image=0x{image:x} {}x{} fmt={}->{} mip={} layers={}+{} offset={:?} extent={:?} bufferOffset={})",
-            emu.width,
-            emu.height,
-            emu.etc,
-            emu.substitute,
-            r.mip_level,
-            r.base_array_layer,
-            r.layer_count,
-            r.image_offset,
-            r.image_extent,
-            r.buffer_offset
-        );
+        let fmt_what = || {
+            format!(
+                "{via}(image=0x{image:x} {}x{} fmt={}->{} mip={} layers={}+{} offset={:?} extent={:?} bufferOffset={})",
+                emu.width,
+                emu.height,
+                emu.etc,
+                emu.substitute,
+                r.mip_level,
+                r.base_array_layer,
+                r.layer_count,
+                r.image_offset,
+                r.image_extent,
+                r.buffer_offset
+            )
+        };
         match emulate_copy(dev, cmd, src, image, emu, layout, r) {
-            Ok(how) => trace(format_args!("{what}: {how}")),
-            Err(e) => unhandled(format_args!("{what}: region skipped, {e}")),
+            Ok(how) => {
+                if tracing {
+                    trace(format_args!("{}: {how}", fmt_what()));
+                }
+            }
+            Err(e) => unhandled(format_args!("{}: region skipped, {e}", fmt_what())),
         }
     }
 }
@@ -1631,6 +2622,52 @@ extern "C" fn cmd_copy_image_to_buffer2(cmd: *mut c_void, info: *const c_void) {
     f(cmd, info);
 }
 
+extern "C" fn create_buffer(
+    device: *mut c_void,
+    info: *const c_void,
+    alloc: *const c_void,
+    out: *mut u64,
+) -> i32 {
+    let Some(f) = as_fn::<extern "C" fn(*mut c_void, *const c_void, *const c_void, *mut u64) -> i32>(
+        H_CREATE_BUFFER.load(Relaxed),
+    ) else {
+        return VK_ERROR_INITIALIZATION_FAILED;
+    };
+    if info.is_null() || out.is_null() {
+        return f(device, info, alloc, out);
+    }
+    let Some(dev) = active_device(device as usize) else {
+        return f(device, info, alloc, out);
+    };
+    let usage: u32 = rd(info, 32);
+    if dev.gpu.is_some() && usage & BUFFER_USAGE_TRANSFER_SRC != 0 {
+        let mut added = false;
+        let rc = if usage & BUFFER_USAGE_STORAGE_BUFFER == 0 {
+            let mut copy: [u8; 56] = rd(info, 0);
+            let patched = usage | BUFFER_USAGE_STORAGE_BUFFER;
+            copy[32..36].copy_from_slice(&patched.to_ne_bytes());
+            let rc = f(device, copy.as_ptr() as *const c_void, alloc, out);
+            if rc == VK_SUCCESS {
+                added = true;
+                rc
+            } else {
+                // Fall back to the caller's exact usage flags if the driver rejects
+                // STORAGE_BUFFER on this buffer (e.g. external memory constraints).
+                f(device, info, alloc, out)
+            }
+        } else {
+            added = true;
+            f(device, info, alloc, out)
+        };
+        if rc == VK_SUCCESS && added {
+            let buffer: u64 = rd(out as *const c_void, 0);
+            state_write().storage_buffers.insert(buffer);
+        }
+        return rc;
+    }
+    f(device, info, alloc, out)
+}
+
 extern "C" fn bind_buffer_memory(device: *mut c_void, buffer: u64, memory: u64, offset: u64) -> i32 {
     let Some(f) = as_fn::<extern "C" fn(*mut c_void, u64, u64, u64) -> i32>(H_BIND_BUFFER_MEMORY.load(Relaxed))
     else {
@@ -1638,7 +2675,7 @@ extern "C" fn bind_buffer_memory(device: *mut c_void, buffer: u64, memory: u64, 
     };
     let rc = f(device, buffer, memory, offset);
     if rc == VK_SUCCESS && active_device(device as usize).is_some() {
-        state().buffers.insert(buffer, (memory, offset));
+        state_write().buffers.insert(buffer, (memory, offset));
     }
     rc
 }
@@ -1650,7 +2687,7 @@ extern "C" fn bind_buffer_memory2(device: *mut c_void, count: u32, infos: *const
     };
     let rc = f(device, count, infos);
     if rc == VK_SUCCESS && !infos.is_null() && active_device(device as usize).is_some() {
-        let mut st = state();
+        let mut st = state_write();
         for i in 0..count as usize {
             let base = (infos as *const u8).wrapping_add(i * 40) as *const c_void;
             st.buffers.insert(rd(base, 16), (rd(base, 24), rd(base, 32)));
@@ -1661,7 +2698,9 @@ extern "C" fn bind_buffer_memory2(device: *mut c_void, count: u32, infos: *const
 
 extern "C" fn destroy_buffer(device: *mut c_void, buffer: u64, alloc: *const c_void) {
     if active_device(device as usize).is_some() {
-        state().buffers.remove(&buffer);
+        let mut st = state_write();
+        st.buffers.remove(&buffer);
+        st.storage_buffers.remove(&buffer);
     }
     if let Some(f) = as_fn::<extern "C" fn(*mut c_void, u64, *const c_void)>(H_DESTROY_BUFFER.load(Relaxed)) {
         f(device, buffer, alloc);
@@ -1684,7 +2723,7 @@ extern "C" fn map_memory(
     let rc = f(device, memory, offset, size, flags, out);
     if rc == VK_SUCCESS && !out.is_null() && active_device(device as usize).is_some() {
         let p: usize = rd(out as *const c_void, 0);
-        state().mapped.insert(memory, (p, offset, size));
+        mapped_write().insert(memory, (p, offset, size));
     }
     rc
 }
@@ -1698,7 +2737,7 @@ extern "C" fn map_memory2(device: *mut c_void, info: *const c_void, out: *mut *m
     let rc = f(device, info, out);
     if rc == VK_SUCCESS && !info.is_null() && !out.is_null() && active_device(device as usize).is_some() {
         let p: usize = rd(out as *const c_void, 0);
-        state().mapped.insert(rd(info, 24), (p, rd(info, 32), rd(info, 40)));
+        mapped_write().insert(rd(info, 24), (p, rd(info, 32), rd(info, 40)));
     }
     rc
 }
@@ -1722,11 +2761,11 @@ extern "C" fn free_memory(device: *mut c_void, memory: u64, alloc: *const c_void
 }
 
 fn retire_mapping(memory: u64) {
-    let cmds: Vec<_> = {
-        let mut st = state();
-        st.mapped.remove(&memory);
-        st.cmds.values().cloned().collect()
-    };
+    mapped_write().remove(&memory);
+    if LIVE_CPU_CMDS.load(Relaxed) == 0 {
+        return;
+    }
+    let cmds: Vec<_> = state_read().cmds.values().cloned().collect();
     for cmd in cmds {
         for p in command(&cmd).pending.iter_mut().filter(|p| p.memory == memory) {
             if let Err(error) = p.finish() {
@@ -1737,9 +2776,9 @@ fn retire_mapping(memory: u64) {
 }
 
 fn check_command(c: usize, same: &mut usize, gone: &mut usize) -> Vec<usize> {
-    let Some(shared) = state().cmds.get(&c).cloned() else { return Vec::new() };
+    let Some(shared) = state_read().cmds.get(&c).cloned() else { return Vec::new() };
     let mut cs = command(&shared);
-    if cs.retired {
+    if cs.retired || (cs.pending.is_empty() && cs.secondaries.is_empty()) {
         return Vec::new();
     }
     for p in &mut cs.pending {
@@ -1748,8 +2787,8 @@ fn check_command(c: usize, same: &mut usize, gone: &mut usize) -> Vec<usize> {
             continue;
         }
         let snapshot = {
-            let st = state();
-            source_bytes(&st.mapped, p.memory, p.mem_offset, p.len).map(|bytes| {
+            let mapped = mapped_read();
+            source_bytes(&mapped, p.memory, p.mem_offset, p.len).map(|bytes| {
                 let h = hash(bytes);
                 if p.decoded && h == p.hash { None } else { Some(bytes.to_vec().into_boxed_slice()) }
             })
@@ -1802,7 +2841,7 @@ fn check_command(c: usize, same: &mut usize, gone: &mut usize) -> Vec<usize> {
 }
 
 fn check_pending(cmds: impl Iterator<Item = usize>) {
-    if LIVE_CMDS.load(Relaxed) == 0 {
+    if LIVE_CPU_CMDS.load(Relaxed) == 0 {
         return;
     }
     let (mut same, mut gone) = (0usize, 0usize);
@@ -1829,24 +2868,28 @@ extern "C" fn cmd_execute_commands(cmd: *mut c_void, count: u32, secondaries: *c
     let Some(f) = as_fn::<extern "C" fn(*mut c_void, u32, *const usize)>(H_CMD_EXECUTE_COMMANDS.load(Relaxed)) else {
         return;
     };
-    if LIVE_CMDS.load(Relaxed) != 0 && !secondaries.is_null() {
-        let linked = {
-            let mut st = state();
-            let children: Vec<usize> = (0..count as usize).map(|i| rd(secondaries as *const c_void, i * 8))
-                .filter(|c| st.cmds.contains_key(c)).collect();
-            if children.is_empty() {
-                None
-            } else {
-                let primary = Arc::clone(st.cmds.entry(cmd as usize).or_insert_with(|| {
+    if LIVE_CPU_CMDS.load(Relaxed) != 0 && !secondaries.is_null() {
+        let children: Vec<usize> = {
+            let st = state_read();
+            (0..count as usize)
+                .map(|i| rd(secondaries as *const c_void, i * 8))
+                .filter(|c| st.cmds.contains_key(c))
+                .collect()
+        };
+        if !children.is_empty() {
+            let primary = {
+                let mut st = state_write();
+                Arc::clone(st.cmds.entry(cmd as usize).or_insert_with(|| {
                     LIVE_CMDS.fetch_add(1, Relaxed);
                     SharedCmd::default()
-                }));
-                Some((primary, children))
-            }
-        };
-        if let Some((primary, children)) = linked {
+                }))
+            };
             let mut primary = command(&primary);
             if !primary.retired {
+                if !primary.has_cpu_work {
+                    primary.has_cpu_work = true;
+                    LIVE_CPU_CMDS.fetch_add(1, Relaxed);
+                }
                 // Joining here would miss legal source writes between this
                 // recording call and the eventual primary submission.
                 primary.secondaries.extend(children);
@@ -1862,7 +2905,7 @@ extern "C" fn queue_submit(queue: *mut c_void, count: u32, submits: *const c_voi
     else {
         return VK_ERROR_INITIALIZATION_FAILED;
     };
-    if LIVE_CMDS.load(Relaxed) != 0 && !submits.is_null() {
+    if LIVE_CPU_CMDS.load(Relaxed) != 0 && !submits.is_null() {
         let all = (0..count as usize).flat_map(|i| {
             let s = (submits as *const u8).wrapping_add(i * 72) as *const c_void;
             let n: u32 = rd(s, 40);
@@ -1880,7 +2923,7 @@ extern "C" fn queue_submit2(queue: *mut c_void, count: u32, submits: *const c_vo
     else {
         return VK_ERROR_INITIALIZATION_FAILED;
     };
-    if LIVE_CMDS.load(Relaxed) != 0 && !submits.is_null() {
+    if LIVE_CPU_CMDS.load(Relaxed) != 0 && !submits.is_null() {
         let all = (0..count as usize).flat_map(|i| {
             let s = (submits as *const u8).wrapping_add(i * 64) as *const c_void;
             let n: u32 = rd(s, 32);
@@ -1890,6 +2933,45 @@ extern "C" fn queue_submit2(queue: *mut c_void, count: u32, submits: *const c_vo
         check_pending(all);
     }
     f(queue, count, submits, fence)
+}
+
+extern "C" fn create_command_pool(
+    device: *mut c_void,
+    info: *const c_void,
+    alloc: *const c_void,
+    out: *mut u64,
+) -> i32 {
+    let Some(f) = as_fn::<extern "C" fn(*mut c_void, *const c_void, *const c_void, *mut u64) -> i32>(
+        H_CREATE_COMMAND_POOL.load(Relaxed),
+    ) else {
+        return VK_ERROR_INITIALIZATION_FAILED;
+    };
+    let rc = f(device, info, alloc, out);
+    if rc == VK_SUCCESS && !info.is_null() && !out.is_null() {
+        if let Some(dev) = active_device(device as usize) {
+            let pool: u64 = rd(out as *const c_void, 0);
+            let family: u32 = rd(info, 20);
+            let compute = dev
+                .gpu
+                .as_ref()
+                .and_then(|g| g.compute_queue_families.get(family as usize).copied())
+                .unwrap_or(false);
+            state_write().pool_compute.insert(pool, compute);
+        }
+    }
+    rc
+}
+
+extern "C" fn cmd_bind_pipeline(cmd: *mut c_void, bind_point: u32, pipeline: u64) {
+    if bind_point == PIPELINE_BIND_POINT_COMPUTE && active().is_some() {
+        let mut st = state_write();
+        if st.compute_bound.insert(cmd as usize) {
+            COMPUTE_BOUND_CMDS.fetch_add(1, Relaxed);
+        }
+    }
+    if let Some(f) = as_fn::<extern "C" fn(*mut c_void, u32, u64)>(H_CMD_BIND_PIPELINE.load(Relaxed)) {
+        f(cmd, bind_point, pipeline);
+    }
 }
 
 extern "C" fn allocate_command_buffers(device: *mut c_void, info: *const c_void, out: *mut usize) -> i32 {
@@ -1902,10 +2984,14 @@ extern "C" fn allocate_command_buffers(device: *mut c_void, info: *const c_void,
     if rc == VK_SUCCESS && !info.is_null() && !out.is_null() && active_device(device as usize).is_some() {
         let pool: u64 = rd(info, 16);
         let n: u32 = rd(info, 28);
-        let mut st = state();
+        let mut st = state_write();
+        let mut added = Vec::with_capacity(n as usize);
         for i in 0..n as usize {
-            st.cmd_pool.insert(rd(out as *const c_void, i * 8), pool);
+            let c: usize = rd(out as *const c_void, i * 8);
+            st.cmd_pool.insert(c, pool);
+            added.push(c);
         }
+        st.pool_cmds.entry(pool).or_default().extend(added);
     }
     rc
 }
@@ -1935,17 +3021,29 @@ extern "C" fn free_command_buffers(device: *mut c_void, pool: u64, count: u32, c
     if !cmds.is_null() && active_device(device as usize).is_some() {
         let list: Vec<usize> = (0..count as usize).map(|i| rd(cmds as *const c_void, i * 8)).collect();
         release_cmds(&list);
-        let mut st = state();
+        let mut st = state_write();
         for c in &list {
             st.cmd_pool.remove(c);
+        }
+        if let Some(v) = st.pool_cmds.get_mut(&pool) {
+            v.retain(|c| !list.contains(c));
         }
     }
     f(device, pool, count, cmds);
 }
 
 fn cmds_of_pool(pool: u64, forget: bool) -> Vec<usize> {
-    let mut st = state();
-    let list: Vec<usize> = st.cmd_pool.iter().filter(|(_, &p)| p == pool).map(|(&c, _)| c).collect();
+    let mut st = state_write();
+    let list = if forget {
+        st.pool_compute.remove(&pool);
+        st.pool_cmds.remove(&pool).unwrap_or_else(|| {
+            st.cmd_pool.iter().filter(|(_, &p)| p == pool).map(|(&c, _)| c).collect()
+        })
+    } else if let Some(v) = st.pool_cmds.get(&pool) {
+        v.clone()
+    } else {
+        st.cmd_pool.iter().filter(|(_, &p)| p == pool).map(|(&c, _)| c).collect()
+    };
     if forget {
         for c in &list {
             st.cmd_pool.remove(c);
@@ -1958,7 +3056,9 @@ extern "C" fn reset_command_pool(device: *mut c_void, pool: u64, flags: u32) -> 
     let Some(f) = as_fn::<extern "C" fn(*mut c_void, u64, u32) -> i32>(H_RESET_COMMAND_POOL.load(Relaxed)) else {
         return VK_ERROR_INITIALIZATION_FAILED;
     };
-    if LIVE_CMDS.load(Relaxed) != 0 && active_device(device as usize).is_some() {
+    if (LIVE_CMDS.load(Relaxed) != 0 || COMPUTE_BOUND_CMDS.load(Relaxed) != 0)
+        && active_device(device as usize).is_some()
+    {
         release_cmds(&cmds_of_pool(pool, false));
     }
     f(device, pool, flags)
@@ -2035,6 +3135,8 @@ mod tests {
                 buffer_requirements: requirements, allocate_memory: create, free_memory: destroy,
                 bind_buffer_memory: bind, map_memory: map, copy_buffer_to_image: copy,
                 memory_types: vec![MEMORY_HOST_VISIBLE | MEMORY_HOST_COHERENT],
+                free_cpu_chunks: Mutex::new(Vec::new()),
+                gpu: None,
             });
             let mut seed = 0x1234_5678u32;
             let src = (0..width * width).map(|_| {
@@ -2042,18 +3144,19 @@ mod tests {
                 (seed >> 24) as u8
             }).collect::<Vec<_>>();
             let mut dst = vec![0xa5; width * width * 4 * copies];
-            let mut st = state();
-            assert!(st.cmds.is_empty());
-            st.buffers.insert(1, (2, 0));
-            st.cmd_pool.insert(3, 7);
-            st.mapped.insert(2, (src.as_ptr() as usize, 0, src.len() as u64));
-            st.cmds.insert(3, Arc::new(Mutex::new(CmdState {
-                chunks: vec![Chunk { buffer: 4, memory: 5, mapped: dst.as_mut_ptr() as usize, size: dst.len() as u64, used: 0 }],
-                pending: Vec::new(),
-                secondaries: Vec::new(),
-                retired: false,
-            })));
+            {
+                let mut st = state();
+                assert!(st.cmds.is_empty());
+                st.buffers.insert(1, (2, 0));
+                st.cmd_pool.insert(3, 7);
+                st.cmds.insert(3, Arc::new(Mutex::new(CmdState {
+                    chunks: vec![Chunk { buffer: 4, memory: 5, mapped: dst.as_mut_ptr() as usize, size: dst.len() as u64, used: 0 }],
+                    ..CmdState::default()
+                })));
+            }
+            mapped_write().insert(2, (src.as_ptr() as usize, 0, src.len() as u64));
             LIVE_CMDS.store(1, Relaxed);
+            LIVE_CPU_CMDS.store(0, Relaxed);
             DEV.store(&*dev as *const Dev as *mut Dev, Release);
             Self { dev, src, dst, width }
         }
@@ -2309,7 +3412,7 @@ mod tests {
             assert_eq!(work.progress.lock().unwrap().remaining, 0);
             assert_eq!(harness.dst, harness.expected());
             if operation < 2 {
-                assert!(!state().mapped.contains_key(&2));
+                assert!(!mapped_read().contains_key(&2));
                 assert_eq!(harness.submit(false), VK_SUCCESS);
             } else {
                 assert!(!state().cmds.contains_key(&3));
@@ -2335,7 +3438,7 @@ mod tests {
         assert!(emulate_copy(&harness.dev, 3usize as *mut c_void, 1, 6, image, 0, &invalid).is_err());
         assert!(command(&state().cmds[&3]).pending.is_empty());
         harness.rewind();
-        state().mapped.remove(&2);
+        mapped_write().remove(&2);
         harness.record().unwrap();
         assert_eq!(harness.submit(false), VK_SUCCESS);
         assert!(harness.dst.iter().all(|&b| b == 0));
@@ -2832,5 +3935,569 @@ mod tests {
         data[4098] = 7;
         data[0] = 6;
         assert_ne!(before, hash(&data));
+    }
+
+    #[test]
+    fn staging_chunks_are_recycled_across_command_buffer_resets() {
+        let _turn = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        static DESTROY_CALLS: AtomicUsize = AtomicUsize::new(0);
+        extern "C" fn create(_: usize, _: *const c_void, _: *const c_void, _: *mut u64) -> i32 { -1 }
+        extern "C" fn destroy(_: usize, _: u64, _: *const c_void) { DESTROY_CALLS.fetch_add(1, Relaxed); }
+        extern "C" fn requirements(_: usize, _: u64, _: *mut [u64; 3]) {}
+        extern "C" fn bind(_: usize, _: u64, _: u64, _: u64) -> i32 { 0 }
+        extern "C" fn map(_: usize, _: u64, _: u64, _: u64, _: u32, _: *mut *mut c_void) -> i32 { -1 }
+        extern "C" fn copy(_: *mut c_void, _: u64, _: u64, _: i32, _: u32, _: *const c_void) {}
+
+        let dev = Box::new(Dev {
+            device: 0x8009,
+            create_buffer: create,
+            destroy_buffer: destroy,
+            buffer_requirements: requirements,
+            allocate_memory: create,
+            free_memory: destroy,
+            bind_buffer_memory: bind,
+            map_memory: map,
+            copy_buffer_to_image: copy,
+            memory_types: vec![MEMORY_HOST_VISIBLE | MEMORY_HOST_COHERENT | MEMORY_HOST_CACHED],
+            free_cpu_chunks: Mutex::new(Vec::new()),
+            gpu: None,
+        });
+        let mut backing = vec![0u8; 4096];
+        let ptr = backing.as_mut_ptr() as usize;
+        state().cmds.insert(10, Arc::new(Mutex::new(CmdState {
+            chunks: vec![Chunk { buffer: 42, memory: 43, mapped: ptr, size: 4096, used: 1024 }],
+            ..CmdState::default()
+        })));
+        LIVE_CMDS.store(1, Relaxed);
+        DEV.store(&*dev as *const Dev as *mut Dev, Release);
+
+        let before = DESTROY_CALLS.load(Relaxed);
+        release_cmds(&[10]);
+        assert_eq!(DESTROY_CALLS.load(Relaxed), before, "standard chunk must be pooled rather than destroyed");
+        assert_eq!(dev.free_cpu_chunks.lock().unwrap().len(), 1);
+
+        let mut next = CmdState::default();
+        let (buf, off, mapped) = staging(&dev, &mut next, 512).unwrap();
+        assert_eq!((buf, off, mapped), (42, 0, ptr));
+        assert_eq!(dev.free_cpu_chunks.lock().unwrap().len(), 0);
+
+        // Return to pool, then verify forget_device destroys pooled chunks cleanly.
+        state().cmds.insert(11, Arc::new(Mutex::new(next)));
+        LIVE_CMDS.store(1, Relaxed);
+        release_cmds(&[11]);
+        assert_eq!(dev.free_cpu_chunks.lock().unwrap().len(), 1);
+        forget_device();
+        assert_eq!(DESTROY_CALLS.load(Relaxed), before + 2, "forget_device destroys buffer + memory");
+    }
+
+    struct HeadlessVk {
+        instance: *mut c_void,
+        device: *mut c_void,
+        queue: *mut c_void,
+        cmd_pool: u64,
+        cmd: *mut c_void,
+        gpu: GpuDecoder,
+        mem_types: Vec<u32>,
+        destroy_instance: extern "C" fn(*mut c_void, *const c_void),
+        destroy_device: extern "C" fn(*mut c_void, *const c_void),
+        create_buffer: extern "C" fn(usize, *const c_void, *const c_void, *mut u64) -> i32,
+        destroy_buffer: extern "C" fn(usize, u64, *const c_void),
+        buffer_reqs: extern "C" fn(usize, u64, *mut [u64; 3]),
+        alloc_mem: extern "C" fn(usize, *const c_void, *const c_void, *mut u64) -> i32,
+        free_mem: extern "C" fn(usize, u64, *const c_void),
+        bind_buf: extern "C" fn(usize, u64, u64, u64) -> i32,
+        map_mem: extern "C" fn(usize, u64, u64, u64, u32, *mut *mut c_void) -> i32,
+        unmap_mem: extern "C" fn(usize, u64),
+        destroy_cmd_pool: extern "C" fn(usize, u64, *const c_void),
+        begin_cmd: extern "C" fn(*mut c_void, *const c_void) -> i32,
+        end_cmd: extern "C" fn(*mut c_void) -> i32,
+        reset_cmd: extern "C" fn(*mut c_void, u32) -> i32,
+        queue_submit: extern "C" fn(*mut c_void, u32, *const c_void, u64) -> i32,
+        queue_wait_idle: extern "C" fn(*mut c_void) -> i32,
+    }
+
+    impl HeadlessVk {
+        fn open() -> Option<Self> {
+            extern "C" {
+                fn dlopen(filename: *const c_char, flags: i32) -> *mut c_void;
+                fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
+            }
+            const RTLD_NOW: i32 = 2;
+            let lib = unsafe { dlopen(c"libvulkan.so.1".as_ptr(), RTLD_NOW) };
+            if lib.is_null() {
+                return None;
+            }
+            let gipa: extern "C" fn(*mut c_void, *const c_char) -> *mut c_void =
+                as_fn(unsafe { dlsym(lib, c"vkGetInstanceProcAddr".as_ptr()) } as usize)?;
+            let create_inst: extern "C" fn(*const c_void, *const c_void, *mut *mut c_void) -> i32 =
+                as_fn(gipa(std::ptr::null_mut(), c"vkCreateInstance".as_ptr()) as usize)?;
+            let mut ici = [0u8; 64];
+            ici[0..4].copy_from_slice(&1u32.to_ne_bytes()); // VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO
+            let mut instance = std::ptr::null_mut();
+            if create_inst(ici.as_ptr() as *const c_void, std::ptr::null(), &mut instance) != VK_SUCCESS {
+                return None;
+            }
+            let destroy_instance: extern "C" fn(*mut c_void, *const c_void) =
+                as_fn(gipa(instance, c"vkDestroyInstance".as_ptr()) as usize)?;
+            let enum_pds: extern "C" fn(*mut c_void, *mut u32, *mut *mut c_void) -> i32 =
+                as_fn(gipa(instance, c"vkEnumeratePhysicalDevices".as_ptr()) as usize)?;
+            let mut pd_count = 0u32;
+            if enum_pds(instance, &mut pd_count, std::ptr::null_mut()) != VK_SUCCESS || pd_count == 0 {
+                destroy_instance(instance, std::ptr::null());
+                return None;
+            }
+            let mut pds = vec![std::ptr::null_mut(); pd_count as usize];
+            if enum_pds(instance, &mut pd_count, pds.as_mut_ptr()) != VK_SUCCESS {
+                destroy_instance(instance, std::ptr::null());
+                return None;
+            }
+            let pd = pds[0];
+            let qf_fn: extern "C" fn(*mut c_void, *mut u32, *mut VkQueueFamilyProperties) =
+                as_fn(gipa(instance, c"vkGetPhysicalDeviceQueueFamilyProperties".as_ptr()) as usize)?;
+            let mut qf_count = 0u32;
+            qf_fn(pd, &mut qf_count, std::ptr::null_mut());
+            let mut qfs = vec![VkQueueFamilyProperties::default(); qf_count as usize];
+            qf_fn(pd, &mut qf_count, qfs.as_mut_ptr());
+            let queue_family = qfs.iter().position(|q| q.queue_flags & QUEUE_COMPUTE_BIT != 0)? as u32;
+
+            let prio = 1.0f32;
+            #[repr(C)]
+            struct QueueCi { s_type: u32, _p: u32, next: *const c_void, flags: u32, family: u32, count: u32, _p2: u32, prios: *const f32 }
+            let qci = QueueCi { s_type: 2, _p: 0, next: std::ptr::null(), flags: 0, family: queue_family, count: 1, _p2: 0, prios: &prio };
+            #[repr(C)]
+            struct DevCi {
+                s_type: u32, _p: u32, next: *const c_void, flags: u32, q_count: u32,
+                p_qs: *const QueueCi, l_count: u32, _p2: u32, pp_l: *const *const c_char,
+                e_count: u32, _p3: u32, pp_e: *const *const c_char, p_feats: *const c_void,
+            }
+            let dci = DevCi {
+                s_type: 3, _p: 0, next: std::ptr::null(), flags: 0, q_count: 1, p_qs: &qci,
+                l_count: 0, _p2: 0, pp_l: std::ptr::null(), e_count: 0, _p3: 0, pp_e: std::ptr::null(),
+                p_feats: std::ptr::null(),
+            };
+            let create_dev: extern "C" fn(*mut c_void, *const DevCi, *const c_void, *mut *mut c_void) -> i32 =
+                as_fn(gipa(instance, c"vkCreateDevice".as_ptr()) as usize)?;
+            let mut device = std::ptr::null_mut();
+            if create_dev(pd, &dci, std::ptr::null(), &mut device) != VK_SUCCESS {
+                destroy_instance(instance, std::ptr::null());
+                return None;
+            }
+            let gdpa: extern "C" fn(*mut c_void, *const c_char) -> *mut c_void =
+                as_fn(gipa(instance, c"vkGetDeviceProcAddr".as_ptr()) as usize)?;
+            let get = |n: &CStr| gdpa(device, n.as_ptr()) as usize;
+
+            let mut mem_types = Vec::new();
+            let mp: extern "C" fn(*mut c_void, *mut c_void) =
+                as_fn(gipa(instance, c"vkGetPhysicalDeviceMemoryProperties".as_ptr()) as usize)?;
+            let mut raw = [0u8; 520];
+            mp(pd, raw.as_mut_ptr() as *mut c_void);
+            let mcount = u32::from_ne_bytes(raw[0..4].try_into().ok()?);
+            for i in 0..mcount.min(32) as usize {
+                let o = 4 + i * 8;
+                mem_types.push(u32::from_ne_bytes(raw[o..o + 4].try_into().ok()?));
+            }
+
+            // Initialize GpuDecoder directly using our real SPIR-V shader.
+            let create_shader_module: extern "C" fn(usize, *const VkShaderModuleCreateInfo, *const c_void, *mut u64) -> i32 =
+                as_fn(get(c"vkCreateShaderModule"))?;
+            let destroy_shader_module = as_fn(get(c"vkDestroyShaderModule"))?;
+            let create_ds_layout: extern "C" fn(usize, *const VkDescriptorSetLayoutCreateInfo, *const c_void, *mut u64) -> i32 =
+                as_fn(get(c"vkCreateDescriptorSetLayout"))?;
+            let destroy_ds_layout = as_fn(get(c"vkDestroyDescriptorSetLayout"))?;
+            let create_pipeline_layout: extern "C" fn(usize, *const VkPipelineLayoutCreateInfo, *const c_void, *mut u64) -> i32 =
+                as_fn(get(c"vkCreatePipelineLayout"))?;
+            let destroy_pipeline_layout = as_fn(get(c"vkDestroyPipelineLayout"))?;
+            let create_compute_pipelines: extern "C" fn(usize, u64, u32, *const VkComputePipelineCreateInfo, *const c_void, *mut u64) -> i32 =
+                as_fn(get(c"vkCreateComputePipelines"))?;
+            let destroy_pipeline = as_fn(get(c"vkDestroyPipeline"))?;
+
+            let mut shader_module = 0u64;
+            let sm_ci = VkShaderModuleCreateInfo {
+                s_type: ST_SHADER_MODULE_CREATE_INFO, _pad: 0, p_next: std::ptr::null(),
+                flags: 0, _pad2: 0, code_size: std::mem::size_of_val(ETC_DECODE_SPV),
+                p_code: ETC_DECODE_SPV.as_ptr(),
+            };
+            assert_eq!(create_shader_module(device as usize, &sm_ci, std::ptr::null(), &mut shader_module), VK_SUCCESS);
+
+            let bindings = [
+                VkDescriptorSetLayoutBinding { binding: 0, descriptor_type: DESCRIPTOR_TYPE_STORAGE_BUFFER, descriptor_count: 1, stage_flags: SHADER_STAGE_COMPUTE_BIT, p_immutable_samplers: std::ptr::null() },
+                VkDescriptorSetLayoutBinding { binding: 1, descriptor_type: DESCRIPTOR_TYPE_STORAGE_BUFFER, descriptor_count: 1, stage_flags: SHADER_STAGE_COMPUTE_BIT, p_immutable_samplers: std::ptr::null() },
+            ];
+            let dsl_ci = VkDescriptorSetLayoutCreateInfo { s_type: ST_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, _pad: 0, p_next: std::ptr::null(), flags: 0, binding_count: 2, p_bindings: bindings.as_ptr() };
+            let mut ds_layout = 0u64;
+            assert_eq!(create_ds_layout(device as usize, &dsl_ci, std::ptr::null(), &mut ds_layout), VK_SUCCESS);
+
+            let pc_range = VkPushConstantRange { stage_flags: SHADER_STAGE_COMPUTE_BIT, offset: 0, size: std::mem::size_of::<GpuPushConstants>() as u32 };
+            let pl_ci = VkPipelineLayoutCreateInfo { s_type: ST_PIPELINE_LAYOUT_CREATE_INFO, _pad: 0, p_next: std::ptr::null(), flags: 0, set_layout_count: 1, p_set_layouts: &ds_layout, push_constant_range_count: 1, _pad2: 0, p_push_constant_ranges: &pc_range };
+            let mut pipeline_layout = 0u64;
+            assert_eq!(create_pipeline_layout(device as usize, &pl_ci, std::ptr::null(), &mut pipeline_layout), VK_SUCCESS);
+
+            let cp_ci = VkComputePipelineCreateInfo {
+                s_type: ST_COMPUTE_PIPELINE_CREATE_INFO, _pad: 0, p_next: std::ptr::null(), flags: 0, _pad2: 0,
+                stage: VkPipelineShaderStageCreateInfo { s_type: ST_PIPELINE_SHADER_STAGE_CREATE_INFO, _pad: 0, p_next: std::ptr::null(), flags: 0, stage: SHADER_STAGE_COMPUTE_BIT, module: shader_module, p_name: c"main".as_ptr(), p_specialization_info: std::ptr::null() },
+                layout: pipeline_layout, base_pipeline_handle: 0, base_pipeline_index: -1, _pad3: 0,
+            };
+            let mut pipeline = 0u64;
+            assert_eq!(create_compute_pipelines(device as usize, 0, 1, &cp_ci, std::ptr::null(), &mut pipeline), VK_SUCCESS);
+
+            let gpu = GpuDecoder {
+                shader_module, ds_layout, pipeline_layout, pipeline,
+                compute_queue_families: qfs.iter().map(|q| q.queue_flags & QUEUE_COMPUTE_BIT != 0).collect(),
+                destroy_shader_module, destroy_ds_layout, destroy_pipeline_layout, destroy_pipeline,
+                create_ds_pool: as_fn(get(c"vkCreateDescriptorPool"))?,
+                destroy_ds_pool: as_fn(get(c"vkDestroyDescriptorPool"))?,
+                reset_ds_pool: as_fn(get(c"vkResetDescriptorPool"))?,
+                alloc_ds: as_fn(get(c"vkAllocateDescriptorSets"))?,
+                update_ds: as_fn(get(c"vkUpdateDescriptorSets"))?,
+                cmd_bind_pipeline: as_fn(get(c"vkCmdBindPipeline"))?,
+                cmd_bind_ds: as_fn(get(c"vkCmdBindDescriptorSets"))?,
+                cmd_push_constants: as_fn(get(c"vkCmdPushConstants"))?,
+                cmd_dispatch: as_fn(get(c"vkCmdDispatch"))?,
+                cmd_pipeline_barrier: as_fn(get(c"vkCmdPipelineBarrier"))?,
+                free_gpu_chunks: Mutex::new(Vec::new()),
+                free_ds_pools: Mutex::new(Vec::new()),
+            };
+
+            let get_queue: extern "C" fn(*mut c_void, u32, u32, *mut *mut c_void) = as_fn(get(c"vkGetDeviceQueue"))?;
+            let mut queue = std::ptr::null_mut();
+            get_queue(device, queue_family, 0, &mut queue);
+
+            let create_cmd_pool: extern "C" fn(usize, *const c_void, *const c_void, *mut u64) -> i32 = as_fn(get(c"vkCreateCommandPool"))?;
+            let mut cp = [0u8; 24];
+            cp[0..4].copy_from_slice(&39u32.to_ne_bytes()); // VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO
+            cp[16..20].copy_from_slice(&2u32.to_ne_bytes()); // RESET_COMMAND_BUFFER_BIT
+            cp[20..24].copy_from_slice(&queue_family.to_ne_bytes());
+            let mut cmd_pool = 0u64;
+            assert_eq!(create_cmd_pool(device as usize, cp.as_ptr() as *const c_void, std::ptr::null(), &mut cmd_pool), VK_SUCCESS);
+
+            let alloc_cmds: extern "C" fn(usize, *const c_void, *mut *mut c_void) -> i32 = as_fn(get(c"vkAllocateCommandBuffers"))?;
+            let mut cbai = [0u8; 32];
+            cbai[0..4].copy_from_slice(&40u32.to_ne_bytes()); // VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO
+            cbai[16..24].copy_from_slice(&cmd_pool.to_ne_bytes());
+            cbai[28..32].copy_from_slice(&1u32.to_ne_bytes());
+            let mut cmd = std::ptr::null_mut();
+            assert_eq!(alloc_cmds(device as usize, cbai.as_ptr() as *const c_void, &mut cmd), VK_SUCCESS);
+
+            Some(Self {
+                instance, device, queue, cmd_pool, cmd, gpu, mem_types,
+                destroy_instance,
+                destroy_device: as_fn(get(c"vkDestroyDevice"))?,
+                create_buffer: as_fn(get(c"vkCreateBuffer"))?,
+                destroy_buffer: as_fn(get(c"vkDestroyBuffer"))?,
+                buffer_reqs: as_fn(get(c"vkGetBufferMemoryRequirements"))?,
+                alloc_mem: as_fn(get(c"vkAllocateMemory"))?,
+                free_mem: as_fn(get(c"vkFreeMemory"))?,
+                bind_buf: as_fn(get(c"vkBindBufferMemory"))?,
+                map_mem: as_fn(get(c"vkMapMemory"))?,
+                unmap_mem: as_fn(get(c"vkUnmapMemory"))?,
+                destroy_cmd_pool: as_fn(get(c"vkDestroyCommandPool"))?,
+                begin_cmd: as_fn(get(c"vkBeginCommandBuffer"))?,
+                end_cmd: as_fn(get(c"vkEndCommandBuffer"))?,
+                reset_cmd: as_fn(get(c"vkResetCommandBuffer"))?,
+                queue_submit: as_fn(get(c"vkQueueSubmit"))?,
+                queue_wait_idle: as_fn(get(c"vkQueueWaitIdle"))?,
+            })
+        }
+
+        fn alloc_host_ssbo(&self, size: u64) -> (u64, u64, *mut u8) {
+            let mut bci = [0u8; 56];
+            bci[0..4].copy_from_slice(&ST_BUFFER_CREATE_INFO.to_ne_bytes());
+            bci[24..32].copy_from_slice(&size.to_ne_bytes());
+            let usage = BUFFER_USAGE_TRANSFER_SRC | BUFFER_USAGE_STORAGE_BUFFER;
+            bci[32..36].copy_from_slice(&usage.to_ne_bytes());
+            let mut buf = 0u64;
+            assert_eq!((self.create_buffer)(self.device as usize, bci.as_ptr() as *const c_void, std::ptr::null(), &mut buf), VK_SUCCESS);
+            let mut req = [0u64; 3];
+            (self.buffer_reqs)(self.device as usize, buf, &mut req);
+            let bits = req[2] as u32;
+            let wanted = MEMORY_HOST_VISIBLE | MEMORY_HOST_COHERENT;
+            let cached = wanted | MEMORY_HOST_CACHED;
+            let type_idx = self.mem_types.iter().enumerate()
+                .find(|(i, &f)| bits & (1 << i) != 0 && f & cached == cached)
+                .or_else(|| self.mem_types.iter().enumerate().find(|(i, &f)| bits & (1 << i) != 0 && f & wanted == wanted))
+                .unwrap().0 as u32;
+            let mut mai = [0u8; 32];
+            mai[0..4].copy_from_slice(&ST_MEMORY_ALLOCATE_INFO.to_ne_bytes());
+            mai[16..24].copy_from_slice(&req[0].to_ne_bytes());
+            mai[24..28].copy_from_slice(&type_idx.to_ne_bytes());
+            let mut mem = 0u64;
+            assert_eq!((self.alloc_mem)(self.device as usize, mai.as_ptr() as *const c_void, std::ptr::null(), &mut mem), VK_SUCCESS);
+            assert_eq!((self.bind_buf)(self.device as usize, buf, mem, 0), VK_SUCCESS);
+            let mut mapped = std::ptr::null_mut();
+            assert_eq!((self.map_mem)(self.device as usize, mem, 0, WHOLE_SIZE, 0, &mut mapped), VK_SUCCESS);
+            (buf, mem, mapped as *mut u8)
+        }
+
+        fn dispatch_decode(
+            &self,
+            src_buf: u64,
+            dst_buf: u64,
+            ds: u64,
+            pc: &GpuPushConstants,
+            w: usize,
+            h: usize,
+            layers: usize,
+        ) {
+            let src_info = VkDescriptorBufferInfo { buffer: src_buf, offset: 0, range: WHOLE_SIZE };
+            let dst_info = VkDescriptorBufferInfo { buffer: dst_buf, offset: 0, range: WHOLE_SIZE };
+            let writes = [
+                VkWriteDescriptorSet { s_type: ST_WRITE_DESCRIPTOR_SET, _pad: 0, p_next: std::ptr::null(), dst_set: ds, dst_binding: 0, dst_array_element: 0, descriptor_count: 1, descriptor_type: DESCRIPTOR_TYPE_STORAGE_BUFFER, p_image_info: std::ptr::null(), p_buffer_info: &src_info, p_texel_buffer_view: std::ptr::null() },
+                VkWriteDescriptorSet { s_type: ST_WRITE_DESCRIPTOR_SET, _pad: 0, p_next: std::ptr::null(), dst_set: ds, dst_binding: 1, dst_array_element: 0, descriptor_count: 1, descriptor_type: DESCRIPTOR_TYPE_STORAGE_BUFFER, p_image_info: std::ptr::null(), p_buffer_info: &dst_info, p_texel_buffer_view: std::ptr::null() },
+            ];
+            (self.gpu.update_ds)(self.device as usize, 2, writes.as_ptr(), 0, std::ptr::null());
+
+            assert_eq!((self.reset_cmd)(self.cmd, 0), VK_SUCCESS);
+            let mut bi = [0u8; 32];
+            bi[0..4].copy_from_slice(&42u32.to_ne_bytes()); // VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO
+            assert_eq!((self.begin_cmd)(self.cmd, bi.as_ptr() as *const c_void), VK_SUCCESS);
+            (self.gpu.cmd_bind_pipeline)(self.cmd, PIPELINE_BIND_POINT_COMPUTE, self.gpu.pipeline);
+            (self.gpu.cmd_bind_ds)(self.cmd, PIPELINE_BIND_POINT_COMPUTE, self.gpu.pipeline_layout, 0, 1, &ds, 0, std::ptr::null());
+            (self.gpu.cmd_push_constants)(self.cmd, self.gpu.pipeline_layout, SHADER_STAGE_COMPUTE_BIT, 0, std::mem::size_of::<GpuPushConstants>() as u32, pc as *const GpuPushConstants as *const c_void);
+            (self.gpu.cmd_dispatch)(self.cmd, w.div_ceil(4).div_ceil(8) as u32, h.div_ceil(4).div_ceil(8) as u32, layers as u32);
+            let post = VkBufferMemoryBarrier {
+                s_type: ST_BUFFER_MEMORY_BARRIER, _pad: 0, p_next: std::ptr::null(),
+                src_access_mask: ACCESS_SHADER_WRITE_BIT, dst_access_mask: 0x2000 /* HOST_READ_BIT */,
+                src_queue_family_index: QUEUE_FAMILY_IGNORED, dst_queue_family_index: QUEUE_FAMILY_IGNORED,
+                buffer: dst_buf, offset: 0, size: WHOLE_SIZE,
+            };
+            (self.gpu.cmd_pipeline_barrier)(self.cmd, PIPELINE_STAGE_COMPUTE_SHADER_BIT, PIPELINE_STAGE_HOST_BIT, 0, 0, std::ptr::null(), 1, &post, 0, std::ptr::null());
+            assert_eq!((self.end_cmd)(self.cmd), VK_SUCCESS);
+
+            let mut si = [0u64; 9];
+            si[0] = 4; // VK_STRUCTURE_TYPE_SUBMIT_INFO
+            si[5] = 1;
+            let cmd_val = self.cmd as usize;
+            si[6] = &cmd_val as *const usize as u64;
+            assert_eq!((self.queue_submit)(self.queue, 1, si.as_ptr() as *const c_void, 0), VK_SUCCESS);
+            assert_eq!((self.queue_wait_idle)(self.queue), VK_SUCCESS);
+        }
+    }
+
+    impl Drop for HeadlessVk {
+        fn drop(&mut self) {
+            (self.queue_wait_idle)(self.queue);
+            (self.gpu.destroy_pipeline)(self.device as usize, self.gpu.pipeline, std::ptr::null());
+            (self.gpu.destroy_pipeline_layout)(self.device as usize, self.gpu.pipeline_layout, std::ptr::null());
+            (self.gpu.destroy_ds_layout)(self.device as usize, self.gpu.ds_layout, std::ptr::null());
+            (self.gpu.destroy_shader_module)(self.device as usize, self.gpu.shader_module, std::ptr::null());
+            (self.destroy_cmd_pool)(self.device as usize, self.cmd_pool, std::ptr::null());
+            (self.destroy_device)(self.device, std::ptr::null());
+            (self.destroy_instance)(self.instance, std::ptr::null());
+        }
+    }
+
+    #[test]
+    fn gpu_compute_decoder_matches_cpu_bit_for_bit_across_all_formats() {
+        let Some(vk) = HeadlessVk::open() else {
+            eprintln!("[test] no Vulkan compute device available; skipping GPU compute verification");
+            return;
+        };
+        let pool_size = VkDescriptorPoolSize { ty: DESCRIPTOR_TYPE_STORAGE_BUFFER, descriptor_count: 16 };
+        let pool_ci = VkDescriptorPoolCreateInfo {
+            s_type: ST_DESCRIPTOR_POOL_CREATE_INFO, _pad: 0, p_next: std::ptr::null(),
+            flags: 0, max_sets: 8, pool_size_count: 1, _pad2: 0, p_pool_sizes: &pool_size,
+        };
+        let mut ds_pool = 0u64;
+        assert_eq!((vk.gpu.create_ds_pool)(vk.device as usize, &pool_ci, std::ptr::null(), &mut ds_pool), VK_SUCCESS);
+        let ds_ai = VkDescriptorSetAllocateInfo {
+            s_type: ST_DESCRIPTOR_SET_ALLOCATE_INFO, _pad: 0, p_next: std::ptr::null(),
+            descriptor_pool: ds_pool, descriptor_set_count: 1, _pad2: 0, p_set_layouts: &vk.gpu.ds_layout,
+        };
+        let mut ds = 0u64;
+        assert_eq!((vk.gpu.alloc_ds)(vk.device as usize, &ds_ai, &mut ds), VK_SUCCESS);
+
+        let (src_buf, src_mem, src_ptr) = vk.alloc_host_ssbo(2 << 20);
+        let (dst_buf, dst_mem, dst_ptr) = vk.alloc_host_ssbo(4 << 20);
+
+        let formats = [
+            EtcFormat::Rgb8,
+            EtcFormat::Rgb8A1,
+            EtcFormat::Rgba8,
+            EtcFormat::R11,
+            EtcFormat::R11Signed,
+            EtcFormat::Rg11,
+            EtcFormat::Rg11Signed,
+        ];
+        // Exercise multiple-of-4, cropped odd-width (tests R11 row-word padding),
+        // padded row_blocks, non-zero byte offset, and multi-layer arrays.
+        let shapes = [
+            (64usize, 64usize, 16usize, 1usize, 0usize),
+            (37usize, 29usize, 12usize, 3usize, 64usize),
+            (1usize, 1usize, 1usize, 2usize, 16usize),
+        ];
+
+        let mut seed = 0x51a7_9921u32;
+        for fmt in formats {
+            for (w, h, row_blocks, layers, src_off) in shapes {
+                let rows_of_blocks = h.div_ceil(4) + 1;
+                let layer_stride = row_blocks * rows_of_blocks * fmt.block_bytes();
+                let src_len = layers * layer_stride;
+                let mut src_bytes = vec![0u8; src_off + src_len];
+                for b in &mut src_bytes[src_off..] {
+                    seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                    *b = (seed >> 24) as u8;
+                }
+                unsafe { std::ptr::copy_nonoverlapping(src_bytes.as_ptr(), src_ptr, src_bytes.len()) };
+
+                let dst_row_words = match fmt {
+                    EtcFormat::R11 | EtcFormat::R11Signed => w.div_ceil(2),
+                    _ => w,
+                };
+                let dst_word_off = 16usize;
+                let dst_bytes = dst_row_words * 4 * h * layers;
+                unsafe { std::ptr::write_bytes(dst_ptr, 0xCC, dst_word_off * 4 + dst_bytes) };
+
+                let pc = GpuPushConstants {
+                    src_byte_offset: src_off as u32,
+                    dst_word_offset: dst_word_off as u32,
+                    width: w as u32,
+                    height: h as u32,
+                    row_blocks: row_blocks as u32,
+                    layer_stride: layer_stride as u32,
+                    dst_row_words: dst_row_words as u32,
+                    fmt_and_layers: etc_format_code(fmt) | ((layers as u32) << 8),
+                };
+                vk.dispatch_decode(src_buf, dst_buf, ds, &pc, w, h, layers);
+
+                let tb = fmt.texel_bytes();
+                let mut cpu_layer = vec![0u8; w * h * tb];
+                let gpu_out = unsafe {
+                    std::slice::from_raw_parts(dst_ptr.add(dst_word_off * 4), dst_bytes)
+                };
+                for layer in 0..layers {
+                    let surface = Surface {
+                        data: &src_bytes[src_off + layer * layer_stride..],
+                        row_blocks,
+                        rows_of_blocks,
+                    };
+                    etc_decode::decode_region(fmt, &surface, w, h, &mut cpu_layer).unwrap();
+                    let gpu_row_bytes = dst_row_words * 4;
+                    let cpu_row_bytes = w * tb;
+                    for y in 0..h {
+                        let g_start = (layer * h + y) * gpu_row_bytes;
+                        let c_start = y * cpu_row_bytes;
+                        assert_eq!(
+                            &gpu_out[g_start..g_start + cpu_row_bytes],
+                            &cpu_layer[c_start..c_start + cpu_row_bytes],
+                            "GPU vs CPU mismatch for {fmt:?} {w}x{h} layer {layer} row {y}"
+                        );
+                    }
+                }
+            }
+        }
+
+        (vk.unmap_mem)(vk.device as usize, src_mem);
+        (vk.unmap_mem)(vk.device as usize, dst_mem);
+        (vk.destroy_buffer)(vk.device as usize, src_buf, std::ptr::null());
+        (vk.free_mem)(vk.device as usize, src_mem, std::ptr::null());
+        (vk.destroy_buffer)(vk.device as usize, dst_buf, std::ptr::null());
+        (vk.free_mem)(vk.device as usize, dst_mem, std::ptr::null());
+        (vk.gpu.destroy_ds_pool)(vk.device as usize, ds_pool, std::ptr::null());
+    }
+
+    #[test]
+    #[ignore]
+    fn microbench_gpu_vs_cpu_decode() {
+        let Some(vk) = HeadlessVk::open() else {
+            println!("no Vulkan compute device available");
+            return;
+        };
+        let pool_size = VkDescriptorPoolSize { ty: DESCRIPTOR_TYPE_STORAGE_BUFFER, descriptor_count: 16 };
+        let pool_ci = VkDescriptorPoolCreateInfo {
+            s_type: ST_DESCRIPTOR_POOL_CREATE_INFO, _pad: 0, p_next: std::ptr::null(),
+            flags: 0, max_sets: 8, pool_size_count: 1, _pad2: 0, p_pool_sizes: &pool_size,
+        };
+        let mut ds_pool = 0u64;
+        assert_eq!((vk.gpu.create_ds_pool)(vk.device as usize, &pool_ci, std::ptr::null(), &mut ds_pool), VK_SUCCESS);
+        let ds_ai = VkDescriptorSetAllocateInfo {
+            s_type: ST_DESCRIPTOR_SET_ALLOCATE_INFO, _pad: 0, p_next: std::ptr::null(),
+            descriptor_pool: ds_pool, descriptor_set_count: 1, _pad2: 0, p_set_layouts: &vk.gpu.ds_layout,
+        };
+        let mut ds = 0u64;
+        assert_eq!((vk.gpu.alloc_ds)(vk.device as usize, &ds_ai, &mut ds), VK_SUCCESS);
+
+        let (src_buf, src_mem, src_ptr) = vk.alloc_host_ssbo(2 << 20);
+        // Device-local scratch output (identical to production GPU path).
+        let mut bci = [0u8; 56];
+        bci[0..4].copy_from_slice(&ST_BUFFER_CREATE_INFO.to_ne_bytes());
+        bci[24..32].copy_from_slice(&(4u64 << 20).to_ne_bytes());
+        bci[32..36].copy_from_slice(&(BUFFER_USAGE_TRANSFER_SRC | BUFFER_USAGE_STORAGE_BUFFER).to_ne_bytes());
+        let mut dst_buf = 0u64;
+        assert_eq!((vk.create_buffer)(vk.device as usize, bci.as_ptr() as *const c_void, std::ptr::null(), &mut dst_buf), VK_SUCCESS);
+        let mut req = [0u64; 3];
+        (vk.buffer_reqs)(vk.device as usize, dst_buf, &mut req);
+        let bits = req[2] as u32;
+        let dev_type = vk.mem_types.iter().enumerate()
+            .find(|(i, &f)| bits & (1 << i) != 0 && f & MEMORY_DEVICE_LOCAL != 0)
+            .unwrap().0 as u32;
+        let mut mai = [0u8; 32];
+        mai[0..4].copy_from_slice(&ST_MEMORY_ALLOCATE_INFO.to_ne_bytes());
+        mai[16..24].copy_from_slice(&req[0].to_ne_bytes());
+        mai[24..28].copy_from_slice(&dev_type.to_ne_bytes());
+        let mut dst_mem = 0u64;
+        assert_eq!((vk.alloc_mem)(vk.device as usize, mai.as_ptr() as *const c_void, std::ptr::null(), &mut dst_mem), VK_SUCCESS);
+        assert_eq!((vk.bind_buf)(vk.device as usize, dst_buf, dst_mem, 0), VK_SUCCESS);
+
+        let (w, h) = (1024usize, 1024usize);
+        let row_blocks = w / 4;
+        let mut seed = 0x1234_5678u32;
+        for fmt in [EtcFormat::Rgb8, EtcFormat::Rgba8, EtcFormat::Rg11Signed] {
+            let src_len = row_blocks * (h / 4) * fmt.block_bytes();
+            let src_bytes: Vec<u8> = (0..src_len).map(|_| {
+                seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                (seed >> 24) as u8
+            }).collect();
+            unsafe { std::ptr::copy_nonoverlapping(src_bytes.as_ptr(), src_ptr, src_bytes.len()) };
+
+            let pc = GpuPushConstants {
+                src_byte_offset: 0,
+                dst_word_offset: 0,
+                width: w as u32,
+                height: h as u32,
+                row_blocks: row_blocks as u32,
+                layer_stride: src_len as u32,
+                dst_row_words: w as u32,
+                fmt_and_layers: etc_format_code(fmt) | (1u32 << 8),
+            };
+            // Warm up
+            vk.dispatch_decode(src_buf, dst_buf, ds, &pc, w, h, 1);
+
+            let mut gpu_samples = Vec::new();
+            for _ in 0..5 {
+                let t0 = std::time::Instant::now();
+                for _ in 0..20 {
+                    vk.dispatch_decode(src_buf, dst_buf, ds, &pc, w, h, 1);
+                }
+                gpu_samples.push(t0.elapsed().as_secs_f64() / 20.0 * 1000.0);
+            }
+            gpu_samples.sort_by(f64::total_cmp);
+
+            let mut cpu_dst = vec![0u8; w * h * fmt.texel_bytes()];
+            let surface = Surface { data: &src_bytes, row_blocks, rows_of_blocks: h / 4 };
+            etc_decode::decode_region(fmt, &surface, w, h, &mut cpu_dst).unwrap();
+            let mut cpu_samples = Vec::new();
+            for _ in 0..5 {
+                let t0 = std::time::Instant::now();
+                for _ in 0..10 {
+                    etc_decode::decode_region(fmt, &surface, w, h, &mut cpu_dst).unwrap();
+                    std::hint::black_box(&cpu_dst);
+                }
+                cpu_samples.push(t0.elapsed().as_secs_f64() / 10.0 * 1000.0);
+            }
+            cpu_samples.sort_by(f64::total_cmp);
+            println!(
+                "1024x1024 {fmt:?}: CPU serial={:.3} ms, GPU compute (incl. submit+waitIdle)={:.3} ms ({:.1}x faster)",
+                cpu_samples[2],
+                gpu_samples[2],
+                cpu_samples[2] / gpu_samples[2]
+            );
+        }
+
+        (vk.unmap_mem)(vk.device as usize, src_mem);
+        (vk.destroy_buffer)(vk.device as usize, src_buf, std::ptr::null());
+        (vk.free_mem)(vk.device as usize, src_mem, std::ptr::null());
+        (vk.destroy_buffer)(vk.device as usize, dst_buf, std::ptr::null());
+        (vk.free_mem)(vk.device as usize, dst_mem, std::ptr::null());
+        (vk.gpu.destroy_ds_pool)(vk.device as usize, ds_pool, std::ptr::null());
     }
 }

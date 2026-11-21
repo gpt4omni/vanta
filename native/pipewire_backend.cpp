@@ -1417,14 +1417,72 @@ struct CaptureStream::Impl {
     std::atomic<bool> failed{false};
 
     mutable std::mutex mutex;
-    // A plain byte queue rather than a borrowed-pointer list like the
-    // playback side: capture is the other way round — PipeWire owns the
-    // memory the samples arrive in and reuses it the moment `process`
-    // returns, so anything we intend the reader to see later has to be
-    // copied out here, not referenced.
-    std::deque<uint8_t> buffered;
+    // Pre-allocated fixed-capacity circular byte buffer: PipeWire owns the
+    // memory the samples arrive in and reuses it the moment `process` returns,
+    // so samples are copied out in bulk `memcpy`s with zero heap allocations
+    // on the audio callback thread.
+    std::vector<uint8_t> ring;
+    size_t ring_head = 0;
+    size_t ring_len = 0;
     size_t max_buffered = 0;
     uint64_t dropped_bytes = 0;
+
+    void ring_reset(size_t capacity) {
+        ring.assign(capacity, 0);
+        ring_head = 0;
+        ring_len = 0;
+        max_buffered = capacity;
+        dropped_bytes = 0;
+    }
+
+    void ring_clear() {
+        ring_head = 0;
+        ring_len = 0;
+    }
+
+    void ring_push(const uint8_t* data, size_t size) {
+        if (size == 0 || max_buffered == 0) return;
+        if (size >= max_buffered) {
+            // Input alone exceeds capacity: drop everything queued plus the
+            // oldest prefix of this chunk, keeping the newest `max_buffered`.
+            dropped_bytes += ring_len + (size - max_buffered);
+            const uint8_t* tail = data + (size - max_buffered);
+            std::memcpy(ring.data(), tail, max_buffered);
+            ring_head = 0;
+            ring_len = max_buffered;
+            return;
+        }
+        if (ring_len + size > max_buffered) {
+            size_t drop = (ring_len + size) - max_buffered;
+            ring_head = (ring_head + drop) % max_buffered;
+            ring_len -= drop;
+            dropped_bytes += drop;
+        }
+        size_t tail_pos = (ring_head + ring_len) % max_buffered;
+        size_t first = max_buffered - tail_pos;
+        if (first >= size) {
+            std::memcpy(ring.data() + tail_pos, data, size);
+        } else {
+            std::memcpy(ring.data() + tail_pos, data, first);
+            std::memcpy(ring.data(), data + first, size - first);
+        }
+        ring_len += size;
+    }
+
+    uint32_t ring_pop(uint8_t* out, uint32_t size) {
+        size_t n = ring_len < size ? ring_len : size;
+        if (n == 0) return 0;
+        size_t first = max_buffered - ring_head;
+        if (first >= n) {
+            std::memcpy(out, ring.data() + ring_head, n);
+        } else {
+            std::memcpy(out, ring.data() + ring_head, first);
+            std::memcpy(out + first, ring.data(), n - first);
+        }
+        ring_head = (ring_head + n) % max_buffered;
+        ring_len -= n;
+        return static_cast<uint32_t>(n);
+    }
 
     static void on_process(void* data) { static_cast<Impl*>(data)->process(); }
 
@@ -1447,16 +1505,7 @@ struct CaptureStream::Impl {
             const uint32_t offset = buf->datas[0].chunk->offset;
             const uint32_t size = buf->datas[0].chunk->size;
             std::lock_guard<std::mutex> lock(mutex);
-            for (uint32_t i = 0; i < size; ++i) buffered.push_back(src[offset + i]);
-            // A reader that has stopped calling `read` must not turn into
-            // unbounded memory growth for as long as the stream stays open.
-            // Dropping the oldest samples is the right end to drop from: what
-            // a late reader wants is the most recent audio, and voice chat has
-            // no use for a second-old backlog it would only have to skip.
-            while (buffered.size() > max_buffered) {
-                buffered.pop_front();
-                ++dropped_bytes;
-            }
+            ring_push(src + offset, size);
         }
         g_lib.stream_queue_buffer(stream, b);
     }
@@ -1528,11 +1577,10 @@ bool CaptureStream::open(uint32_t rate_hz, uint32_t channels, const std::string&
     // Half a second. Long enough to absorb a reader that misses its slot
     // while the graph re-negotiates, short enough that the samples a reader
     // eventually sees are still worth hearing.
-    impl_->max_buffered = static_cast<size_t>(impl_->bytes_per_frame) * rate_hz / 2;
+    const size_t cap = static_cast<size_t>(impl_->bytes_per_frame) * rate_hz / 2;
     {
         std::lock_guard<std::mutex> lock(impl_->mutex);
-        impl_->buffered.clear();
-        impl_->dropped_bytes = 0;
+        impl_->ring_reset(cap);
     }
 
     static std::atomic<uint32_t> next_id{0};
@@ -1648,7 +1696,7 @@ void CaptureStream::close() {
     impl_->stream = nullptr;
     {
         std::lock_guard<std::mutex> lock(impl_->mutex);
-        impl_->buffered.clear();
+        impl_->ring_clear();
     }
     uint32_t remaining = g_open_capture_streams.fetch_sub(1) - 1;
     std::fprintf(stderr,
@@ -1665,13 +1713,7 @@ bool CaptureStream::failed() const {
 uint32_t CaptureStream::read(void* dst, uint32_t size) {
     if (!impl_ || !dst || size == 0) return 0;
     std::lock_guard<std::mutex> lock(impl_->mutex);
-    uint32_t n = static_cast<uint32_t>(impl_->buffered.size() < size ? impl_->buffered.size() : size);
-    auto* out = static_cast<uint8_t*>(dst);
-    for (uint32_t i = 0; i < n; ++i) {
-        out[i] = impl_->buffered.front();
-        impl_->buffered.pop_front();
-    }
-    return n;
+    return impl_->ring_pop(static_cast<uint8_t*>(dst), size);
 }
 
 uint64_t CaptureStream::dropped_bytes() const {

@@ -248,9 +248,15 @@ int vanta_cookies_get_for_domain(void* fn, const char* class_name, const char* d
         return -1;
     }
     try {
+        JNIEnv* jni = env->GetJNIEnv();
+        jni->PushLocalFrame(8);
+        struct Pop {
+            JNIEnv* j;
+            ~Pop() { if (j) j->PopLocalFrame(nullptr); }
+        } pop{jni};
         auto cls = env->GetClass(class_name);
         auto arg = std::make_shared<vanta::String>(std::string(domain ? domain : ""));
-        jstring r = reinterpret_cast<Call>(fn)(env->GetJNIEnv(),
+        jstring r = reinterpret_cast<Call>(fn)(jni,
                                                (jobject)vanta::to_jni(env, cls),
                                                (jstring)vanta::to_jni(env, arg));
         const auto* s = reinterpret_cast<vanta::String*>(r);

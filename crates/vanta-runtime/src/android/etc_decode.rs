@@ -353,47 +353,36 @@ pub fn decode_region(
     if dst.len() < width * height * tb {
         return Err(format!("destination has {} bytes, region needs {}", dst.len(), width * height * tb));
     }
-    // Keep interior results in place; only cropped blocks need uncropped texels
-    // in scratch for a following identical block.
+    // Keep the last decoded block in L1/stack scratch so consecutive identical
+    // blocks never read back from `dst`, which may be uncached write-combined
+    // Vulkan staging memory where CPU reads stall by 50-100x.
     let mut texels = [0u8; 64];
-    let mut previous: Option<(&[u8], usize, bool)> = None;
+    let mut previous: Option<&[u8]> = None;
     let stride = width * tb;
+    let row_bytes = 4 * tb;
     for by in 0..bh {
         for bx in 0..bw {
             let off = (by * src.row_blocks + bx) * bb;
             let block = &src.data[off..off + bb];
             let d = (by * 4 * width + bx * 4) * tb;
             let full = bx * 4 + 4 <= width && by * 4 + 4 <= height;
-            let same = previous.filter(|&(raw, _, _)| raw == block);
+            let same = previous.is_some_and(|raw| raw == block);
+            if !same {
+                decode_block(format, block, &mut texels);
+                previous = Some(block);
+            }
             if full {
-                if let Some((_, from, was_full)) = same {
-                    for y in 0..4 {
-                        if was_full {
-                            dst.copy_within(from + y * stride..from + y * stride + 4 * tb, d + y * stride);
-                        } else {
-                            dst[d + y * stride..d + y * stride + 4 * tb]
-                                .copy_from_slice(&texels[y * 4 * tb..(y + 1) * 4 * tb]);
-                        }
-                    }
-                } else {
-                    decode_block_rows(format, block, &mut dst[d..], stride);
+                for y in 0..4 {
+                    dst[d + y * stride..d + y * stride + row_bytes]
+                        .copy_from_slice(&texels[y * row_bytes..(y + 1) * row_bytes]);
                 }
             } else {
-                if let Some((_, from, true)) = same {
-                    for y in 0..4 {
-                        texels[y * 4 * tb..(y + 1) * 4 * tb]
-                            .copy_from_slice(&dst[from + y * stride..from + y * stride + 4 * tb]);
-                    }
-                } else if same.is_none() {
-                    decode_block(format, block, &mut texels);
-                }
                 let bytes = (width - bx * 4).min(4) * tb;
                 for y in 0..(height - by * 4).min(4) {
                     dst[d + y * stride..d + y * stride + bytes]
-                        .copy_from_slice(&texels[y * 4 * tb..y * 4 * tb + bytes]);
+                        .copy_from_slice(&texels[y * row_bytes..y * row_bytes + bytes]);
                 }
             }
-            previous = Some((block, d, full));
         }
     }
     Ok(())

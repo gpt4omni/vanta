@@ -801,6 +801,46 @@ void register_game_activity_classes(ENV* env) {
 /// construction happens inside the local frame this pushes. Returns 0 with
 /// `*consumed` set, -1 on error, or -2 if the native is not registered yet —
 /// the ordinary race against `initializeNativeCode` during startup.
+struct LocalFrame {
+    JNIEnv* jni;
+    LocalFrame(JNIEnv* env, jint cap = 8) : jni(env) {
+        if (jni) jni->PushLocalFrame(cap);
+    }
+    ~LocalFrame() {
+        if (jni) jni->PopLocalFrame(nullptr);
+    }
+    LocalFrame(const LocalFrame&) = delete;
+    LocalFrame& operator=(const LocalFrame&) = delete;
+};
+
+static std::shared_ptr<jnivm::Class> cached_game_activity_class(jnivm::ENV* env) {
+    static const auto cls = env->GetClass("com/google/androidgamesdk/GameActivity");
+    return cls;
+}
+
+static std::shared_ptr<jnivm::Class> cached_native_gl_class(jnivm::ENV* env) {
+    static const auto cls = env->GetClass("com/roblox/engine/jni/NativeGLInterface");
+    return cls;
+}
+
+static std::shared_ptr<jnivm::Class> cached_native_input_class(jnivm::ENV* env) {
+    static const auto cls = env->GetClass("com/roblox/engine/jni/NativeInputInterface");
+    return cls;
+}
+
+static void* resolve_ga_native(jnivm::Class* cls, const char* name, std::atomic<void*>& slot) {
+    if (void* p = slot.load(std::memory_order_acquire)) {
+        return p;
+    }
+    std::lock_guard<std::mutex> lock(cls->mtx);
+    auto it = cls->natives.find(name);
+    void* fn = it == cls->natives.end() ? nullptr : it->second;
+    if (fn) {
+        slot.store(fn, std::memory_order_release);
+    }
+    return fn;
+}
+
 template <typename Build>
 int deliver_motion(long handle, Build&& build, int* consumed, char* err, size_t err_len) {
     auto* env = vanta::process_env();
@@ -810,29 +850,20 @@ int deliver_motion(long handle, Build&& build, int* consumed, char* err, size_t 
     }
     try {
         JNIEnv* jni = env->GetJNIEnv();
-        auto cls = env->GetClass("com/google/androidgamesdk/GameActivity");
+        auto cls = cached_game_activity_class(env);
         if (!cls) {
             snprintf(err, err_len, "GameActivity class is not registered");
             return -1;
         }
-        void* fn;
-        {
-            std::lock_guard<std::mutex> lock(cls->mtx);
-            auto it = cls->natives.find("onTouchEventNative");
-            fn = it == cls->natives.end() ? nullptr : it->second;
-        }
+        static std::atomic<void*> s_on_touch{nullptr};
+        void* fn = resolve_ga_native(cls.get(), "onTouchEventNative", s_on_touch);
         if (!fn) {
             return -2;
         }
 
-        // Wrapped in `PushLocalFrame`/`PopLocalFrame`: unlike the
-        // once-per-launch calls elsewhere in this file, this runs once per
-        // input event, and `vanta::to_jni` parks every object it touches in
-        // the current local frame — without popping, a long session would grow
-        // that frame without bound. The contacts are plain C++ in the event
-        // object rather than a Java array, so the frame holds two references
-        // however many fingers are down.
-        jni->PushLocalFrame(8);
+        // RAII frame guarantees PopLocalFrame runs even on an exception path,
+        // preventing unbounded local-frame growth across a long session.
+        LocalFrame frame(jni, 8);
 
         auto jactivity = vanta::to_jni(env, vanta::shared_activity(env));
         auto event = build(env);
@@ -851,7 +882,6 @@ int deliver_motion(long handle, Build&& build, int* consumed, char* err, size_t 
             /*buttonState=*/event->buttonState, /*classification=*/0, /*edgeFlags=*/0,
             /*precisionX=*/1.0f, /*precisionY=*/1.0f);
 
-        jni->PopLocalFrame(nullptr);
         if (consumed) {
             *consumed = r ? 1 : 0;
         }
@@ -1431,8 +1461,10 @@ int vanta_input_key_event(void* fn, int down, int key_code, int modifiers, int i
         return -1;
     }
     try {
-        auto cls = env->GetClass("com/roblox/engine/jni/NativeGLInterface");
-        reinterpret_cast<Call>(fn)(env->GetJNIEnv(), (jobject)vanta::to_jni(env, cls),
+        JNIEnv* jni = env->GetJNIEnv();
+        vanta::LocalFrame frame(jni, 4);
+        auto cls = vanta::cached_native_gl_class(env);
+        reinterpret_cast<Call>(fn)(jni, (jobject)vanta::to_jni(env, cls),
                                    down ? JNI_TRUE : JNI_FALSE, key_code, modifiers,
                                    is_repeat ? JNI_TRUE : JNI_FALSE);
         return 0;
@@ -1456,9 +1488,11 @@ int vanta_input_pass_text(void* fn, long long which, const char* text, int flag,
         return -1;
     }
     try {
-        auto cls = env->GetClass("com/roblox/engine/jni/NativeGLInterface");
+        JNIEnv* jni = env->GetJNIEnv();
+        vanta::LocalFrame frame(jni, 4);
+        auto cls = vanta::cached_native_gl_class(env);
         auto str = std::make_shared<vanta::String>(std::string(text ? text : ""));
-        reinterpret_cast<Call>(fn)(env->GetJNIEnv(), (jobject)vanta::to_jni(env, cls),
+        reinterpret_cast<Call>(fn)(jni, (jobject)vanta::to_jni(env, cls),
                                    (jlong)which, (jstring)vanta::to_jni(env, str),
                                    flag ? JNI_TRUE : JNI_FALSE, cursor);
         return 0;
@@ -1491,7 +1525,8 @@ int vanta_game_activity_surface_resized(long long handle, int format, int width,
     }
     try {
         auto* jni = env->GetJNIEnv();
-        auto cls = env->GetClass("com/google/androidgamesdk/GameActivity");
+        vanta::LocalFrame frame(jni, 8);
+        auto cls = vanta::cached_game_activity_class(env);
         auto native = [&](const char* name) -> void* {
             std::lock_guard<std::mutex> lock(cls->mtx);
             auto it = cls->natives.find(name);
@@ -1545,8 +1580,10 @@ int vanta_input_update_keyboard_size(void* fn, int visible, int x, int y, int w,
         return -1;
     }
     try {
-        auto cls = env->GetClass("com/roblox/engine/jni/NativeGLInterface");
-        reinterpret_cast<Call>(fn)(env->GetJNIEnv(), (jobject)vanta::to_jni(env, cls),
+        JNIEnv* jni = env->GetJNIEnv();
+        vanta::LocalFrame frame(jni, 4);
+        auto cls = vanta::cached_native_gl_class(env);
+        reinterpret_cast<Call>(fn)(jni, (jobject)vanta::to_jni(env, cls),
                                    visible ? JNI_TRUE : JNI_FALSE, x, y, w, h);
         return 0;
     } catch (const std::exception& e) {
@@ -1577,9 +1614,11 @@ int vanta_input_sync_textbox(void* fn, const char* text, int cursor, char* err,
         return -1;
     }
     try {
-        auto cls = env->GetClass("com/roblox/engine/jni/NativeGLInterface");
+        JNIEnv* jni = env->GetJNIEnv();
+        vanta::LocalFrame frame(jni, 4);
+        auto cls = vanta::cached_native_gl_class(env);
         auto str = std::make_shared<vanta::String>(std::string(text ? text : ""));
-        reinterpret_cast<Call>(fn)(env->GetJNIEnv(), (jobject)vanta::to_jni(env, cls),
+        reinterpret_cast<Call>(fn)(jni, (jobject)vanta::to_jni(env, cls),
                                    (jstring)vanta::to_jni(env, str), cursor);
         return 0;
     } catch (const std::exception& e) {
@@ -1608,8 +1647,10 @@ int vanta_input_return_pressed(void* fn, long long which, char* err, size_t err_
         return -1;
     }
     try {
-        auto cls = env->GetClass("com/roblox/engine/jni/NativeGLInterface");
-        reinterpret_cast<Call>(fn)(env->GetJNIEnv(), (jobject)vanta::to_jni(env, cls),
+        JNIEnv* jni = env->GetJNIEnv();
+        vanta::LocalFrame frame(jni, 4);
+        auto cls = vanta::cached_native_gl_class(env);
+        reinterpret_cast<Call>(fn)(jni, (jobject)vanta::to_jni(env, cls),
                                    (jlong)which);
         return 0;
     } catch (const std::exception& e) {
@@ -1630,10 +1671,14 @@ int vanta_input_mouse_move(void* fn, float x, float y, float dx, float dy, char*
         return -1;
     }
     try {
-        // There is one VM per process, and its class table owns this class.
-        // Cache the shared class, not a local JNI reference from another thread.
-        static const auto cls = env->GetClass("com/roblox/engine/jni/NativeInputInterface");
-        reinterpret_cast<Call>(fn)(env->GetJNIEnv(), (jobject)vanta::to_jni(env, cls), x, y, dx,
+        JNIEnv* jni = env->GetJNIEnv();
+        // Pop the local reference parked by `to_jni` on every call; this runs
+        // at up to 1000-8000 Hz during mouse movement plus the 250 Hz idle
+        // keepalive, and without a frame it grows libjnivm's root local-ref
+        // vector without bound.
+        vanta::LocalFrame frame(jni, 4);
+        auto cls = vanta::cached_native_input_class(env);
+        reinterpret_cast<Call>(fn)(jni, (jobject)vanta::to_jni(env, cls), x, y, dx,
                                    dy);
         return 0;
     } catch (const std::exception& e) {
@@ -1654,8 +1699,10 @@ int vanta_input_mouse_button(void* fn, float x, float y, int down, int button, c
         return -1;
     }
     try {
-        auto cls = env->GetClass("com/roblox/engine/jni/NativeInputInterface");
-        reinterpret_cast<Call>(fn)(env->GetJNIEnv(), (jobject)vanta::to_jni(env, cls), x, y,
+        JNIEnv* jni = env->GetJNIEnv();
+        vanta::LocalFrame frame(jni, 4);
+        auto cls = vanta::cached_native_input_class(env);
+        reinterpret_cast<Call>(fn)(jni, (jobject)vanta::to_jni(env, cls), x, y,
                                    down ? JNI_TRUE : JNI_FALSE, button);
         return 0;
     } catch (const std::exception& e) {
@@ -1688,8 +1735,10 @@ int vanta_input_mouse_wheel(void* fn, float x, float y, float delta, char* err, 
         return -1;
     }
     try {
-        auto cls = env->GetClass("com/roblox/engine/jni/NativeInputInterface");
-        reinterpret_cast<Call>(fn)(env->GetJNIEnv(), (jobject)vanta::to_jni(env, cls), x, y,
+        JNIEnv* jni = env->GetJNIEnv();
+        vanta::LocalFrame frame(jni, 4);
+        auto cls = vanta::cached_native_input_class(env);
+        reinterpret_cast<Call>(fn)(jni, (jobject)vanta::to_jni(env, cls), x, y,
                                    delta);
         return 0;
     } catch (const std::exception& e) {
@@ -1731,8 +1780,10 @@ int vanta_input_pass_input(void* fn, int pointer_id, float x, float y, int actio
         return -1;
     }
     try {
-        auto cls = env->GetClass("com/roblox/engine/jni/NativeInputInterface");
-        reinterpret_cast<Call>(fn)(env->GetJNIEnv(), (jobject)vanta::to_jni(env, cls), pointer_id,
+        JNIEnv* jni = env->GetJNIEnv();
+        vanta::LocalFrame frame(jni, 4);
+        auto cls = vanta::cached_native_input_class(env);
+        reinterpret_cast<Call>(fn)(jni, (jobject)vanta::to_jni(env, cls), pointer_id,
                                    x, y, action, width, height);
         return 0;
     } catch (const std::exception& e) {
@@ -1846,8 +1897,10 @@ int vanta_input_gamepad_button(void* fn, int id, int key_code, int action, char*
         return -1;
     }
     try {
-        auto cls = env->GetClass("com/roblox/engine/jni/NativeInputInterface");
-        reinterpret_cast<Call>(fn)(env->GetJNIEnv(), (jobject)vanta::to_jni(env, cls), id,
+        JNIEnv* jni = env->GetJNIEnv();
+        vanta::LocalFrame frame(jni, 4);
+        auto cls = vanta::cached_native_input_class(env);
+        reinterpret_cast<Call>(fn)(jni, (jobject)vanta::to_jni(env, cls), id,
                                    key_code, action);
         return 0;
     } catch (const std::exception& e) {
@@ -1878,8 +1931,10 @@ int vanta_input_gamepad_axis(void* fn, int id, int axis, float x, float y, float
         return -1;
     }
     try {
-        auto cls = env->GetClass("com/roblox/engine/jni/NativeInputInterface");
-        reinterpret_cast<Call>(fn)(env->GetJNIEnv(), (jobject)vanta::to_jni(env, cls), id, axis,
+        JNIEnv* jni = env->GetJNIEnv();
+        vanta::LocalFrame frame(jni, 4);
+        auto cls = vanta::cached_native_input_class(env);
+        reinterpret_cast<Call>(fn)(jni, (jobject)vanta::to_jni(env, cls), id, axis,
                                    x, y, z);
         return 0;
     } catch (const std::exception& e) {
@@ -2040,23 +2095,21 @@ int vanta_game_activity_key(long handle, int down, int key_code, int scan_code, 
     }
     try {
         JNIEnv* jni = env->GetJNIEnv();
-        auto cls = env->GetClass("com/google/androidgamesdk/GameActivity");
+        auto cls = vanta::cached_game_activity_class(env);
         if (!cls) {
             snprintf(err, err_len, "GameActivity class is not registered");
             return -1;
         }
-        const char* name = down ? "onKeyDownNative" : "onKeyUpNative";
-        void* fn;
-        {
-            std::lock_guard<std::mutex> lock(cls->mtx);
-            auto it = cls->natives.find(name);
-            fn = it == cls->natives.end() ? nullptr : it->second;
-        }
+        static std::atomic<void*> s_key_down{nullptr};
+        static std::atomic<void*> s_key_up{nullptr};
+        void* fn = down
+            ? vanta::resolve_ga_native(cls.get(), "onKeyDownNative", s_key_down)
+            : vanta::resolve_ga_native(cls.get(), "onKeyUpNative", s_key_up);
         if (!fn) {
             return -2;
         }
 
-        jni->PushLocalFrame(8);
+        vanta::LocalFrame frame(jni, 8);
 
         auto jactivity = vanta::to_jni(env, vanta::shared_activity(env));
         auto event = vanta::KeyEvent::Create(env, down ? JNI_TRUE : JNI_FALSE, (jint)key_code,
@@ -2068,7 +2121,6 @@ int vanta_game_activity_key(long handle, int down, int key_code, int scan_code, 
         using KeyFn = jboolean (*)(JNIEnv*, jobject, jlong, jobject);
         jboolean r = reinterpret_cast<KeyFn>(fn)(jni, jactivity, (jlong)handle, jevent);
 
-        jni->PopLocalFrame(nullptr);
         if (consumed) {
             *consumed = r ? 1 : 0;
         }

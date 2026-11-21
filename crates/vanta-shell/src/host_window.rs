@@ -369,6 +369,12 @@ pub struct HostWindow {
     /// rebuilt when the *editor* moves, without waiting for the next geometry
     /// sync to supply the canvas again.
     canvas_rect: std::cell::Cell<Option<(i32, i32, i32, i32)>>,
+    /// Last `(canvas_rect, surface_size, window_size, surface_transform)` sent
+    /// to the compositor by `set_canvas_cutout`. `sync_canvas_geometry` runs on
+    /// every `looper::pump` tick (up to 1000 Hz while moving a gaming mouse);
+    /// skipping redundant Cairo region allocations and Wayland wire requests
+    /// when nothing moved prevents a 2000 req/s compositor storm.
+    cutout_cache: std::cell::Cell<Option<((i32, i32, i32, i32), (i32, i32), (i32, i32), (i32, i32))>>,
     /// Whether a web-view dialog is up, so [`input_region`] stops punching the
     /// canvas out of what GTK will accept clicks for.
     ///
@@ -1123,6 +1129,7 @@ impl HostWindow {
             canvas_see_through: std::cell::Cell::new(false),
             opaque_unsized: std::cell::Cell::new(false),
             canvas_rect: std::cell::Cell::new(None),
+            cutout_cache: std::cell::Cell::new(None),
             dialog_up: std::cell::Cell::new(false),
             canvas_in_input_region: std::cell::Cell::new(false),
             present_probe: std::cell::RefCell::new(None),
@@ -1794,7 +1801,19 @@ impl HostWindow {
         if w <= 0 || h <= 0 {
             return;
         }
+        let surface_size = self
+            .window
+            .surface()
+            .map(|s| (s.width(), s.height()))
+            .unwrap_or((0, 0));
+        let win_size = (self.window.width(), self.window.height());
+        let (dx, dy) = self.window.surface_transform();
+        let key = ((x, y, w, h), surface_size, win_size, (dx as i32, dy as i32));
+        if self.cutout_cache.get() == Some(key) {
+            return;
+        }
         self.canvas_rect.set(Some((x, y, w, h)));
+        self.cutout_cache.set(Some(key));
         self.refresh_opaque_region();
         self.refresh_input_region();
     }

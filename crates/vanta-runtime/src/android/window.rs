@@ -971,10 +971,13 @@ impl HostWindow {
             .unwrap_or_else(|e| e.into_inner())
             .buttons;
 
-        let no_drag_lock = std::env::var_os("VANTA_NO_DRAG_LOCK").is_some();
-        let force = std::env::var_os("VANTA_FORCE_POINTER_LOCK").is_some();
+        static NO_DRAG_LOCK: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        static FORCE_LOCK: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        static NO_LOCK: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let no_drag_lock = *NO_DRAG_LOCK.get_or_init(|| std::env::var_os("VANTA_NO_DRAG_LOCK").is_some());
+        let force = *FORCE_LOCK.get_or_init(|| std::env::var_os("VANTA_FORCE_POINTER_LOCK").is_some());
 
-        if std::env::var_os("VANTA_NO_POINTER_LOCK").is_some() {
+        if *NO_LOCK.get_or_init(|| std::env::var_os("VANTA_NO_POINTER_LOCK").is_some()) {
             self.release_pointer_lock();
             return;
         }
@@ -1857,8 +1860,6 @@ impl HostWindow {
     /// Drain and deliver whatever X11 input is already queued, then return.
     /// See the module-level comment above for why this never blocks.
     fn pump_input_events(&self, handle: i64) {
-        self.sync_pointer_lock();
-
         // GTK first, then the editor's placement: a keystroke typed into the
         // editor arrives through GTK's own connection and is turned into an
         // edit here, before the engine's connection is drained below. Ahead of
@@ -1878,6 +1879,7 @@ impl HostWindow {
         // pure non-blocking check.
         let ready = unsafe { poll(&mut pfd as *mut PollFd as *mut c_void, 1, 0) };
         if ready <= 0 {
+            self.sync_pointer_lock();
             return;
         }
 

@@ -1196,7 +1196,8 @@ pub fn pump(duration: std::time::Duration, game_activity_handle: Option<i64>) {
             // which ever drew a frame properly can reach it, and it says so in
             // the log when it fires -- so a run that needed it is never
             // mistaken for one that did not.
-            if std::env::var_os("VANTA_RECOVERY_DEBUG").is_some()
+            static RECOVERY_DEBUG: OnceLock<bool> = OnceLock::new();
+            if *RECOVERY_DEBUG.get_or_init(|| std::env::var_os("VANTA_RECOVERY_DEBUG").is_some())
                 && stall_since.elapsed().as_millis() % 5000 < 40
             {
                 println!(
@@ -1403,8 +1404,10 @@ pub fn pump(duration: std::time::Duration, game_activity_handle: Option<i64>) {
                 Some(v) => Some(v),
                 None => super::backend_visible(),
             };
+            let mut keepalive_active = false;
             policy = super::input::throttle_policy();
             if super::input::keepalive_wanted(policy, observed, visible) {
+                keepalive_active = true;
                 super::input::idle_keepalive();
             }
             // Gamepads, from the host's joydev nodes. **On unless
@@ -1419,6 +1422,16 @@ pub fn pump(duration: std::time::Duration, game_activity_handle: Option<i64>) {
             // reach the engine at all. Backgrounding the window should slow the
             // game down, not drop a button press.
             super::gamepad::poll();
+            looper_poll_once(
+                if watching {
+                    super::input::keepalive_poll_timeout_ms(keepalive_active)
+                } else {
+                    8
+                },
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            );
         } else {
             super::pump_window_only();
             // The control socket under `--app-bridge`, with 0 for the handle.
@@ -1428,13 +1441,13 @@ pub fn pump(duration: std::time::Duration, game_activity_handle: Option<i64>) {
             // activity" every AGDK entry point already refuses by name; the
             // plain JNI natives each verb also drives do not take one.
             crate::devctl::apply_queued(0);
+            looper_poll_once(
+                if watching { 50 } else { 8 },
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            );
         }
-        looper_poll_once(
-            if watching { 50 } else { 8 },
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-        );
         // The engine's cookie jar is memory-only, so somebody has to write it
         // down. Driven from here rather than from the engine's own `Set-Cookie`
         // callback because that callback arrives on the engine's HTTP thread
@@ -1868,7 +1881,12 @@ extern "C" fn looper_poll_once(
         super::trace(format_args!("ALooper_pollOnce on a thread with no looper"));
         return POLL_ERROR;
     };
-    l.stats.polls.fetch_add(1, Ordering::Relaxed);
+    // Single-writer counter on the looper's owning thread: relaxed load+store
+    // avoids a locked RMW on every hot `ALooper_pollOnce` call.
+    l.stats.polls.store(
+        l.stats.polls.load(Ordering::Relaxed).wrapping_add(1),
+        Ordering::Relaxed,
+    );
     let instrumentation = census::on();
     if instrumentation {
         POLLS.fetch_add(1, Ordering::Relaxed);
@@ -1914,17 +1932,10 @@ extern "C" fn looper_poll_once(
     // wake, resets the streak to zero, so a burst of real events is never
     // slowed -- only an idle spin is.
     let backoff_ns = zero_timeout_coalesce_ns();
-    if timeout_millis == 0
+    let use_backoff = timeout_millis == 0
         && backoff_ns > 0
         && super::glcount::frames() >= BACKOFF_AFTER_PRESENTS
-        && l.empty_zero_streak.load(Ordering::Relaxed) >= IDLE_SPIN_THRESHOLD
-    {
-        POLLS_COALESCED.fetch_add(1, Ordering::Relaxed);
-        // SAFETY: a plain relative sleep on this thread; the struct is
-        // fully initialised and the call cannot fail in a way that matters.
-        let ts = Timespec { tv_sec: 0, tv_nsec: backoff_ns as i64 };
-        unsafe { nanosleep(&ts, std::ptr::null_mut()) };
-    }
+        && l.empty_zero_streak.load(Ordering::Relaxed) >= IDLE_SPIN_THRESHOLD;
 
     let mut events = [EpollEvent { events: 0, data: 0 }; 16];
     // Time the syscall on one call in 1024. Timing every call would cost two
@@ -1932,8 +1943,47 @@ extern "C" fn looper_poll_once(
     // one, which is the classic way to measure the instrument.
     let timed = seat.is_some_and(|s| s.calls.load(Ordering::Relaxed) % 1024 == 0);
     let t0 = timed.then(std::time::Instant::now);
-    // SAFETY: `events` is a live array of the length passed.
-    let n = unsafe { epoll_wait(l.epoll, events.as_mut_ptr(), events.len() as c_int, effective_timeout) };
+    let n = if use_backoff {
+        POLLS_COALESCED.fetch_add(1, Ordering::Relaxed);
+        // Prefer `epoll_pwait2` (Linux 5.11+, syscall 441 on x86_64/aarch64):
+        // it sleeps for `backoff_ns` inside the kernel epoll wait itself, so
+        // `ALooper_wake()` or any ready fd wakes the thread instantaneously
+        // instead of stalling behind an uninterruptible `nanosleep`, and does
+        // so in one syscall instead of two. Falls back cleanly on ENOSYS.
+        const SYS_EPOLL_PWAIT2: std::ffi::c_long = 441;
+        static EPOLL_PWAIT2_OK: AtomicBool = AtomicBool::new(true);
+        let ts = Timespec { tv_sec: 0, tv_nsec: backoff_ns as i64 };
+        if EPOLL_PWAIT2_OK.load(Ordering::Relaxed) {
+            extern "C" {
+                fn syscall(num: std::ffi::c_long, ...) -> std::ffi::c_long;
+            }
+            // SAFETY: `events` and `ts` are valid stack objects for the call.
+            let r = unsafe {
+                syscall(
+                    SYS_EPOLL_PWAIT2,
+                    l.epoll as std::ffi::c_long,
+                    events.as_mut_ptr(),
+                    events.len() as std::ffi::c_long,
+                    &ts as *const Timespec,
+                    std::ptr::null::<c_void>(),
+                    0usize,
+                )
+            };
+            if r >= 0 || std::io::Error::last_os_error().raw_os_error() != Some(38 /* ENOSYS */) {
+                r as c_int
+            } else {
+                EPOLL_PWAIT2_OK.store(false, Ordering::Relaxed);
+                unsafe { nanosleep(&ts, std::ptr::null_mut()) };
+                unsafe { epoll_wait(l.epoll, events.as_mut_ptr(), events.len() as c_int, effective_timeout) }
+            }
+        } else {
+            unsafe { nanosleep(&ts, std::ptr::null_mut()) };
+            unsafe { epoll_wait(l.epoll, events.as_mut_ptr(), events.len() as c_int, effective_timeout) }
+        }
+    } else {
+        // SAFETY: `events` is a live array of the length passed.
+        unsafe { epoll_wait(l.epoll, events.as_mut_ptr(), events.len() as c_int, effective_timeout) }
+    };
     if let (Some(s), Some(t0)) = (seat, t0) {
         s.ns.store(
             s.ns.load(Ordering::Relaxed) + t0.elapsed().as_nanos() as u64,
@@ -1946,11 +1996,15 @@ extern "C" fn looper_poll_once(
     }
     // Remember an empty zero-timeout poll so the next few can be answered
     // without the kernel; forget it the moment anything is actually ready, so
-    // input in flight is never delayed by the damper.
+    // input in flight is never delayed by the damper. Saturate at the
+    // threshold to avoid repeated RMWs while idle.
     if timeout_millis == 0 {
         if n == 0 {
-            l.empty_zero_streak.fetch_add(1, Ordering::Relaxed);
-        } else {
+            let cur = l.empty_zero_streak.load(Ordering::Relaxed);
+            if cur < IDLE_SPIN_THRESHOLD {
+                l.empty_zero_streak.store(cur + 1, Ordering::Relaxed);
+            }
+        } else if l.empty_zero_streak.load(Ordering::Relaxed) != 0 {
             l.empty_zero_streak.store(0, Ordering::Relaxed);
         }
     }

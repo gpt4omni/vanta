@@ -87,10 +87,13 @@ const char* remap(const char* path, char* buf, size_t n) {
         return nullptr;
     }
     // `path + 7` keeps the separator, so the result is `<root>/fonts/...`.
-    int w = std::snprintf(buf, n, "%s%s", g_root, path + 7);
-    if (w < 0 || static_cast<size_t>(w) >= n) {
+    const char* tail = path + 7;
+    size_t tail_len = std::strlen(tail);
+    if (g_root_len + tail_len + 1 > n) {
         return nullptr;
     }
+    std::memcpy(buf, g_root, g_root_len);
+    std::memcpy(buf + g_root_len, tail, tail_len + 1);
     return buf;
 }
 
@@ -165,6 +168,10 @@ char* s_realpath(const char* path, char* resolved) {
         //
         // `vasprintf` and `getcwd(NULL, n)` have the same shape and get the same
         // treatment in foreign_alloc.cpp.
+        if (!g_trace) {
+            errno = ENOTSUP;
+            return nullptr;
+        }
         char tmp[PATH_MAX];
         char* r = ::realpath(real, tmp);
         trace("realpath", real, r ? r : "null (unsupported: no caller buffer)");

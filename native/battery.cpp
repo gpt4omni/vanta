@@ -253,8 +253,14 @@ int vanta_report_battery_state_changed(void* fn, int status, int plugged, char* 
         return -1;
     }
     try {
-        auto cls = env->GetClass("com/roblox/engine/jni/NativeGLInterface");
-        reinterpret_cast<Call>(fn)(env->GetJNIEnv(), (jclass)vanta::to_jni(env, cls),
+        JNIEnv* jni = env->GetJNIEnv();
+        jni->PushLocalFrame(4);
+        struct Pop {
+            JNIEnv* j;
+            ~Pop() { if (j) j->PopLocalFrame(nullptr); }
+        } pop{jni};
+        static const auto cls = env->GetClass("com/roblox/engine/jni/NativeGLInterface");
+        reinterpret_cast<Call>(fn)(jni, (jclass)vanta::to_jni(env, cls),
                                    static_cast<jint>(status), static_cast<jint>(plugged));
         return 0;
     } catch (const std::exception& e) {
@@ -315,6 +321,12 @@ int vanta_report_battery_status(void* fn, const VantaBatteryStatus* in, char* er
         return -1;
     }
     try {
+        JNIEnv* jni = env->GetJNIEnv();
+        jni->PushLocalFrame(8);
+        struct Pop {
+            JNIEnv* j;
+            ~Pop() { if (j) j->PopLocalFrame(nullptr); }
+        } pop{jni};
         auto status = std::make_shared<vanta::BatteryStatus>();
         if (in->has_present) status->present = vanta::box_bool(in->present != 0);
         if (in->has_percentage) status->batteryPercentage = vanta::box_int(in->percentage);
@@ -333,8 +345,8 @@ int vanta_report_battery_status(void* fn, const VantaBatteryStatus* in, char* er
         // batteryLow, batterySaverMode, energyCounter: never set. See the
         // class's own doc comment for why.
 
-        auto cls = env->GetClass("com/roblox/engine/jni/NativeGLInterface");
-        reinterpret_cast<Call>(fn)(env->GetJNIEnv(), (jclass)vanta::to_jni(env, cls),
+        static const auto cls = env->GetClass("com/roblox/engine/jni/NativeGLInterface");
+        reinterpret_cast<Call>(fn)(jni, (jclass)vanta::to_jni(env, cls),
                                    (jobject)vanta::to_jni(env, status));
         return 0;
     } catch (const std::exception& e) {

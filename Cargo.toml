@@ -46,3 +46,5 @@ undocumented_unsafe_blocks = "warn"
 
 [profile.release]
 debug = true      # the runtime is useless to debug without symbols
+lto = "thin"      # cross-crate inlining across vanta-runtime, vanta-linker-sys and vanta-shell
+codegen-units = 1 # keep hot runtime modules (etc_decode, vulkan, looper, pthread) in one CGU

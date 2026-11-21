@@ -1,4 +1,4 @@
-# ADR-049: ETC2/EAC is decoded on the CPU where the driver lacks the feature
+# ADR-049: ETC2/EAC is emulated where the driver lacks the feature
 
 **Status:** accepted
 **Supersedes:** the "nothing is translated" half of [ADR-042](ADR-042-texture-format-query-observability.md); its counters and the test-only mask stand
@@ -33,11 +33,26 @@ as though it were true and serves the engine's ETC2 and EAC images itself:
 - `vkCreateImage` and `vkCreateImageView` use that substitute format, as does
   `vkGetDeviceImageMemoryRequirements` and its sparse variant, so the image
   the driver sizes and creates is the one that is used;
-- `vkCmdCopyBufferToImage(2)` reserves staging and queues CPU decoding from an
-  owned compressed-byte snapshot. Submit joins the work and checks for writes
-  since recording before the driver may execute the recorded staging copy.
+- `vkCmdCopyBufferToImage(2)` prefers a device-side Vulkan 1.0 compute shader
+  (`etc_decode_gpu.comp`, precompiled SPIR-V in `etc_decode_spv.rs`) whenever
+  the command buffer belongs to a compute-capable queue family, the source
+  upload buffer carries `VK_BUFFER_USAGE_STORAGE_BUFFER_BIT` (ORed in at
+  `vkCreateBuffer` on `TRANSFER_SRC` buffers), and the command buffer has not
+  bound a compute pipeline of its own. The shader decodes straight from the
+  engine's upload buffer into a pooled `DEVICE_LOCAL` scratch buffer, emits a
+  compute-to-transfer buffer barrier, and forwards `vkCmdCopyBufferToImage`
+  to the driver. The destination `VkImage` stays pure `SAMPLED | TRANSFER_DST`
+  so driver texture compression (such as NVIDIA DCC) is preserved.
+- Where the GPU compute path cannot be used (transfer-only queue family,
+  compute pipeline already bound on the command buffer, or
+  `VANTA_NO_GPU_ETC_DECODE=1`), `vkCmdCopyBufferToImage(2)` falls back to
+  pooled host-visible staging (`MEMORY_HOST_CACHED` preferred) and queues
+  pipelined CPU decoding from an owned compressed-byte snapshot. Submit joins
+  the work and checks for writes since recording before the driver may execute
+  the recorded staging copy.
 
-The decoder is `etc_decode.rs` and the shim is `vulkan_etc.rs`.
+The CPU decoder is `etc_decode.rs`, the GPU compute shader is
+`etc_decode_gpu.comp` / `etc_decode_spv.rs`, and the shim is `vulkan_etc.rs`.
 
 **The gate is the driver lacking the feature, and not the vendor id.** ADR-046
 gates the other NVIDIA behaviour on `vendorID == 0x10DE` because those
@@ -57,6 +72,8 @@ the passthroughs are traced.
 
 ## Controls
 
+- `VANTA_NO_GPU_ETC_DECODE=1` disables the GPU compute shader path and forces
+  the pooled CPU fallback, for A/B comparison or driver workarounds.
 - `CORDIAL_NO_ETC_EMULATION=1` turns it off; the engine then sees `ETC1 0
   ETC2 0` on NVIDIA again.
 - `CORDIAL_FORCE_ETC_EMULATION=1` turns it on for a driver that has ETC2
@@ -312,6 +329,75 @@ unsigned R11/RG11 output. Independent vectors, padded/cropped regions and
 repeated-edge cases still run; an additional test compares unsigned dispatch
 with the pinned path for empty, edge and malformed source/destination cases.
 **INFERRED:** signed EAC uploads may use less CPU in game. No game was run.
+
+## GPU compute shader decoder and staging pooling
+
+Decoding ETC2/EAC on the CPU required taking a snapshot of compressed source
+bytes, running worker threads against host-visible staging memory, hashing
+every source byte at submit time, and blocking `vkQueueSubmit` until every
+decoded band finished. In addition, the CPU repeated-block memoisation copied
+back from the destination staging buffer (`dst.copy_within`), which turns into
+uncached PCIe/Write-Combined reads when the driver returns non-cached staging
+memory, and each command-buffer reset destroyed and reallocated its 8 MiB
+staging buffers.
+
+Three changes address this:
+
+1. **Vulkan 1.0 compute shader path (`etc_decode_gpu.comp`):** decodes all
+   seven `EtcFormat`s (`Rgb8`, `Rgb8A1`, `Rgba8`, `R11`, `R11Signed`, `Rg11`,
+   `Rg11Signed`) on the GPU using `local_size_x = 8, local_size_y = 8,
+   local_size_z = 1` and zero Vulkan extensions. `vkCreateBuffer` adds
+   `VK_BUFFER_USAGE_STORAGE_BUFFER_BIT` to `TRANSFER_SRC` buffers (falling
+   back to the unmodified flags if the driver refuses). `vkCreateCommandPool`
+   records queue-family compute capability, and `vkCmdBindPipeline` tracks
+   whether the command buffer has bound a compute pipeline so the shim never
+   clobbers engine compute state. `emulate_copy_gpu()` records compute
+   dispatch -> `VkBufferMemoryBarrier` -> `vkCmdCopyBufferToImage` with zero
+   CPU decode, zero snapshot copy, zero submit-time hashing, and zero submit
+   blocking. Counts into `ETC_REGION_GPU` under `VANTA_COUNT_GL=1`.
+2. **Staging and descriptor pooling + lock split:** both GPU `DEVICE_LOCAL`
+   scratch chunks and CPU host-visible staging chunks are returned to bounded
+   per-device free lists on command-buffer reset/free instead of calling
+   `vkDestroyBuffer`/`vkFreeMemory` every frame. Descriptor pools are likewise
+   recycled with `vkResetDescriptorPool`. Host mappings live in their own
+   `RwLock` separate from `State` (`RwLock`), and `LIVE_CPU_CMDS` lets
+   `vkQueueSubmit*`, `vkCmdExecuteCommands`, and `retire_mapping` return
+   immediately without locking when no CPU-decoded command buffers are active.
+3. **CPU fallback Write-Combined readback fix:** both `etc_decode.rs` and
+   `etc_decode_legacy.rs` cache the previous decoded 4x4 block in a 64-byte
+   stack buffer instead of reading back from `dst`, and CPU staging allocation
+   prefers `MEMORY_HOST_VISIBLE | MEMORY_HOST_COHERENT | MEMORY_HOST_CACHED`.
+
+### Hardware Vulkan compute verification and microbenchmarks
+
+`gpu_compute_decoder_matches_cpu_bit_for_bit_across_all_formats` runs the real
+SPIR-V compute pipeline against the CPU decoder across all seven formats,
+multiple-of-4 and cropped odd widths (including odd-width `R11`/`R11Signed`
+row-word padding), padded `row_blocks`, non-zero source byte offsets, and
+multi-layer arrays. It passed bit-exact on an NVIDIA GeForce GTX 1080 Ti
+(driver `580.178.04`, Intel Core i9-11900, 16 threads, release build with
+`CARGO_PROFILE_RELEASE_DEBUG=0`).
+
+Isolated 1024x1024 random-block microbenchmark on the same GTX 1080 Ti (median
+of five batches after warm-up; GPU timing includes descriptor update, command
+buffer reset/record, `vkQueueSubmit`, and `vkQueueWaitIdle` per image):
+
+| 1024x1024 format | CPU serial, ms | GPU compute (incl. submit+waitIdle), ms | Speedup |
+| --- | ---: | ---: | ---: |
+| RGB8 | 2.699 | 0.136 | 19.9x |
+| RGBA8 | 3.402 | 0.272 | 12.5x |
+| RG11 signed | 3.900 | 0.158 | 24.7x |
+
+Reproduce without loading an engine:
+
+```sh
+CARGO_PROFILE_RELEASE_DEBUG=0 cargo test --release -p vanta-runtime --lib microbench_gpu_vs_cpu_decode -- --ignored --nocapture --test-threads=1
+```
+
+**INFERRED:** offloading ETC2/EAC decoding to GPU compute and pooling staging
+buffers should substantially reduce texture-streaming CPU spikes and submit
+stalls on GPUs without native ETC2 (such as NVIDIA). No game was run; in-game
+frame rate and frame-time percentiles remain unmeasured.
 
 ## Not an ADR-001 matter
 

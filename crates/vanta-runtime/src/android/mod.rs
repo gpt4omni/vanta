@@ -19,6 +19,7 @@ pub mod clipboard;
 pub mod config;
 pub mod editor_font;
 pub mod etc_decode;
+mod etc_decode_spv;
 pub mod frame_pacing;
 pub mod gamepad;
 pub mod gl;

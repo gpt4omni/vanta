@@ -513,7 +513,21 @@ fn presence_payload() -> serde_json::Value {
     payload
 }
 
+/// Minimum interval between global `game_log::poll()` file checks from
+/// `looper::pump`. High-polling-rate mice wake `looper::pump` up to 1000x/sec;
+/// without this gate every mouse packet issued `openat` + `fstat` + `close`.
+const POLL_INTERVAL: Duration = Duration::from_millis(250);
+
 pub fn poll() {
+    static LAST_POLL: Mutex<Option<Instant>> = Mutex::new(None);
+    {
+        let mut last = LAST_POLL.lock().unwrap_or_else(|e| e.into_inner());
+        let now = Instant::now();
+        if last.is_some_and(|t| now.duration_since(t) < POLL_INTERVAL) {
+            return;
+        }
+        *last = Some(now);
+    }
     static WATCHER: Mutex<Option<Watcher>> = Mutex::new(None);
     let mut guard = WATCHER.lock().unwrap_or_else(|e| e.into_inner());
     let watcher = guard.get_or_insert_with(|| Watcher::new(logs_dir()));

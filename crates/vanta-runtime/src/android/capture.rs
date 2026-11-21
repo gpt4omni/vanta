@@ -581,11 +581,18 @@ impl Readback {
         let mut props: PhysicalDeviceMemoryProperties = unsafe { std::mem::zeroed() };
         (gpdmp)(physical_device, &mut props);
         let wanted = MEMORY_HOST_VISIBLE | MEMORY_HOST_COHERENT;
-        let type_index = (0..props.memory_type_count)
-            .find(|i| {
+        // Prefer HOST_CACHED (0x8) so CPU readback of 8-15 MB frames runs at
+        // cached RAM bandwidth rather than stalling 10-80 ms on uncached
+        // write-combined memory.
+        let cached = wanted | 0x8;
+        let pick = |req_flags: u32| {
+            (0..props.memory_type_count).find(|i| {
                 req.memory_type_bits & (1 << i) != 0
-                    && props.memory_types[*i as usize].property_flags & wanted == wanted
+                    && props.memory_types[*i as usize].property_flags & req_flags == req_flags
             })
+        };
+        let type_index = pick(cached)
+            .or_else(|| pick(wanted))
             .ok_or("no host-visible coherent memory type accepts this buffer")?;
 
         let mai = MemoryAllocateInfo {

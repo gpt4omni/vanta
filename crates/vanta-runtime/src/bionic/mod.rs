@@ -78,6 +78,14 @@ pub fn function_overrides() -> Vec<(&'static str, *mut c_void)> {
         f!("fwrite", legacy_fwrite),
         f!("fprintf", legacy_fprintf),
         f!("vfprintf", legacy_vfprintf),
+        // ZSTD tracing hooks are weakly imported by libroblox.so and invoked on
+        // every ZSTD frame compressed or decompressed across all worker threads.
+        // Returning 0 is the documented "tracing disabled" contract; binding
+        // them directly avoids entering `stubs::hit()` on every asset/packet.
+        f!("ZSTD_trace_compress_begin", zstd_trace_disabled),
+        f!("ZSTD_trace_decompress_begin", zstd_trace_disabled),
+        f!("ZSTD_trace_compress_end", zstd_trace_disabled),
+        f!("ZSTD_trace_decompress_end", zstd_trace_disabled),
     ];
     // sigset_t is 8 bytes in bionic and 128 in glibc; struct sigaction is 32
     // against 152, with a different field order. Passing either through is a
@@ -540,6 +548,17 @@ extern "C" fn android_get_device_api_level() -> c_int {
     33
 }
 
+/// ZSTD tracing hooks (`ZSTD_trace_*`): zero means tracing is off, so zstd
+/// skips tracing overhead with no stub lock or environment check.
+extern "C" fn zstd_trace_disabled() -> usize {
+    0
+}
+
+fn trace_props_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("VANTA_TRACE_PROPS").is_some())
+}
+
 /// bionic's `__system_property_get(name, value)`. `value` is a caller buffer of
 /// `PROP_VALUE_MAX` (92) bytes; the return is the length written.
 extern "C" fn system_property_get(name: *const c_char, value: *mut c_char) -> c_int {
@@ -547,33 +566,29 @@ extern "C" fn system_property_get(name: *const c_char, value: *mut c_char) -> c_
         return 0;
     }
     // SAFETY: bionic's contract is a NUL-terminated name and a 92-byte buffer.
-    let key = unsafe { cstr(name) };
+    let key = if name.is_null() {
+        std::borrow::Cow::Borrowed("")
+    } else {
+        unsafe { CStr::from_ptr(name) }.to_string_lossy()
+    };
     let found = property_value(&key);
 
-    // `VANTA_TRACE_PROPS=1` names every property the engine asks for and what
-    // it was told.
-    //
-    // An unknown key returns the empty string, and an empty string handed to
-    // something that then builds a path out of it is indistinguishable from a
-    // path that was never configured. `RbxStorage::init` fails during ELF
-    // construction on exactly that shape -- three `stat("")` in a row -- and
-    // system properties are one of the few things readable that early on
-    // Android and absent here. See docs/analysis/flag-init.md §26.
-    if std::env::var_os("VANTA_TRACE_PROPS").is_some() {
+    if trace_props_enabled() {
         eprintln!(
             "[props] {key} = {}",
             if found.is_empty() { "<empty, not in table>" } else { found }
         );
     }
 
-    // The reply is at most PROP_VALUE_MAX bytes, NUL included, so the helper's
-    // own length check is satisfied by the buffer the ABI promises. It writes
-    // the reply and its NUL and nothing past them, as the hand-rolled copy did.
-    let reply = property_reply(found);
-    if !write_response(&reply, value, PROP_VALUE_MAX) {
+    let bytes = found.as_bytes();
+    let len = bytes.len().min(PROP_VALUE_MAX - 1);
+    let mut buf = [0u8; PROP_VALUE_MAX];
+    buf[..len].copy_from_slice(&bytes[..len]);
+    buf[len] = 0;
+    if !write_response(&buf[..=len], value, PROP_VALUE_MAX) {
         return 0;
     }
-    (reply.len() - 1) as c_int
+    len as c_int
 }
 
 /// `PROP_VALUE_MAX`: the size of the buffer bionic's callers pass, NUL included.
@@ -591,6 +606,7 @@ fn property_value(key: &str) -> &'static str {
 
 /// `value` as `__system_property_get` leaves it in the caller's buffer:
 /// truncated to `PROP_VALUE_MAX - 1` bytes and NUL-terminated.
+#[cfg(test)]
 fn property_reply(value: &str) -> Vec<u8> {
     let bytes = value.as_bytes();
     let mut reply = bytes[..bytes.len().min(PROP_VALUE_MAX - 1)].to_vec();

@@ -121,6 +121,7 @@ pub struct Resolved {
 }
 
 /// A set of overrides read from one file.
+#[derive(Clone)]
 pub struct Layer {
     pub source: Source,
     pub values: BTreeMap<String, String>,
@@ -727,6 +728,30 @@ pub fn set_live_frame_rate_limit(choice: Option<FrameRateLimit>) -> bool {
 /// the shell sets at launch and a measurement run sets by hand), then the flag
 /// layers, then [`FrameRateLimit::Display`] -- the order [`performance`] and
 /// `android::vulkan::resolve_present_mode` already use, plus the socket on top.
+fn frame_rate_limit_from(resolved: &BTreeMap<String, Resolved>) -> FrameRateLimit {
+    if let Some(choice) = *LIVE_FRAME_RATE_LIMIT.lock().unwrap_or_else(|e| e.into_inner()) {
+        return choice;
+    }
+    if let Ok(text) = std::env::var(FRAME_RATE_LIMIT_ENV) {
+        if !text.trim().is_empty() {
+            return match FrameRateLimit::parse(&text) {
+                Some(choice) => choice,
+                None => {
+                    println!(
+                        "  flags: {FRAME_RATE_LIMIT_ENV}={text:?} is not a frame rate limit; \
+                         using display refresh. Known: display, or a number of fps"
+                    );
+                    FrameRateLimit::Display
+                }
+            };
+        }
+    }
+    match resolved.get(FRAME_RATE_LIMIT_KEY).and_then(|r| FrameRateLimit::parse(&r.value)) {
+        Some(choice) => choice,
+        None => FrameRateLimit::Display,
+    }
+}
+
 pub fn frame_rate_limit() -> FrameRateLimit {
     if let Some(choice) = *LIVE_FRAME_RATE_LIMIT.lock().unwrap_or_else(|e| e.into_inner()) {
         return choice;
@@ -792,10 +817,11 @@ pub fn frame_rate_limit_flags_for(
 /// The layer [`frame_rate_limit`]'s choice contributes, empty on `Display`
 /// until the display's rate is known and above 60.
 /// Above the plugins and below the user's own `flags.json`; see [`collect`].
-fn frame_rate_limit_layer() -> Layer {
-    let choice = frame_rate_limit();
+fn frame_rate_limit_layer_from(resolved: &BTreeMap<String, Resolved>) -> Layer {
+    let choice = frame_rate_limit_from(resolved);
+    let replaces = present_replaces_frames_from(resolved);
     let values: BTreeMap<String, String> =
-        frame_rate_limit_flags_for(choice, crate::refresh::announced(), present_replaces_frames())
+        frame_rate_limit_flags_for(choice, crate::refresh::announced(), replaces)
             .into_iter()
             .collect();
     if !values.is_empty() {
@@ -804,11 +830,7 @@ fn frame_rate_limit_layer() -> Layer {
     Layer { source: Source::FrameRateLimit, values }
 }
 
-/// Whether the present mode the environment and flag layers ask for replaces
-/// frames, read from [`collect_without_frame_rate_limit`] for the reason that
-/// function exists.
-pub fn present_replaces_frames() -> bool {
-    let resolved = resolve(collect_without_frame_rate_limit());
+fn present_replaces_frames_from(resolved: &BTreeMap<String, Resolved>) -> bool {
     let from_flags = resolved
         .get(crate::android::vulkan::PRESENT_MODE_KEY)
         .map(|entry| (entry.source.describe(), entry.value.clone()));
@@ -816,6 +838,14 @@ pub fn present_replaces_frames() -> bool {
         std::env::var(crate::android::vulkan::PRESENT_MODE_ENV).ok(),
         from_flags,
     )
+}
+
+/// Whether the present mode the environment and flag layers ask for replaces
+/// frames, read from [`collect_without_frame_rate_limit`] for the reason that
+/// function exists.
+pub fn present_replaces_frames() -> bool {
+    let resolved = resolve(collect_without_frame_rate_limit());
+    present_replaces_frames_from(&resolved)
 }
 
 /// [`collect`] without the frame-rate-limit layer itself, so [`frame_rate_limit`]
@@ -967,9 +997,17 @@ pub fn collect() -> Vec<Layer> {
     // carries a default for the same flag (FPS Flex ships a frame rate cap); a
     // row left on Display refresh asks for nothing, which leaves the plugin
     // alone. The file is still the one thing that beats it.
-    layers.push(frame_rate_limit_layer());
+    let user_layer = read_layer(&user_path(), Source::User);
+    // Compute the frame-rate-limit layer from the layers already read in this
+    // pass instead of rescanning plugin directories and sysfs twice more.
+    let mut base_for_resolve = layers.clone();
+    if let Some(ref u) = user_layer {
+        base_for_resolve.push(u.clone());
+    }
+    let resolved_base = resolve(base_for_resolve);
+    layers.push(frame_rate_limit_layer_from(&resolved_base));
 
-    if let Some(layer) = read_layer(&user_path(), Source::User) {
+    if let Some(layer) = user_layer {
         layers.push(layer);
     }
     layers

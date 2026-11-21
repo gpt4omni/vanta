@@ -2369,14 +2369,6 @@ extern "C" fn vk_get_physical_device_surface_capabilities_khr(
     {
         if let Some(w) = crate::android::wayland::current() {
             let (width, height, _) = w.geometry();
-            // TEMPORARY INSTRUMENTATION -- not for commit. `VANTA_INSTR=1`.
-            // This is the extent the swapchain is actually built from. If it
-            // disagrees with the window after a fullscreen toggle, the content
-            // is drawn against the wrong rectangle and offsets by the
-            // difference — which is what issue #7 looks like on screen.
-            if std::env::var_os("VANTA_INSTR").is_some() {
-                eprintln!("[instr] surface_caps currentExtent <- geometry() {width}x{height}");
-            }
             // Clamped into [minImageExtent, maxImageExtent] on principle —
             // Vanta's window is always within Mesa's advertised range in
             // practice (1x1..16384x16384 observed), but a substitution that
@@ -2393,7 +2385,7 @@ extern "C" fn vk_get_physical_device_surface_capabilities_khr(
             // second); holding all of them back until the pointer paused left
             // an interactive drag showing the old size.
             let settled = {
-                let mut guard = RESIZE_SETTLE_STATE.lock().unwrap();
+                let mut guard = RESIZE_SETTLE_STATE.lock().unwrap_or_else(|e| e.into_inner());
                 let (reported, next) = settle_resize_extent(*guard, raw, std::time::Instant::now(), resize_max_lag());
                 *guard = Some(next);
                 reported
