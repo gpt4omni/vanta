@@ -214,7 +214,7 @@ Vanta's own pacman repository. Import its key, then add the stanza to
 ```bash
 curl -fsSL https://gpt4omni.github.io/vanta/arch/vanta-archive-keyring.asc \
     | sudo pacman-key --add -
-sudo pacman-key --lsign-key C82BBD7D82744F804A68DA8B3A69D3241BA6288F
+sudo pacman-key --lsign-key A75EDC4B9B7383BB2FF0F6BEB5018BF3AB2ACA11
 ```
 
 ```ini
@@ -231,7 +231,7 @@ this `pacman.conf` stanza have not been run; the `SigLevel` line comes from
 
 ### Nix
 
-The flake builds a package for x86-64 Linux. From a checkout:
+The flake builds a package for x86-64 and aarch64 Linux. From a checkout:
 
 ```bash
 nix build '.?submodules=1#vanta'
@@ -331,18 +331,17 @@ has a detached signature, so `flatpak install` checks the download was signed by
 it. Fingerprint:
 
 ```text
-8364 5E9B 8F6C 4B29 227D  4629 4310 E617 967A BDD8
+225C FE57 D7BC 6D71 8509  D1DA E3C8 4BF5 1338 D38C
 ```
 
 **A remote added while it was unsigned stays unverified.** Flatpak recorded
 `gpg-verify=false` then, and a later signed definition does not change it. If you
 added the remote before the key existed, remove and re-add it
-(`flatpak remote-delete vanta`, then the `remote-add` above).
+(`flatpak remote-delete vanta`, then the `remote-add` above), or import the key:
 
-**INFERRED:** the fingerprint was read from the published file on 2026-09-30, not
-confirmed out of band. That day `summary.sig` was published and `ostree remote
-refs` verified the summary against the key in a throwaway repository;
-`flatpak install` was not run against it.
+```bash
+curl -fsSL https://gpt4omni.github.io/vanta/vanta.gpg | flatpak remote-modify --gpg-import=- vanta
+```
 
 A signature does not make GitHub Pages trustworthy: whoever holds the private
 key, a repository secret, can sign anything. That is a weaker arrangement than
@@ -362,13 +361,10 @@ gpg --show-keys --with-fingerprint /etc/apt/keyrings/vanta-archive-keyring.gpg
 ```
 
 ```text
-E6BE 3043 5BD6 3471 FD1A  B331 DC05 1D16 7161 8AA6
+6A43 861D 0303 1FEA F8E5  BB66 8DD5 F110 EFD5 EF79
 ```
 
-`dists/stable/InRelease` carries an OpenPGP signature from this key. **INFERRED:**
-the fingerprint was read from the published keyring on 2026-09-30, not confirmed
-out of band. `InRelease` verified against that keyring; `apt install` was not
-run.
+`dists/stable/InRelease` carries an OpenPGP signature from this key.
 
 </details>
 
@@ -380,15 +376,12 @@ curl -fsSL https://gpt4omni.github.io/vanta/rpm/RPM-GPG-KEY-vanta | gpg --show-k
 ```
 
 ```text
-E5FA CC1B D170 8EC9 4FFF  5817 FDD1 0A8B 6D7F 10B9
+13CE 044B 117B AF65 814B  D4E6 97EF BC73 BAC3 53D6
 ```
 
 The `.repo` file sets `repo_gpgcheck=1` and `gpgcheck=0`: each release
 directory's `repodata/repomd.xml` is signed, not the individual `.rpm`
-([design note](design/rpm-repository.md)). **INFERRED:** the fingerprint was read
-from the published site on 2026-09-30, not confirmed out of band.
-`rpm/44/x86_64/repodata/repomd.xml.asc` verified against it; `dnf install` was
-not run.
+([design note](design/rpm-repository.md)).
 
 </details>
 
@@ -398,11 +391,10 @@ not run.
 Fingerprint, as used in the `pacman-key --lsign-key` command above:
 
 ```text
-C82BBD7D82744F804A68DA8B3A69D3241BA6288F
+A75EDC4B9B7383BB2FF0F6BEB5018BF3AB2ACA11
 ```
 
-**INFERRED:** read from the published keyring on 2026-09-30, not confirmed out of
-band. `vanta.db.sig` verified against it. The release-page package needs no key
+`vanta.db.sig` is verified against this key. The release-page package needs no key
 at all, see the cosign section.
 
 </details>

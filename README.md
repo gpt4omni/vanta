@@ -38,9 +38,9 @@ Vanta runs Roblox's official, unmodified Android client directly on **x86-64** a
 
 > **First launch:** Vanta does not include Roblox. When you open Vanta, click **Download Roblox** to fetch the official Android APK (verified against Roblox's signing certificate), or import an existing copy from [Sober](https://sober.vinegarhq.org/).
 
-### Flatpak (Recommended)
+### Flatpak (Recommended, GPG-Signed)
 
-Works on most Linux distros with the exact GTK4, WebKitGTK, Vulkan, and audio libraries Vanta is tested against:
+Works on most Linux distros (x86-64 & ARM64) with automatic updates and the exact GTK4, WebKitGTK, Vulkan, and audio libraries Vanta is tested against:
 
 ```bash
 flatpak remote-add --if-not-exists vanta https://gpt4omni.github.io/vanta/vanta.flatpakrepo
@@ -50,26 +50,62 @@ flatpak run io.github.gpt4omni.Vanta
 
 To test the latest commits from `main` instead of tagged releases, install `io.github.gpt4omni.Vanta//master`.
 
-### AppImage (x86-64 & ARM64)
+### Native Signed Repositories (Automatic Updates)
 
-Download `Vanta-*-x86_64.AppImage` or `Vanta-*-aarch64.AppImage` from [GitHub Releases](https://github.com/gpt4omni/vanta/releases/latest):
+<details>
+<summary><b>Debian / Ubuntu (APT, x86-64 & ARM64)</b></summary>
+
+```bash
+sudo install -m 0755 -d /etc/apt/keyrings
+sudo curl -fsSL https://gpt4omni.github.io/vanta/apt/vanta-archive-keyring.gpg \
+    -o /etc/apt/keyrings/vanta-archive-keyring.gpg
+echo "deb [signed-by=/etc/apt/keyrings/vanta-archive-keyring.gpg] https://gpt4omni.github.io/vanta/apt stable main" \
+    | sudo tee /etc/apt/sources.list.d/vanta.list
+sudo apt update && sudo apt install vanta
+```
+
+</details>
+
+<details>
+<summary><b>Fedora 44 (DNF, x86-64 & ARM64)</b></summary>
+
+```bash
+sudo curl -fsSL https://gpt4omni.github.io/vanta/vanta.repo \
+    -o /etc/yum.repos.d/vanta.repo
+sudo dnf install vanta
+```
+
+</details>
+
+<details>
+<summary><b>Arch Linux (Pacman, x86-64)</b></summary>
+
+```bash
+curl -fsSL https://gpt4omni.github.io/vanta/arch/vanta-archive-keyring.asc \
+    | sudo pacman-key --add -
+sudo pacman-key --lsign-key A75EDC4B9B7383BB2FF0F6BEB5018BF3AB2ACA11
+```
+
+Then add this to `/etc/pacman.conf` and run `sudo pacman -Syu vanta`:
+
+```ini
+[vanta]
+Server = https://gpt4omni.github.io/vanta/arch/$arch
+SigLevel = DatabaseRequired PackageNever
+```
+
+</details>
+
+### AppImage & Direct Downloads (x86-64 & ARM64)
+
+Download `Vanta-*-x86_64.AppImage`, `Vanta-*-aarch64.AppImage`, `.deb`, `.rpm`, or `.pkg.tar.zst` (all signed with Sigstore/cosign) from [GitHub Releases](https://github.com/gpt4omni/vanta/releases/latest):
 
 ```bash
 chmod +x Vanta-*.AppImage
 ./Vanta-*.AppImage
 ```
 
-### Native Packages (.deb, .rpm, Arch)
-
-Download the package for your distro from [GitHub Releases](https://github.com/gpt4omni/vanta/releases/latest):
-
-```bash
-sudo apt install ./vanta_*_amd64.deb         # Debian / Ubuntu (or _arm64.deb)
-sudo dnf install ./vanta-*.x86_64.rpm        # Fedora 44 (or .aarch64.rpm)
-sudo pacman -U vanta-*-x86_64.pkg.tar.zst    # Arch Linux (x86-64)
-```
-
-For `apt`, `dnf`, `pacman`, and Nix repository setup, see [`docs/install.md`](docs/install.md).
+Key fingerprints, cosign verification, and Nix flake setup are in [`docs/install.md`](docs/install.md).
 
 <details>
 <summary><b>Build from Source</b></summary>
