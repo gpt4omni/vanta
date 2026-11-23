@@ -2,7 +2,7 @@
 
 <img src="https://raw.githubusercontent.com/gpt4omni/vanta/main/packaging/banner.svg" alt="Vanta" width="520">
 
-### Run Roblox natively on Linux — fast, open, and unmodified.
+### Run Roblox natively on Linux - fast, open, and unmodified.
 
 Runs Roblox's official Android client directly on **x86-64** and **aarch64** Linux with no emulator, container, or virtual machine.
 
