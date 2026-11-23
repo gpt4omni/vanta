@@ -3,6 +3,24 @@
 <!-- description: Install Vanta from a Flatpak, AppImage, deb, rpm, Arch package, Nix or source, and get Roblox's Android build into it. -->
 <!-- icon: download -->
 
+### Quick Install (Auto-Detect)
+
+Run one command to detect your distro, architecture (`x86_64` or `aarch64`), and
+immutable/atomic desktop status, verify Vanta's pinned signing key, and install
+through the best signed channel (Flatpak, APT, DNF, Pacman, or AppImage):
+
+```bash
+curl -fsSL https://gpt4omni.github.io/vanta/install.sh | bash
+```
+
+You can preview what it will do with `--dry-run` or force a channel with
+`--method`:
+
+```bash
+curl -fsSL https://gpt4omni.github.io/vanta/install.sh | bash -s -- --dry-run
+curl -fsSL https://gpt4omni.github.io/vanta/install.sh | bash -s -- --method flatpak
+```
+
 **Use the Flatpak unless you have a reason not to.** It is sandboxed, updates in
 place, and runs on one fixed runtime (GNOME 50), so the GTK, WebKit, Vulkan and
 audio libraries are the ones Vanta is tested against. Most compatibility

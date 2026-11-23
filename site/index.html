@@ -178,9 +178,13 @@
 
   <h2 id="install">Install</h2>
 
-  <pre><code>flatpak remote-add --if-not-exists --no-gpg-verify \
-    vanta https://gpt4omni.github.io/vanta/repo
+  <p class="n">One command auto-detects your distro and CPU architecture (x86-64 or ARM64), verifies Vanta's signing key, and sets everything up:</p>
 
+  <pre><code>curl -fsSL https://gpt4omni.github.io/vanta/install.sh | bash</code></pre>
+
+  <p class="n">Or add the GPG-signed Flatpak remote directly:</p>
+
+  <pre><code>flatpak remote-add --if-not-exists vanta https://gpt4omni.github.io/vanta/vanta.flatpakrepo
 flatpak install vanta io.github.gpt4omni.Vanta</code></pre>
 
   <p class="n">

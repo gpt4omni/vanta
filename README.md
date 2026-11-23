@@ -38,6 +38,16 @@ Vanta runs Roblox's official, unmodified Android client directly on **x86-64** a
 
 > **First launch:** Vanta does not include Roblox. When you open Vanta, click **Download Roblox** to fetch the official Android APK (verified against Roblox's signing certificate), or import an existing copy from [Sober](https://sober.vinegarhq.org/).
 
+### Quick Install (Auto-Detect OS & Arch)
+
+Automatically detects your Linux distro and CPU architecture (`x86_64` or `aarch64`), verifies Vanta's signing key, and installs via the best signed channel for your system (Flatpak, APT, DNF, Pacman, or AppImage):
+
+```bash
+curl -fsSL https://gpt4omni.github.io/vanta/install.sh | bash
+```
+
+Pass `--method flatpak`, `--method apt`, `--method dnf`, `--method pacman`, `--method appimage`, or `--dry-run` with `bash -s --` if you want to override auto-detection.
+
 ### Flatpak (Recommended, GPG-Signed)
 
 Works on most Linux distros (x86-64 & ARM64) with automatic updates and the exact GTK4, WebKitGTK, Vulkan, and audio libraries Vanta is tested against:
