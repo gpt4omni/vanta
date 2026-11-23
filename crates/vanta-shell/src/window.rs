@@ -132,7 +132,7 @@ const FREEZE_KILL_AFTER: Duration = Duration::from_secs(5);
 /// Roblox's own icons are their assets, and AGENTS.md rules out vendoring any
 /// of them however small.
 #[cfg(test)]
-fn starting_dialog(parent: &gtk::Window, profile: &str, joining: bool) -> Option<gtk::Window> {
+fn starting_dialog(parent: &gtk::Window, profile: &str, joining: bool) -> Option<adw::Dialog> {
     starting_dialog_with(parent, profile, joining, None)
 }
 
@@ -143,7 +143,7 @@ fn starting_dialog_with(
     profile: &str,
     joining: bool,
     notice: Option<&str>,
-) -> Option<gtk::Window> {
+) -> Option<adw::Dialog> {
     // Browser auto-launch has no launcher surface or progress animation.
     if !parent.is_visible() {
         return None;
@@ -184,33 +184,33 @@ fn starting_dialog_with(
         }
     });
 
-    let dialog = gtk::Window::builder()
-        .transient_for(parent)
-        .modal(true)
-        .resizable(false)
-        .deletable(false)
-        .titlebar(&{
-            let h = adw::HeaderBar::new();
-            h.set_show_end_title_buttons(false);
-            h.add_css_class("flat");
-            h
-        })
-        .child(&content)
+    // In-window `adw::Dialog` rather than a separate non-deletable modal
+    // `gtk::Window`: on tiling compositors such as Niri, a separate modal
+    // `xdg_toplevel` with no close button floats over the session and blocks
+    // pointer clicks until killed via keybind.
+    let header = adw::HeaderBar::new();
+    header.add_css_class("flat");
+    let toolbar = adw::ToolbarView::new();
+    toolbar.add_top_bar(&header);
+    toolbar.set_content(Some(&content));
+
+    let dialog = adw::Dialog::builder()
+        .can_close(true)
+        .child(&toolbar)
         .build();
 
     // Stop the pulse whenever the dialog goes, however it goes -- closed here
-    // when the client is up, or closed by the early-exit path when it is not.
-    // A timeout left running against a dropped widget is a warning per frame
-    // for the rest of the session.
+    // when the client is up, dismissed by the user, or closed by the early-exit
+    // path when the client did not start. A timeout left running against a
+    // dropped widget is a warning per frame for the rest of the session.
     let pulse = std::cell::RefCell::new(Some(pulse));
-    dialog.connect_close_request(move |_| {
+    dialog.connect_closed(move |_| {
         if let Some(id) = pulse.borrow_mut().take() {
             id.remove();
         }
-        glib::Propagation::Proceed
     });
 
-    dialog.present();
+    dialog.present(Some(parent));
     Some(dialog)
 }
 
@@ -1379,7 +1379,7 @@ fn start_attempt(
         let linger = if notice.is_some() { RECOVERY_NOTICE } else { EARLY_EXIT_CHECK };
         glib::timeout_add_local_once(linger, move || {
             if !dialog_closed.replace(true) {
-                starting.close();
+                starting.force_close();
             }
         });
     }
@@ -1433,7 +1433,7 @@ fn start_attempt(
         let _released_once_this_client_is_gone = &hold;
         if !dialog_closed.replace(true) {
             if let Some(starting) = &starting {
-                starting.close();
+                starting.force_close();
             }
         }
         let remaining_clients = lifecycle.client_finished();

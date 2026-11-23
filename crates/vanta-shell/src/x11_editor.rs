@@ -49,6 +49,8 @@ use libadwaita::gtk;
 use libadwaita::prelude::*;
 use std::cell::{Cell, RefCell};
 use std::ffi::{c_int, c_long, c_uint, c_ulong, c_void, CStr};
+use std::rc::{Rc, Weak};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 type Display = *mut c_void;
 type Window = c_ulong;
@@ -228,6 +230,74 @@ struct Wanted {
     text_color: u32,
 }
 
+/// Set by the X11 engine window on `FocusOut` (when focus did not move to the
+/// editor itself) and cleared on `FocusIn`. Prevents the override-redirect
+/// editor from staying mapped or stealing focus back under XWayland bridges
+/// such as `xwayland-satellite` on Niri when a native Wayland window takes
+/// focus and `XGetInputFocus` reverts to `None`/`PointerRoot`.
+static ENGINE_FOCUS_LOST: AtomicBool = AtomicBool::new(false);
+
+thread_local! {
+    static ACTIVE_EDITOR: RefCell<Option<(Weak<RefCell<State>>, glib::WeakRef<gtk::Window>)>> =
+        const { RefCell::new(None) };
+}
+
+/// Called by the X11 backend when the game window receives `FocusOut` and the
+/// editor does not own X keyboard focus. Immediately withdraws/unmaps the
+/// override-redirect editor window so it can never float over another window
+/// or trap pointer events under `xwayland-satellite`.
+pub fn notify_engine_focus_out() {
+    ENGINE_FOCUS_LOST.store(true, Ordering::Release);
+    ACTIVE_EDITOR.with(|slot| {
+        let Some((st_weak, win_weak)) = slot.borrow().clone() else {
+            return;
+        };
+        let (Some(st), Some(window)) = (st_weak.upgrade(), win_weak.upgrade()) else {
+            return;
+        };
+        let was_shown = {
+            let mut st = st.borrow_mut();
+            let was = st.shown;
+            st.suspended = true;
+            st.shown = false;
+            st.placed = None;
+            st.had_focus = false;
+            was
+        };
+        if was_shown {
+            eprintln!("[x11-editor] hidden: engine window lost focus (FocusOut)");
+            window.set_visible(false);
+        }
+    });
+}
+
+/// Called by the X11 backend when the game window receives `FocusIn`.
+pub fn notify_engine_focus_in() {
+    ENGINE_FOCUS_LOST.store(false, Ordering::Release);
+}
+
+/// Decide whether the editor should assert X11 keyboard focus when it is
+/// viewable and `holder != editor_xid`.
+fn should_take_focus(
+    holder: Window,
+    engine: Window,
+    had_focus: bool,
+    engine_focus_lost: bool,
+) -> bool {
+    if engine_focus_lost {
+        return false;
+    }
+    if holder == engine {
+        return true;
+    }
+    // On initial map (bare Xvfb or a WM where focus sits on PointerRoot/None),
+    // taking focus once is expected. Once the editor already held focus,
+    // XGetInputFocus reverting to None/PointerRoot means focus moved outside
+    // X11 (e.g. a native Wayland window under xwayland-satellite on Niri), so
+    // we must suspend rather than steal focus back.
+    !had_focus && (holder == NONE_WINDOW || holder == POINTER_ROOT)
+}
+
 struct State {
     wanted: Option<Wanted>,
     /// Whether the window is mapped, as far as this struct asked it to be.
@@ -235,6 +305,9 @@ struct State {
     /// Hidden because focus went to another application, or the engine window
     /// is not viewable. Cleared once the engine has focus again.
     suspended: bool,
+    /// Whether the editor X window has been observed holding X keyboard focus
+    /// during the current mapping.
+    had_focus: bool,
     /// The X window GTK made, and whether it has been made override-redirect.
     xid: Window,
     or_applied_to: Window,
@@ -256,7 +329,7 @@ pub struct X11Editor {
     engine: Window,
     composited: bool,
     background: gtk::CssProvider,
-    st: RefCell<State>,
+    st: Rc<RefCell<State>>,
     key_forward: std::rc::Rc<RefCell<Option<KeyForward>>>,
     scale: Cell<i32>,
 }
@@ -304,6 +377,72 @@ impl X11Editor {
         }
         window.add_controller(keys);
 
+        let st = Rc::new(RefCell::new(State {
+            wanted: None,
+            shown: false,
+            suspended: false,
+            had_focus: false,
+            xid: 0,
+            or_applied_to: 0,
+            placed: None,
+            background: None,
+            refocused: 0,
+        }));
+
+        // Withdraw the override-redirect editor immediately when GTK reports
+        // focus leaving the editor window to anything other than the engine
+        // (for example, switching to a native Wayland window under
+        // `xwayland-satellite` on Niri).
+        let focus = gtk::EventControllerFocus::new();
+        {
+            let st_weak = Rc::downgrade(&st);
+            let win_weak = window.downgrade();
+            let gdk_display = gdk_display.clone();
+            let trap_push = x.trap_push;
+            let trap_pop = x.trap_pop;
+            let get_input_focus = x.get_input_focus;
+            focus.connect_leave(move |_| {
+                let (Some(st), Some(window)) = (st_weak.upgrade(), win_weak.upgrade()) else {
+                    return;
+                };
+                let (shown, xid) = {
+                    let s = st.borrow();
+                    (s.shown, s.xid)
+                };
+                if !shown {
+                    return;
+                }
+                let holder = {
+                    let dpy = gdk_display.as_ptr() as *mut c_void;
+                    let mut w: Window = 0;
+                    let mut revert: c_int = 0;
+                    // SAFETY: GDK's live display and error trap pair on the pump thread.
+                    unsafe {
+                        (trap_push)(dpy);
+                        (get_input_focus)(display, &mut w, &mut revert);
+                        (trap_pop)(dpy);
+                    }
+                    w
+                };
+                if holder != engine && holder != xid {
+                    {
+                        let mut s = st.borrow_mut();
+                        s.suspended = true;
+                        s.shown = false;
+                        s.placed = None;
+                        s.had_focus = false;
+                    }
+                    eprintln!("[x11-editor] hidden: editor lost focus to {holder:#x}");
+                    window.set_visible(false);
+                }
+            });
+        }
+        window.add_controller(focus);
+
+        ACTIVE_EDITOR.with(|slot| {
+            *slot.borrow_mut() = Some((Rc::downgrade(&st), window.downgrade()));
+        });
+
         let editor = Self {
             window,
             core,
@@ -313,16 +452,7 @@ impl X11Editor {
             engine,
             composited,
             background,
-            st: RefCell::new(State {
-                wanted: None,
-                shown: false,
-                suspended: false,
-                xid: 0,
-                or_applied_to: 0,
-                placed: None,
-                background: None,
-                refocused: 0,
-            }),
+            st,
             key_forward,
             scale: Cell::new(1),
         };
@@ -534,6 +664,11 @@ impl X11Editor {
             self.suspend();
             return;
         };
+        let engine_focus_lost = ENGINE_FOCUS_LOST.load(Ordering::Acquire);
+        if engine_focus_lost {
+            self.suspend();
+            return;
+        }
         let holder = self.focus_holder();
         {
             let mut st = self.st.borrow_mut();
@@ -581,18 +716,25 @@ impl X11Editor {
 
         // Focus, once the server says the window is mapped (an XSetInputFocus
         // on an unviewable window is a BadMatch).
-        if self.map_state(xid) == IS_VIEWABLE && holder != xid {
-            if holder == self.engine || holder == NONE_WINDOW || holder == POINTER_ROOT {
-                self.take_focus(xid);
-                let mut st = self.st.borrow_mut();
-                st.refocused += 1;
-                if st.refocused <= 3 {
-                    eprintln!("[x11-editor] took keyboard focus from {holder:#x} for the box");
-                }
+        if self.map_state(xid) == IS_VIEWABLE {
+            if holder == xid {
+                self.st.borrow_mut().had_focus = true;
             } else {
-                // Somebody else's window has focus: the user left. Hide rather
-                // than float over it.
-                self.suspend();
+                let had_focus = self.st.borrow().had_focus;
+                if should_take_focus(holder, self.engine, had_focus, engine_focus_lost) {
+                    self.take_focus(xid);
+                    let mut st = self.st.borrow_mut();
+                    st.had_focus = true;
+                    st.refocused += 1;
+                    if st.refocused <= 3 {
+                        eprintln!("[x11-editor] took keyboard focus from {holder:#x} for the box");
+                    }
+                } else {
+                    // Somebody else's window (or a native Wayland window under
+                    // XWayland) has focus: the user left. Hide rather than
+                    // float over it.
+                    self.suspend();
+                }
             }
         }
     }
@@ -657,6 +799,7 @@ impl X11Editor {
         let mut st = self.st.borrow_mut();
         st.shown = false;
         st.placed = None;
+        st.had_focus = false;
         if !keep_wanted {
             st.suspended = false;
             st.background = None;
@@ -743,5 +886,33 @@ mod tests {
     fn the_window_sheet_is_transparent_only_when_nothing_is_asked_to_be_opaque() {
         assert!(window_sheet(None).contains("transparent"));
         assert!(window_sheet(Some(0x232527)).contains("#232527"));
+    }
+
+    #[test]
+    fn focus_takeover_withdraws_when_focus_leaves_x11_or_engine_loses_focus() {
+        let engine = 0x1000;
+        let other = 0x2000;
+
+        // Initial map over engine or bare root/none succeeds.
+        assert!(should_take_focus(engine, engine, false, false));
+        assert!(should_take_focus(NONE_WINDOW, engine, false, false));
+        assert!(should_take_focus(POINTER_ROOT, engine, false, false));
+
+        // Focus-follows-mouse bouncing back to the engine is reclaimed.
+        assert!(should_take_focus(engine, engine, true, false));
+
+        // Once the editor held focus, focus dropping to None/PointerRoot (e.g.
+        // switching to a native Wayland window under xwayland-satellite on Niri)
+        // must withdraw the override-redirect window rather than steal focus.
+        assert!(!should_take_focus(NONE_WINDOW, engine, true, false));
+        assert!(!should_take_focus(POINTER_ROOT, engine, true, false));
+
+        // Focus on another X11 window withdraws in all cases.
+        assert!(!should_take_focus(other, engine, false, false));
+        assert!(!should_take_focus(other, engine, true, false));
+
+        // Explicit engine FocusOut withdraws even if XGetInputFocus hasn't settled.
+        assert!(!should_take_focus(engine, engine, false, true));
+        assert!(!should_take_focus(engine, engine, true, true));
     }
 }

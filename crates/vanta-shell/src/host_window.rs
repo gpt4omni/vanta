@@ -388,8 +388,12 @@ pub struct HostWindow {
     present_probe: std::cell::RefCell<Option<PresentProbe>>,
     /// Built-in live Performance HUD monospace pill badge in the header bar.
     perf_hud_label: gtk::Label,
-    /// Base title before any HUD suffix (used when header bar is hidden/fullscreen).
-    perf_hud_title_base: std::cell::RefCell<Option<String>>,
+    /// Unadorned window title passed to [`HostWindow::new`].
+    base_title: String,
+    /// Whether the recording marker (`● REC`) is currently shown in the title.
+    recording: std::cell::Cell<bool>,
+    /// Compact live Performance HUD text, when enabled.
+    perf_hud: std::cell::RefCell<Option<String>>,
     /// Server region quick-actions pill in the header bar (visible while in-game).
     server_pill: gtk::MenuButton,
     /// Detail header label inside the server quick-actions popover.
@@ -1297,7 +1301,9 @@ impl HostWindow {
             canvas_in_input_region: std::cell::Cell::new(false),
             present_probe: std::cell::RefCell::new(None),
             perf_hud_label,
-            perf_hud_title_base: std::cell::RefCell::new(None),
+            base_title: title.to_owned(),
+            recording: std::cell::Cell::new(false),
+            perf_hud: std::cell::RefCell::new(None),
             server_pill,
             server_detail_label,
             server_rejoin_btn,
@@ -2574,6 +2580,7 @@ impl HostWindow {
         self.compact_css.load_from_string(
             if choice == crate::title_bar::TitleBar::Compact { COMPACT_SHEET } else { "" },
         );
+        self.sync_title();
         // See the fullscreen handler: a reveal alone need not reach the
         // compositor, so ask for a frame once this call has returned.
         let w = self.window.clone();
@@ -2583,6 +2590,28 @@ impl HostWindow {
     /// The preference in force.
     pub fn title_bar(&self) -> crate::title_bar::TitleBar {
         self.title_bar.get()
+    }
+
+    /// Recompute the window title from its independent components (`base_title`,
+    /// `recording`, and `perf_hud`) so toggling `F8` and `F9` in any order
+    /// never corrupts or duplicates suffixes.
+    fn sync_title(&self) {
+        let bar_visible = self.title_bar.get().revealed(self.window.is_fullscreen());
+        let hud = self.perf_hud.borrow();
+        let title = format_window_title(
+            &self.base_title,
+            self.recording.get(),
+            hud.as_deref(),
+            bar_visible,
+        );
+        self.window.set_title(Some(&title));
+    }
+
+    /// Show or hide the recording marker (`● REC`) in the window title.
+    pub fn set_recording(&self, on: bool) {
+        if self.recording.replace(on) != on {
+            self.sync_title();
+        }
     }
 
     /// Show or hide the built-in live Performance HUD badge in the header bar.
@@ -2596,25 +2625,15 @@ impl HostWindow {
                 self.perf_hud_label.set_text(text);
                 self.perf_hud_label.set_tooltip_text(tooltip);
                 self.perf_hud_label.set_visible(true);
-                let bar_visible = self.title_bar.get().revealed(self.window.is_fullscreen());
-                if !bar_visible {
-                    let mut base_slot = self.perf_hud_title_base.borrow_mut();
-                    let base = base_slot.get_or_insert_with(|| {
-                        self.window.title().map(|t| t.to_string()).unwrap_or_default()
-                    });
-                    self.window.set_title(Some(&format!("{base} — {text}")));
-                } else if let Some(base) = self.perf_hud_title_base.borrow_mut().take() {
-                    self.window.set_title(Some(&base));
-                }
+                *self.perf_hud.borrow_mut() = Some(text.to_owned());
             }
             None => {
                 self.perf_hud_label.set_visible(false);
                 self.perf_hud_label.set_tooltip_text(None);
-                if let Some(base) = self.perf_hud_title_base.borrow_mut().take() {
-                    self.window.set_title(Some(&base));
-                }
+                *self.perf_hud.borrow_mut() = None;
             }
         }
+        self.sync_title();
     }
 
     /// Show or hide the in-game Server Region quick-actions pill in the header bar.
@@ -2639,6 +2658,28 @@ impl HostWindow {
     /// Install the callback invoked when the user clicks "Quick Rejoin Server".
     pub fn connect_rejoin<F: Fn() + 'static>(&self, f: F) {
         *self.server_rejoin_cb.borrow_mut() = Some(Box::new(f));
+    }
+}
+
+/// Compose the displayed window title from its independent components so
+/// toggling recording (`F9`) and the Performance HUD (`F8`) in any order can
+/// never corrupt or duplicate suffixes.
+///
+/// The HUD suffix is appended to the window title only when the header bar is
+/// hidden (or fullscreen), because otherwise the header bar's own badge widget
+/// displays it.
+pub(crate) fn format_window_title(
+    base: &str,
+    recording: bool,
+    perf_hud: Option<&str>,
+    bar_visible: bool,
+) -> String {
+    const REC_MARK: &str = " \u{25cf} REC";
+    match (recording, !bar_visible, perf_hud) {
+        (true, true, Some(hud)) => format!("{base}{REC_MARK} — {hud}"),
+        (true, _, _) => format!("{base}{REC_MARK}"),
+        (false, true, Some(hud)) => format!("{base} — {hud}"),
+        (false, _, _) => base.to_owned(),
     }
 }
 
@@ -3188,5 +3229,58 @@ mod tests {
         let on = (anchor_height(true), anchor_height(false));
         assert_eq!(off, (0, 0));
         assert_eq!(on, (0, 1));
+    }
+
+    #[test]
+    fn title_state_machine_keeps_recording_and_perf_hud_independent() {
+        let base = "Vanta 0.45";
+        let hud = "120 FPS | 8.3 ms";
+
+        // 1. Neither active
+        assert_eq!(format_window_title(base, false, None, false), "Vanta 0.45");
+        assert_eq!(format_window_title(base, false, None, true), "Vanta 0.45");
+
+        // 2. Recording only
+        assert_eq!(
+            format_window_title(base, true, None, false),
+            "Vanta 0.45 \u{25cf} REC"
+        );
+        assert_eq!(
+            format_window_title(base, true, None, true),
+            "Vanta 0.45 \u{25cf} REC"
+        );
+
+        // 3. HUD only (only reflected in title when bar is hidden/fullscreen)
+        assert_eq!(
+            format_window_title(base, false, Some(hud), false),
+            "Vanta 0.45 — 120 FPS | 8.3 ms"
+        );
+        assert_eq!(format_window_title(base, false, Some(hud), true), "Vanta 0.45");
+
+        // 4. Both active, then stopping recording while HUD stays on, then hiding HUD
+        assert_eq!(
+            format_window_title(base, true, Some(hud), false),
+            "Vanta 0.45 \u{25cf} REC — 120 FPS | 8.3 ms"
+        );
+        assert_eq!(
+            format_window_title(base, false, Some(hud), false),
+            "Vanta 0.45 — 120 FPS | 8.3 ms"
+        );
+        assert_eq!(format_window_title(base, false, None, false), "Vanta 0.45");
+
+        // Reverse order: HUD on first, recording on, HUD off, recording off
+        assert_eq!(
+            format_window_title(base, false, Some(hud), false),
+            "Vanta 0.45 — 120 FPS | 8.3 ms"
+        );
+        assert_eq!(
+            format_window_title(base, true, Some(hud), false),
+            "Vanta 0.45 \u{25cf} REC — 120 FPS | 8.3 ms"
+        );
+        assert_eq!(
+            format_window_title(base, true, None, false),
+            "Vanta 0.45 \u{25cf} REC"
+        );
+        assert_eq!(format_window_title(base, false, None, false), "Vanta 0.45");
     }
 }

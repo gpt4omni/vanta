@@ -218,11 +218,33 @@ pub struct HostWindow {
     input: Mutex<InputState>,
     pointer_lock: Mutex<PointerLockState>,
     fullscreen: AtomicBool,
+    /// Independent components of the X11 window title (`base`, recording
+    /// indicator, and live Performance HUD badge) so toggling `F8` and `F9`
+    /// never corrupts or duplicates suffixes.
+    title_state: Mutex<X11TitleState>,
     /// Whether the server agreed to report auto-repeat as presses alone. When
     /// it did not, a repeat arrives as a release and a press with one
     /// timestamp and the release has to be recognised by its neighbour; see
     /// [`is_autorepeat_pair`].
     detectable_autorepeat: bool,
+}
+
+struct X11TitleState {
+    base: String,
+    recording: bool,
+    perf_hud: Option<String>,
+}
+
+/// Compose an ASCII-safe X11 `WM_NAME` (`XA_STRING`) title from its
+/// independent components.
+fn format_x11_title(base: &str, recording: bool, perf_hud: Option<&str>) -> String {
+    let raw = match (recording, perf_hud) {
+        (true, Some(hud)) => format!("{base} [REC] - {hud}"),
+        (true, None) => format!("{base} [REC]"),
+        (false, Some(hud)) => format!("{base} - {hud}"),
+        (false, None) => base.to_owned(),
+    };
+    raw.chars().map(|c| if c.is_ascii() { c } else { '-' }).collect()
 }
 
 /// Buttons and timing carried across calls to `pump_input_events`, the way a
@@ -803,6 +825,11 @@ pub fn open(width: u32, height: u32, title: &str) -> Result<&'static HostWindow,
         }),
         pointer_lock: Mutex::new(PointerLockState::new()),
         fullscreen: AtomicBool::new(place.fullscreen),
+        title_state: Mutex::new(X11TitleState {
+            base: title.to_owned(),
+            recording: false,
+            perf_hud: None,
+        }),
         detectable_autorepeat,
     };
     // No touchscreen, and that is a statement about this backend rather than
@@ -1319,6 +1346,7 @@ struct XInputEvent {
 const KEY_PRESS: c_int = 2;
 const KEY_RELEASE: c_int = 3;
 const MOTION_NOTIFY: c_int = 6;
+const FOCUS_IN: c_int = 9;
 const FOCUS_OUT: c_int = 10;
 const BUTTON_PRESS: c_int = 4;
 const BUTTON_RELEASE: c_int = 5;
@@ -1872,8 +1900,58 @@ impl HostWindow {
     }
 
     /// Drain and deliver whatever X11 input is already queued, then return.
+    fn set_x11_title(&self, ascii: &str) {
+        let name = CString::new(ascii).unwrap_or_default();
+        // SAFETY: `self.display` and `self.window` are live X11 handles;
+        // `name` is a valid NUL-terminated ASCII string.
+        unsafe {
+            (self.xlib.store_name)(self.display, self.window, name.as_ptr());
+            (self.xlib.flush)(self.display);
+        }
+    }
+
     /// See the module-level comment above for why this never blocks.
     fn pump_input_events(&self, handle: i64) {
+        // Recording indicator (`F9`) and live Performance HUD (`F8`) updates,
+        // polled ahead of the early return so title/stats stay fresh even when
+        // no X11 input events are queued.
+        if let Some(on) = crate::recording::take_indicator_change() {
+            let formatted = {
+                let mut ts = self.title_state.lock().unwrap_or_else(|e| e.into_inner());
+                if ts.recording != on {
+                    ts.recording = on;
+                    Some(format_x11_title(&ts.base, ts.recording, ts.perf_hud.as_deref()))
+                } else {
+                    None
+                }
+            };
+            if let Some(title) = formatted {
+                self.set_x11_title(&title);
+            }
+        }
+        if let Some(hud) = crate::perf_hud::poll_hud_update() {
+            match hud {
+                crate::perf_hud::HudUpdate::Show { badge, tooltip: _, stats } => {
+                    crate::control::perf_stats(stats.map(|s| s.to_protocol_snapshot()));
+                    let formatted = {
+                        let mut ts = self.title_state.lock().unwrap_or_else(|e| e.into_inner());
+                        ts.perf_hud = Some(badge);
+                        format_x11_title(&ts.base, ts.recording, ts.perf_hud.as_deref())
+                    };
+                    self.set_x11_title(&formatted);
+                }
+                crate::perf_hud::HudUpdate::Hide => {
+                    crate::control::perf_stats(None);
+                    let formatted = {
+                        let mut ts = self.title_state.lock().unwrap_or_else(|e| e.into_inner());
+                        ts.perf_hud = None;
+                        format_x11_title(&ts.base, ts.recording, ts.perf_hud.as_deref())
+                    };
+                    self.set_x11_title(&formatted);
+                }
+            }
+        }
+
         // GTK first, then the editor's placement: a keystroke typed into the
         // editor arrives through GTK's own connection and is turned into an
         // edit here, before the engine's connection is drained below. Ahead of
@@ -1930,8 +2008,14 @@ impl HostWindow {
                     }
                     self.dispatch_key(handle, &mut buf, event_type == KEY_PRESS);
                 }
+                FOCUS_IN => {
+                    vanta_shell::x11_editor::notify_engine_focus_in();
+                }
                 FOCUS_OUT => {
                     self.release_pointer_lock();
+                    if !super::x11_text::owns_keyboard() {
+                        vanta_shell::x11_editor::notify_engine_focus_out();
+                    }
 
                     let stranded = {
                         let mut state = self.input.lock().unwrap_or_else(|e| e.into_inner());
@@ -2549,5 +2633,23 @@ mod tests {
             .find_map(|l| l.strip_prefix("StartupWMClass="))
             .expect("desktop entry declares StartupWMClass");
         assert_eq!(declared.trim(), WM_RES_CLASS);
+    }
+
+    #[test]
+    fn x11_title_formatting_keeps_recording_and_perf_hud_independent() {
+        let base = "Vanta 0.45";
+        let hud = "120 FPS | 8.3 ms";
+        assert_eq!(format_x11_title(base, false, None), "Vanta 0.45");
+        assert_eq!(format_x11_title(base, true, None), "Vanta 0.45 [REC]");
+        assert_eq!(format_x11_title(base, false, Some(hud)), "Vanta 0.45 - 120 FPS | 8.3 ms");
+        assert_eq!(
+            format_x11_title(base, true, Some(hud)),
+            "Vanta 0.45 [REC] - 120 FPS | 8.3 ms"
+        );
+        // Non-ASCII characters are mapped to '-' for XA_STRING safety.
+        assert_eq!(
+            format_x11_title("Vanta — Test", false, Some("60 FPS · 16ms")),
+            "Vanta - Test - 60 FPS - 16ms"
+        );
     }
 }
