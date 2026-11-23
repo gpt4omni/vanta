@@ -356,6 +356,7 @@ const EPOLLERR: u32 = 0x008;
 const EPOLLHUP: u32 = 0x010;
 const EPOLL_CTL_ADD: c_int = 1;
 const EPOLL_CTL_DEL: c_int = 2;
+const EPOLL_CTL_MOD: c_int = 3;
 
 /// glibc's `struct epoll_event` is packed on x86_64 and nowhere else --
 /// `bits/epoll.h` `#define`s `__EPOLL_PACKED` to `__attribute__((packed))`
@@ -387,6 +388,7 @@ extern "C" {
     fn eventfd(initval: u32, flags: c_int) -> c_int;
     fn read(fd: c_int, buf: *mut c_void, count: usize) -> isize;
     fn write(fd: c_int, buf: *const c_void, count: usize) -> isize;
+    fn close(fd: c_int) -> c_int;
 }
 
 /// A registered descriptor. `ident` is what `pollOnce` reports for it; a
@@ -398,6 +400,11 @@ struct Registration {
     callback: Option<extern "C" fn(c_int, c_int, *mut c_void) -> c_int>,
     data: *mut c_void,
 }
+
+// SAFETY: `data` is an opaque caller-supplied context pointer passed across
+// the C `ALooper_addFd` boundary; Android NDK specifies `ALooper_addFd` and
+// `ALooper_removeFd` are thread-safe and the caller owns `data`'s lifetime.
+unsafe impl Send for Registration {}
 
 /// Push whatever the watchdog just printed out of the buffer.
 ///
@@ -512,7 +519,10 @@ pub struct Looper {
     epoll: c_int,
     /// Written to by `ALooper_wake`, so a blocked `pollOnce` returns promptly.
     wake: c_int,
-    registrations: RefCell<Vec<Registration>>,
+    /// Guarded by a `Mutex` rather than `RefCell`: Android NDK specifies that
+    /// `ALooper_addFd` and `ALooper_removeFd` are safe to call from any thread
+    /// holding a pointer to the looper.
+    registrations: Mutex<Vec<Registration>>,
     refs: AtomicUsize,
     /// How many zero-timeout polls in a row have come back with nothing.
     ///
@@ -536,6 +546,14 @@ impl Looper {
         // SAFETY: plain syscall wrappers with no pointer arguments.
         let (epoll, wake) = unsafe { (epoll_create1(0), eventfd(0, 0)) };
         if epoll < 0 || wake < 0 {
+            if epoll >= 0 {
+                // SAFETY: `epoll` was just created above and is not shared.
+                unsafe { close(epoll) };
+            }
+            if wake >= 0 {
+                // SAFETY: `wake` was just created above and is not shared.
+                unsafe { close(wake) };
+            }
             return None;
         }
         // The owning thread, so a `loopers` reading joins onto a backtrace.
@@ -561,7 +579,7 @@ impl Looper {
             stats,
             epoll,
             wake,
-            registrations: RefCell::new(Vec::new()),
+            registrations: Mutex::new(Vec::new()),
             refs: AtomicUsize::new(1),
             empty_zero_streak: AtomicU64::new(0),
         }));
@@ -848,6 +866,9 @@ pub fn pump(duration: std::time::Duration, game_activity_handle: Option<i64>) {
     // ticks without resending anything, and this flag is what tells the
     // per-tick block below to resend.
     let mut keyrepeat = false;
+    // Throttle `game_log::poll()` to ~5 Hz (200 ms) so high-polling-rate input
+    // wakes don't hammer the log watcher on the input pump thread.
+    let mut last_game_log_poll: Option<std::time::Instant> = None;
 
     // Subscribe to the engine's `setClipboardText` before the first tick.
     //
@@ -1488,13 +1509,17 @@ pub fn pump(duration: std::time::Duration, game_activity_handle: Option<i64>) {
         // its own thread. Cheap when nothing has changed: one relaxed load.
         crate::cookies::flush_if_dirty();
 
-        // What the engine's own log says it is doing. Here rather than in the
-        // input branch above for the same reason as the cookie flush: it is
-        // housekeeping that must keep happening while the window is in the
-        // background, and it is cheap when nothing has changed -- one
-        // `read_dir` a second, and between those a metadata read that usually
-        // finds the file no longer than it was.
-        crate::game_log::poll();
+        // What the engine's own log says it is doing. Throttled to 200 ms (5 Hz)
+        // so 1000 Hz mouse packets don't trigger a syscall storm on the input
+        // pump thread; when idle, each 200 ms tick is a single `fstat` on the
+        // already-open log descriptor.
+        let now = std::time::Instant::now();
+        if last_game_log_poll
+            .is_none_or(|t| now.duration_since(t) >= std::time::Duration::from_millis(200))
+        {
+            last_game_log_poll = Some(now);
+            crate::game_log::poll();
+        }
 
         // A deep link waiting for the app shell to exist, here for the same
         // reason and on the same thread: `APP_READY` arrives on the engine's
@@ -1689,6 +1714,17 @@ fn watch_teardown(finished: &std::sync::atomic::AtomicBool, limit: std::time::Du
     on_expiry();
 }
 
+fn update_registered_stats(l: &Looper, regs: &[Registration]) {
+    l.stats.registered.store(regs.len(), Ordering::Relaxed);
+    *l.stats.registered_detail.lock().unwrap_or_else(|e| e.into_inner()) = regs
+        .iter()
+        .map(|r| {
+            format!("{}:{}:{}", r.fd, r.ident, if r.callback.is_some() { "cb" } else { "-" })
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+}
+
 /// Add a descriptor to the calling thread's looper so `pollOnce` returns as soon
 /// as it is readable.
 ///
@@ -1720,21 +1756,14 @@ fn watch_input_fd(fd: c_int) -> bool {
     // costs more than it saves, and this one already cost a session's worth of
     // suspicion. Claiming the registration makes the count mean what it says.
     {
-        let mut regs = l.registrations.borrow_mut();
+        let mut regs = l.registrations.lock().unwrap_or_else(|e| e.into_inner());
         regs.push(Registration {
             fd,
             ident: IDENT_DISPLAY_CONNECTION,
             callback: None,
             data: std::ptr::null_mut(),
         });
-        l.stats.registered.store(regs.len(), Ordering::Relaxed);
-        *l.stats.registered_detail.lock().unwrap_or_else(|e| e.into_inner()) = regs
-            .iter()
-            .map(|r| {
-                format!("{}:{}:{}", r.fd, r.ident, if r.callback.is_some() { "cb" } else { "-" })
-            })
-            .collect::<Vec<_>>()
-            .join(",");
+        update_registered_stats(l, &regs);
     }
     true
 }
@@ -1817,29 +1846,41 @@ extern "C" fn looper_add_fd(
         events: epoll_events,
         data: fd as u64,
     };
+
+    let mut regs = l.registrations.lock().unwrap_or_else(|e| e.into_inner());
+    let existing = regs.iter().position(|r| r.fd == fd);
     // SAFETY: `l.epoll` is open, `fd` is the caller's, `ev` is live.
-    if unsafe { epoll_ctl(l.epoll, EPOLL_CTL_ADD, fd, &mut ev) } < 0 {
+    let rc = if existing.is_some() {
+        let r = unsafe { epoll_ctl(l.epoll, EPOLL_CTL_MOD, fd, &mut ev) };
+        if r < 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ENOENT) {
+            unsafe { epoll_ctl(l.epoll, EPOLL_CTL_ADD, fd, &mut ev) }
+        } else {
+            r
+        }
+    } else {
+        let r = unsafe { epoll_ctl(l.epoll, EPOLL_CTL_ADD, fd, &mut ev) };
+        if r < 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::EEXIST) {
+            unsafe { epoll_ctl(l.epoll, EPOLL_CTL_MOD, fd, &mut ev) }
+        } else {
+            r
+        }
+    };
+    if rc < 0 {
         return -1;
     }
 
-    {
-        let mut regs = l.registrations.borrow_mut();
-        regs.push(Registration {
-            fd,
-            // With a callback Android reports POLL_CALLBACK rather than the ident.
-            ident: if callback.is_some() { POLL_CALLBACK } else { ident },
-            callback,
-            data,
-        });
-        l.stats.registered.store(regs.len(), Ordering::Relaxed);
-        *l.stats.registered_detail.lock().unwrap_or_else(|e| e.into_inner()) = regs
-            .iter()
-            .map(|r| {
-                format!("{}:{}:{}", r.fd, r.ident, if r.callback.is_some() { "cb" } else { "-" })
-            })
-            .collect::<Vec<_>>()
-            .join(",");
+    let reg = Registration {
+        fd,
+        // With a callback Android reports POLL_CALLBACK rather than the ident.
+        ident: if callback.is_some() { POLL_CALLBACK } else { ident },
+        callback,
+        data,
+    };
+    match existing {
+        Some(idx) => regs[idx] = reg,
+        None => regs.push(reg),
     }
+    update_registered_stats(l, &regs);
     1
 }
 
@@ -1847,12 +1888,12 @@ extern "C" fn looper_remove_fd(looper: *mut c_void, fd: c_int) -> c_int {
     let Some(l) = as_looper(looper) else {
         return -1;
     };
+    let mut regs = l.registrations.lock().unwrap_or_else(|e| e.into_inner());
     // SAFETY: EPOLL_CTL_DEL ignores the event argument.
     unsafe { epoll_ctl(l.epoll, EPOLL_CTL_DEL, fd, std::ptr::null_mut()) };
-    let mut regs = l.registrations.borrow_mut();
     let before = regs.len();
     regs.retain(|r| r.fd != fd);
-    l.stats.registered.store(regs.len(), Ordering::Relaxed);
+    update_registered_stats(l, &regs);
     if regs.len() < before {
         1
     } else {
@@ -2093,7 +2134,7 @@ extern "C" fn looper_poll_once(
         }
 
         let (ident, callback, data) = {
-            let regs = l.registrations.borrow();
+            let regs = l.registrations.lock().unwrap_or_else(|e| e.into_inner());
             match regs.iter().find(|r| r.fd == fd) {
                 Some(r) => (r.ident, r.callback, r.data),
                 None => {
@@ -2180,12 +2221,6 @@ fn health_line(drawn: u64, secs: f64, total: u64, pacing: Option<&str>) -> Strin
 
 #[cfg(test)]
 mod tests {
-    // Only the tests close a descriptor, so the binding lives with them rather
-    // than in the module's extern block, where it read as dead code.
-    extern "C" {
-        fn close(fd: c_int) -> c_int;
-    }
-
     use super::*;
 
     #[test]
@@ -2374,6 +2409,63 @@ mod tests {
         assert_ne!(out_events & EVENT_INPUT, 0);
 
         assert_eq!(looper_remove_fd(looper, fd), 1);
+        // SAFETY: closing the descriptor this test opened.
+        unsafe { close(fd) };
+    }
+
+    #[test]
+    fn add_fd_updates_existing_registration_and_remove_fd_clears_detail() {
+        let looper = looper_prepare(0);
+        let l = as_looper(looper).expect("looper");
+        // SAFETY: creating our own eventfd.
+        let fd = unsafe { eventfd(1, 0) };
+        assert!(fd >= 0);
+
+        assert_eq!(looper_add_fd(looper, fd, 10, EVENT_INPUT, None, std::ptr::null_mut()), 1);
+        assert!(l.stats.registered_detail.lock().unwrap().contains(&format!("{fd}:10:-")));
+
+        // Updating an already-registered fd must succeed via EPOLL_CTL_MOD and
+        // replace the existing entry rather than duplicating it.
+        assert_eq!(looper_add_fd(looper, fd, 99, EVENT_INPUT, None, std::ptr::null_mut()), 1);
+        let detail = l.stats.registered_detail.lock().unwrap().clone();
+        assert!(detail.contains(&format!("{fd}:99:-")), "updated ident missing: {detail}");
+        assert!(!detail.contains(&format!("{fd}:10:-")), "old ident duplicated: {detail}");
+
+        let (mut out_fd, mut out_events) = (0, 0);
+        let mut out_data = std::ptr::null_mut();
+        assert_eq!(looper_poll_once(500, &mut out_fd, &mut out_events, &mut out_data), 99);
+        assert_eq!(out_fd, fd);
+
+        assert_eq!(looper_remove_fd(looper, fd), 1);
+        let detail_after = l.stats.registered_detail.lock().unwrap().clone();
+        assert!(
+            !detail_after.contains(&format!("{fd}:")),
+            "registered_detail still mentions removed fd {fd}: {detail_after}"
+        );
+        // SAFETY: closing the descriptor this test opened.
+        unsafe { close(fd) };
+    }
+
+    #[test]
+    fn add_and_remove_fd_are_safe_across_threads() {
+        let looper = looper_prepare(0);
+        assert!(!looper.is_null());
+        let looper_addr = looper as usize;
+        // SAFETY: creating our own eventfd.
+        let fd = unsafe { eventfd(0, 0) };
+        assert!(fd >= 0);
+
+        let t = std::thread::spawn(move || {
+            let lp = looper_addr as *mut c_void;
+            for i in 0..32 {
+                assert_eq!(looper_add_fd(lp, fd, 100 + i, EVENT_INPUT, None, std::ptr::null_mut()), 1);
+            }
+            assert_eq!(looper_remove_fd(lp, fd), 1);
+        });
+        for _ in 0..8 {
+            let _ = looper_poll_once(0, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut());
+        }
+        t.join().unwrap();
         // SAFETY: closing the descriptor this test opened.
         unsafe { close(fd) };
     }

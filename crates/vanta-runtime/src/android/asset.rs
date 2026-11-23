@@ -581,6 +581,8 @@ fn walk_root(root: &Path) -> Vec<(String, PathBuf)> {
         return Vec::new();
     };
     let mut out = Vec::new();
+    let mut visited = std::collections::HashSet::new();
+    visited.insert(root.clone());
     let mut stack = vec![root.clone()];
     while let Some(dir) = stack.pop() {
         let Ok(entries) = std::fs::read_dir(&dir) else {
@@ -601,7 +603,9 @@ fn walk_root(root: &Path) -> Vec<(String, PathBuf)> {
                 continue;
             }
             if real.is_dir() {
-                stack.push(real);
+                if visited.insert(real.clone()) {
+                    stack.push(real);
+                }
                 continue;
             }
             let Ok(rel) = real.strip_prefix(&root) else {
@@ -835,12 +839,22 @@ pub fn explain(name: &str) -> Option<String> {
 /// once.
 static ASSET_ROOT: Mutex<Option<PathBuf>> = Mutex::new(None);
 
+extern "C" {
+    fn vanta_set_asset_root(root: *const c_char);
+}
+
 /// Record the directory `assetFolderPath` points at — the extraction root,
 /// **not** its `content` subdirectory, because overlay names are relative to
 /// `assets/` and `content/…` is part of the name.
 pub fn set_asset_root(dir: &Path) {
+    let resolved = dir.canonicalize().ok().unwrap_or_else(|| dir.to_path_buf());
     if let Ok(mut held) = ASSET_ROOT.lock() {
-        *held = dir.canonicalize().ok().or_else(|| Some(dir.to_path_buf()));
+        *held = Some(resolved.clone());
+    }
+    if let Ok(c) = std::ffi::CString::new(resolved.as_os_str().as_encoded_bytes()) {
+        // SAFETY: `vanta_set_asset_root` copies the NUL-terminated path into its
+        // own static buffer for fast prefix gating in `native/system_paths.cpp`.
+        unsafe { vanta_set_asset_root(c.as_ptr()) };
     }
 }
 
@@ -898,21 +912,13 @@ pub fn resolve_asset_path(path: &str, write: bool) -> Option<PathBuf> {
 }
 
 /// The C ABI `native/system_paths.cpp` calls from each of its path-taking
-/// functions.
+/// functions (`stat`, `lstat`, `access`, `opendir`, `realpath`, `readlink`,
+/// `fopen`, `statvfs`, `open`) whenever a read-only path matches the
+/// registered extracted asset root prefix.
 ///
-/// **Not yet called.** The table in `vanta_system_symbols` holds `stat`,
-/// `lstat`, `access`, `opendir`, `realpath`, `readlink`, `fopen`, `statvfs`
-/// and `open`, and every one of them must route through here together — the
-/// invariant is that they all consult one resolver or none of them do, because
-/// a size call answering about the original while `open` answers with the
-/// overlay is the mismatch that truncates a texture. Wiring it is a change to
-/// that file, which was held by another agent when this was written; the Rust
-/// half is complete and tested so the C++ half is one call per function.
-///
-/// Writes `out` as a NUL-terminated path and returns 1 when the caller should
-/// use it, 0 when it should use the path it was given. A buffer too small
-/// returns 0 rather than a truncated path, because a truncated path names a
-/// different file and would be worse than no redirect at all.
+/// Writes (`for_write != 0`) are never redirected; a buffer too small returns
+/// 0 rather than a truncated path, because a truncated path names a different
+/// file and would be worse than no redirect at all.
 ///
 /// # Safety
 ///
@@ -1799,6 +1805,97 @@ mod overlay_tests {
             assert_eq!(vanta_overlay_resolve(target.as_ptr(), 0, buf.as_mut_ptr() as *mut c_char, 0), 0);
         }
         unregister_plugin_root("resolver");
+    }
+
+    #[test]
+    fn system_paths_cpp_routes_extracted_assets_through_overlay_resolver() {
+        let _guard = GLOBAL.lock().unwrap_or_else(|e| e.into_inner());
+        isolate("syspaths-wire");
+        let root = scratch("syspaths-assets");
+        write(&root, "content/sounds/ouch.ogg", b"orig");
+        let overlay = scratch("syspaths-overlay");
+        write(&overlay, "content/sounds/ouch.ogg", b"modded-bytes!");
+        register_plugin_root("syspaths-wire", overlay.clone());
+        set_asset_root(&root);
+
+        let syms = crate::bionic::function_overrides();
+        let sym = |name: &str| {
+            syms.iter()
+                .find(|(n, _)| *n == name)
+                .map(|(_, p)| *p)
+                .unwrap_or_else(|| panic!("missing symbol {name}"))
+        };
+        let s_open: extern "C" fn(*const c_char, c_int, ...) -> c_int =
+            unsafe { std::mem::transmute(sym("open")) };
+        let s_fopen: extern "C" fn(*const c_char, *const c_char) -> *mut libc::FILE =
+            unsafe { std::mem::transmute(sym("fopen")) };
+        let s_stat: extern "C" fn(*const c_char, *mut libc::stat) -> c_int =
+            unsafe { std::mem::transmute(sym("stat")) };
+        let s_lstat: extern "C" fn(*const c_char, *mut libc::stat) -> c_int =
+            unsafe { std::mem::transmute(sym("lstat")) };
+        let s_access: extern "C" fn(*const c_char, c_int) -> c_int =
+            unsafe { std::mem::transmute(sym("access")) };
+        let s_realpath: extern "C" fn(*const c_char, *mut c_char) -> *mut c_char =
+            unsafe { std::mem::transmute(sym("realpath")) };
+
+        let target = std::ffi::CString::new(
+            root.canonicalize().unwrap().join("content/sounds/ouch.ogg").to_string_lossy().as_bytes(),
+        )
+        .unwrap();
+
+        // Read-only open must serve the overlaid file.
+        let fd = s_open(target.as_ptr(), libc::O_RDONLY);
+        assert!(fd >= 0);
+        let mut got = String::new();
+        // SAFETY: `fd` was returned by `s_open` and is owned here.
+        File::from(unsafe { OwnedFd::from_raw_fd(fd) }).read_to_string(&mut got).unwrap();
+        assert_eq!(got, "modded-bytes!");
+
+        // Read-only fopen must also serve the overlaid file.
+        let fp = s_fopen(target.as_ptr(), c"rb".as_ptr());
+        assert!(!fp.is_null());
+        let mut fbuf = [0u8; 32];
+        let fn_read = unsafe { libc::fread(fbuf.as_mut_ptr() as *mut c_void, 1, fbuf.len(), fp) };
+        unsafe { libc::fclose(fp) };
+        assert_eq!(&fbuf[..fn_read], b"modded-bytes!");
+
+        // stat, lstat, and access must agree with open's size (no truncation mismatch).
+        let mut st: libc::stat = unsafe { std::mem::zeroed() };
+        assert_eq!(s_stat(target.as_ptr(), &mut st), 0);
+        assert_eq!(st.st_size as usize, b"modded-bytes!".len());
+        let mut lst: libc::stat = unsafe { std::mem::zeroed() };
+        assert_eq!(s_lstat(target.as_ptr(), &mut lst), 0);
+        assert_eq!(lst.st_size as usize, b"modded-bytes!".len());
+        assert_eq!(s_access(target.as_ptr(), libc::R_OK), 0);
+
+        // realpath with caller buffer resolves to the overlaid file.
+        let mut resolved = vec![0u8; 4096];
+        let rp = s_realpath(target.as_ptr(), resolved.as_mut_ptr() as *mut c_char);
+        assert!(!rp.is_null());
+        let rp_str = unsafe { CStr::from_ptr(rp) }.to_string_lossy();
+        assert!(rp_str.starts_with(&overlay.canonicalize().unwrap().to_string_lossy().as_ref()));
+
+        // Write open must NOT redirect to the overlay.
+        let wfd = s_open(target.as_ptr(), libc::O_WRONLY | libc::O_TRUNC);
+        assert!(wfd >= 0);
+        {
+            let mut f = File::from(unsafe { OwnedFd::from_raw_fd(wfd) });
+            f.write_all(b"rewritten").unwrap();
+        }
+        assert_eq!(std::fs::read(overlay.join("content/sounds/ouch.ogg")).unwrap(), b"modded-bytes!");
+        assert_eq!(std::fs::read(root.join("content/sounds/ouch.ogg")).unwrap(), b"rewritten");
+
+        unregister_plugin_root("syspaths-wire");
+    }
+
+    #[test]
+    fn walk_root_terminates_on_internal_symlink_cycle() {
+        let root = scratch("walk-cycle");
+        write(&root, "content/a.txt", b"ok");
+        std::os::unix::fs::symlink(&root, root.join("content/loop_back")).unwrap();
+        let walked = walk_root(&root);
+        assert_eq!(walked.len(), 1);
+        assert_eq!(walked[0].0, "content/a.txt");
     }
 
     #[test]

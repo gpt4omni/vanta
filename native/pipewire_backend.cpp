@@ -33,6 +33,7 @@
 #include "pipewire_backend.h"
 #include "record_tap.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -191,19 +192,30 @@ bool load_library() {
 /// device enumeration is the first thing to do so, and it turned a latent
 /// dangling pointer into one that would actually be called.
 struct Session {
+    struct SyncWaiter {
+        int seq = -1;
+        bool done = false;
+        bool failed = false;
+    };
+
     pw_thread_loop* loop = nullptr;
     pw_context* context = nullptr;
     pw_core* core = nullptr;
 
     spa_hook core_listener{};
-    int pending_seq = -1;
-    bool sync_done = false;
+    /// Serializes multi-step sync/round-trip flows (`enumerate_devices`,
+    /// `retarget_streams_impl`). Always acquired BEFORE `thread_loop_lock(loop)`
+    /// so there is a single strict lock order (`sync_mutex -> loop -> g_live_mutex`).
+    std::mutex sync_mutex;
+    /// Active per-call sync waiters, accessed strictly under `thread_loop_lock(loop)`.
+    std::vector<SyncWaiter*> waiters;
     bool sync_failed = false;
 };
 
 /// Blocks until the server has answered a `pw_core_sync`, i.e. until every
 /// request issued before it has been processed and every event it produced
-/// has been delivered. Must be called with `loop` locked.
+/// has been delivered. Must be called with `loop` locked (and `sync_mutex`
+/// held for shared-session callers).
 ///
 /// Three seconds, matching `connect_session`: a session that cannot answer a
 /// local socket round trip in that time is not one worth making Roblox wait
@@ -211,13 +223,16 @@ struct Session {
 /// "report what was gathered so far" rather than retrying — a wedged daemon
 /// does not become unwedged by being asked twice.
 bool round_trip(Session* s) {
-    s->sync_done = false;
-    s->sync_failed = false;
-    s->pending_seq = pw_core_sync(s->core, PW_ID_CORE, 0);
-    while (!s->sync_done && !s->sync_failed) {
+    Session::SyncWaiter waiter;
+    waiter.seq = pw_core_sync(s->core, PW_ID_CORE, 0);
+    s->waiters.push_back(&waiter);
+    while (!waiter.done && !waiter.failed) {
         if (g_lib.thread_loop_timed_wait(s->loop, 3) != 0) break;
     }
-    return s->sync_done;
+    auto it = std::find(s->waiters.begin(), s->waiters.end(), &waiter);
+    if (it != s->waiters.end()) s->waiters.erase(it);
+    s->sync_failed = waiter.failed;
+    return waiter.done;
 }
 
 /// Connects and round-trips once. A `pw_context_connect` that returns a
@@ -300,9 +315,15 @@ Session* connect_session(bool first_attempt) {
         e.version = PW_VERSION_CORE_EVENTS;
         e.done = [](void* data, uint32_t id, int seq) {
             auto* s = static_cast<Session*>(data);
-            if (id == PW_ID_CORE && seq == s->pending_seq) {
-                s->sync_done = true;
-                g_lib.thread_loop_signal(s->loop, false);
+            if (id == PW_ID_CORE) {
+                bool matched = false;
+                for (Session::SyncWaiter* w : s->waiters) {
+                    if (w->seq == seq) {
+                        w->done = true;
+                        matched = true;
+                    }
+                }
+                if (matched) g_lib.thread_loop_signal(s->loop, false);
             }
         };
         e.error = [](void* data, uint32_t id, int, int res, const char* message) {
@@ -311,6 +332,9 @@ Session* connect_session(bool first_attempt) {
                 "E/Vanta-Audio           PipeWire core reported an error "
                 "(id=%u res=%d %s).\n", id, res, message ? message : "");
             s->sync_failed = true;
+            for (Session::SyncWaiter* w : s->waiters) {
+                w->failed = true;
+            }
             g_lib.thread_loop_signal(s->loop, false);
         };
         return e;
@@ -671,6 +695,7 @@ std::vector<DeviceInfo> enumerate_devices() {
 
     RegistryScan scan;
 
+    std::lock_guard<std::mutex> sync_lock(session->sync_mutex);
     g_lib.thread_loop_lock(session->loop);
 
     pw_registry* registry = pw_core_get_registry(session->core, PW_VERSION_REGISTRY, 0);
@@ -990,15 +1015,8 @@ OutputSwitch retarget_streams_impl(const std::string& requested, bool capture) {
                       "instead, and the choice is kept for when it returns";
     }
 
+    std::lock_guard<std::mutex> sync_lock(session->sync_mutex);
     g_lib.thread_loop_lock(session->loop);
-
-    // Copied with the loop held. A stream cannot be destroyed while it is, so
-    // every pointer in the copy stays valid until the unlock below.
-    std::vector<pw_stream*> streams;
-    {
-        std::lock_guard<std::mutex> lock(g_live_mutex);
-        streams = capture ? g_live_capture_streams : g_live_streams;
-    }
 
     pw_registry* registry = pw_core_get_registry(session->core, PW_VERSION_REGISTRY, 0);
     if (!registry) {
@@ -1022,6 +1040,16 @@ OutputSwitch retarget_streams_impl(const std::string& requested, bool capture) {
         result.note = "this PipeWire session has no 'default' metadata (is a session manager "
                       "running?); open streams stay where they are until the next launch";
     } else {
+        // Snapshot live streams AFTER `find_default_metadata()` returns: its
+        // `round_trip()` calls `pw_thread_loop_timed_wait`, which releases
+        // `session->loop`'s lock and allows a concurrent `close()` to destroy a
+        // `pw_stream*`. From here through the loop below `session->loop` stays
+        // continuously locked with no waits, so every pointer stays live.
+        std::vector<pw_stream*> streams;
+        {
+            std::lock_guard<std::mutex> lock(g_live_mutex);
+            streams = capture ? g_live_capture_streams : g_live_streams;
+        }
         for (pw_stream* stream : streams) {
             const uint32_t node = g_lib.stream_get_node_id(stream);
             if (node == SPA_ID_INVALID) continue;
@@ -1419,71 +1447,88 @@ struct CaptureStream::Impl {
     uint32_t bytes_per_frame = 0;
     std::atomic<bool> failed{false};
 
-    mutable std::mutex mutex;
-    // Pre-allocated fixed-capacity circular byte buffer: PipeWire owns the
-    // memory the samples arrive in and reuses it the moment `process` returns,
-    // so samples are copied out in bulk `memcpy`s with zero heap allocations
-    // on the audio callback thread.
+    // Lock-free power-of-two SPSC circular byte buffer: PipeWire's real-time
+    // audio callback is the sole producer (`ring_push`) and `CaptureStream::read`
+    // is the sole consumer (`ring_pop`). Neither ever acquires a mutex on the
+    // audio path.
     std::vector<uint8_t> ring;
-    size_t ring_head = 0;
-    size_t ring_len = 0;
-    size_t max_buffered = 0;
-    uint64_t dropped_bytes = 0;
+    size_t capacity = 0;
+    size_t mask = 0;
+    alignas(64) std::atomic<size_t> write_pos{0};
+    alignas(64) std::atomic<size_t> read_pos{0};
+    std::atomic<uint64_t> dropped_bytes{0};
 
-    void ring_reset(size_t capacity) {
-        ring.assign(capacity, 0);
-        ring_head = 0;
-        ring_len = 0;
-        max_buffered = capacity;
-        dropped_bytes = 0;
+    static size_t next_pow2(size_t n) {
+        if (n == 0) return 0;
+        size_t p = 64;
+        while (p < n && p <= (SIZE_MAX >> 1)) p <<= 1;
+        return p;
     }
 
+    // Called only while the PipeWire stream is not running (in `open()` before
+    // `pw_stream_connect`).
+    void ring_reset(size_t min_capacity) {
+        const size_t cap = next_pow2(min_capacity);
+        ring.assign(cap, 0);
+        capacity = cap;
+        mask = cap ? (cap - 1) : 0;
+        write_pos.store(0, std::memory_order_relaxed);
+        read_pos.store(0, std::memory_order_relaxed);
+        dropped_bytes.store(0, std::memory_order_relaxed);
+    }
+
+    // Called only in `close()` after `pw_stream_destroy` has stopped callbacks.
     void ring_clear() {
-        ring_head = 0;
-        ring_len = 0;
+        write_pos.store(0, std::memory_order_relaxed);
+        read_pos.store(0, std::memory_order_relaxed);
     }
 
     void ring_push(const uint8_t* data, size_t size) {
-        if (size == 0 || max_buffered == 0) return;
-        if (size >= max_buffered) {
-            // Input alone exceeds capacity: drop everything queued plus the
-            // oldest prefix of this chunk, keeping the newest `max_buffered`.
-            dropped_bytes += ring_len + (size - max_buffered);
-            const uint8_t* tail = data + (size - max_buffered);
-            std::memcpy(ring.data(), tail, max_buffered);
-            ring_head = 0;
-            ring_len = max_buffered;
+        if (size == 0 || capacity == 0) return;
+        const size_t w = write_pos.load(std::memory_order_relaxed);
+        const size_t r = read_pos.load(std::memory_order_acquire);
+        const size_t used = w - r;
+        const size_t avail = capacity - used;
+        if (avail == 0) {
+            dropped_bytes.fetch_add(size, std::memory_order_relaxed);
             return;
         }
-        if (ring_len + size > max_buffered) {
-            size_t drop = (ring_len + size) - max_buffered;
-            ring_head = (ring_head + drop) % max_buffered;
-            ring_len -= drop;
-            dropped_bytes += drop;
+        size_t to_write = size <= avail ? size : avail;
+        if (to_write < size) {
+            // Keep whole frames aligned when dropping excess bytes on overflow.
+            if (bytes_per_frame > 1) {
+                to_write -= (to_write % bytes_per_frame);
+            }
+            dropped_bytes.fetch_add(size - to_write, std::memory_order_relaxed);
+            if (to_write == 0) return;
         }
-        size_t tail_pos = (ring_head + ring_len) % max_buffered;
-        size_t first = max_buffered - tail_pos;
-        if (first >= size) {
-            std::memcpy(ring.data() + tail_pos, data, size);
+        const size_t idx = w & mask;
+        const size_t first = capacity - idx;
+        if (first >= to_write) {
+            std::memcpy(ring.data() + idx, data, to_write);
         } else {
-            std::memcpy(ring.data() + tail_pos, data, first);
-            std::memcpy(ring.data(), data + first, size - first);
+            std::memcpy(ring.data() + idx, data, first);
+            std::memcpy(ring.data(), data + first, to_write - first);
         }
-        ring_len += size;
+        write_pos.store(w + to_write, std::memory_order_release);
     }
 
     uint32_t ring_pop(uint8_t* out, uint32_t size) {
-        size_t n = ring_len < size ? ring_len : size;
+        if (size == 0 || capacity == 0) return 0;
+        const size_t r = read_pos.load(std::memory_order_relaxed);
+        const size_t w = write_pos.load(std::memory_order_acquire);
+        const size_t avail = w - r;
+        const size_t n = avail < size ? avail : size;
         if (n == 0) return 0;
-        size_t first = max_buffered - ring_head;
+        const size_t idx = r & mask;
+        const size_t first = capacity - idx;
         if (first >= n) {
-            std::memcpy(out, ring.data() + ring_head, n);
+            std::memcpy(out, ring.data() + idx, n);
         } else {
-            std::memcpy(out, ring.data() + ring_head, first);
+            std::memcpy(out, ring.data() + idx, first);
             std::memcpy(out + first, ring.data(), n - first);
         }
-        ring_head = (ring_head + n) % max_buffered;
-        ring_len -= n;
+        read_pos.store(r + n, std::memory_order_release);
         return static_cast<uint32_t>(n);
     }
 
@@ -1507,7 +1552,6 @@ struct CaptureStream::Impl {
         if (src) {
             const uint32_t offset = buf->datas[0].chunk->offset;
             const uint32_t size = buf->datas[0].chunk->size;
-            std::lock_guard<std::mutex> lock(mutex);
             ring_push(src + offset, size);
         }
         g_lib.stream_queue_buffer(stream, b);
@@ -1581,10 +1625,7 @@ bool CaptureStream::open(uint32_t rate_hz, uint32_t channels, const std::string&
     // while the graph re-negotiates, short enough that the samples a reader
     // eventually sees are still worth hearing.
     const size_t cap = static_cast<size_t>(impl_->bytes_per_frame) * rate_hz / 2;
-    {
-        std::lock_guard<std::mutex> lock(impl_->mutex);
-        impl_->ring_reset(cap);
-    }
+    impl_->ring_reset(cap);
 
     static std::atomic<uint32_t> next_id{0};
     char name[64];
@@ -1697,10 +1738,7 @@ void CaptureStream::close() {
         g_lib.thread_loop_unlock(session->loop);
     }
     impl_->stream = nullptr;
-    {
-        std::lock_guard<std::mutex> lock(impl_->mutex);
-        impl_->ring_clear();
-    }
+    impl_->ring_clear();
     uint32_t remaining = g_open_capture_streams.fetch_sub(1) - 1;
     std::fprintf(stderr,
         "I/Vanta-OpenSLES         microphone closed; %u capture stream(s) now open.\n",
@@ -1715,14 +1753,12 @@ bool CaptureStream::failed() const {
 
 uint32_t CaptureStream::read(void* dst, uint32_t size) {
     if (!impl_ || !dst || size == 0) return 0;
-    std::lock_guard<std::mutex> lock(impl_->mutex);
     return impl_->ring_pop(static_cast<uint8_t*>(dst), size);
 }
 
 uint64_t CaptureStream::dropped_bytes() const {
     if (!impl_) return 0;
-    std::lock_guard<std::mutex> lock(impl_->mutex);
-    return impl_->dropped_bytes;
+    return impl_->dropped_bytes.load(std::memory_order_relaxed);
 }
 
 // --------------------------------------------------------------- interface

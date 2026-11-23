@@ -138,33 +138,53 @@ static void init_fast_classes(jnivm::ENV* env) {
     g_cls_arr_double = env->GetClass("[D");
 }
 
-static inline jnivm::Object* fast_unwrap(jobject o) noexcept {
+struct FastObj {
+    jnivm::Object* ptr = nullptr;
+    /// Populated ONLY when unwrapping a `jnivm::Weak` ref so the strong
+    /// reference stays alive for the entire JNI call (preventing UAF).
+    /// Null for local and global refs (zero atomic refcount overhead).
+    std::shared_ptr<jnivm::Object> pin;
+    explicit operator bool() const noexcept { return ptr != nullptr; }
+};
+
+struct FastClass {
+    jnivm::Class* ptr = nullptr;
+    std::shared_ptr<jnivm::Object> pin;
+    explicit operator bool() const noexcept { return ptr != nullptr; }
+};
+
+static inline FastObj fast_unwrap(jobject o) noexcept {
     if (!o) {
-        return nullptr;
+        return {};
     }
     auto* obj = reinterpret_cast<jnivm::Object*>(o);
     const void* vp = vptr_of(obj);
     if (__builtin_expect(vp != g_vptr_global && vp != g_vptr_weak, 1)) {
-        return obj;
+        return {obj, {}};
     }
     if (vp == g_vptr_global) {
         auto* g = reinterpret_cast<jnivm::Global*>(reinterpret_cast<char*>(obj) + g_global_obj_delta);
-        return g->wrapped.get();
+        return {g->wrapped.get(), {}};
     }
     auto* w = reinterpret_cast<jnivm::Weak*>(reinterpret_cast<char*>(obj) + g_weak_obj_delta);
     auto sp = w->wrapped.lock();
-    return sp.get();
+    jnivm::Object* raw = sp.get();
+    return {raw, std::move(sp)};
 }
 
-static inline jnivm::Class* fast_unwrap_class(jclass c) noexcept {
-    jnivm::Object* obj = fast_unwrap(c);
-    if (!obj) {
-        return nullptr;
+static inline FastClass fast_unwrap_class(jclass c) noexcept {
+    FastObj obj = fast_unwrap(c);
+    if (!obj.ptr) {
+        return {};
     }
-    if (__builtin_expect(vptr_of(obj) == g_vptr_class, 1)) {
-        return static_cast<jnivm::Class*>(obj);
+    if (__builtin_expect(vptr_of(obj.ptr) == g_vptr_class, 1)) {
+        return {static_cast<jnivm::Class*>(obj.ptr), std::move(obj.pin)};
     }
-    return dynamic_cast<jnivm::Class*>(obj);
+    auto* cp = dynamic_cast<jnivm::Class*>(obj.ptr);
+    if (!cp) {
+        return {};
+    }
+    return {cp, std::move(obj.pin)};
 }
 
 static inline void push_local(jnivm::ENV* nenv, const std::shared_ptr<jnivm::Object>& obj) {
@@ -209,20 +229,26 @@ static void fast_delete_local_ref(JNIEnv* env, jobject obj) {
     if (!obj) {
         return;
     }
-    auto* nenv = jnivm::ENV::FromJNIEnv(env);
-    jnivm::Object* raw = fast_unwrap(obj);
-    if (!raw) {
+    // Reject Global/Weak refs: DeleteLocalRef must never unwrap and delete a
+    // local ref belonging to the same underlying object.
+    auto* raw = reinterpret_cast<jnivm::Object*>(obj);
+    const void* vp = vptr_of(raw);
+    if (__builtin_expect(vp == g_vptr_global || vp == g_vptr_weak, 0)) {
         return;
     }
-    for (auto& frame : nenv->localframe) {
-        for (size_t i = frame.size(); i-- > 0;) {
-            if (frame[i].get() == raw) {
-                if (i + 1 < frame.size()) {
-                    frame[i] = std::move(frame.back());
-                }
-                frame.pop_back();
-                return;
+    auto* nenv = jnivm::ENV::FromJNIEnv(env);
+    if (nenv->localframe.empty()) {
+        return;
+    }
+    // ONLY inspect the innermost local frame (`front()`), never parent frames.
+    auto& frame = nenv->localframe.front();
+    for (size_t i = frame.size(); i-- > 0;) {
+        if (frame[i].get() == raw) {
+            if (i + 1 < frame.size()) {
+                frame[i] = std::move(frame.back());
             }
+            frame.pop_back();
+            return;
         }
     }
 #else
@@ -235,11 +261,11 @@ static jobject fast_new_global_ref(JNIEnv* env, jobject obj) {
     if (!obj) {
         return nullptr;
     }
-    jnivm::Object* raw = fast_unwrap(obj);
-    if (!raw) {
+    FastObj unwrapped = fast_unwrap(obj);
+    if (!unwrapped.ptr) {
         return nullptr;
     }
-    auto strong = raw->weak_from_this().lock();
+    auto strong = unwrapped.pin ? std::move(unwrapped.pin) : unwrapped.ptr->weak_from_this().lock();
     if (!strong) {
         return g_orig_jni.NewGlobalRef(env, obj);
     }
@@ -285,11 +311,11 @@ static jobject fast_new_local_ref(JNIEnv* env, jobject obj) {
     if (!obj) {
         return nullptr;
     }
-    jnivm::Object* raw = fast_unwrap(obj);
-    if (!raw) {
+    FastObj unwrapped = fast_unwrap(obj);
+    if (!unwrapped.ptr) {
         return nullptr;
     }
-    auto strong = raw->weak_from_this().lock();
+    auto strong = unwrapped.pin ? std::move(unwrapped.pin) : unwrapped.ptr->weak_from_this().lock();
     if (!strong) {
         return g_orig_jni.NewLocalRef(env, obj);
     }
@@ -301,15 +327,17 @@ static jboolean fast_is_same_object(JNIEnv*, jobject l, jobject r) {
     if (l == r) {
         return JNI_TRUE;
     }
-    return fast_unwrap(l) == fast_unwrap(r) ? JNI_TRUE : JNI_FALSE;
+    FastObj lo = fast_unwrap(l);
+    FastObj ro = fast_unwrap(r);
+    return lo.ptr == ro.ptr ? JNI_TRUE : JNI_FALSE;
 }
 
 static jclass fast_get_object_class(JNIEnv* env, jobject obj) {
-    jnivm::Object* raw = fast_unwrap(obj);
-    if (!raw) {
+    FastObj raw = fast_unwrap(obj);
+    if (!raw.ptr) {
         return nullptr;
     }
-    auto cl = raw->clazz.lock();
+    auto cl = raw.ptr->clazz.lock();
     if (!cl) {
         return g_orig_jni.GetObjectClass(env, obj);
     }
@@ -346,8 +374,9 @@ static jclass fast_find_class(JNIEnv* env, const char* name) {
         }
         jclass res = g_orig_jni.FindClass(env, name);
         if (res) {
-            if (auto* cp = fast_unwrap_class(res)) {
-                auto sp = std::static_pointer_cast<jnivm::Class>(cp->weak_from_this().lock());
+            if (auto cp = fast_unwrap_class(res)) {
+                auto sp = std::static_pointer_cast<jnivm::Class>(
+                    cp.pin ? std::move(cp.pin) : cp.ptr->weak_from_this().lock());
                 if (sp) {
                     slot.gen = gen;
                     slot.hash = h;
@@ -382,7 +411,8 @@ static IdT fast_lookup_member_id(JNIEnv* env, jclass cl, const char* name, const
     if (!cl || !name || !sig) {
         return orig(env, cl, name, sig);
     }
-    jnivm::Class* cp = fast_unwrap_class(cl);
+    FastClass cls = fast_unwrap_class(cl);
+    jnivm::Class* cp = cls.ptr;
     if (!cp) {
         return orig(env, cl, name, sig);
     }
@@ -432,15 +462,24 @@ static jfieldID fast_get_static_field_id(JNIEnv* env, jclass cl, const char* nam
 
 // ---- Fast String & DirectByteBuffer accessors -----------------------------
 
-static inline jnivm::String* fast_as_string(jstring s) noexcept {
-    jnivm::Object* raw = fast_unwrap(s);
-    if (!raw) {
-        return nullptr;
+struct FastString {
+    jnivm::String* ptr = nullptr;
+    std::shared_ptr<jnivm::Object> pin;
+};
+
+static inline FastString fast_as_string(jstring s) noexcept {
+    FastObj raw = fast_unwrap(s);
+    if (!raw.ptr) {
+        return {};
     }
-    if (__builtin_expect(vptr_of(raw) == g_vptr_string, 1)) {
-        return static_cast<jnivm::String*>(raw);
+    if (__builtin_expect(vptr_of(raw.ptr) == g_vptr_string, 1)) {
+        return {static_cast<jnivm::String*>(raw.ptr), std::move(raw.pin)};
     }
-    return dynamic_cast<jnivm::String*>(raw);
+    auto* sp = dynamic_cast<jnivm::String*>(raw.ptr);
+    if (!sp) {
+        return {};
+    }
+    return {sp, std::move(raw.pin)};
 }
 
 static jstring fast_new_string_utf(JNIEnv* env, const char* str) {
@@ -450,37 +489,42 @@ static jstring fast_new_string_utf(JNIEnv* env, const char* str) {
 }
 
 static jsize fast_get_string_utf_length(JNIEnv*, jstring str) {
-    auto* s = fast_as_string(str);
-    return s ? static_cast<jsize>(s->length()) : 0;
+    auto s = fast_as_string(str);
+    return s.ptr ? static_cast<jsize>(s.ptr->length()) : 0;
 }
 
-static const char* fast_get_string_utf_chars(JNIEnv*, jstring str, jboolean* isCopy) {
+static const char* fast_get_string_utf_chars(JNIEnv* env, jstring str, jboolean* isCopy) {
+    auto s = fast_as_string(str);
+    // For Weak refs, fall back to g_orig_jni so the returned pointer cannot
+    // outlive our temporary lock.
+    if (__builtin_expect(s.pin != nullptr, 0)) {
+        return g_orig_jni.GetStringUTFChars(env, str, isCopy);
+    }
     if (isCopy) {
         *isCopy = JNI_FALSE;
     }
-    auto* s = fast_as_string(str);
-    return s ? s->c_str() : "";
+    return s.ptr ? s.ptr->c_str() : "";
 }
 
 static void* fast_get_direct_buffer_address(JNIEnv*, jobject buf) {
-    jnivm::Object* raw = fast_unwrap(buf);
-    if (!raw) {
+    FastObj raw = fast_unwrap(buf);
+    if (!raw.ptr) {
         return nullptr;
     }
-    auto* bb = (__builtin_expect(vptr_of(raw) == g_vptr_bytebuf, 1))
-        ? static_cast<jnivm::ByteBuffer*>(raw)
-        : dynamic_cast<jnivm::ByteBuffer*>(raw);
+    auto* bb = (__builtin_expect(vptr_of(raw.ptr) == g_vptr_bytebuf, 1))
+        ? static_cast<jnivm::ByteBuffer*>(raw.ptr)
+        : dynamic_cast<jnivm::ByteBuffer*>(raw.ptr);
     return bb ? bb->buffer : nullptr;
 }
 
 static jlong fast_get_direct_buffer_capacity(JNIEnv*, jobject buf) {
-    jnivm::Object* raw = fast_unwrap(buf);
-    if (!raw) {
+    FastObj raw = fast_unwrap(buf);
+    if (!raw.ptr) {
         return -1;
     }
-    auto* bb = (__builtin_expect(vptr_of(raw) == g_vptr_bytebuf, 1))
-        ? static_cast<jnivm::ByteBuffer*>(raw)
-        : dynamic_cast<jnivm::ByteBuffer*>(raw);
+    auto* bb = (__builtin_expect(vptr_of(raw.ptr) == g_vptr_bytebuf, 1))
+        ? static_cast<jnivm::ByteBuffer*>(raw.ptr)
+        : dynamic_cast<jnivm::ByteBuffer*>(raw.ptr);
     return bb ? bb->capacity : -1;
 }
 
@@ -489,47 +533,66 @@ static jlong fast_get_direct_buffer_capacity(JNIEnv*, jobject buf) {
 template <class T>
 struct ArrayTraits;
 
-#define DEFINE_ARRAY_TRAITS(CType, JArrType, VptrVar, ClsVar) \
+#define DEFINE_ARRAY_TRAITS(CType, JArrType, Name, VptrVar, ClsVar) \
     template <> struct ArrayTraits<CType> { \
         using JArr = JArrType; \
         static inline const void* vptr() noexcept { return VptrVar; } \
         static inline const std::shared_ptr<jnivm::Class>& cls() noexcept { return ClsVar; } \
+        static inline CType* orig_get_elements(JNIEnv* e, JArr a, jboolean* c) { \
+            return g_orig_jni.Get##Name##ArrayElements(e, a, c); \
+        } \
+        static inline void orig_get_region(JNIEnv* e, JArr a, jsize s, jsize l, CType* b) { \
+            g_orig_jni.Get##Name##ArrayRegion(e, a, s, l, b); \
+        } \
+        static inline void orig_set_region(JNIEnv* e, JArr a, jsize s, jsize l, const CType* b) { \
+            g_orig_jni.Set##Name##ArrayRegion(e, a, s, l, b); \
+        } \
     }
 
-DEFINE_ARRAY_TRAITS(jboolean, jbooleanArray, g_vptr_arr_bool, g_cls_arr_bool);
-DEFINE_ARRAY_TRAITS(jbyte, jbyteArray, g_vptr_arr_byte, g_cls_arr_byte);
-DEFINE_ARRAY_TRAITS(jchar, jcharArray, g_vptr_arr_char, g_cls_arr_char);
-DEFINE_ARRAY_TRAITS(jshort, jshortArray, g_vptr_arr_short, g_cls_arr_short);
-DEFINE_ARRAY_TRAITS(jint, jintArray, g_vptr_arr_int, g_cls_arr_int);
-DEFINE_ARRAY_TRAITS(jlong, jlongArray, g_vptr_arr_long, g_cls_arr_long);
-DEFINE_ARRAY_TRAITS(jfloat, jfloatArray, g_vptr_arr_float, g_cls_arr_float);
-DEFINE_ARRAY_TRAITS(jdouble, jdoubleArray, g_vptr_arr_double, g_cls_arr_double);
+DEFINE_ARRAY_TRAITS(jboolean, jbooleanArray, Boolean, g_vptr_arr_bool, g_cls_arr_bool);
+DEFINE_ARRAY_TRAITS(jbyte, jbyteArray, Byte, g_vptr_arr_byte, g_cls_arr_byte);
+DEFINE_ARRAY_TRAITS(jchar, jcharArray, Char, g_vptr_arr_char, g_cls_arr_char);
+DEFINE_ARRAY_TRAITS(jshort, jshortArray, Short, g_vptr_arr_short, g_cls_arr_short);
+DEFINE_ARRAY_TRAITS(jint, jintArray, Int, g_vptr_arr_int, g_cls_arr_int);
+DEFINE_ARRAY_TRAITS(jlong, jlongArray, Long, g_vptr_arr_long, g_cls_arr_long);
+DEFINE_ARRAY_TRAITS(jfloat, jfloatArray, Float, g_vptr_arr_float, g_cls_arr_float);
+DEFINE_ARRAY_TRAITS(jdouble, jdoubleArray, Double, g_vptr_arr_double, g_cls_arr_double);
 #undef DEFINE_ARRAY_TRAITS
 
 template <class T>
-static inline jnivm::Array<T>* fast_as_array(typename ArrayTraits<T>::JArr a) noexcept {
-    jnivm::Object* raw = fast_unwrap(a);
-    if (!raw) {
-        return nullptr;
+struct FastArray {
+    jnivm::Array<T>* ptr = nullptr;
+    std::shared_ptr<jnivm::Object> pin;
+};
+
+template <class T>
+static inline FastArray<T> fast_as_array(typename ArrayTraits<T>::JArr a) noexcept {
+    FastObj raw = fast_unwrap(a);
+    if (!raw.ptr) {
+        return {};
     }
-    if (__builtin_expect(vptr_of(raw) == ArrayTraits<T>::vptr(), 1)) {
-        return static_cast<jnivm::Array<T>*>(raw);
+    if (__builtin_expect(vptr_of(raw.ptr) == ArrayTraits<T>::vptr(), 1)) {
+        return {static_cast<jnivm::Array<T>*>(raw.ptr), std::move(raw.pin)};
     }
-    return dynamic_cast<jnivm::Array<T>*>(raw);
+    auto* arr = dynamic_cast<jnivm::Array<T>*>(raw.ptr);
+    if (!arr) {
+        return {};
+    }
+    return {arr, std::move(raw.pin)};
 }
 
 static jsize fast_get_array_length(JNIEnv*, jarray a) {
-    jnivm::Object* raw = fast_unwrap(a);
-    if (!raw) {
+    FastObj raw = fast_unwrap(a);
+    if (!raw.ptr) {
         return 0;
     }
-    const void* vp = vptr_of(raw);
+    const void* vp = vptr_of(raw.ptr);
     if (vp == g_vptr_arr_byte || vp == g_vptr_arr_int || vp == g_vptr_arr_float ||
         vp == g_vptr_arr_short || vp == g_vptr_arr_long || vp == g_vptr_arr_bool ||
         vp == g_vptr_arr_char || vp == g_vptr_arr_double) {
-        return static_cast<jnivm::Array<void>*>(raw)->getSize();
+        return static_cast<jnivm::Array<void>*>(raw.ptr)->getSize();
     }
-    auto* arr = dynamic_cast<jnivm::Array<void>*>(raw);
+    auto* arr = dynamic_cast<jnivm::Array<void>*>(raw.ptr);
     return arr ? arr->getSize() : 0;
 }
 
@@ -550,45 +613,77 @@ static typename ArrayTraits<T>::JArr fast_new_array(JNIEnv* env, jsize length) {
 }
 
 template <class T>
-static T* fast_get_array_elements(JNIEnv*, typename ArrayTraits<T>::JArr a, jboolean* isCopy) {
+static T* fast_get_array_elements(JNIEnv* env, typename ArrayTraits<T>::JArr a, jboolean* isCopy) {
+    auto arr = fast_as_array<T>(a);
+    if (__builtin_expect(arr.pin != nullptr, 0)) {
+        return ArrayTraits<T>::orig_get_elements(env, a, isCopy);
+    }
     if (isCopy) {
         *isCopy = JNI_FALSE;
     }
-    auto* arr = fast_as_array<T>(a);
-    return arr ? arr->getArray() : nullptr;
+    return arr.ptr ? arr.ptr->getArray() : nullptr;
 }
 
 template <class T>
-static void fast_get_array_region(JNIEnv*, typename ArrayTraits<T>::JArr a, jsize start, jsize len, T* buf) {
-    auto* arr = fast_as_array<T>(a);
-    if (arr && buf && len > 0) {
-        std::memcpy(buf, arr->getArray() + start, sizeof(T) * static_cast<size_t>(len));
+static void fast_get_array_region(JNIEnv* env, typename ArrayTraits<T>::JArr a, jsize start, jsize len, T* buf) {
+    auto arr = fast_as_array<T>(a);
+    if (__builtin_expect(!arr.ptr || !buf, 0)) {
+        ArrayTraits<T>::orig_get_region(env, a, start, len, buf);
+        return;
+    }
+    const jsize raw_size = arr.ptr->getSize();
+    const size_t arr_size = raw_size > 0 ? static_cast<size_t>(raw_size) : 0;
+    if (__builtin_expect(
+            start < 0 || len < 0 || static_cast<size_t>(start) > arr_size ||
+                static_cast<size_t>(len) > arr_size - static_cast<size_t>(start),
+            0)) {
+        ArrayTraits<T>::orig_get_region(env, a, start, len, buf);
+        return;
+    }
+    if (len > 0) {
+        std::memcpy(buf, arr.ptr->getArray() + start, sizeof(T) * static_cast<size_t>(len));
     }
 }
 
 template <class T>
-static void fast_set_array_region(JNIEnv*, typename ArrayTraits<T>::JArr a, jsize start, jsize len, const T* buf) {
-    auto* arr = fast_as_array<T>(a);
-    if (arr && buf && len > 0) {
-        std::memcpy(arr->getArray() + start, buf, sizeof(T) * static_cast<size_t>(len));
+static void fast_set_array_region(JNIEnv* env, typename ArrayTraits<T>::JArr a, jsize start, jsize len, const T* buf) {
+    auto arr = fast_as_array<T>(a);
+    if (__builtin_expect(!arr.ptr || !buf, 0)) {
+        ArrayTraits<T>::orig_set_region(env, a, start, len, buf);
+        return;
+    }
+    const jsize raw_size = arr.ptr->getSize();
+    const size_t arr_size = raw_size > 0 ? static_cast<size_t>(raw_size) : 0;
+    if (__builtin_expect(
+            start < 0 || len < 0 || static_cast<size_t>(start) > arr_size ||
+                static_cast<size_t>(len) > arr_size - static_cast<size_t>(start),
+            0)) {
+        ArrayTraits<T>::orig_set_region(env, a, start, len, buf);
+        return;
+    }
+    if (len > 0) {
+        std::memcpy(arr.ptr->getArray() + start, buf, sizeof(T) * static_cast<size_t>(len));
     }
 }
 
-static void* fast_get_primitive_array_critical(JNIEnv*, jarray a, jboolean* isCopy) {
+static void* fast_get_primitive_array_critical(JNIEnv* env, jarray a, jboolean* isCopy) {
+    FastObj raw = fast_unwrap(a);
+    if (__builtin_expect(raw.pin != nullptr, 0)) {
+        return g_orig_jni.GetPrimitiveArrayCritical(env, a, isCopy);
+    }
     if (isCopy) {
         *isCopy = JNI_FALSE;
     }
-    jnivm::Object* raw = fast_unwrap(a);
-    if (!raw) {
+    if (!raw.ptr) {
         return nullptr;
     }
-    const void* vp = vptr_of(raw);
+    const void* vp = vptr_of(raw.ptr);
     if (vp == g_vptr_arr_byte || vp == g_vptr_arr_int || vp == g_vptr_arr_float ||
         vp == g_vptr_arr_short || vp == g_vptr_arr_long || vp == g_vptr_arr_bool ||
         vp == g_vptr_arr_char || vp == g_vptr_arr_double) {
-        return static_cast<jnivm::Array<void>*>(raw)->getArray();
+        return static_cast<jnivm::Array<void>*>(raw.ptr)->getArray();
     }
-    auto* arr = dynamic_cast<jnivm::Array<void>*>(raw);
+    auto* arr = dynamic_cast<jnivm::Array<void>*>(raw.ptr);
     return arr ? arr->getArray() : nullptr;
 }
 
@@ -722,12 +817,12 @@ template <class T>
 struct FastCall {
     static T instance_a(JNIEnv* env, jobject obj, jmethodID id, jvalue* args) {
         auto* mid = reinterpret_cast<jnivm::Method*>(id);
-        jnivm::Object* raw = fast_unwrap(obj);
-        if (__builtin_expect(!mid || !mid->nativehandle || !raw, 0)) {
+        FastObj raw = fast_unwrap(obj);
+        if (__builtin_expect(!mid || !mid->nativehandle || !raw.ptr, 0)) {
             return orig_a(env, obj, id, args);
         }
         // Hold shared_ptr to Class on stack — never pushes a leaked local ref!
-        auto cl_sp = raw->clazz.lock();
+        auto cl_sp = raw.ptr->clazz.lock();
         jnivm::Method* resolved = resolve_virtual_method(cl_sp.get(), mid);
         if (__builtin_expect(!resolved || !resolved->nativehandle, 0)) {
             return orig_a(env, obj, id, args);
@@ -772,7 +867,8 @@ struct FastCall {
 
     static T static_a(JNIEnv* env, jclass cl, jmethodID id, jvalue* args) {
         auto* mid = reinterpret_cast<jnivm::Method*>(id);
-        jnivm::Class* cp = fast_unwrap_class(cl);
+        FastClass cls = fast_unwrap_class(cl);
+        jnivm::Class* cp = cls.ptr;
         if (__builtin_expect(!mid || !mid->nativehandle || !cp, 0)) {
             return orig_static_a(env, cl, id, args);
         }

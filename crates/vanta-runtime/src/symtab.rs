@@ -232,6 +232,7 @@ fn resolve(
     overrides: &BTreeMap<&'static str, *mut c_void>,
     host_libs: &[HostLib],
     libc: Option<&HostLib>,
+    libc_base: *mut c_void,
 ) -> Option<(&'static str, *mut c_void, Source)> {
     // Vanta's own implementations win over everything. They exist because
     // neither the host nor a stub is correct for these; see `bionic`.
@@ -241,12 +242,18 @@ fn resolve(
     match class {
         // No host has these, so there is nothing to try.
         Class::Android(_) => None,
-        // Always register under the Khronos soname even when the host answers,
-        // so the bucketing stays honest either way.
-        Class::Khronos(lib) => lookup(host_libs, symbol).map(|(_, addr)| (*lib, addr, Source::Host)),
-        Class::Generic => match lookup(host_libs, symbol) {
-            Some((provides, addr)) => Some((provides, addr, Source::Host)),
-            None => libc
+        // Route Khronos symbols directly to their matching host DSO instead of
+        // probing libm/libz first, while still registering under the Khronos
+        // Android soname.
+        Class::Khronos(lib) => host_libs
+            .iter()
+            .find(|h| h.provides == *lib)
+            .and_then(|h| h.lookup(symbol))
+            .map(|addr| (*lib, addr, Source::Host)),
+        Class::Generic => match lookup_generic(host_libs, symbol, libc_base) {
+            LookupHit::Host(provides, addr) => Some((provides, addr, Source::Host)),
+            LookupHit::Libc(addr) => libc.map(|_| ("libc.so", addr, Source::Host)),
+            LookupHit::Miss => libc
                 .and_then(|l| l.lookup(symbol))
                 .map(|addr| ("libc.so", addr, Source::Host)),
         },
@@ -299,9 +306,15 @@ pub fn build(host_libc: bool, imports: &crate::elf::Imports) -> SymbolTable {
             None => missing_host_libs.push(*soname),
         }
     }
-    let libc = host_libc
-        .then(|| HostLib::open("libc.so.6", "libc.so"))
-        .flatten();
+    // Open libc.so.6 unconditionally so we can cache its load base (`dli_fbase`)
+    // and short-circuit redundant probes across the remaining host DSOs when
+    // `dlsym` resolves a symbol into libc through a DT_NEEDED chain. Only hand
+    // `libc` to `resolve()` when `host_libc` was explicitly requested.
+    let libc_handle = HostLib::open("libc.so.6", "libc.so");
+    let libc_base = libc_handle
+        .as_ref()
+        .map_or(std::ptr::null_mut(), |l| l.base);
+    let libc = host_libc.then_some(()).and(libc_handle.as_ref());
 
     let mut table = SymbolTable {
         libraries: BTreeMap::new(),
@@ -313,8 +326,9 @@ pub fn build(host_libc: bool, imports: &crate::elf::Imports) -> SymbolTable {
 
     for (symbol, stub) in SYMBOLS.iter() {
         let class = classify(symbol);
-        let (library, address, source) = resolve(symbol, &class, &overrides, &host_libs, libc.as_ref())
-            .unwrap_or((fallback_library(&class), *stub as *mut c_void, Source::Stub));
+        let (library, address, source) =
+            resolve(symbol, &class, &overrides, &host_libs, libc, libc_base)
+                .unwrap_or((fallback_library(&class), *stub as *mut c_void, Source::Stub));
 
         table.libraries.entry(library).or_default().push(Entry {
             symbol,
@@ -336,7 +350,7 @@ pub fn build(host_libc: bool, imports: &crate::elf::Imports) -> SymbolTable {
             continue;
         }
         let class = classify(name);
-        match resolve(name, &class, &overrides, &host_libs, libc.as_ref()) {
+        match resolve(name, &class, &overrides, &host_libs, libc, libc_base) {
             Some((library, address, source)) => {
                 // The table outlives every caller -- it is handed to the linker
                 // at startup and never rebuilt -- and the linker copies these
@@ -451,20 +465,72 @@ pub fn build(host_libc: bool, imports: &crate::elf::Imports) -> SymbolTable {
     table
 }
 
-fn lookup(libs: &[HostLib], symbol: &str) -> Option<(&'static str, *mut c_void)> {
-    libs.iter()
-        .find_map(|lib| lib.lookup(symbol).map(|addr| (lib.provides, addr)))
+enum LookupHit {
+    Host(&'static str, *mut c_void),
+    /// Resolved inside `libc.so` via a host library's `DT_NEEDED` chain; no
+    /// other host DSO can define it, so remaining probes are skipped.
+    Libc(*mut c_void),
+    Miss,
+}
+
+/// Invoke `f` with a NUL-terminated C string for `symbol`, using a stack buffer
+/// for ordinary symbol names to avoid a heap allocation on every lookup.
+fn with_cstr<R>(symbol: &str, f: impl FnOnce(*const c_char) -> R) -> Option<R> {
+    let bytes = symbol.as_bytes();
+    if bytes.contains(&0) {
+        return None;
+    }
+    if bytes.len() < 256 {
+        let mut stack = [0u8; 256];
+        stack[..bytes.len()].copy_from_slice(bytes);
+        stack[bytes.len()] = 0;
+        Some(f(stack.as_ptr() as *const c_char))
+    } else {
+        let owned = CString::new(bytes).ok()?;
+        Some(f(owned.as_ptr()))
+    }
+}
+
+fn lookup_generic(libs: &[HostLib], symbol: &str, libc_base: *mut c_void) -> LookupHit {
+    with_cstr(symbol, |c_name| {
+        for lib in libs {
+            // SAFETY: `lib.handle` came from dlopen and is never closed; `c_name` is valid.
+            let addr = unsafe { host_dlsym(lib.handle, c_name) };
+            if addr.is_null() {
+                continue;
+            }
+            let mut info = DlInfo::default();
+            // SAFETY: `addr` came from dlsym and `info` is a valid out-parameter.
+            if unsafe { host_dladdr(addr, &mut info) } == 0 {
+                continue;
+            }
+            if lib.defines_info(&info) {
+                return LookupHit::Host(lib.provides, addr);
+            }
+            // If a host library's dependency chain resolved this symbol inside
+            // `libc.so`, none of the remaining host DSOs define it either —
+            // short-circuit instead of taking glibc's global loader lock 5 more times.
+            if !libc_base.is_null() && info.dli_fbase == libc_base {
+                return LookupHit::Libc(addr);
+            }
+        }
+        LookupHit::Miss
+    })
+    .unwrap_or(LookupHit::Miss)
 }
 
 /// A host shared object consulted for real implementations.
 struct HostLib {
     provides: &'static str,
-    /// Filename prefix a symbol's defining object must have to count as ours,
-    /// e.g. `libm.so` for `libm.so.6`.
+    /// Filename prefix a symbol's defining object must have to count as ours
+    /// when `base` could not be queried, e.g. `libm.so` for `libm.so.6`.
     soname_stem: &'static str,
     /// Whether vDSO-provided symbols count as this library's.
     accepts_vdso: bool,
     handle: *mut c_void,
+    /// Cached `dli_fbase` (from `dlinfo(RTLD_DI_LINKMAP)`) for O(1) pointer
+    /// comparison in `defines_info()` with zero string conversion.
+    base: *mut c_void,
 }
 
 impl HostLib {
@@ -472,37 +538,66 @@ impl HostLib {
         let name = CString::new(soname).ok()?;
         // SAFETY: `name` outlives the call and is NUL-terminated.
         let handle = unsafe { host_dlopen(name.as_ptr(), RTLD_NOW | RTLD_GLOBAL) };
+        if handle.is_null() {
+            return None;
+        }
         let soname_stem = soname.split_once(".so").map_or(soname, |(stem, _)| {
             // "libm.so.6" -> "libm.so"
             &soname[..stem.len() + 3]
         });
-        (!handle.is_null()).then_some(HostLib {
+        let mut lm: *const LinkMap = std::ptr::null();
+        // SAFETY: `handle` is a valid dlopen handle and `&mut lm` is a valid out-pointer.
+        let base = if unsafe {
+            host_dlinfo(handle, RTLD_DI_LINKMAP, &mut lm as *mut *const LinkMap as *mut c_void)
+        } == 0
+            && !lm.is_null()
+        {
+            // SAFETY: `dlinfo(RTLD_DI_LINKMAP)` populated `lm` with glibc's link_map.
+            unsafe { (*lm).l_addr as *mut c_void }
+        } else {
+            std::ptr::null_mut()
+        };
+        Some(HostLib {
             provides,
             soname_stem,
             accepts_vdso: soname.starts_with("libc."),
             handle,
+            base,
         })
     }
 
     fn lookup(&self, symbol: &str) -> Option<*mut c_void> {
-        let name = CString::new(symbol).ok()?;
-        // SAFETY: `handle` came from dlopen and is never closed; `name` is valid.
-        let addr = unsafe { host_dlsym(self.handle, name.as_ptr()) };
-        if addr.is_null() {
-            return None;
-        }
-        // dlsym searches the handle's whole dependency chain, so asking libm for
-        // `memcpy` succeeds — glibc's libm.so.6 depends on libc.so.6. Accepting
-        // that would attribute 400-odd libc symbols to libm and, worse, silently
-        // resolve libc from the host when the caller did not ask for it. Confirm
-        // the *defining* object is the one we asked.
-        (self.defines(addr)).then_some(addr)
+        with_cstr(symbol, |c_name| {
+            // SAFETY: `handle` came from dlopen and is never closed; `c_name` is valid.
+            let addr = unsafe { host_dlsym(self.handle, c_name) };
+            if addr.is_null() {
+                return None;
+            }
+            let mut info = DlInfo::default();
+            // SAFETY: `addr` came from dlsym and `info` is a valid out-parameter.
+            if unsafe { host_dladdr(addr, &mut info) } == 0 {
+                return None;
+            }
+            // dlsym searches the handle's whole dependency chain, so asking libm for
+            // `memcpy` succeeds — glibc's libm.so.6 depends on libc.so.6. Accepting
+            // that would attribute 400-odd libc symbols to libm and, worse, silently
+            // resolve libc from the host when the caller did not ask for it. Confirm
+            // the *defining* object is the one we asked.
+            self.defines_info(&info).then_some(addr)
+        })
+        .flatten()
     }
 
-    fn defines(&self, addr: *mut c_void) -> bool {
-        let mut info = DlInfo::default();
-        // SAFETY: `addr` came from dlsym and `info` is a valid out-parameter.
-        if unsafe { host_dladdr(addr, &mut info) } == 0 || info.dli_fname.is_null() {
+    fn defines_info(&self, info: &DlInfo) -> bool {
+        if !self.base.is_null() {
+            if info.dli_fbase == self.base {
+                return true;
+            }
+            if !self.accepts_vdso {
+                return false;
+            }
+        }
+        if info.dli_fname.is_null() {
             return false;
         }
         // SAFETY: dladdr filled dli_fname with a NUL-terminated path.
@@ -510,7 +605,7 @@ impl HostLib {
         let path = path.to_string_lossy();
         let file = path.rsplit('/').next().unwrap_or(&path);
 
-        if file.starts_with(self.soname_stem) {
+        if self.base.is_null() && file.starts_with(self.soname_stem) {
             return true;
         }
         // glibc puts gettimeofday, time and clock_gettime in the vDSO, so dladdr
@@ -518,6 +613,12 @@ impl HostLib {
         // implementation libc would have given us.
         self.accepts_vdso && file.starts_with("linux-vdso")
     }
+}
+
+/// Prefix of glibc's `struct link_map` (only `l_addr`, matching `Dl_info.dli_fbase`).
+#[repr(C)]
+struct LinkMap {
+    l_addr: usize,
 }
 
 /// `Dl_info`, laid out to match glibc's.
@@ -541,7 +642,7 @@ impl Default for DlInfo {
 }
 
 // The *host* dynamic loader, not the bionic one. Declared directly rather than
-// taking a dependency on the `libc` crate for two functions.
+// taking a dependency on the `libc` crate for these functions.
 extern "C" {
     #[link_name = "dlopen"]
     fn host_dlopen(filename: *const c_char, flags: c_int) -> *mut c_void;
@@ -549,10 +650,13 @@ extern "C" {
     fn host_dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
     #[link_name = "dladdr"]
     fn host_dladdr(addr: *mut c_void, info: *mut DlInfo) -> c_int;
+    #[link_name = "dlinfo"]
+    fn host_dlinfo(handle: *mut c_void, request: c_int, info: *mut c_void) -> c_int;
 }
 
 const RTLD_NOW: c_int = 2;
 const RTLD_GLOBAL: c_int = 0x100;
+const RTLD_DI_LINKMAP: c_int = 2;
 
 #[cfg(test)]
 mod tests {

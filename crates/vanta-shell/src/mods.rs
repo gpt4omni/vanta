@@ -13,10 +13,15 @@
 //! so toggling packs never mutates pack files or manifests.
 
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::File;
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
+
+/// Maximum decompressed size for a single file inside an imported `.zip` mod pack (64 MiB).
+const MAX_MOD_FILE_BYTES: u64 = 64 * 1024 * 1024;
+/// Maximum total decompressed size for an imported `.zip` mod pack (512 MiB).
+const MAX_MOD_TOTAL_BYTES: u64 = 512 * 1024 * 1024;
 
 /// Optional manifest placed at `<profile>/mods/<pack>/mod.json`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -102,34 +107,44 @@ pub fn set_pack_enabled(profile_dir: &Path, pack_id: &str, enabled: bool) -> Res
     save_enablement(profile_dir, &map)
 }
 
-/// Canonicalize a relative asset lookup name, rejecting path traversal (`..`),
-/// absolute paths, backslashes, NUL bytes, and empty paths.
-pub fn normalize_asset_name(raw: &str) -> Option<String> {
+/// Zero-allocation check for a canonical relative asset lookup name.
+///
+/// Returns `Some(raw)` when `raw` is already normalized (non-empty, no NUL,
+/// no `\`, no leading `/`, no `//`, and no `.`/`..` segments) and `None`
+/// otherwise.
+pub fn validate_asset_name(raw: &str) -> Option<&str> {
     if raw.is_empty() || raw.contains('\0') || raw.contains('\\') || raw.starts_with('/') {
         return None;
     }
-    let mut parts = Vec::new();
+    let mut any = false;
     for segment in raw.split('/') {
         if segment.is_empty() || segment == "." || segment == ".." {
             return None;
         }
-        parts.push(segment);
+        any = true;
     }
-    if parts.is_empty() {
-        return None;
-    }
-    Some(parts.join("/"))
+    any.then_some(raw)
+}
+
+/// Canonicalize a relative asset lookup name, rejecting path traversal (`..`),
+/// absolute paths, backslashes, NUL bytes, and empty paths.
+pub fn normalize_asset_name(raw: &str) -> Option<String> {
+    validate_asset_name(raw).map(str::to_string)
 }
 
 /// Walk all regular asset files contained strictly inside `pack_root`.
 ///
-/// Canonicalizes every entry and drops symlinks or paths that escape `pack_root`.
-/// Skips `mod.json` at the pack root so pack metadata is never served as an asset.
+/// Canonicalizes every entry, drops symlinks or paths that escape `pack_root`,
+/// and tracks visited canonicalized directories to guard against internal
+/// symlink cycles. Skips `mod.json` at the pack root so pack metadata is never
+/// served as an asset.
 fn walk_pack_files(pack_root: &Path) -> Vec<(String, PathBuf)> {
     let Ok(canon_root) = pack_root.canonicalize() else {
         return Vec::new();
     };
     let mut out = Vec::new();
+    let mut visited = HashSet::new();
+    visited.insert(canon_root.clone());
     let mut stack = vec![canon_root.clone()];
     while let Some(dir) = stack.pop() {
         let Ok(entries) = std::fs::read_dir(&dir) else {
@@ -144,7 +159,9 @@ fn walk_pack_files(pack_root: &Path) -> Vec<(String, PathBuf)> {
                 continue;
             }
             if real.is_dir() {
-                stack.push(real);
+                if visited.insert(real.clone()) {
+                    stack.push(real);
+                }
                 continue;
             }
             if !real.is_file() {
@@ -184,9 +201,7 @@ fn walk_pack_files(pack_root: &Path) -> Vec<(String, PathBuf)> {
     out
 }
 
-/// Discover all mod packs under `<profile>/mods/`, ordered by ascending
-/// `(priority, id)` so later entries win during overlay merging.
-pub fn discover_packs(profile_dir: &Path) -> Vec<ModPack> {
+fn discover_packs_inner(profile_dir: &Path, count_files: bool) -> Vec<ModPack> {
     let root = mods_dir(profile_dir);
     let Ok(entries) = std::fs::read_dir(&root) else {
         return Vec::new();
@@ -220,7 +235,7 @@ pub fn discover_packs(profile_dir: &Path) -> Vec<ModPack> {
         let description = manifest.description.unwrap_or_default().trim().to_string();
         let default_enabled = manifest.enabled.unwrap_or(true);
         let enabled = overrides.get(&id).copied().unwrap_or(default_enabled);
-        let file_count = walk_pack_files(&path).len();
+        let file_count = if count_files { walk_pack_files(&path).len() } else { 0 };
 
         packs.push(ModPack {
             id,
@@ -237,14 +252,21 @@ pub fn discover_packs(profile_dir: &Path) -> Vec<ModPack> {
     packs
 }
 
+/// Discover all mod packs under `<profile>/mods/`, ordered by ascending
+/// `(priority, id)` so later entries win during overlay merging.
+pub fn discover_packs(profile_dir: &Path) -> Vec<ModPack> {
+    discover_packs_inner(profile_dir, true)
+}
+
 /// Build the merged asset lookup table (`relative/asset/path -> host PathBuf`)
 /// for all enabled mod packs under `profile_dir`.
 ///
 /// Packs are applied in ascending `(priority, id)` order, so higher priority
 /// packs win on collisions. Every file is canonicalized and verified to stay
-/// inside its pack root.
+/// inside its pack root. Walks each enabled pack exactly once (skipping
+/// disabled packs entirely).
 pub fn build_mod_index(profile_dir: &Path) -> HashMap<String, PathBuf> {
-    let packs = discover_packs(profile_dir);
+    let packs = discover_packs_inner(profile_dir, false);
     let mut index = HashMap::new();
     for pack in packs.into_iter().filter(|p| p.enabled) {
         for (rel, real_path) in walk_pack_files(&pack.root) {
@@ -276,7 +298,8 @@ fn allocate_pack_dir(mods_root: &Path, stem: &str) -> Result<(String, PathBuf), 
 }
 
 /// Copy an existing folder into `<profile>/mods/<pack>/`, skipping symlinks
-/// that escape `src_dir`. Returns the created pack id.
+/// that escape `src_dir` and guarding against internal symlink cycles.
+/// Removes any partial destination folder on error. Returns the created pack id.
 pub fn import_mod_dir(profile_dir: &Path, src_dir: &Path) -> Result<String, String> {
     let canon_src = src_dir
         .canonicalize()
@@ -293,48 +316,72 @@ pub fn import_mod_dir(profile_dir: &Path, src_dir: &Path) -> Result<String, Stri
     std::fs::create_dir_all(&dest_root)
         .map_err(|e| format!("{}: {e}", dest_root.display()))?;
 
-    let mut stack = vec![canon_src.clone()];
-    let mut copied = 0usize;
-    while let Some(dir) = stack.pop() {
-        let entries = std::fs::read_dir(&dir)
-            .map_err(|e| format!("{}: {e}", dir.display()))?;
-        for entry in entries.flatten() {
-            let Ok(real) = entry.path().canonicalize() else { continue };
-            if !real.starts_with(&canon_src) {
-                continue;
+    let copy_result: Result<usize, String> = (|| {
+        let mut visited = HashSet::new();
+        visited.insert(canon_src.clone());
+        let mut stack = vec![canon_src.clone()];
+        let mut copied = 0usize;
+        while let Some(dir) = stack.pop() {
+            let entries = std::fs::read_dir(&dir)
+                .map_err(|e| format!("{}: {e}", dir.display()))?;
+            for entry in entries.flatten() {
+                let Ok(real) = entry.path().canonicalize() else { continue };
+                if !real.starts_with(&canon_src) {
+                    continue;
+                }
+                if real.is_dir() {
+                    if visited.insert(real.clone()) {
+                        stack.push(real);
+                    }
+                    continue;
+                }
+                if !real.is_file() {
+                    continue;
+                }
+                let Ok(rel) = real.strip_prefix(&canon_src) else { continue };
+                let target = dest_root.join(rel);
+                if let Some(parent) = target.parent() {
+                    std::fs::create_dir_all(parent)
+                        .map_err(|e| format!("{}: {e}", parent.display()))?;
+                }
+                std::fs::copy(&real, &target)
+                    .map_err(|e| format!("{}: {e}", target.display()))?;
+                copied += 1;
             }
-            if real.is_dir() {
-                stack.push(real);
-                continue;
-            }
-            if !real.is_file() {
-                continue;
-            }
-            let Ok(rel) = real.strip_prefix(&canon_src) else { continue };
-            let target = dest_root.join(rel);
-            if let Some(parent) = target.parent() {
-                std::fs::create_dir_all(parent)
-                    .map_err(|e| format!("{}: {e}", parent.display()))?;
-            }
-            std::fs::copy(&real, &target)
-                .map_err(|e| format!("{}: {e}", target.display()))?;
-            copied += 1;
+        }
+        Ok(copied)
+    })();
+
+    match copy_result {
+        Ok(0) => {
+            let _ = std::fs::remove_dir_all(&dest_root);
+            Err("the selected folder contains no files".to_string())
+        }
+        Ok(_) => Ok(pack_id),
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&dest_root);
+            Err(e)
         }
     }
-    if copied == 0 {
-        let _ = std::fs::remove_dir_all(&dest_root);
-        return Err("the selected folder contains no files".to_string());
-    }
-    Ok(pack_id)
 }
 
 /// Extract a `.zip` mod archive safely into `<profile>/mods/<pack>/`.
 ///
-/// Rejects zip-slip paths via `enclosed_name()`, and strips a single common
-/// top-level wrapper folder (if all entries sit inside it and it is not
-/// `content`/`extra` itself) so archives packaged with a root folder work
-/// seamlessly. Returns the created pack id.
+/// Rejects zip-slip paths via `enclosed_name()`, enforces per-file and total
+/// decompressed byte caps via `Read::take` (defending against zip bombs with
+/// forged header sizes), removes any partial destination on error, and strips
+/// a single common top-level wrapper folder (if all entries sit inside it and
+/// it is not `content`/`extra` itself). Returns the created pack id.
 pub fn import_mod_zip(profile_dir: &Path, zip_path: &Path) -> Result<String, String> {
+    import_mod_zip_with_limits(profile_dir, zip_path, MAX_MOD_FILE_BYTES, MAX_MOD_TOTAL_BYTES)
+}
+
+fn import_mod_zip_with_limits(
+    profile_dir: &Path,
+    zip_path: &Path,
+    max_file_bytes: u64,
+    max_total_bytes: u64,
+) -> Result<String, String> {
     let file = File::open(zip_path).map_err(|e| format!("{}: {e}", zip_path.display()))?;
     let mut archive = zip::ZipArchive::new(file)
         .map_err(|e| format!("could not read {}: {e}", zip_path.display()))?;
@@ -389,23 +436,53 @@ pub fn import_mod_zip(profile_dir: &Path, zip_path: &Path) -> Result<String, Str
     std::fs::create_dir_all(&dest_root)
         .map_err(|e| format!("{}: {e}", dest_root.display()))?;
 
-    for (idx, rel) in entries {
-        let rel = match &strip_prefix {
-            Some(prefix) => rel.strip_prefix(prefix).unwrap_or(&rel),
-            None => &rel,
-        };
-        if rel.as_os_str().is_empty() {
-            continue;
+    let extract_result: Result<(), String> = (|| {
+        let mut total_written: u64 = 0;
+        for (idx, rel) in entries {
+            let rel = match &strip_prefix {
+                Some(prefix) => rel.strip_prefix(prefix).unwrap_or(&rel),
+                None => &rel,
+            };
+            if rel.as_os_str().is_empty() {
+                continue;
+            }
+            let target = dest_root.join(rel);
+            if let Some(parent) = target.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| format!("{}: {e}", parent.display()))?;
+            }
+            let mut entry = archive.by_index(idx).map_err(|e| e.to_string())?;
+            let remaining_total = max_total_bytes.saturating_sub(total_written);
+            let effective_limit = max_file_bytes.min(remaining_total);
+            let mut bytes = Vec::with_capacity(
+                entry.size().min(effective_limit).min(4 * 1024 * 1024) as usize,
+            );
+            let read_len = (&mut entry)
+                .take(effective_limit.saturating_add(1))
+                .read_to_end(&mut bytes)
+                .map_err(|e| e.to_string())? as u64;
+            if read_len > max_file_bytes {
+                return Err(format!(
+                    "mod file '{}' exceeds the {} byte per-file size limit",
+                    rel.display(),
+                    max_file_bytes
+                ));
+            }
+            if total_written.saturating_add(read_len) > max_total_bytes {
+                return Err(format!(
+                    "mod archive exceeds the {} byte total decompressed size limit",
+                    max_total_bytes
+                ));
+            }
+            total_written += read_len;
+            std::fs::write(&target, &bytes).map_err(|e| format!("{}: {e}", target.display()))?;
         }
-        let target = dest_root.join(rel);
-        if let Some(parent) = target.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("{}: {e}", parent.display()))?;
-        }
-        let mut entry = archive.by_index(idx).map_err(|e| e.to_string())?;
-        let mut bytes = Vec::with_capacity(entry.size().min(32 * 1024 * 1024) as usize);
-        entry.read_to_end(&mut bytes).map_err(|e| e.to_string())?;
-        std::fs::write(&target, &bytes).map_err(|e| format!("{}: {e}", target.display()))?;
+        Ok(())
+    })();
+
+    if let Err(e) = extract_result {
+        let _ = std::fs::remove_dir_all(&dest_root);
+        return Err(e);
     }
     Ok(pack_id)
 }
@@ -542,5 +619,75 @@ mod tests {
         assert!(!profile.join("evil.txt").exists());
 
         let _ = std::fs::remove_dir_all(&profile);
+    }
+
+    #[test]
+    fn internal_symlink_cycle_does_not_loop_in_walk_or_import_dir() {
+        let profile = scratch("symlink-cycle");
+        let src = profile.join("src-cycle");
+        std::fs::create_dir_all(src.join("content/sounds")).unwrap();
+        std::fs::write(src.join("content/sounds/ouch.ogg"), b"loop-safe").unwrap();
+        // Self-referencing directory symlink inside the pack.
+        std::os::unix::fs::symlink(&src, src.join("content/loop_root")).unwrap();
+        std::os::unix::fs::symlink(src.join("content"), src.join("content/sounds/loop_parent"))
+            .unwrap();
+
+        let pack_id = import_mod_dir(&profile, &src).unwrap();
+        let pack_root = mods_dir(&profile).join(&pack_id);
+        // Also place a cycle directly inside the installed pack to exercise walk_pack_files.
+        std::os::unix::fs::symlink(&pack_root, pack_root.join("content/self_loop")).unwrap();
+
+        let idx = build_mod_index(&profile);
+        assert_eq!(idx.len(), 1);
+        assert_eq!(std::fs::read(&idx["content/sounds/ouch.ogg"]).unwrap(), b"loop-safe");
+
+        let _ = std::fs::remove_dir_all(&profile);
+    }
+
+    #[test]
+    fn import_zip_enforces_decompressed_caps_and_cleans_up_partial_dest() {
+        let profile = scratch("zip-bomb");
+        let zip_path = profile.join("bomb.zip");
+        {
+            let file = File::create(&zip_path).unwrap();
+            let mut w = zip::ZipWriter::new(file);
+            let opts = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Deflated);
+            w.start_file("content/a.bin", opts).unwrap();
+            w.write_all(&vec![0u8; 2048]).unwrap();
+            w.start_file("content/b.bin", opts).unwrap();
+            w.write_all(&vec![0u8; 2048]).unwrap();
+            w.finish().unwrap();
+        }
+
+        // Per-file cap exceeded on first file.
+        let err = import_mod_zip_with_limits(&profile, &zip_path, 1024, 8192).unwrap_err();
+        assert!(err.contains("per-file size limit"), "{err}");
+        assert!(
+            !mods_dir(&profile).join("bomb").exists(),
+            "partial dest_root must be removed on per-file limit error"
+        );
+
+        // Total archive cap exceeded on second file (after first file was written!).
+        let err = import_mod_zip_with_limits(&profile, &zip_path, 4096, 3000).unwrap_err();
+        assert!(err.contains("total decompressed size limit"), "{err}");
+        assert!(
+            !mods_dir(&profile).join("bomb").exists(),
+            "partial dest_root must be removed on total-size limit error"
+        );
+
+        let _ = std::fs::remove_dir_all(&profile);
+    }
+
+    #[test]
+    fn validate_asset_name_borrows_input_without_allocation() {
+        let input = "content/textures/cursors/arrow.png";
+        let validated = validate_asset_name(input).expect("valid");
+        assert!(std::ptr::eq(validated.as_ptr(), input.as_ptr()));
+        assert_eq!(validate_asset_name("content//double.png"), None);
+        assert_eq!(validate_asset_name("content/./dot.png"), None);
+        assert_eq!(validate_asset_name("content/../up.png"), None);
+        assert_eq!(validate_asset_name("/leading.png"), None);
+        assert_eq!(validate_asset_name("trailing/"), None);
     }
 }

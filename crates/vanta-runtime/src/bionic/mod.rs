@@ -409,12 +409,11 @@ extern "C" fn bionic_mmap(
         && (prot & libc::PROT_EXEC) == 0
         && !hugepage_heap_disabled()
     {
-        let start = (p as usize + TWO_MIB - 1) & !(TWO_MIB - 1);
-        let end = (p as usize + len) & !(TWO_MIB - 1);
-        if end > start {
-            // SAFETY: [start, end) lies strictly inside the just-mapped anonymous RW region.
-            unsafe { libc::madvise(start as *mut c_void, end - start, libc::MADV_HUGEPAGE) };
-        }
+        // Linux only requires page alignment for MADV_HUGEPAGE; advising the
+        // entire mapping avoids skipping exact 2 MiB allocations and avoids
+        // splitting larger mappings into three separate kernel VMAs.
+        // SAFETY: [p, p + len) is the just-mapped page-aligned anonymous RW region.
+        unsafe { libc::madvise(p, len, libc::MADV_HUGEPAGE) };
     }
     p
 }
@@ -727,11 +726,21 @@ extern "C" fn bionic_sysconf(name: c_int) -> i64 {
             if v > 0 { V.store(v, std::sync::atomic::Ordering::Relaxed); }
             return v;
         }
-        96 | 97 => {
+        96 => {
             static V: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
             let c = V.load(std::sync::atomic::Ordering::Relaxed);
             if c != 0 { return c; }
-            let v = unsafe { sysconf(if name == 96 { 83 } else { 84 }) };
+            // SAFETY: glibc `_SC_NPROCESSORS_CONF` (83).
+            let v = unsafe { sysconf(83) };
+            if v > 0 { V.store(v, std::sync::atomic::Ordering::Relaxed); }
+            return v;
+        }
+        97 => {
+            static V: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+            let c = V.load(std::sync::atomic::Ordering::Relaxed);
+            if c != 0 { return c; }
+            // SAFETY: glibc `_SC_NPROCESSORS_ONLN` (84).
+            let v = unsafe { sysconf(84) };
             if v > 0 { V.store(v, std::sync::atomic::Ordering::Relaxed); }
             return v;
         }
@@ -1622,6 +1631,39 @@ mod netdb_tests {
             .collect();
         for t in threads {
             t.join().expect("a lookup thread panicked");
+        }
+    }
+
+    #[test]
+    fn nprocessors_conf_and_onln_match_host_independently() {
+        // SAFETY: glibc `_SC_NPROCESSORS_CONF` (83) and `_SC_NPROCESSORS_ONLN` (84).
+        let (host_conf, host_onln) = unsafe { (sysconf(83), sysconf(84)) };
+        assert_eq!(bionic_sysconf(96), host_conf);
+        assert_eq!(bionic_sysconf(97), host_onln);
+        // Second calls hit their respective caches cleanly.
+        assert_eq!(bionic_sysconf(96), host_conf);
+        assert_eq!(bionic_sysconf(97), host_onln);
+    }
+
+    #[test]
+    fn bionic_mmap_exact_2mib_succeeds_and_is_usable() {
+        const TWO_MIB: usize = 2 << 20;
+        let p = bionic_mmap(
+            std::ptr::null_mut(),
+            TWO_MIB,
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+            -1,
+            0,
+        );
+        assert_ne!(p, libc::MAP_FAILED);
+        // SAFETY: `p` is a live 2 MiB anonymous RW mapping just created above.
+        unsafe {
+            *(p as *mut u8) = 0x5A;
+            *((p as *mut u8).add(TWO_MIB - 1)) = 0xA5;
+            assert_eq!(*(p as *const u8), 0x5A);
+            assert_eq!(*((p as *const u8).add(TWO_MIB - 1)), 0xA5);
+            assert_eq!(libc::munmap(p, TWO_MIB), 0);
         }
     }
 }
