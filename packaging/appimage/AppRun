@@ -23,6 +23,13 @@ APPDIR="${APPDIR:-$(cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)}"
 # rather than linking the host's, which is what this line is for.
 export LD_LIBRARY_PATH="${APPDIR}/usr/lib:${LD_LIBRARY_PATH:-}"
 
+# Ubuntu 24.04's bundled GTK 4.14.5 defaults to GskNglRenderer, which suffers
+# from blank-window failures on Wayland with NVIDIA/Mesa/wlroots compositors.
+# The host GTK window only draws the headerbar, launcher, and dialogs -- the
+# engine's Vulkan game subsurface renders independently -- so cairo has zero
+# game performance cost and works universally. Users can override GSK_RENDERER.
+export GSK_RENDERER="${GSK_RENDERER:-cairo}"
+
 # GSettings schemas are found by path lookup through GIO, not through a
 # symbol linuxdeploy's ELF dependency walk can see -- nothing in
 # vanta-shell references the schema directory by name, so nothing about it
@@ -32,186 +39,95 @@ export GSETTINGS_SCHEMA_DIR="${APPDIR}/usr/share/glib-2.0/schemas"
 
 export XDG_DATA_DIRS="${APPDIR}/usr/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
 
-# ---------------------------------------------------------------------------
-# WebKitGTK's four absolute paths, and why an environment variable cannot fix
-# any of them
-#
-# WebKitGTK does not link its helper processes into vanta-run. It spawns
-# WebKitWebProcess, WebKitNetworkProcess and WebKitGPUProcess as separate
-# executables, loads its injected bundle as a separate .so, and shells out to
-# bwrap and xdg-dbus-proxy for its own sandbox -- five things, at four paths
-# baked into libwebkitgtk-6.0.so when *it* was built. In the copy this AppImage
-# bundles, Fedora 44's webkitgtk6.0-2.52.5, each occurs exactly once, measured
-# with `grep -abo` against the library on 2026-09-02:
-#
-#   offset 70733628   /usr/libexec/webkitgtk-6.0   the three helper processes
-#   offset 71027302   /usr/lib64/webkitgtk-6.0/    the injected bundle
-#   offset 71101302   /usr/bin/xdg-dbus-proxy      the sandbox's D-Bus filter
-#   offset 71101655   /usr/bin/bwrap               the sandbox itself
-#
-# `WEBKIT_EXEC_PATH`, which upstream WebKit would honour for the first of
-# those, **does not occur in the library at all** -- zero matches, against
-# thirty-odd other WEBKIT_* names that do occur, so this is not an artefact of
-# how the strings were read. Upstream gates that lookup on
-# ENABLE(DEVELOPER_MODE) and distributions build with it off (INFERRED, but it
-# fits). Measured on 2026-08-27, with the variable exported at exactly the path
-# below: MiniBrowser out of the built AppDir spawned the *host's*
-# /usr/libexec/webkitgtk-6.0/WebKitWebProcess, read straight off
-# `readlink /proc/PID/exe`, and hiding that host directory behind an empty
-# tmpfs under bwrap killed the same run in under a tenth of a second with
-# `Failed to spawn child process ".../WebKitNetworkProcess" (No such file or
-# directory)`. The control -- the identical bwrap namespace with the directory
-# still visible -- ran the full 25 s without complaint.
-#
-# **That is the error a user reported from this AppImage on 2026-09-02**, and
-# it is also why installing WebKitGTK on their host did not fix it. Only
-# Fedora and its derivatives put the helpers under /usr/libexec. Debian and
-# Ubuntu ship them at /usr/lib/x86_64-linux-gnu/webkitgtk-6.0, Arch at
-# /usr/lib/webkitgtk-6.0 -- both read off the distributions' own package file
-# lists, 2026-09-02. So on those hosts the package installs, nothing appears
-# at the path the bundled Fedora library asks for, and the message does not
-# change by one character.
-#
-# The path therefore has to be *made to exist* rather than redirected, which
-# is what the bwrap block below does. The two exports are kept anyway: the
-# first because it costs nothing, is what any other fix would have to
-# redirect, and a deleted line takes the finding with it; the second because
-# unlike WEBKIT_EXEC_PATH the string WEBKIT_INJECTED_BUNDLE_PATH *is* present
-# in the library, so that lookup is not compiled out. In the run below the
-# WebProcess loaded the bundle from the AppImage either way, because the bind
-# also landed; which of the two did it is not separated.
-export WEBKIT_EXEC_PATH="${APPDIR}/usr/libexec/webkitgtk-6.0"
-export WEBKIT_INJECTED_BUNDLE_PATH="${APPDIR}/usr/lib/webkitgtk-6.0/injected-bundle"
+# Bundled libgdk_pixbuf-2.0.so.0 hardcodes Ubuntu's multiarch loaders path,
+# which does not exist on Arch, Fedora, openSUSE, or NixOS. Materialize a
+# per-user loaders.cache pointing into the current AppImage mount so SVG icons
+# and bundled artwork load on every distribution.
+pixbuf_cache_in="${APPDIR}/usr/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache.in"
+if [ -f "$pixbuf_cache_in" ]; then
+    pixbuf_cache="${XDG_RUNTIME_DIR:-/tmp}/vanta-appimage-loaders-${UID}.cache"
+    if [ -z "${VANTA_APPIMAGE_WRAPPED:-}" ] || [ ! -f "$pixbuf_cache" ]; then
+        appdir_escaped=${APPDIR//\\/\\\\}
+        appdir_escaped=${appdir_escaped//&/\\&}
+        appdir_escaped=${appdir_escaped//|/\\|}
+        if sed "s|@APPDIR@|${appdir_escaped}|g" "$pixbuf_cache_in" > "${pixbuf_cache}.tmp.$$" 2>/dev/null; then
+            mv -f "${pixbuf_cache}.tmp.$$" "$pixbuf_cache" 2>/dev/null || rm -f "${pixbuf_cache}.tmp.$$"
+        else
+            rm -f "${pixbuf_cache}.tmp.$$"
+        fi
+    fi
+    if [ -f "$pixbuf_cache" ]; then
+        export GDK_PIXBUF_MODULE_FILE="$pixbuf_cache"
+    fi
+fi
 
-# Make the baked-in paths real, in a mount namespace only this process tree
-# sees. bwrap needs no root and no setuid: an overlayfs over /usr/libexec
-# whose writes go to an invisible tmpfs, with the bundled helper directory
-# bound in under the name the library asks for. The rest of /usr/libexec stays
-# visible through the overlay's lower layer, which matters -- GIO spawns gvfsd
-# from there and a plain --tmpfs would have hidden it.
+# Bundled libgio-2.0.so.0 likewise hardcodes Ubuntu's multiarch GIO modules
+# directory; point it at the bundled modules (e.g. libgiognutls.so for TLS).
+if [ -d "${APPDIR}/usr/lib/gio/modules" ]; then
+    export GIO_MODULE_DIR="${APPDIR}/usr/lib/gio/modules"
+fi
+
+# ---------------------------------------------------------------------------
+# WebKitGTK's baked-in absolute paths
 #
-# Measured against a built AppImage on 2026-09-02, on a host standing in for
-# one that has never installed WebKitGTK -- /usr/libexec replaced by an empty
-# tmpfs, and /usr/bin replaced by a copy of itself with bwrap and
-# xdg-dbus-proxy removed -- with a GTK4 window and a WebKitWebView run in
-# place of vanta-shell out of the extracted image, on gtk4-broadwayd so that
-# nothing appeared on the developer's screen:
+# WebKitGTK spawns WebKitWebProcess, WebKitNetworkProcess, and WebKitGPUProcess
+# as separate executables, dlopens libwebkitgtkinjectedbundle.so, and shells out
+# to /usr/bin/bwrap and /usr/bin/xdg-dbus-proxy for its sandbox. Production
+# builds of libwebkitgtk-6.0.so do not honor WEBKIT_EXEC_PATH, so the baked-in
+# paths must exist at runtime.
 #
-#   with the wrap    WebKitNetworkProcess and WebKitWebProcess both ran from
-#                    /usr/libexec/webkitgtk-6.0, both with /proc/PID/exe inside
-#                    the image; both loaded the image's own
-#                    libwebkitgtk-6.0.so.4; the WebProcess loaded the image's
-#                    libwebkitgtkinjectedbundle.so; the bundled bwrap and
-#                    xdg-dbus-proxy were planted and the sandbox engaged (the
-#                    WebProcess took a "...Sandboxed.WebProcess" bus name); and
-#                    a page reached load-changed FINISHED.
-#   without it       the same image on the same host, VANTA_APPIMAGE_NO_WRAP=1:
-#                    `Unable to spawn a new child process: Failed to spawn child
-#                    process "/usr/libexec/webkitgtk-6.0/WebKitNetworkProcess"
-#                    (No such file or directory)` -- the reported error, verbatim.
+# build-appimage.sh patches Ubuntu's multiarch strings
+# (`/usr/lib/<arch>-linux-gnu/webkitgtk-6.0` and
+# `/usr/lib/<arch>-linux-gnu/webkitgtk-6.0/injected-bundle/`) in-place to
+# `/usr/libexec/webkitgtk-6.0` (and `/usr/libexec/webkitgtk-6.0/injected-bundle/`)
+# and lays out both helpers and injected-bundle under
+# `${APPDIR}/usr/libexec/webkitgtk-6.0`. Binding that single directory onto
+# `/usr/libexec/webkitgtk-6.0` inside an unprivileged bwrap mount namespace
+# makes WebKitGTK work identically across Arch, Fedora, Ubuntu, Debian,
+# openSUSE, and NixOS.
 #
-# The namespace itself was checked separately in the same session: the real uid
-# stays put, the pid namespace stays shared (so `pidof vanta-run`, lldb and
-# the development MCP still reach the client from outside), /usr/libexec keeps
-# its other contents through the overlay's lower layer (301 entries became 302,
-# gvfsd still there -- a plain --tmpfs would have hidden it), and /dev/dri, the
-# Wayland socket, the session bus and flock all still work.
-#
-# **What is still unexercised**: vanta-shell's own sign-in view and the
-# in-experience web view -- the probe was a WebKitWebView, not the shell, and
-# the binaries inside the tested image came from the installed rpm because this
-# host cannot compile the webview feature; any distribution other than Fedora;
-# and a kernel or policy that refuses unprivileged overlayfs, which is what the
-# fallback below is for. One known limit found while measuring: overlayfs
-# refuses a lowerdir that is itself an overlay or that already has a submount
-# inside it, so a host with something mounted under /usr/libexec takes the
-# fallback.
-#
-# VANTA_APPIMAGE_NO_WRAP=1 skips it entirely; VANTA_APPIMAGE_WRAPPED is
-# the recursion guard and is set by the re-exec, not by a user.
-#
-# **Everything up to this comment was measured against a Fedora-built
-# libwebkitgtk-6.0.so; build-appimage.sh has bundled one from Ubuntu 24.04
-# since ADR-032, and the mismatch below is real, not hypothetical.**
-# `grep -abo` against the bundled library, 2026-09-13, found one baked-in
-# directory, `/usr/lib/x86_64-linux-gnu/webkitgtk-6.0`, serving both the
-# helper processes and the injected bundle -- not Fedora's split
-# `/usr/libexec/webkitgtk-6.0` plus `/usr/lib64/webkitgtk-6.0` the block above
-# binds onto. Measured directly, on a host with WebKitGTK, bwrap and
-# xdg-dbus-proxy stripped out of its search path, with only the Fedora binds
-# in place: launching a WebKitWebView out of the extracted AppImage failed
-# outright, `Failed to spawn child process
-# "/usr/lib/x86_64-linux-gnu/webkitgtk-6.0/WebKitNetworkProcess" (No such
-# file or directory)` -- the Fedora binds above do nothing for this library.
-# The block immediately below adds the merged bind Ubuntu's layout needs.
-# Re-measured the same way afterwards, at the same one-bwrap-layer depth a
-# real launch uses: the spawn error above is gone and WebKitNetworkProcess
-# starts. It does not yet add up to a working web view -- WebProcess now
-# gets far enough to try setting up rendering and aborts instead, `Could not
-# create default EGL display: EGL_BAD_PARAMETER`, reproduced with WebKitGTK's
-# own process sandbox disabled and with software rendering forced, so it is
-# not this file's mount namespace and not GPU acceleration specifically.
-# What it is has not been established -- this host has no real
-# `/usr/lib/x86_64-linux-gnu` to test against, so even the single-layer
-# repro above stands on a directory this file fakes into existence with an
-# extra bwrap layer around the outside, and that scaffolding has not been
-# ruled out either. Treat the path-bind defect this block fixes as fixed,
-# and the web view as still not verified end-to-end, until this is chased
-# on a host that actually has the directory.
+# VANTA_APPIMAGE_NO_WRAP=1 skips the mount namespace; VANTA_APPIMAGE_WRAPPED is
+# the internal recursion guard set across the re-exec.
+export WEBKIT_EXEC_PATH="${APPDIR}/usr/libexec/webkitgtk-6.0"
+if [ -d "${APPDIR}/usr/libexec/webkitgtk-6.0/injected-bundle" ]; then
+    export WEBKIT_INJECTED_BUNDLE_PATH="${APPDIR}/usr/libexec/webkitgtk-6.0/injected-bundle"
+elif [ -d "${APPDIR}/usr/lib/webkitgtk-6.0/injected-bundle" ]; then
+    export WEBKIT_INJECTED_BUNDLE_PATH="${APPDIR}/usr/lib/webkitgtk-6.0/injected-bundle"
+fi
+
 if [ -z "${VANTA_APPIMAGE_WRAPPED:-}" ] \
    && [ -z "${VANTA_APPIMAGE_NO_WRAP:-}" ] \
-   && [ -d "${APPDIR}/usr/libexec/webkitgtk-6.0" ] \
-   && [ -d /usr/libexec ]; then
-    for bwrap in "${APPDIR}/usr/bin/bwrap" /usr/bin/bwrap; do
+   && [ -d "${APPDIR}/usr/libexec/webkitgtk-6.0" ]; then
+    # Prefer the host's /usr/bin/bwrap when present (e.g. on Ubuntu 24.04 where
+    # AppArmor grants unprivileged userns specifically to /usr/bin/bwrap), and
+    # fall back to the bundled copy on hosts without bwrap (or with an older
+    # bwrap that lacks --overlay-src).
+    for bwrap in /usr/bin/bwrap "${APPDIR}/usr/bin/bwrap"; do
         [ -x "$bwrap" ] || continue
 
-        args=(--dev-bind / / --die-with-parent
-              --overlay-src /usr/libexec --tmp-overlay /usr/libexec
-              --bind "${APPDIR}/usr/libexec/webkitgtk-6.0" /usr/libexec/webkitgtk-6.0)
-
-        # The injected bundle, only where the directory already exists so that
-        # a plain --bind suffices. Overlaying /usr/lib64 to create it would be
-        # a far bigger hammer than overlaying /usr/libexec -- on Arch
-        # /usr/lib64 is a symlink to /usr/lib, so it would put every system
-        # library including the loader behind an overlayfs. Where the bind
-        # cannot happen, WEBKIT_INJECTED_BUNDLE_PATH above is what is left.
-        if [ -d /usr/lib64/webkitgtk-6.0 ] \
-           && [ -d "${APPDIR}/usr/lib/webkitgtk-6.0" ]; then
-            args+=(--ro-bind "${APPDIR}/usr/lib/webkitgtk-6.0" /usr/lib64/webkitgtk-6.0)
+        overlaid_usr=0
+        if [ -d /usr/libexec ]; then
+            args=(--dev-bind / / --die-with-parent
+                  --overlay-src /usr/libexec --tmp-overlay /usr/libexec
+                  --bind "${APPDIR}/usr/libexec/webkitgtk-6.0" /usr/libexec/webkitgtk-6.0)
+        else
+            # Minimal hosts without /usr/libexec: overlay /usr so the bind
+            # mountpoint can be created inside the private namespace.
+            overlaid_usr=1
+            args=(--dev-bind / / --die-with-parent
+                  --overlay-src /usr --tmp-overlay /usr
+                  --bind "${APPDIR}/usr/libexec/webkitgtk-6.0" /usr/libexec/webkitgtk-6.0)
         fi
 
-        # Ubuntu/Debian's package bakes in one merged directory for both the
-        # helpers and the injected bundle instead of Fedora's split pair
-        # above -- see the comment before this block for how that was found
-        # and measured. Bind it only where the multiarch directory already
-        # exists, same reasoning as /usr/lib64 just above: a host that lacks
-        # it entirely was never going to need this bind, and overlaying the
-        # whole of /usr/lib to manufacture it from nothing would put the
-        # loader (/usr/lib/<triplet>/ld-linux-*.so.* on this family) behind an
-        # overlayfs for no gain. This directory is not itself a symlink to
-        # /usr/lib64 the way Arch's is, so the overlay stays narrow the same
-        # way /usr/libexec's does.
-        #
-        # `$(uname -m)-linux-gnu` rather than the literal `x86_64-linux-gnu`
-        # this was measured against: an AppImage cannot execute on a host of a
-        # different architecture than it was built for, so the multiarch
-        # triplet this process is actually running under is always the one
-        # whichever libwebkitgtk-6.0.so got bundled was itself built against
-        # -- `uname -m` at this point in AppRun and `uname -m` in the build
-        # container that produced this AppDir necessarily agree.
-        multiarch_dir="/usr/lib/$(uname -m)-linux-gnu"
-        if [ -d "$multiarch_dir" ]; then
-            args+=(--overlay-src "$multiarch_dir" --tmp-overlay "$multiarch_dir"
-                   --bind "${APPDIR}/usr/libexec/webkitgtk-6.0" "$multiarch_dir/webkitgtk-6.0")
-            if [ -d "${APPDIR}/usr/lib/webkitgtk-6.0/injected-bundle" ]; then
-                args+=(--bind "${APPDIR}/usr/lib/webkitgtk-6.0/injected-bundle" "$multiarch_dir/webkitgtk-6.0/injected-bundle")
-            fi
+        # Compatibility for Fedora-built libwebkitgtk-6.0.so if ever used
+        # directly without multiarch patching.
+        if [ -d /usr/lib64/webkitgtk-6.0 ] \
+           && [ -d "${APPDIR}/usr/libexec/webkitgtk-6.0/injected-bundle" ]; then
+            args+=(--ro-bind "${APPDIR}/usr/libexec/webkitgtk-6.0/injected-bundle" /usr/lib64/webkitgtk-6.0/injected-bundle)
         fi
 
         # WebKitGTK's sandbox execs /usr/bin/bwrap and /usr/bin/xdg-dbus-proxy
-        # by absolute path too. Plant the bundled copies only where the host
-        # has none, because overlaying /usr/bin is worth avoiding when there
-        # is nothing to add to it.
+        # by absolute path. Plant bundled copies only when the host lacks them.
         plant=()
         for tool in bwrap xdg-dbus-proxy; do
             if [ ! -x "/usr/bin/$tool" ] && [ -x "${APPDIR}/usr/bin/$tool" ]; then
@@ -219,32 +135,29 @@ if [ -z "${VANTA_APPIMAGE_WRAPPED:-}" ] \
             fi
         done
         if [ ${#plant[@]} -gt 0 ] && [ -d /usr/bin ]; then
-            args+=(--overlay-src /usr/bin --tmp-overlay /usr/bin)
+            if [ "$overlaid_usr" -eq 0 ]; then
+                args+=(--overlay-src /usr/bin --tmp-overlay /usr/bin)
+            fi
             for tool in "${plant[@]}"; do
                 args+=(--ro-bind "${APPDIR}/usr/bin/$tool" "/usr/bin/$tool")
             done
         fi
 
-        # Probe with the real argument list rather than a bare --dev-bind, so
-        # that a kernel or a distribution policy which permits the user
-        # namespace but refuses unprivileged overlayfs is caught here and
-        # falls through to the warning, instead of aborting the launch.
+        # Probe with the real argument list so a kernel or policy that refuses
+        # unprivileged userns/overlayfs falls through cleanly to the next
+        # candidate or the warning below instead of aborting launch.
         "$bwrap" "${args[@]}" -- /bin/true >/dev/null 2>&1 || continue
 
         export VANTA_APPIMAGE_WRAPPED=1
         exec "$bwrap" "${args[@]}" -- "${APPDIR}/AppRun" "$@"
     done
 
-    # Nothing exec'd, so no namespace. Say so now and name the consequence:
-    # a blank sign-in window is otherwise read as a Roblox problem, a network
-    # problem, or the URL policy refusing something, and it is none of those.
     if [ ! -x /usr/libexec/webkitgtk-6.0/WebKitNetworkProcess ]; then
         echo "vanta: could not set up a mount namespace (no usable bwrap, or" >&2
-        echo "  unprivileged overlayfs refused), and this host has no WebKitGTK" >&2
-        echo "  helper at /usr/libexec/webkitgtk-6.0. Sign-in will open a blank" >&2
-        echo "  window. Install a distribution package of Vanta instead, or" >&2
-        echo "  install WebKitGTK 6.0 -- on Fedora that puts the helpers at the" >&2
-        echo "  path above; elsewhere it does not, and will not help." >&2
+        echo "  unprivileged overlayfs refused), and /usr/libexec/webkitgtk-6.0" >&2
+        echo "  is absent on this host. Sign-in / web views may open blank." >&2
+        echo "  Install a native distribution package of Vanta, or enable" >&2
+        echo "  unprivileged user namespaces / bubblewrap." >&2
     fi
 fi
 

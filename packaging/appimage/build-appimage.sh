@@ -93,7 +93,7 @@ need() {
         exit 1
     }
 }
-for tool in cargo clang rsvg-convert readelf glib-compile-schemas patchelf; do
+for tool in cargo clang rsvg-convert readelf glib-compile-schemas patchelf python3; do
     need "$tool"
 done
 
@@ -416,47 +416,91 @@ echo "==> laying out what WebKitGTK reaches by absolute path"
 # linuxdeploy was just given each helper as an --executable so their own
 # library dependencies land in usr/lib, but linuxdeploy places binaries named
 # as --executable next to usr/bin, not back where WebKitGTK's ProcessLauncher
-# expects to find them. The layout below is not decoration: AppRun binds each
-# of these directories over the path baked into libwebkitgtk-6.0.so, in a
-# mount namespace of its own, and it binds them *by these names*. Change one
-# here and change it there.
+# expects to find them. The layout below is not decoration: AppRun binds
+# usr/libexec/webkitgtk-6.0 over /usr/libexec/webkitgtk-6.0 in a mount
+# namespace of its own, and libwebkitgtk-6.0.so.4 is patched below so that
+# Ubuntu's multiarch path (/usr/lib/<arch>-linux-gnu/webkitgtk-6.0 and its
+# /injected-bundle/ subdir) resolves under /usr/libexec/webkitgtk-6.0 on every
+# distribution (Arch, Fedora, Ubuntu, Debian, openSUSE, NixOS).
 #
-#   usr/libexec/webkitgtk-6.0          -> /usr/libexec/webkitgtk-6.0
-#   usr/lib/webkitgtk-6.0/injected-bundle
-#                                      -> /usr/lib64/webkitgtk-6.0, or, where
-#                                         that cannot be bound, reached by
-#                                         WEBKIT_INJECTED_BUNDLE_PATH
-#   usr/bin/bwrap, usr/bin/xdg-dbus-proxy
-#                                      -> /usr/bin/..., planted only on a host
-#                                         that has none
-#
-# The environment variable that would have made all of this unnecessary,
-# WEBKIT_EXEC_PATH, does not exist in the shipped library at all -- zero
-# occurrences against thirty-odd other WEBKIT_* names -- and exporting it
-# anyway, measured 2026-08-27, left MiniBrowser spawning the *host's*
-# WebKitWebProcess. AppRun carries the full measurement and the byte offsets
-# of each baked-in path.
-#
-# **That measurement was of a Fedora-built libwebkitgtk-6.0.so, and this
-# script no longer bundles one.** Since ADR-032, `webkit_libexec` above
-# resolves to `/usr/lib/x86_64-linux-gnu/webkitgtk-6.0` -- confirmed with
-# `grep -abo` against Ubuntu 24.04's own library, 2026-09-13 -- which is a
-# single directory serving both the helper processes and the injected
-# bundle, not Fedora's split `/usr/libexec/webkitgtk-6.0` plus
-# `/usr/lib64/webkitgtk-6.0`. AppRun now binds that merged path too, added
-# and re-measured with a live Wayland display the same day: with only the
-# Fedora binds, MiniBrowser out of the extracted AppImage failed outright
-# with WebKitNetworkProcess not found; with the merged bind added, that
-# spawn succeeds. It does not add up to a verified web view yet -- the
-# WebProcess that spawns next aborts on its own, `Could not create default
-# EGL display: EGL_BAD_PARAMETER`, for a reason not yet established. See
-# AppRun for the full measurement and what has and has not been ruled out.
+#   usr/libexec/webkitgtk-6.0                  -> /usr/libexec/webkitgtk-6.0
+#   usr/libexec/webkitgtk-6.0/injected-bundle  -> /usr/libexec/webkitgtk-6.0/injected-bundle
+#   usr/bin/bwrap, usr/bin/xdg-dbus-proxy      -> /usr/bin/..., planted only
+#                                                 on a host that has none
 install -d "$appdir/usr/libexec/webkitgtk-6.0"
-find "$webkit_libexec" -maxdepth 1 -type f -executable -exec \
-    install -m755 {} "$appdir/usr/libexec/webkitgtk-6.0/" \;
-install -d "$appdir/usr/lib/webkitgtk-6.0/injected-bundle"
-find "$webkit_bundle" -maxdepth 1 -name '*.so' -exec \
-    install -m755 {} "$appdir/usr/lib/webkitgtk-6.0/injected-bundle/" \;
+while IFS= read -r -d '' helper; do
+    name=$(basename "$helper")
+    install -m755 "$helper" "$appdir/usr/libexec/webkitgtk-6.0/$name"
+    patchelf --set-rpath '$ORIGIN/../../lib' "$appdir/usr/libexec/webkitgtk-6.0/$name"
+    # Remove the duplicate copy linuxdeploy dropped into usr/bin/.
+    rm -f "$appdir/usr/bin/$name"
+done < <(find "$webkit_libexec" -maxdepth 1 -type f -executable -print0)
+
+install -d "$appdir/usr/libexec/webkitgtk-6.0/injected-bundle"
+while IFS= read -r -d '' so; do
+    name=$(basename "$so")
+    install -m755 "$so" "$appdir/usr/libexec/webkitgtk-6.0/injected-bundle/$name"
+    patchelf --set-rpath '$ORIGIN/../../../lib' "$appdir/usr/libexec/webkitgtk-6.0/injected-bundle/$name"
+    # Remove the duplicate copy linuxdeploy --library dropped into usr/lib/.
+    rm -f "$appdir/usr/lib/$name"
+done < <(find "$webkit_bundle" -maxdepth 1 -name '*.so' -print0)
+# Keep usr/lib/webkitgtk-6.0/injected-bundle as a relative symlink to the
+# canonical copy under usr/libexec/webkitgtk-6.0/injected-bundle.
+install -d "$appdir/usr/lib/webkitgtk-6.0"
+ln -sfn ../../libexec/webkitgtk-6.0/injected-bundle "$appdir/usr/lib/webkitgtk-6.0/injected-bundle"
+
+# Patch Ubuntu/Debian's baked-in multiarch WebKitGTK paths in-place to
+# /usr/libexec/webkitgtk-6.0 (NUL-padded to the exact original byte length so
+# ELF section offsets do not move). Both the helper directory string
+# (`/usr/lib/<multiarch>/webkitgtk-6.0`) and the injected-bundle string
+# (`/usr/lib/<multiarch>/webkitgtk-6.0/injected-bundle/`) are rewritten while
+# preserving any trailing suffix.
+echo "==> patching multiarch WebKitGTK paths in libwebkitgtk-6.0"
+python3 - "$appdir/usr/lib" <<'PYEOF'
+import glob
+import os
+import re
+import sys
+
+lib_dir = sys.argv[1]
+pattern = re.compile(rb"/usr/lib/[a-z0-9_]+-linux-gnu/webkitgtk-6\.0[^\x00]*")
+targets = [
+    p for p in sorted(glob.glob(os.path.join(lib_dir, "libwebkitgtk-6.0.so*")))
+    if os.path.isfile(p) and not os.path.islink(p)
+]
+if not targets:
+    sys.exit("error: no libwebkitgtk-6.0.so* found in AppDir usr/lib")
+
+for path in targets:
+    os.chmod(path, os.stat(path).st_mode | 0o200)
+    with open(path, "rb") as f:
+        data = f.read()
+
+    rewrites = []
+
+    def repl(match: re.Match) -> bytes:
+        old = match.group(0)
+        marker = b"/webkitgtk-6.0"
+        suffix = old[old.index(marker) + len(marker):]
+        new = b"/usr/libexec/webkitgtk-6.0" + suffix
+        if len(new) > len(old):
+            raise RuntimeError(f"replacement {new!r} longer than original {old!r}")
+        padded = new + b"\x00" * (len(old) - len(new))
+        rewrites.append((old.decode("ascii"), new.decode("ascii")))
+        return padded
+
+    patched = pattern.sub(repl, data)
+    if len(patched) != len(data):
+        raise RuntimeError(f"size mismatch patching {path}: {len(patched)} != {len(data)}")
+    if rewrites:
+        with open(path, "wb") as f:
+            f.write(patched)
+        for old_s, new_s in rewrites:
+            print(f"  patched {os.path.basename(path)}: {old_s} -> {new_s}")
+    else:
+        print(f"  {os.path.basename(path)}: no multiarch webkitgtk-6.0 paths to patch")
+PYEOF
+
 # linuxdeploy puts --executable binaries in usr/bin already, but say so
 # explicitly rather than depending on that: AppRun tests for these two paths
 # by name and silently skips planting them if they are absent, which is
@@ -474,64 +518,124 @@ if [ -n "$webkit_share" ] && [ -d "$webkit_share" ]; then
     cp -a "$webkit_share/." "$appdir/usr/share/webkitgtk-6.0/"
 fi
 
-echo "==> completing the dependency closure linuxdeploy's excludelist dropped"
+echo "==> bundling gdk-pixbuf loaders, GIO modules, and essential icon themes"
+# Ubuntu 24.04's bundled libgdk_pixbuf-2.0.so.0 and libgio-2.0.so.0 hardcode
+# /usr/lib/<multiarch>/... module paths that do not exist on non-Debian
+# distros (Arch, Fedora, openSUSE, NixOS). Bundle the loaders and modules here
+# BEFORE the dependency closure loop so their non-excluded DT_NEEDED deps
+# (e.g. librsvg-2.so.2 for SVG icons, libgnutls.so.30 for GIO TLS) are pulled
+# into usr/lib automatically.
+pixbuf_loaders_src=""
+for candidate in \
+    "/usr/lib/${appimage_arch}-linux-gnu/gdk-pixbuf-2.0/2.10.0/loaders" \
+    "/usr/lib64/gdk-pixbuf-2.0/2.10.0/loaders" \
+    "/usr/lib/gdk-pixbuf-2.0/2.10.0/loaders"; do
+    if [ -d "$candidate" ]; then
+        pixbuf_loaders_src="$candidate"
+        break
+    fi
+done
+if [ -n "$pixbuf_loaders_src" ]; then
+    install -d "$appdir/usr/lib/gdk-pixbuf-2.0/2.10.0/loaders"
+    pixbuf_count=0
+    while IFS= read -r -d '' loader; do
+        name=$(basename "$loader")
+        install -m644 "$loader" "$appdir/usr/lib/gdk-pixbuf-2.0/2.10.0/loaders/$name"
+        patchelf --set-rpath '$ORIGIN/../../..' "$appdir/usr/lib/gdk-pixbuf-2.0/2.10.0/loaders/$name"
+        pixbuf_count=$((pixbuf_count + 1))
+    done < <(find "$pixbuf_loaders_src" -maxdepth 1 -name '*.so' -print0)
+    echo "  bundled $pixbuf_count gdk-pixbuf loaders from $pixbuf_loaders_src"
+else
+    echo "warning: gdk-pixbuf loaders directory not found; SVG/image loading may fail on non-Debian hosts" >&2
+fi
+
+gio_modules_src=""
+for candidate in \
+    "/usr/lib/${appimage_arch}-linux-gnu/gio/modules" \
+    "/usr/lib64/gio/modules" \
+    "/usr/lib/gio/modules"; do
+    if [ -d "$candidate" ]; then
+        gio_modules_src="$candidate"
+        break
+    fi
+done
+if [ -n "$gio_modules_src" ]; then
+    install -d "$appdir/usr/lib/gio/modules"
+    gio_count=0
+    for mod in libgiognutls.so libdconfsettings.so; do
+        if [ -f "$gio_modules_src/$mod" ]; then
+            install -m644 "$gio_modules_src/$mod" "$appdir/usr/lib/gio/modules/$mod"
+            patchelf --set-rpath '$ORIGIN/../..' "$appdir/usr/lib/gio/modules/$mod"
+            gio_count=$((gio_count + 1))
+        fi
+    done
+    echo "  bundled $gio_count GIO modules from $gio_modules_src"
+else
+    echo "warning: GIO modules directory not found; GIO TLS/dconf may fail on non-Debian hosts" >&2
+fi
+
+if [ -f /usr/share/icons/Adwaita/index.theme ]; then
+    install -Dm644 /usr/share/icons/Adwaita/index.theme \
+        "$appdir/usr/share/icons/Adwaita/index.theme"
+    if [ -d /usr/share/icons/Adwaita/symbolic ]; then
+        install -d "$appdir/usr/share/icons/Adwaita/symbolic"
+        cp -a /usr/share/icons/Adwaita/symbolic/. "$appdir/usr/share/icons/Adwaita/symbolic/"
+    fi
+    echo "  bundled Adwaita icon theme metadata + symbolic icons"
+fi
+if [ -f /usr/share/icons/hicolor/index.theme ]; then
+    install -Dm644 /usr/share/icons/hicolor/index.theme \
+        "$appdir/usr/share/icons/hicolor/index.theme"
+fi
+icon_cache_tool=$(command -v gtk4-update-icon-cache 2>/dev/null || command -v gtk-update-icon-cache 2>/dev/null || true)
+if [ -n "$icon_cache_tool" ]; then
+    for theme_dir in "$appdir/usr/share/icons/Adwaita" "$appdir/usr/share/icons/hicolor"; do
+        [ -f "$theme_dir/index.theme" ] && "$icon_cache_tool" -q -t -f "$theme_dir" || true
+    done
+fi
+
+echo "==> pruning host-driver libraries and completing the dependency closure"
 # linuxdeploy carries its own fixed list of libraries it assumes every host
 # already has, and does not copy them regardless of what --executable or
-# --library named -- see its own `excludelist`. That assumption is a
-# reasonable one for a stock desktop and a wrong one for a minimal container,
-# which is exactly what an AppImage's own premise ("runs on a host that
-# installed nothing else for it") should not lean on. Measured here on
-# 2026-09-13: linuxdeploy printed "Skipping deployment of blacklisted library
-# .../libharfbuzz.so.0" while bundling this AppDir, and the resulting image
-# then failed outright on a bare `ubuntu:24.04` container with
-# `vanta-shell: error while loading shared libraries: libharfbuzz.so.0:
-# cannot open shared object file` -- the exact host this AppImage claims to
-# support, refusing it for a library the bundler decided was not its job.
+# --library named -- see its own `excludelist`. Conversely, linuxdeploy DOES
+# copy host-driver-coupled libraries (libvulkan, libwayland-*, libX11/libxcb,
+# libexpat, libz, libzstd, libelf, libffi, libfontconfig, libfreetype, libudev,
+# libsystemd) from the Ubuntu 24.04 build container into usr/lib/. When AppRun
+# prepends usr/lib to LD_LIBRARY_PATH, those older Ubuntu copies shadow the
+# host's copies that host Mesa (libEGL_mesa, libgallium, Vulkan ICDs), NVIDIA
+# drivers, and Fontconfig directly link against -- causing blank canvases,
+# WebKitGTK `EGL_BAD_PARAMETER` aborts, and Fontconfig config-syntax warnings
+# on Arch/Fedora/openSUSE.
 #
-# The fix computes the closure itself rather than trusting linuxdeploy's list
-# or hardcoding names: read each bundled ELF's own `DT_NEEDED` entries with
-# `patchelf --print-needed` (works on a stripped binary; that is section-
-# header debug info, not this), skip anything already sitting in the AppDir
-# and anything on the never-bundle list below, and copy the rest in from the
-# build container by way of `ldconfig -p`. Copying can introduce a library
-# that itself needs a further one linuxdeploy also skipped, so this runs to a
-# fixed point rather than once.
+# Therefore we:
+#   1. Actively DELETE every library on `never_bundle_libs` that linuxdeploy
+#      copied into `$appdir/usr/lib/`.
+#   2. Compute the remaining DT_NEEDED dependency closure ourselves to a fixed
+#      point, respecting `never_bundle_libs`, so genuine app/toolkit deps that
+#      linuxdeploy's excludelist dropped (like libharfbuzz or librsvg for the
+#      SVG pixbuf loader) are always bundled.
 #
-# Two families are left to the host on purpose, and the first pass of this
-# fix copied one of them in before that was noticed -- worth recording so it
-# is not tried again. `vanta-shell`/`vanta-run` carry `RUNPATH
-# $ORIGIN/../lib` (`readelf -d`, this pass), and copying `libc.so.6` and
-# `ld-linux-x86-64.so.2` into that directory put them ahead of the host's own
-# in the dynamic linker's search order for `DT_NEEDED` resolution -- while the
-# *interpreter* stays the host's regardless, fixed at link time in
-# `PT_INTERP`, which the kernel loads by absolute path before RUNPATH exists
-# to consult. Loading a foreign libc against the host's ld.so is the same
-# mismatched-pair failure the bundled-loader prototype was rejected for
-# elsewhere in this file, reached by RUNPATH instead of by rewriting
-# `PT_INTERP` on purpose. `libstdc++.so.6`, `libgcc_s.so.1` and the rest of
-# glibc's own component libraries carry the same ABI coupling to whichever
-# libc actually loads and are excluded for the same reason. None of them
-# needs bundling regardless: unlike `libharfbuzz`, they are present on any
-# glibc host by construction, which is the entire justification the
-# `objdump`-based glibc-symbol floor above relies on already.
-#
-# The second is the graphics stack: nothing renders without a matching driver
-# underneath, and bundling a driver-adjacent library ties the AppImage to
-# whatever GPU stack happened to be in the build container.
-# The dynamic linker's own soname is not spelled the same way on every
-# architecture -- glibc's aarch64 loader is `ld-linux-aarch64.so.1`, not the
-# x86_64 `ld-linux-x86-64.so.2` -- so this is read off the interpreter this
-# container's own compiler actually produced rather than assumed. `readelf -p
-# .interp` on either of the two binaries just linked answers that directly,
-# with no case statement mapping `uname -m` onto a loader name that could
-# itself go stale on a third architecture.
+# The dynamic linker's own soname is read off vanta-shell's `.interp` section
+# rather than hardcoding x86_64 vs aarch64.
 ld_linux=$(readelf -p .interp "$appdir/usr/bin/vanta-shell" 2>/dev/null \
     | grep -oE 'ld-linux[a-zA-Z0-9._-]*\.so\.[0-9]+' | head -1)
 if [ -z "$ld_linux" ]; then
     echo "error: could not read the ELF interpreter out of vanta-shell's .interp section" >&2
     exit 1
 fi
-never_bundle_libs="libEGL.so.1 libGLX.so.0 libGL.so.1 libOpenGL.so.0 libGLdispatch.so.0 libgbm.so.1 libdrm.so.2 libGLESv2.so.2 libc.so.6 libm.so.6 libdl.so.2 libpthread.so.0 librt.so.1 libresolv.so.2 libutil.so.1 libnsl.so.1 libanl.so.1 libcrypt.so.1 $ld_linux libstdc++.so.6 libgcc_s.so.1"
+never_bundle_libs="
+    libEGL.so.1 libGLX.so.0 libGL.so.1 libOpenGL.so.0 libGLdispatch.so.0 libgbm.so.1 libdrm.so.2 libGLESv2.so.2
+    libvulkan.so.1
+    libwayland-client.so.0 libwayland-egl.so.1 libwayland-cursor.so.0 libwayland-server.so.0
+    libX11.so.6 libX11-xcb.so.1 libxcb.so.1 libxcb-shm.so.0 libxcb-render.so.0
+    libXext.so.6 libXfixes.so.3 libXdamage.so.1 libXrandr.so.2 libXrender.so.1
+    libXi.so.6 libXcursor.so.1 libXinerama.so.1 libXau.so.6 libXdmcp.so.6
+    libexpat.so.1 libz.so.1 libzstd.so.1 libelf.so.1 libffi.so.8
+    libpipewire-0.3.so.0 libasound.so.2 libpulse.so.0 libdbus-1.so.3 libudev.so.1 libsystemd.so.0
+    libfontconfig.so.1 libfreetype.so.6
+    libc.so.6 libm.so.6 libdl.so.2 libpthread.so.0 librt.so.1 libresolv.so.2 libutil.so.1 libnsl.so.1 libanl.so.1 libcrypt.so.1
+    $ld_linux libstdc++.so.6 libgcc_s.so.1
+"
 is_never_bundled() {
     local name="$1" g
     for g in $never_bundle_libs; do
@@ -539,6 +643,16 @@ is_never_bundled() {
     done
     return 1
 }
+
+pruned=0
+for lib in $never_bundle_libs; do
+    if [ -e "$appdir/usr/lib/$lib" ] || [ -L "$appdir/usr/lib/$lib" ]; then
+        rm -f "$appdir/usr/lib/$lib"
+        echo "  pruned host-coupled library: $lib"
+        pruned=$((pruned + 1))
+    fi
+done
+echo "  pruned $pruned host-coupled libraries copied by linuxdeploy"
 
 pass=0
 added=1
@@ -568,6 +682,60 @@ while [ "$added" -gt 0 ]; do
     echo "  pass $pass: completed $added"
 done
 
+echo "==> generating gdk-pixbuf and GIO module caches"
+appdir_abs=$(cd "$appdir" && pwd -P)
+if [ -d "$appdir/usr/lib/gdk-pixbuf-2.0/2.10.0/loaders" ]; then
+    query_loaders=""
+    for candidate in \
+        "/usr/lib/${appimage_arch}-linux-gnu/gdk-pixbuf-2.0/gdk-pixbuf-query-loaders" \
+        "$(command -v gdk-pixbuf-query-loaders-64 2>/dev/null || true)" \
+        "$(command -v gdk-pixbuf-query-loaders 2>/dev/null || true)"; do
+        if [ -n "$candidate" ] && [ -x "$candidate" ]; then
+            query_loaders="$candidate"
+            break
+        fi
+    done
+    if [ -n "$query_loaders" ]; then
+        loaders_cache_in="$appdir/usr/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache.in"
+        LD_LIBRARY_PATH="$appdir_abs/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+        GDK_PIXBUF_MODULEDIR="$appdir_abs/usr/lib/gdk-pixbuf-2.0/2.10.0/loaders" \
+            "$query_loaders" \
+            | python3 -c 'import sys; print(sys.stdin.read().replace(sys.argv[1], "@APPDIR@"), end="")' "$appdir_abs" \
+            > "$loaders_cache_in"
+        echo "  generated loaders.cache.in via $query_loaders"
+    else
+        echo "warning: gdk-pixbuf-query-loaders not found; loaders.cache.in not generated" >&2
+    fi
+fi
+
+if [ -d "$appdir/usr/lib/gio/modules" ]; then
+    gio_query=""
+    for candidate in \
+        "/usr/lib/${appimage_arch}-linux-gnu/glib-2.0/gio-querymodules" \
+        "$(command -v gio-querymodules-64 2>/dev/null || true)" \
+        "$(command -v gio-querymodules 2>/dev/null || true)"; do
+        if [ -n "$candidate" ] && [ -x "$candidate" ]; then
+            gio_query="$candidate"
+            break
+        fi
+    done
+    if [ -n "$gio_query" ]; then
+        LD_LIBRARY_PATH="$appdir_abs/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+            "$gio_query" "$appdir_abs/usr/lib/gio/modules"
+        echo "  generated giomodule.cache via $gio_query"
+    elif [ -n "$gio_modules_src" ] && [ -f "$gio_modules_src/giomodule.cache" ]; then
+        # Fallback: copy only entries for modules we actually bundled.
+        : > "$appdir/usr/lib/gio/modules/giomodule.cache"
+        while IFS= read -r line; do
+            mod_name=${line%%:*}
+            if [ -f "$appdir/usr/lib/gio/modules/$mod_name" ]; then
+                printf '%s\n' "$line" >> "$appdir/usr/lib/gio/modules/giomodule.cache"
+            fi
+        done < "$gio_modules_src/giomodule.cache"
+        echo "  filtered giomodule.cache from $gio_modules_src"
+    fi
+fi
+
 echo "==> compiling GSettings schemas into the AppDir"
 # Looked up by GIO through GSETTINGS_SCHEMA_DIR at runtime (see AppRun), not
 # discoverable from any binary's DT_NEEDED entries, so linuxdeploy's walk
@@ -583,6 +751,64 @@ if [ -d "$schemas_src" ]; then
 else
     echo "warning: $schemas_src not found; the AppImage ships no compiled GSettings schemas" >&2
 fi
+
+echo "==> verifying post-build AppDir invariants"
+forbidden_present=()
+for lib in $never_bundle_libs; do
+    if [ -e "$appdir/usr/lib/$lib" ] || [ -L "$appdir/usr/lib/$lib" ]; then
+        forbidden_present+=("$lib")
+    fi
+done
+if [ "${#forbidden_present[@]}" -gt 0 ]; then
+    echo "error: forbidden host-driver/system libraries are still present in $appdir/usr/lib/:" >&2
+    printf '  %s\n' "${forbidden_present[@]}" >&2
+    exit 1
+fi
+
+python3 - "$appdir/usr/lib" <<'PYEOF'
+import glob
+import os
+import re
+import sys
+
+lib_dir = sys.argv[1]
+bad = re.compile(rb"/usr/lib/[a-z0-9_]+-linux-gnu/webkitgtk-6\.0")
+good = b"/usr/libexec/webkitgtk-6.0"
+targets = [
+    p for p in sorted(glob.glob(os.path.join(lib_dir, "libwebkitgtk-6.0.so*")))
+    if os.path.isfile(p) and not os.path.islink(p)
+]
+if not targets:
+    sys.exit("error: libwebkitgtk-6.0.so* missing from AppDir usr/lib")
+for path in targets:
+    with open(path, "rb") as f:
+        data = f.read()
+    if bad.search(data):
+        sys.exit(f"error: {path} still contains unpatched /usr/lib/*-linux-gnu/webkitgtk-6.0 path")
+    if good not in data:
+        sys.exit(f"error: {path} does not contain expected /usr/libexec/webkitgtk-6.0 path")
+PYEOF
+
+for helper in WebKitNetworkProcess WebKitWebProcess; do
+    if [ ! -x "$appdir/usr/libexec/webkitgtk-6.0/$helper" ]; then
+        echo "error: missing $appdir/usr/libexec/webkitgtk-6.0/$helper" >&2
+        exit 1
+    fi
+    if [ -e "$appdir/usr/bin/$helper" ]; then
+        echo "error: duplicate helper left in $appdir/usr/bin/$helper" >&2
+        exit 1
+    fi
+    rpath=$(patchelf --print-rpath "$appdir/usr/libexec/webkitgtk-6.0/$helper" 2>/dev/null || true)
+    if [ "$rpath" != '$ORIGIN/../../lib' ]; then
+        echo "error: $helper RUNPATH is '$rpath', expected '\$ORIGIN/../../lib'" >&2
+        exit 1
+    fi
+done
+if [ -z "$(find "$appdir/usr/libexec/webkitgtk-6.0/injected-bundle" -maxdepth 1 -name '*.so' 2>/dev/null)" ]; then
+    echo "error: missing injected-bundle .so in $appdir/usr/libexec/webkitgtk-6.0/injected-bundle" >&2
+    exit 1
+fi
+echo "  all post-build AppDir assertions passed"
 
 echo "==> checking every bundled ELF against the glibc floor"
 # **This is the check that already existed and was pointed at the wrong
@@ -645,22 +871,3 @@ ARCH="$appimage_arch" "$tools_dir/appimagetool-${appimage_arch}.AppImage" "$appd
 chmod +x "$outfile"
 ls -lh "$outfile"
 echo "built: $outfile"
-echo
-echo "The shell starts and draws: launched on Fedora 44 (Bluefin, GNOME,"
-echo "Wayland) on 2026-08-27, first-run window titled with VANTA_DESCRIBE,"
-echo "profile row and Roblox button, as a wl_surface with the right app id."
-echo "That run was against a Fedora-built AppImage, before ADR-032 moved the"
-echo "base to ubuntu:24.04; not yet repeated against this one."
-echo
-echo "The web view's mount-namespace trick (AppRun binding WebKitGTK's helper"
-echo "processes, injected bundle, bwrap and xdg-dbus-proxy over the absolute"
-echo "paths baked into libwebkitgtk-6.0.so) was measured 2026-09-02 against a"
-echo "Fedora-built copy of that library, whose baked-in path was"
-echo "/usr/libexec/webkitgtk-6.0. Ubuntu 24.04's build of the same library"
-echo "bakes in /usr/lib/x86_64-linux-gnu/webkitgtk-6.0 instead, and AppRun now"
-echo "binds that path too, re-measured 2026-09-13 with a live Wayland display:"
-echo "WebKitNetworkProcess, which failed to spawn at all with only the Fedora"
-echo "binds, now starts. The WebProcess it hands off to aborts on its own"
-echo "straight after, \"Could not create default EGL display: EGL_BAD_PARAMETER\","
-echo "for a reason not yet established. Treat the web view as UNVERIFIED on"
-echo "this AppImage -- the spawn-path defect is fixed, the EGL one is not."
