@@ -1,8 +1,7 @@
 # Documentation index
 
-The user and plugin-developer pages here are also published, with search, at
-[vanta.mintlify.app](https://vanta.mintlify.app). This index covers the
-whole folder, including the working notes the site leaves out.
+This index covers the documentation folder, including user guides,
+architecture decisions, and working notes.
 
 Start with [`NEXT.md`](NEXT.md). The rest here is reference, in roughly the
 order a newcomer would want it.
@@ -27,7 +26,7 @@ order a newcomer would want it.
 | [`../CHANGELOG.md`](../CHANGELOG.md) | What changed between releases, retractions included. [Releases](https://github.com/gpt4omni/vanta/releases) |
 | [`findings.md`](findings.md) | Bootstrap analysis: the architecture verdict and what is unknown |
 | [`framework-api-inventory.md`](framework-api-inventory.md) | The framework backlog, enumerated from the shipping APK |
-| [`traces/`](traces) | A capture of the same APK on real Android — the ground truth this project checks itself against |
+| [`traces/`](traces) | A capture of the same APK on real Android: the ground truth this project checks itself against |
 
 ## ADRs
 
@@ -38,7 +37,7 @@ All 53. Status is marked where it is not plain "accepted"; [`HANDOVER.md`](HANDO
 | [ADR-001](adr/ADR-001-in-process-hooking.md) | Why Vanta has no in-process hooking, ever (the proposal was rejected) |
 | [ADR-002](adr/ADR-002-core-shell-and-ui-handoff.md) | Core shell, UI handoff, and the cold-start ordering |
 | [ADR-003](adr/ADR-003-plugin-isolation.md) | Plugins have no memory access to Vanta |
-| [ADR-004](adr/ADR-004-plugin-asset-overrides.md) | Superseded by ADR-010 — why plugins were once refused asset overrides |
+| [ADR-004](adr/ADR-004-plugin-asset-overrides.md) | Superseded by ADR-010: why plugins were once refused asset overrides |
 | [ADR-005](adr/ADR-005-flag-service.md) | Why the flag service has two surfaces |
 | [ADR-006](adr/ADR-006-plugin-events-and-first-party.md) | Plugin-declared events, and why built-in features are still plugins |
 | [ADR-007](adr/ADR-007-host-resources-are-brokered.md) | Why a plugin never holds a socket, and Discord RPC as the worked example |
@@ -76,7 +75,7 @@ All 53. Status is marked where it is not plain "accepted"; [`HANDOVER.md`](HANDO
 | [ADR-039](adr/ADR-039-a-runtime-backend-seam-and-why-macos-waits.md) | A runtime-backend seam is cheap to describe and not worth building yet. Corrected 2026-10-01 on Metal, Darling and the loader, and on its quotation of "do not build a translation layer", which ADR-053 no longer follows for the Quest build |
 | [ADR-040](adr/ADR-040-the-engine-already-runs-mimalloc.md) | The engine already runs mimalloc, so there is no allocator to switch |
 | [ADR-041](adr/ADR-041-vkbasalt-post-processing.md) | vkBasalt post-processing is a driver-stack layer, not in-process hooking |
-| [ADR-042](adr/ADR-042-texture-format-query-observability.md) | Vulkan texture-format queries are counted and, test-only, maskable — nothing is translated |
+| [ADR-042](adr/ADR-042-texture-format-query-observability.md) | Vulkan texture-format queries are counted and, test-only, maskable; nothing is translated |
 | [ADR-043](adr/ADR-043-the-roblox-build-is-the-binarys-architecture.md) | The Roblox build's architecture is the binary's; choosing another needs a second runtime, so Settings shows it read-only. Its "Quest is rejected" and the premise of its decision 3 (a second `vanta-run`) superseded by ADR-053 |
 | [ADR-044](adr/ADR-044-settings-reach-a-running-game.md) | Settings that can change reach a running game over a small socket; the rest say "Applies at next launch" |
 | [ADR-045](adr/ADR-045-one-report-screen-outside-settings.md) | One Report a Problem screen, outside Settings; the launcher says so when the game will open on X11 |
@@ -96,7 +95,7 @@ All 53. Status is marked where it is not plain "accepted"; [`HANDOVER.md`](HANDO
 | | |
 |---|---|
 | [`design/instances-and-launch.md`](design/instances-and-launch.md) | Multi-instance, multi-account, and `roblox://` |
-| [`design/sign-in.md`](design/sign-in.md) | What signing in actually requires — the current blocker |
+| [`design/sign-in.md`](design/sign-in.md) | What signing in actually requires (the current blocker) |
 | [`design/path-to-a-frame.md`](design/path-to-a-frame.md) | GameActivity, assets, surface |
 | [`base-evaluation.md`](base-evaluation.md) | Port-vs-write assessment of the prior art |
 | [`multiarch.md`](multiarch.md) | Multi-architecture decision |
