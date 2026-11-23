@@ -21,6 +21,7 @@
 // real `open` is the one thing C does better here — the same reason liblog.cpp
 // is C++.
 
+#include <atomic>
 #include <cstdarg>
 #include <cstddef>
 #include <cstdio>
@@ -37,12 +38,24 @@
 #include <cstdint>
 #include <unistd.h>
 
+/// Weakly linked into `vanta-runtime`'s `asset::vanta_overlay_resolve` so
+/// standalone C++ unit tests and `vanta-linker-sys` binaries that do not link
+/// `vanta-runtime` still link cleanly with zero undefined symbols.
+extern "C" __attribute__((weak)) int vanta_overlay_resolve(
+    const char* path, int for_write, char* out, size_t out_len);
+
 namespace {
 
 /// The host directory standing in for `/system`. Set once from Rust before the
 /// engine runs; empty means "no redirect", which leaves every call untouched.
 char g_root[PATH_MAX];
 size_t g_root_len = 0;
+
+/// The extracted Roblox asset root (`<cache>/assets`), set from Rust via
+/// `vanta_set_asset_root`. Used as a zero-overhead prefix gate before crossing
+/// into `vanta_overlay_resolve` so non-asset paths pay no FFI cost.
+char g_asset_root[PATH_MAX];
+std::atomic<size_t> g_asset_root_len{0};
 
 /// `VANTA_TRACE_PATHS=1`. Every function here is fixed-arity except `open`,
 /// which is forwarded properly, so this is safe to leave on — unlike
@@ -75,45 +88,79 @@ void trace_i(const char* call, const char* path, long r) {
     trace(call, path, b);
 }
 
-/// Rewrite `/system/<rest>` to `<root>/<rest>`.
+static inline bool open_is_write(int flags) {
+    const int acc = flags & O_ACCMODE;
+    return acc != O_RDONLY || (flags & (O_CREAT | O_TRUNC | O_APPEND | O_TMPFILE)) != 0;
+}
+
+static inline bool fopen_is_write(const char* mode) {
+    if (!mode) {
+        return false;
+    }
+    return std::strpbrk(mode, "wa+") != nullptr;
+}
+
+/// Rewrite `/system/<rest>` to `<root>/<rest>`, or consult `vanta_overlay_resolve`
+/// for read-only accesses under the registered extracted Roblox asset root.
 ///
-/// Returns null when the path is not under `/system`, which is the overwhelming
-/// majority of calls — the cost on that path is one `strncmp`.
-const char* remap(const char* path, char* buf, size_t n) {
-    if (!path || g_root_len == 0) {
+/// Returns null when the path is neither under `/system` nor overlaid.
+const char* remap(const char* path, int for_write, char* buf, size_t n) {
+    if (!path) {
         return nullptr;
     }
-    if (std::strncmp(path, "/system/", 8) != 0) {
-        return nullptr;
+    if (g_root_len != 0 && std::strncmp(path, "/system/", 8) == 0) {
+        // `path + 7` keeps the separator, so the result is `<root>/fonts/...`.
+        const char* tail = path + 7;
+        size_t tail_len = std::strlen(tail);
+        if (g_root_len + tail_len + 1 > n) {
+            return nullptr;
+        }
+        std::memcpy(buf, g_root, g_root_len);
+        std::memcpy(buf + g_root_len, tail, tail_len + 1);
+        return buf;
     }
-    // `path + 7` keeps the separator, so the result is `<root>/fonts/...`.
-    const char* tail = path + 7;
-    size_t tail_len = std::strlen(tail);
-    if (g_root_len + tail_len + 1 > n) {
-        return nullptr;
+    if (!for_write && vanta_overlay_resolve != nullptr) {
+        const size_t alen = g_asset_root_len.load(std::memory_order_acquire);
+        if (alen != 0 && std::strncmp(path, g_asset_root, alen) == 0 && path[alen] == '/') {
+            if (vanta_overlay_resolve(path, 0, buf, n) == 1) {
+                return buf;
+            }
+        }
     }
-    std::memcpy(buf, g_root, g_root_len);
-    std::memcpy(buf + g_root_len, tail, tail_len + 1);
-    return buf;
+    return nullptr;
 }
 
 static inline bool needs_slow_path(const char* path) {
     if (__builtin_expect(g_trace, 0)) {
         return true;
     }
-    if (__builtin_expect(g_root_len == 0 || !path || path[0] != '/' || path[1] != 's', 1)) {
+    if (__builtin_expect(!path, 0)) {
         return false;
     }
-    return std::strncmp(path, "/system/", 8) == 0;
+    if (__builtin_expect(g_root_len != 0 && path[0] == '/' && path[1] == 's' &&
+                             std::strncmp(path, "/system/", 8) == 0,
+                         0)) {
+        return true;
+    }
+    if (vanta_overlay_resolve != nullptr) {
+        const size_t alen = g_asset_root_len.load(std::memory_order_acquire);
+        if (__builtin_expect(alen != 0 && path[0] == g_asset_root[0] &&
+                                 std::strncmp(path, g_asset_root, alen) == 0 &&
+                                 path[alen] == '/',
+                             0)) {
+            return true;
+        }
+    }
+    return false;
 }
 
-#define REMAP(path)                          \
-    char _buf[PATH_MAX];                     \
-    const char* _p = remap(path, _buf, sizeof _buf); \
+#define REMAP(path, for_write)                                  \
+    char _buf[PATH_MAX];                                        \
+    const char* _p = remap(path, for_write, _buf, sizeof _buf); \
     const char* real = _p ? _p : (path)
 
 [[gnu::noinline]] int s_stat_slow(const char* path, struct stat* out) {
-    REMAP(path);
+    REMAP(path, 0);
     int r = ::stat(real, out);
     trace_i("stat", real, r);
     return r;
@@ -126,7 +173,7 @@ int s_stat(const char* path, struct stat* out) {
 }
 
 [[gnu::noinline]] int s_lstat_slow(const char* path, struct stat* out) {
-    REMAP(path);
+    REMAP(path, 0);
     int r = ::lstat(real, out);
     trace_i("lstat", real, r);
     return r;
@@ -139,7 +186,7 @@ int s_lstat(const char* path, struct stat* out) {
 }
 
 [[gnu::noinline]] int s_access_slow(const char* path, int mode) {
-    REMAP(path);
+    REMAP(path, (mode & W_OK) != 0 ? 1 : 0);
     int r = ::access(real, mode);
     trace_i("access", real, r);
     return r;
@@ -152,7 +199,7 @@ int s_access(const char* path, int mode) {
 }
 
 [[gnu::noinline]] DIR* s_opendir_slow(const char* path) {
-    REMAP(path);
+    REMAP(path, 0);
     DIR* d = ::opendir(real);
     trace(d ? "opendir" : "opendir!", real, d ? "ok" : "null");
     return d;
@@ -165,7 +212,7 @@ DIR* s_opendir(const char* path) {
 }
 
 char* s_realpath(const char* path, char* resolved) {
-    REMAP(path);
+    REMAP(path, 0);
     if (!resolved) {
         // glibc's `realpath(path, NULL)` is a GNU extension: it `malloc`s the
         // result buffer itself and hands ownership to the caller, who is
@@ -218,7 +265,7 @@ char* s_realpath(const char* path, char* resolved) {
 }
 
 [[gnu::noinline]] ssize_t s_readlink_slow(const char* path, char* buf, size_t n) {
-    REMAP(path);
+    REMAP(path, 0);
     ssize_t r = ::readlink(real, buf, n);
     trace_i("readlink", real, (long)r);
     return r;
@@ -231,7 +278,7 @@ ssize_t s_readlink(const char* path, char* buf, size_t n) {
 }
 
 [[gnu::noinline]] FILE* s_fopen_slow(const char* path, const char* mode) {
-    REMAP(path);
+    REMAP(path, fopen_is_write(mode) ? 1 : 0);
     FILE* f = ::fopen(real, mode);
     trace("fopen", real, f ? "ok" : "null");
     return f;
@@ -244,7 +291,7 @@ FILE* s_fopen(const char* path, const char* mode) {
 }
 
 [[gnu::noinline]] int s_open_slow(const char* path, int flags, unsigned mode) {
-    REMAP(path);
+    REMAP(path, open_is_write(flags) ? 1 : 0);
     int r = ::open(real, flags, mode);
     trace_i("open", real, r);
     return r;
@@ -305,7 +352,7 @@ struct bionic_statvfs {
 };
 
 int s_statvfs(const char* path, bionic_statvfs* out) {
-    REMAP(path);
+    REMAP(path, 0);
     struct ::statvfs host {};
     const int r = ::statvfs(real, &host);
     trace_i("statvfs", real, r);
@@ -349,6 +396,22 @@ extern "C" void vanta_set_system_root(const char* root) {
     while (g_root_len > 1 && g_root[g_root_len - 1] == '/') {
         g_root[--g_root_len] = '\0';
     }
+}
+
+/// Register the extracted Roblox asset root (`<cache>/assets`) for overlay
+/// prefix gating. Passing null or "" disables filesystem overlay checks.
+extern "C" void vanta_set_asset_root(const char* root) {
+    g_asset_root_len.store(0, std::memory_order_release);
+    if (!root || !*root) {
+        g_asset_root[0] = '\0';
+        return;
+    }
+    std::snprintf(g_asset_root, sizeof g_asset_root, "%s", root);
+    size_t len = std::strlen(g_asset_root);
+    while (len > 1 && g_asset_root[len - 1] == '/') {
+        g_asset_root[--len] = '\0';
+    }
+    g_asset_root_len.store(len, std::memory_order_release);
 }
 
 /// Turn on the path log. Separate from the root so tracing works even when the

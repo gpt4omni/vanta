@@ -397,11 +397,13 @@ fn publish_session(session: &ServerSession) {
 pub fn on_joining(place_id: u64, job_id: &str) {
     let snapshot = {
         let mut s = SESSION.lock().unwrap_or_else(|e| e.into_inner());
-        if s.place_id != Some(place_id) {
+        let new_job = (!job_id.is_empty()).then_some(job_id);
+        let job_changed = new_job.is_some() && s.job_id.as_deref() != new_job;
+        if s.place_id != Some(place_id) || job_changed {
             *s = ServerSession::default();
         }
         s.place_id = Some(place_id);
-        s.job_id = Some(job_id.to_string());
+        s.job_id = new_job.map(str::to_string);
         s.clone()
     };
     publish_session(&snapshot);
@@ -602,5 +604,41 @@ mod tests {
         assert!(!notify_enabled_for(Some("0")));
         assert!(!notify_enabled_for(Some("false")));
         assert!(!notify_enabled_for(Some("off")));
+    }
+
+    #[test]
+    fn hopping_servers_in_same_place_resets_stale_server_ip_and_region() {
+        let _g = TEST_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        let prev_notify = notify_enabled();
+        set_notify_enabled(false);
+        on_left();
+        let _ = take_ui_update();
+
+        // Join server A in place 18879239467 (Dallas).
+        on_joining(18879239467, "11111111-1111-1111-1111-111111111111");
+        on_joined(18879239467, Some(1795268840));
+        on_server("128.116.14.33", 59539);
+        assert_eq!(current_session().server_ip.as_deref(), Some("128.116.14.33"));
+        assert_eq!(current_session().region_label.as_deref(), Some("US-South \u{00b7} Dallas"));
+
+        // Hop / Quick-Rejoin to a different job_id in the SAME place: old IP/region/joined_at must clear.
+        on_joining(18879239467, "22222222-2222-2222-2222-222222222222");
+        let after_hop = current_session();
+        assert_eq!(after_hop.place_id, Some(18879239467));
+        assert_eq!(after_hop.job_id.as_deref(), Some("22222222-2222-2222-2222-222222222222"));
+        assert_eq!(after_hop.server_ip, None, "old server IP must not persist across same-place hop");
+        assert_eq!(after_hop.server_port, None, "old server port must not persist across same-place hop");
+        assert_eq!(after_hop.region_label, None, "old region must not persist across same-place hop");
+        assert_eq!(after_hop.joined_at, None, "old joined_at must not persist across same-place hop");
+
+        // Re-receiving the SAME job_id for the same place must keep the current server info.
+        on_server("128.116.51.33", 50363);
+        on_joining(18879239467, "22222222-2222-2222-2222-222222222222");
+        let same_job = current_session();
+        assert_eq!(same_job.server_ip.as_deref(), Some("128.116.51.33"));
+        assert_eq!(same_job.region_label.as_deref(), Some("AP-South \u{00b7} Singapore"));
+
+        on_left();
+        set_notify_enabled(prev_notify);
     }
 }

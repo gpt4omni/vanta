@@ -1425,6 +1425,10 @@ fn transfer_src_lock() -> &'static RwLock<HashSet<u64>> {
     TRANSFER_SRC.get_or_init(Default::default)
 }
 
+fn transfer_src_read() -> RwLockReadGuard<'static, HashSet<u64>> {
+    transfer_src_lock().read().unwrap_or_else(|e| e.into_inner())
+}
+
 fn transfer_src_write() -> RwLockWriteGuard<'static, HashSet<u64>> {
     transfer_src_lock().write().unwrap_or_else(|e| e.into_inner())
 }
@@ -2385,6 +2389,33 @@ struct GpuPreparedRegion {
     scratch_buf: u64,
     scratch_off: u64,
     dst_bytes: u64,
+    ds: u64,
+}
+
+fn rollback_gpu_staging(
+    dev: &Dev,
+    gpu: &GpuDecoder,
+    entry: &mut CmdState,
+    saved_chunks_len: usize,
+    saved_last_used: Option<u64>,
+    saved_last_ds: Option<(u64, u64, u64)>,
+) {
+    for mut c in entry.gpu_chunks.drain(saved_chunks_len..) {
+        if c.size <= STAGING_CHUNK {
+            c.used = 0;
+            let mut pool = gpu.free_gpu_chunks.lock().unwrap_or_else(|e| e.into_inner());
+            if pool.len() < MAX_POOLED_CHUNKS {
+                pool.push(c);
+                continue;
+            }
+        }
+        (dev.destroy_buffer)(dev.device, c.buffer, std::ptr::null());
+        (dev.free_memory)(dev.device, c.memory, std::ptr::null());
+    }
+    if let (Some(last), Some(used)) = (entry.gpu_chunks.last_mut(), saved_last_used) {
+        last.used = used;
+    }
+    entry.last_ds = saved_last_ds;
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2405,7 +2436,21 @@ fn emulate_copy_gpu_batch(
     }
     let fmt = emu.format;
     let bc_mode = emu.bc_mode;
-    let mut prepared = Vec::with_capacity(regions.len());
+
+    // Phase 1: Pure validation of ALL regions before mutating `entry` or
+    // emitting any Vulkan commands into `cmd`.
+    struct ValidatedRegion {
+        region: BufferImageCopy,
+        w: usize,
+        h: usize,
+        layers: usize,
+        row_blocks: usize,
+        layer_stride: usize,
+        dst_row_words: usize,
+        dst_row_texels: usize,
+        dst_bytes: u64,
+    }
+    let mut validated = Vec::with_capacity(regions.len());
     let mut min_src_off = u64::MAX;
     let mut max_src_end = 0u64;
 
@@ -2441,10 +2486,9 @@ fn emulate_copy_gpu_batch(
             };
             (drw, drt, (drw as u64) * 4 * (h as u64) * (layers as u64))
         };
-        let (scratch_buf, scratch_off) = gpu_staging(dev, gpu, entry, dst_bytes)?;
         min_src_off = min_src_off.min(r.buffer_offset);
         max_src_end = max_src_end.max(r.buffer_offset + (src_len as u64).max(4));
-        prepared.push(GpuPreparedRegion {
+        validated.push(ValidatedRegion {
             region: *r,
             w,
             h,
@@ -2453,15 +2497,109 @@ fn emulate_copy_gpu_batch(
             layer_stride,
             dst_row_words,
             dst_row_texels,
-            scratch_buf,
-            scratch_off,
             dst_bytes,
         });
     }
-    if prepared.is_empty() {
+    if validated.is_empty() {
         return Ok(());
     }
 
+    // Phase 2: Pre-allocate ALL staging chunks and descriptor sets BEFORE
+    // emitting any `vkCmd*` commands. Roll back staged chunks on any error so
+    // the fallback path receives a completely clean command buffer.
+    let saved_chunks_len = entry.gpu_chunks.len();
+    let saved_last_used = entry.gpu_chunks.last().map(|c| c.used);
+    let saved_last_ds = entry.last_ds;
+
+    let mut prepared = Vec::with_capacity(validated.len());
+    let mut last_scratch_alloc = 0u64;
+    let mut last_ds_handle = 0u64;
+
+    let prep_result: Result<(), String> = (|| {
+        for v in validated {
+            let (scratch_buf, scratch_off) = gpu_staging(dev, gpu, entry, v.dst_bytes)?;
+            let ds = if scratch_buf == last_scratch_alloc && last_ds_handle != 0 {
+                last_ds_handle
+            } else {
+                let ds = match entry.last_ds {
+                    Some((cached_src, cached_dst, cached_ds))
+                        if cached_src == src_buffer && cached_dst == scratch_buf =>
+                    {
+                        cached_ds
+                    }
+                    _ => {
+                        let ds = alloc_ds(dev, gpu, entry)?;
+                        let src_info =
+                            VkDescriptorBufferInfo { buffer: src_buffer, offset: 0, range: WHOLE_SIZE };
+                        let dst_info =
+                            VkDescriptorBufferInfo { buffer: scratch_buf, offset: 0, range: WHOLE_SIZE };
+                        let writes = [
+                            VkWriteDescriptorSet {
+                                s_type: ST_WRITE_DESCRIPTOR_SET,
+                                _pad: 0,
+                                p_next: std::ptr::null(),
+                                dst_set: ds,
+                                dst_binding: 0,
+                                dst_array_element: 0,
+                                descriptor_count: 1,
+                                descriptor_type: DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                p_image_info: std::ptr::null(),
+                                p_buffer_info: &src_info,
+                                p_texel_buffer_view: std::ptr::null(),
+                            },
+                            VkWriteDescriptorSet {
+                                s_type: ST_WRITE_DESCRIPTOR_SET,
+                                _pad: 0,
+                                p_next: std::ptr::null(),
+                                dst_set: ds,
+                                dst_binding: 1,
+                                dst_array_element: 0,
+                                descriptor_count: 1,
+                                descriptor_type: DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                p_image_info: std::ptr::null(),
+                                p_buffer_info: &dst_info,
+                                p_texel_buffer_view: std::ptr::null(),
+                            },
+                        ];
+                        (gpu.update_ds)(
+                            dev.device,
+                            writes.len() as u32,
+                            writes.as_ptr(),
+                            0,
+                            std::ptr::null(),
+                        );
+                        entry.last_ds = Some((src_buffer, scratch_buf, ds));
+                        ds
+                    }
+                };
+                last_scratch_alloc = scratch_buf;
+                last_ds_handle = ds;
+                ds
+            };
+            prepared.push(GpuPreparedRegion {
+                region: v.region,
+                w: v.w,
+                h: v.h,
+                layers: v.layers,
+                row_blocks: v.row_blocks,
+                layer_stride: v.layer_stride,
+                dst_row_words: v.dst_row_words,
+                dst_row_texels: v.dst_row_texels,
+                scratch_buf,
+                scratch_off,
+                dst_bytes: v.dst_bytes,
+                ds,
+            });
+        }
+        Ok(())
+    })();
+
+    if let Err(e) = prep_result {
+        rollback_gpu_staging(dev, gpu, entry, saved_chunks_len, saved_last_used, saved_last_ds);
+        return Err(e);
+    }
+
+    // Phase 3: Infallible command buffer emission.
     // One pre-barrier for the entire source span of this batch.
     let pre = VkBufferMemoryBarrier {
         s_type: ST_BUFFER_MEMORY_BARRIER,
@@ -2497,50 +2635,16 @@ fn emulate_copy_gpu_batch(
 
     for p in &prepared {
         if p.scratch_buf != last_scratch {
-            let ds = match entry.last_ds {
-                Some((cached_src, cached_dst, cached_ds))
-                    if cached_src == src_buffer && cached_dst == p.scratch_buf =>
-                {
-                    cached_ds
-                }
-                _ => {
-                    let ds = alloc_ds(dev, gpu, entry)?;
-                    let src_info = VkDescriptorBufferInfo { buffer: src_buffer, offset: 0, range: WHOLE_SIZE };
-                    let dst_info = VkDescriptorBufferInfo { buffer: p.scratch_buf, offset: 0, range: WHOLE_SIZE };
-                    let writes = [
-                        VkWriteDescriptorSet {
-                            s_type: ST_WRITE_DESCRIPTOR_SET,
-                            _pad: 0,
-                            p_next: std::ptr::null(),
-                            dst_set: ds,
-                            dst_binding: 0,
-                            dst_array_element: 0,
-                            descriptor_count: 1,
-                            descriptor_type: DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                            p_image_info: std::ptr::null(),
-                            p_buffer_info: &src_info,
-                            p_texel_buffer_view: std::ptr::null(),
-                        },
-                        VkWriteDescriptorSet {
-                            s_type: ST_WRITE_DESCRIPTOR_SET,
-                            _pad: 0,
-                            p_next: std::ptr::null(),
-                            dst_set: ds,
-                            dst_binding: 1,
-                            dst_array_element: 0,
-                            descriptor_count: 1,
-                            descriptor_type: DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                            p_image_info: std::ptr::null(),
-                            p_buffer_info: &dst_info,
-                            p_texel_buffer_view: std::ptr::null(),
-                        },
-                    ];
-                    (gpu.update_ds)(dev.device, writes.len() as u32, writes.as_ptr(), 0, std::ptr::null());
-                    entry.last_ds = Some((src_buffer, p.scratch_buf, ds));
-                    ds
-                }
-            };
-            (gpu.cmd_bind_ds)(cmd, PIPELINE_BIND_POINT_COMPUTE, gpu.pipeline_layout, 0, 1, &ds, 0, std::ptr::null());
+            (gpu.cmd_bind_ds)(
+                cmd,
+                PIPELINE_BIND_POINT_COMPUTE,
+                gpu.pipeline_layout,
+                0,
+                1,
+                &p.ds,
+                0,
+                std::ptr::null(),
+            );
             last_scratch = p.scratch_buf;
         }
         let pc = GpuPushConstants {
@@ -3105,6 +3209,7 @@ extern "C" fn bind_buffer_memory(device: *mut c_void, buffer: u64, memory: u64, 
     if rc == VK_SUCCESS
         && TRANSFER_SRC_BUF_BLOOM.may_contain(buffer)
         && active_device(device as usize).is_some()
+        && transfer_src_read().contains(&buffer)
     {
         buffers_write().insert(buffer, (memory, offset));
     }
@@ -3118,11 +3223,14 @@ extern "C" fn bind_buffer_memory2(device: *mut c_void, count: u32, infos: *const
     };
     let rc = f(device, count, infos);
     if rc == VK_SUCCESS && !infos.is_null() && active_device(device as usize).is_some() {
+        let mut transfer_src: Option<RwLockReadGuard<'static, HashSet<u64>>> = None;
         let mut bufs: Option<RwLockWriteGuard<'static, HashMap<u64, (u64, u64)>>> = None;
         for i in 0..count as usize {
             let base = (infos as *const u8).wrapping_add(i * 40) as *const c_void;
             let buffer: u64 = rd(base, 16);
-            if TRANSFER_SRC_BUF_BLOOM.may_contain(buffer) {
+            if TRANSFER_SRC_BUF_BLOOM.may_contain(buffer)
+                && transfer_src.get_or_insert_with(transfer_src_read).contains(&buffer)
+            {
                 bufs.get_or_insert_with(buffers_write).insert(buffer, (rd(base, 24), rd(base, 32)));
             }
         }

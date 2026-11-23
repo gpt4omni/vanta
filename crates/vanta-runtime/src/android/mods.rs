@@ -79,24 +79,17 @@ pub fn clear() {
 
 /// Look up an asset name (`content/sounds/ouch.ogg`) in the active mod index.
 ///
-/// Zero allocations and zero locks when no mods are active.
-/// Rejects path traversal (`..`), absolute paths, NUL bytes, and backslashes.
+/// Zero allocations and zero locks when no mods are active. When mods are
+/// active, validates `filename` in place with zero heap allocations and probes
+/// `MOD_INDEX` directly by `&str`. Rejects path traversal (`..`), absolute
+/// paths, NUL bytes, backslashes, `//`, and `.` segments.
 pub fn lookup(filename: &str) -> Option<PathBuf> {
     if !HAS_MODS.load(Ordering::Relaxed) {
         return None;
     }
-    // Fast lexical check before allocating a normalized string.
-    if filename.is_empty()
-        || filename.starts_with('/')
-        || filename.contains('\0')
-        || filename.contains('\\')
-        || filename.contains("..")
-    {
-        return None;
-    }
-    let normalized = vanta_shell::mods::normalize_asset_name(filename)?;
+    let normalized = vanta_shell::mods::validate_asset_name(filename)?;
     let guard = MOD_INDEX.read().ok()?;
-    guard.as_ref()?.get(&normalized).cloned()
+    guard.as_ref()?.get(normalized).cloned()
 }
 
 /// Serialise tests that install into the process-wide `MOD_INDEX`.
@@ -153,6 +146,9 @@ mod tests {
         assert_eq!(lookup("content/../content/fonts/custom.ttf"), None);
         assert_eq!(lookup("/content/fonts/custom.ttf"), None);
         assert_eq!(lookup("content\\fonts\\custom.ttf"), None);
+        assert_eq!(lookup("content//fonts/custom.ttf"), None);
+        assert_eq!(lookup("content/./fonts/custom.ttf"), None);
+        assert_eq!(lookup("content/fonts/missing.ttf"), None);
 
         clear();
         let _ = std::fs::remove_dir_all(&profile);

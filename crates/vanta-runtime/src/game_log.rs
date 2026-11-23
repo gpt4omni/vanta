@@ -44,7 +44,9 @@
 //! network call on somebody's behalf and a privacy question, so this module
 //! stops at the address.
 
+use std::fs::File;
 use std::io::{BufRead, BufReader, Seek, SeekFrom};
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -189,6 +191,12 @@ fn field_after<'a>(line: &'a str, key: &str, stop: &[char]) -> Option<&'a str> {
 /// handful of entries.
 const RESCAN: Duration = Duration::from_secs(1);
 
+struct ActiveLog {
+    path: PathBuf,
+    file: Option<File>,
+    offset: u64,
+}
+
 /// Tails the newest log in a directory, reporting whole lines as they land.
 ///
 /// Deliberately poll-driven rather than inotify-backed: this is called from
@@ -198,13 +206,15 @@ const RESCAN: Duration = Duration::from_secs(1);
 /// reason about against the engine's own.
 pub struct Watcher {
     dir: PathBuf,
-    /// The file being followed, and how far into it has been read.
+    /// The file being followed, its kept-open handle, and how far into it has
+    /// been read.
     ///
-    /// The offset is kept rather than the handle so a truncated or rotated
-    /// file is noticed: if the file is shorter than where we left off, the
-    /// engine started a new one under the same name and reading from the old
-    /// offset would return the middle of a line.
-    current: Option<(PathBuf, u64)>,
+    /// Keeping the `File` open across polls turns an idle check into a single
+    /// `fstat` instead of `openat` + `fstat` + `close` + `PathBuf::clone`. The
+    /// handle is reopened whenever the directory rescan finds a newer log, the
+    /// open descriptor is unlinked (`nlink == 0`), or the file shrinks below
+    /// `offset` (truncated under the same name).
+    current: Option<ActiveLog>,
     last_scan: Option<Instant>,
     /// A partial final line, held until its newline arrives.
     ///
@@ -229,28 +239,56 @@ impl Watcher {
     /// is the ordinary case for the first few hundred calls.
     pub fn poll(&mut self) -> Vec<Event> {
         self.rescan_if_due();
-        let Some((path, offset)) = self.current.clone() else { return Vec::new() };
+        let Some(active) = self.current.as_mut() else { return Vec::new() };
 
-        let Ok(file) = std::fs::File::open(&path) else { return Vec::new() };
-        let len = file.metadata().map(|m| m.len()).unwrap_or(0);
-        if len < offset {
-            // Truncated or replaced under the same name. Start again rather
-            // than read from an offset that no longer means anything.
-            self.current = Some((path.clone(), 0));
+        // Open on first use (or after a previous failure / unlink).
+        if active.file.is_none() {
+            match File::open(&active.path) {
+                Ok(f) => active.file = Some(f),
+                Err(_) => return Vec::new(),
+            }
+        }
+
+        // Single `fstat` on the already-open descriptor.
+        let (len, unlinked) = match active.file.as_ref().unwrap().metadata() {
+            Ok(meta) => (meta.len(), meta.nlink() == 0),
+            Err(_) => {
+                active.file = None;
+                return Vec::new();
+            }
+        };
+
+        if unlinked {
+            // Replaced or removed under the same name: drop the old fd and
+            // reopen from byte 0 if a replacement exists at `active.path`.
+            active.file = File::open(&active.path).ok();
+            active.offset = 0;
+            self.partial.clear();
+            let Some(f) = active.file.as_ref() else { return Vec::new() };
+            let new_len = f.metadata().map(|m| m.len()).unwrap_or(0);
+            if new_len == 0 {
+                return Vec::new();
+            }
+        } else if len < active.offset {
+            // Truncated in place under the same name. Start again rather than
+            // reading from an offset that no longer means anything.
+            active.file = File::open(&active.path).ok();
+            active.offset = 0;
             self.partial.clear();
             return Vec::new();
-        }
-        if len == offset {
+        } else if len == active.offset {
             return Vec::new();
         }
 
-        let mut reader = BufReader::new(file);
-        if reader.seek(SeekFrom::Start(offset)).is_err() {
+        let Some(file) = active.file.as_mut() else { return Vec::new() };
+        if file.seek(SeekFrom::Start(active.offset)).is_err() {
+            active.file = None;
             return Vec::new();
         }
+        let mut reader = BufReader::new(file);
 
         let mut events = Vec::new();
-        let mut read = offset;
+        let mut read = active.offset;
         let mut line = String::new();
         loop {
             line.clear();
@@ -273,7 +311,7 @@ impl Watcher {
                 Err(_) => break,
             }
         }
-        self.current = Some((path, read));
+        active.offset = read;
         events
     }
 
@@ -292,7 +330,7 @@ impl Watcher {
         self.last_scan = Some(now);
 
         let Some(newest) = newest_log(&self.dir) else { return };
-        if self.current.as_ref().is_some_and(|(p, _)| *p == newest) {
+        if self.current.as_ref().is_some_and(|a| a.path == newest) {
             return;
         }
         // A log Vanta has not been following may already have content -- the
@@ -301,7 +339,8 @@ impl Watcher {
         // still the join this session is in, and replaying a `Left` from
         // before Vanta was watching cannot happen, because the file is this
         // session's.
-        self.current = Some((newest, 0));
+        let file = File::open(&newest).ok();
+        self.current = Some(ActiveLog { path: newest, file, offset: 0 });
         self.partial.clear();
     }
 }
@@ -518,10 +557,11 @@ fn presence_payload() -> serde_json::Value {
     payload
 }
 
-/// Minimum interval between global `game_log::poll()` file checks from
-/// `looper::pump`. High-polling-rate mice wake `looper::pump` up to 1000x/sec;
-/// without this gate every mouse packet issued `openat` + `fstat` + `close`.
-const POLL_INTERVAL: Duration = Duration::from_millis(250);
+/// Minimum interval between global `game_log::poll()` file checks.
+/// `looper::pump` throttles calls to 200 ms (5 Hz); keeping this slightly
+/// shorter (180 ms) ensures direct callers stay rate-limited while never
+/// causing `looper::pump`'s 200 ms ticks to skip alternate polls.
+const POLL_INTERVAL: Duration = Duration::from_millis(180);
 
 pub fn poll() {
     static LAST_POLL: Mutex<Option<Instant>> = Mutex::new(None);
@@ -1022,5 +1062,36 @@ mod tests {
         let mut w = Watcher::new("/nonexistent/vanta/logs");
         assert_eq!(w.poll(), Vec::new());
         assert_eq!(w.poll(), Vec::new());
+    }
+
+    #[test]
+    fn watcher_reuses_open_fd_and_recovers_from_truncate_and_unlink() {
+        use std::os::unix::io::AsRawFd;
+        let dir = std::env::temp_dir().join(format!("vanta-gamelog-fd-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("session.log");
+        std::fs::write(&log, format!("{JOIN}\n")).unwrap();
+
+        let mut w = Watcher::new(&dir);
+        assert_eq!(w.poll().len(), 1);
+        let fd1 = w.current.as_ref().and_then(|a| a.file.as_ref()).unwrap().as_raw_fd();
+        // Idle poll keeps the exact same open file descriptor.
+        assert!(w.poll().is_empty());
+        let fd2 = w.current.as_ref().and_then(|a| a.file.as_ref()).unwrap().as_raw_fd();
+        assert_eq!(fd1, fd2, "idle poll must reuse open File handle");
+
+        // Truncate shorter than offset: resets cleanly and reads new content.
+        std::fs::write(&log, "short\n").unwrap();
+        assert!(w.poll().is_empty(), "truncation resets offset");
+        std::fs::OpenOptions::new().append(true).open(&log).unwrap().write_all(b"[FLog::SingleSurfaceApp] leaveUGCGameInternal\n").unwrap();
+        assert_eq!(w.poll(), vec![Event::Left]);
+
+        // Unlink and recreate under the same name: detected via nlink() == 0.
+        std::fs::remove_file(&log).unwrap();
+        std::fs::write(&log, "[FLog::SingleSurfaceApp] leaveUGCGameInternal\n").unwrap();
+        assert_eq!(w.poll(), vec![Event::Left]);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

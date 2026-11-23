@@ -34,13 +34,19 @@ use std::sync::Mutex;
 
 // ---------------------------------------------------------------- constants
 const VK_SUCCESS: i32 = 0;
+const VK_TRUE: u32 = 1;
 const ST_SUBMIT_INFO: u32 = 4;
 const ST_MEMORY_ALLOCATE_INFO: u32 = 5;
+const ST_FENCE_CREATE_INFO: u32 = 8;
 const ST_BUFFER_CREATE_INFO: u32 = 12;
 const ST_IMAGE_MEMORY_BARRIER: u32 = 45;
 const ST_COMMAND_POOL_CREATE_INFO: u32 = 39;
 const ST_COMMAND_BUFFER_ALLOCATE_INFO: u32 = 40;
 const ST_COMMAND_BUFFER_BEGIN_INFO: u32 = 42;
+/// Number of in-flight staging slots for async video readback. With 3 slots
+/// we always wait on a fence submitted 2 frames ago rather than draining the
+/// GPU pipeline on every recorded frame.
+const RING_SLOTS: usize = 3;
 
 const BUFFER_USAGE_TRANSFER_DST: u32 = 0x0000_0002;
 const MEMORY_HOST_VISIBLE: u32 = 0x0000_0002;
@@ -188,6 +194,15 @@ struct BufferImageCopy {
 }
 
 #[repr(C)]
+struct FenceCreateInfo {
+    s_type: u32,
+    _pad: u32,
+    next: *const c_void,
+    flags: u32,
+    _pad2: u32,
+}
+
+#[repr(C)]
 struct SubmitInfo {
     s_type: u32,
     _pad: u32,
@@ -305,7 +320,10 @@ struct DeviceFns {
     cmd_copy_image_to_buffer: extern "C" fn(u64, u64, i32, u64, u32, *const BufferImageCopy),
     end_command_buffer: extern "C" fn(u64) -> i32,
     queue_submit: extern "C" fn(u64, u32, *const SubmitInfo, u64) -> i32,
-    queue_wait_idle: extern "C" fn(u64) -> i32,
+    create_fence: extern "C" fn(u64, *const FenceCreateInfo, *const c_void, *mut u64) -> i32,
+    destroy_fence: extern "C" fn(u64, u64, *const c_void),
+    wait_for_fences: extern "C" fn(u64, u32, *const u64, u32, u64) -> i32,
+    reset_fences: extern "C" fn(u64, u32, *const u64) -> i32,
     map_memory: extern "C" fn(u64, u64, u64, u64, u32, *mut *mut c_void) -> i32,
     unmap_memory: extern "C" fn(u64, u64),
     destroy_buffer: extern "C" fn(u64, u64, *const c_void),
@@ -455,16 +473,38 @@ pub fn capture_target(
     finish(r);
 }
 
-/// Reads one image back into host memory, and keeps what it allocated to do it.
+struct ReadbackSlot {
+    buffer: u64,
+    memory: u64,
+    pool: u64,
+    cb: u64,
+    fence: u64,
+    mapped: *const u8,
+    in_flight: bool,
+}
+
+impl ReadbackSlot {
+    fn empty() -> Self {
+        Self {
+            buffer: 0,
+            memory: 0,
+            pool: 0,
+            cb: 0,
+            fence: 0,
+            mapped: std::ptr::null(),
+            in_flight: false,
+        }
+    }
+}
+
+/// Reads images back into host memory via a multi-slot async `VkFence` ring.
 ///
-/// `copy_to_png` used to create a buffer, a memory allocation, a command pool
-/// and a command buffer, use them once and destroy them -- deliberately, for a
-/// screenshot taken a handful of times a run. A recording takes thirty a
-/// second, and paying four allocations for each of them is the cost the
-/// screenshot design explicitly declined to carry all session. So the same copy
-/// is split in two: [`Readback::new`] allocates, and [`Readback::read`] records
-/// and submits. The screenshot path still builds one, reads once and drops it,
-/// which is the old behaviour exactly.
+/// For video recording ([`Readback::new`]), allocates [`RING_SLOTS`] staging
+/// buffers, command pools/buffers, and fences so each recorded frame submits
+/// its GPU copy and harvests a slot submitted 2 frames earlier — eliminating
+/// the synchronous `vkQueueWaitIdle` pipeline drain on every frame. For
+/// one-shot screenshots ([`copy_to_png`]), allocates a single slot and waits
+/// only on its own fence.
 ///
 /// Sized for one extent. A swapchain that is recreated at another size needs a
 /// new `Readback`; reading a different rectangle into this one is refused
@@ -472,37 +512,57 @@ pub fn capture_target(
 pub struct Readback {
     f: DeviceFns,
     device: u64,
-    buffer: u64,
-    memory: u64,
-    pool: u64,
-    cb: u64,
-    mapped: *const u8,
+    slots: Vec<ReadbackSlot>,
+    submit_idx: usize,
+    last_ready: Option<usize>,
     size: usize,
     width: u32,
     height: u32,
 }
 
-// SAFETY: `mapped` points into device memory this value owns for its whole
-// life and is only ever read through `&mut self`, so moving the value to
-// another thread moves the only handle to it.
+// SAFETY: each slot's `mapped` points into device memory this value owns for
+// its whole life and is only ever read through `&mut self`, so moving the value
+// to another thread moves the only handle to it.
 unsafe impl Send for Readback {}
 
 impl Drop for Readback {
     fn drop(&mut self) {
+        // Wait cleanly on all in-flight fences before destroying any buffers,
+        // fences, or command pools (teardown or swapchain resize).
+        let mut pending = Vec::with_capacity(self.slots.len());
+        for slot in &self.slots {
+            if slot.in_flight && slot.fence != 0 {
+                pending.push(slot.fence);
+            }
+        }
+        if !pending.is_empty() {
+            (self.f.wait_for_fences)(
+                self.device,
+                pending.len() as u32,
+                pending.as_ptr(),
+                VK_TRUE,
+                u64::MAX,
+            );
+        }
         // Frees whatever `new` got as far as creating, in reverse. Handles are
         // zero until made, so a failure half way through allocation cleans up
         // exactly what exists and nothing else.
-        if !self.mapped.is_null() {
-            (self.f.unmap_memory)(self.device, self.memory);
-        }
-        if self.pool != 0 {
-            (self.f.destroy_command_pool)(self.device, self.pool, std::ptr::null());
-        }
-        if self.memory != 0 {
-            (self.f.free_memory)(self.device, self.memory, std::ptr::null());
-        }
-        if self.buffer != 0 {
-            (self.f.destroy_buffer)(self.device, self.buffer, std::ptr::null());
+        for slot in &mut self.slots {
+            if !slot.mapped.is_null() {
+                (self.f.unmap_memory)(self.device, slot.memory);
+            }
+            if slot.fence != 0 {
+                (self.f.destroy_fence)(self.device, slot.fence, std::ptr::null());
+            }
+            if slot.pool != 0 {
+                (self.f.destroy_command_pool)(self.device, slot.pool, std::ptr::null());
+            }
+            if slot.memory != 0 {
+                (self.f.free_memory)(self.device, slot.memory, std::ptr::null());
+            }
+            if slot.buffer != 0 {
+                (self.f.destroy_buffer)(self.device, slot.buffer, std::ptr::null());
+            }
         }
     }
 }
@@ -514,9 +574,19 @@ impl Readback {
         gpdmp: extern "C" fn(*mut c_void, *mut PhysicalDeviceMemoryProperties),
         physical_device: *mut c_void,
     ) -> Result<Self, String> {
+        Self::new_with_slots(t, gdpa, gpdmp, physical_device, RING_SLOTS)
+    }
+
+    fn new_with_slots(
+        t: &Target,
+        gdpa: extern "C" fn(u64, *const std::ffi::c_char) -> *mut c_void,
+        gpdmp: extern "C" fn(*mut c_void, *mut PhysicalDeviceMemoryProperties),
+        physical_device: *mut c_void,
+        slot_count: usize,
+    ) -> Result<Self, String> {
         let device = t.device;
         let (_, _, width, height) = t.rect;
-        if device == 0 || t.image == 0 || width == 0 || height == 0 {
+        if device == 0 || t.image == 0 || width == 0 || height == 0 || slot_count == 0 {
             return Err("no image to read".into());
         }
         let f = DeviceFns {
@@ -532,7 +602,10 @@ impl Readback {
             cmd_copy_image_to_buffer: load!(gdpa, device, "vkCmdCopyImageToBuffer"),
             end_command_buffer: load!(gdpa, device, "vkEndCommandBuffer"),
             queue_submit: load!(gdpa, device, "vkQueueSubmit"),
-            queue_wait_idle: load!(gdpa, device, "vkQueueWaitIdle"),
+            create_fence: load!(gdpa, device, "vkCreateFence"),
+            destroy_fence: load!(gdpa, device, "vkDestroyFence"),
+            wait_for_fences: load!(gdpa, device, "vkWaitForFences"),
+            reset_fences: load!(gdpa, device, "vkResetFences"),
             map_memory: load!(gdpa, device, "vkMapMemory"),
             unmap_memory: load!(gdpa, device, "vkUnmapMemory"),
             destroy_buffer: load!(gdpa, device, "vkDestroyBuffer"),
@@ -542,11 +615,9 @@ impl Readback {
         let mut rb = Readback {
             f,
             device,
-            buffer: 0,
-            memory: 0,
-            pool: 0,
-            cb: 0,
-            mapped: std::ptr::null(),
+            slots: Vec::with_capacity(slot_count),
+            submit_idx: 0,
+            last_ready: None,
             // Four bytes a pixel: every format a swapchain is created with on
             // this path is a 32-bit BGRA or RGBA, and `FORMAT` records which
             // so the channel order can be fixed up on the way out rather than
@@ -555,27 +626,6 @@ impl Readback {
             width,
             height,
         };
-        let bci = BufferCreateInfo {
-            s_type: ST_BUFFER_CREATE_INFO,
-            _pad: 0,
-            next: std::ptr::null(),
-            flags: 0,
-            _pad2: 0,
-            size: rb.size as u64,
-            usage: BUFFER_USAGE_TRANSFER_DST,
-            sharing_mode: 0,
-            queue_family_index_count: 0,
-            _pad3: 0,
-            queue_family_indices: std::ptr::null(),
-        };
-        let mut buffer = 0u64;
-        if (rb.f.create_buffer)(device, &bci, std::ptr::null(), &mut buffer) != VK_SUCCESS {
-            return Err("vkCreateBuffer failed".into());
-        }
-        rb.buffer = buffer;
-
-        let mut req = MemoryRequirements { size: 0, alignment: 0, memory_type_bits: 0, _pad: 0 };
-        (rb.f.get_buffer_memory_requirements)(device, buffer, &mut req);
 
         // SAFETY: the driver fills this out entirely; it is read-only afterwards.
         let mut props: PhysicalDeviceMemoryProperties = unsafe { std::mem::zeroed() };
@@ -585,72 +635,119 @@ impl Readback {
         // cached RAM bandwidth rather than stalling 10-80 ms on uncached
         // write-combined memory.
         let cached = wanted | 0x8;
-        let pick = |req_flags: u32| {
+        let pick = |type_bits: u32, req_flags: u32| {
             (0..props.memory_type_count).find(|i| {
-                req.memory_type_bits & (1 << i) != 0
+                type_bits & (1 << i) != 0
                     && props.memory_types[*i as usize].property_flags & req_flags == req_flags
             })
         };
-        let type_index = pick(cached)
-            .or_else(|| pick(wanted))
-            .ok_or("no host-visible coherent memory type accepts this buffer")?;
 
-        let mai = MemoryAllocateInfo {
-            s_type: ST_MEMORY_ALLOCATE_INFO,
-            _pad: 0,
-            next: std::ptr::null(),
-            allocation_size: req.size,
-            memory_type_index: type_index,
-            _pad2: 0,
-        };
-        let mut memory = 0u64;
-        if (rb.f.allocate_memory)(device, &mai, std::ptr::null(), &mut memory) != VK_SUCCESS {
-            return Err("vkAllocateMemory failed".into());
-        }
-        rb.memory = memory;
-        (rb.f.bind_buffer_memory)(device, buffer, memory, 0);
+        for _ in 0..slot_count {
+            rb.slots.push(ReadbackSlot::empty());
+            let slot = rb.slots.last_mut().expect("just pushed");
 
-        let pool_ci = CommandPoolCreateInfo {
-            s_type: ST_COMMAND_POOL_CREATE_INFO,
-            _pad: 0,
-            next: std::ptr::null(),
-            flags: POOL_TRANSIENT,
-            queue_family_index: t.queue_family,
-        };
-        let mut pool = 0u64;
-        if (rb.f.create_command_pool)(device, &pool_ci, std::ptr::null(), &mut pool) != VK_SUCCESS {
-            return Err("vkCreateCommandPool failed".into());
-        }
-        rb.pool = pool;
+            let bci = BufferCreateInfo {
+                s_type: ST_BUFFER_CREATE_INFO,
+                _pad: 0,
+                next: std::ptr::null(),
+                flags: 0,
+                _pad2: 0,
+                size: rb.size as u64,
+                usage: BUFFER_USAGE_TRANSFER_DST,
+                sharing_mode: 0,
+                queue_family_index_count: 0,
+                _pad3: 0,
+                queue_family_indices: std::ptr::null(),
+            };
+            let mut buffer = 0u64;
+            if (rb.f.create_buffer)(device, &bci, std::ptr::null(), &mut buffer) != VK_SUCCESS {
+                return Err("vkCreateBuffer failed".into());
+            }
+            slot.buffer = buffer;
 
-        let cb_ai = CommandBufferAllocateInfo {
-            s_type: ST_COMMAND_BUFFER_ALLOCATE_INFO,
-            _pad: 0,
-            next: std::ptr::null(),
-            command_pool: pool,
-            level: 0,
-            command_buffer_count: 1,
-        };
-        let mut cb = 0u64;
-        if (rb.f.allocate_command_buffers)(device, &cb_ai, &mut cb) != VK_SUCCESS {
-            return Err("vkAllocateCommandBuffers failed".into());
-        }
-        rb.cb = cb;
+            let mut req = MemoryRequirements { size: 0, alignment: 0, memory_type_bits: 0, _pad: 0 };
+            (rb.f.get_buffer_memory_requirements)(device, buffer, &mut req);
 
-        // Mapped once and left mapped. The memory is host-coherent, so nothing
-        // needs invalidating between reads.
-        let mut ptr: *mut c_void = std::ptr::null_mut();
-        if (rb.f.map_memory)(device, memory, 0, rb.size as u64, 0, &mut ptr) != VK_SUCCESS
-            || ptr.is_null()
-        {
-            return Err("vkMapMemory failed".into());
+            let type_index = pick(req.memory_type_bits, cached)
+                .or_else(|| pick(req.memory_type_bits, wanted))
+                .ok_or("no host-visible coherent memory type accepts this buffer")?;
+
+            let mai = MemoryAllocateInfo {
+                s_type: ST_MEMORY_ALLOCATE_INFO,
+                _pad: 0,
+                next: std::ptr::null(),
+                allocation_size: req.size,
+                memory_type_index: type_index,
+                _pad2: 0,
+            };
+            let mut memory = 0u64;
+            if (rb.f.allocate_memory)(device, &mai, std::ptr::null(), &mut memory) != VK_SUCCESS {
+                return Err("vkAllocateMemory failed".into());
+            }
+            slot.memory = memory;
+            if (rb.f.bind_buffer_memory)(device, buffer, memory, 0) != VK_SUCCESS {
+                return Err("vkBindBufferMemory failed".into());
+            }
+
+            let pool_ci = CommandPoolCreateInfo {
+                s_type: ST_COMMAND_POOL_CREATE_INFO,
+                _pad: 0,
+                next: std::ptr::null(),
+                flags: POOL_TRANSIENT,
+                queue_family_index: t.queue_family,
+            };
+            let mut pool = 0u64;
+            if (rb.f.create_command_pool)(device, &pool_ci, std::ptr::null(), &mut pool) != VK_SUCCESS {
+                return Err("vkCreateCommandPool failed".into());
+            }
+            slot.pool = pool;
+
+            let cb_ai = CommandBufferAllocateInfo {
+                s_type: ST_COMMAND_BUFFER_ALLOCATE_INFO,
+                _pad: 0,
+                next: std::ptr::null(),
+                command_pool: pool,
+                level: 0,
+                command_buffer_count: 1,
+            };
+            let mut cb = 0u64;
+            if (rb.f.allocate_command_buffers)(device, &cb_ai, &mut cb) != VK_SUCCESS {
+                return Err("vkAllocateCommandBuffers failed".into());
+            }
+            slot.cb = cb;
+
+            let fci = FenceCreateInfo {
+                s_type: ST_FENCE_CREATE_INFO,
+                _pad: 0,
+                next: std::ptr::null(),
+                flags: 0,
+                _pad2: 0,
+            };
+            let mut fence = 0u64;
+            if (rb.f.create_fence)(device, &fci, std::ptr::null(), &mut fence) != VK_SUCCESS {
+                return Err("vkCreateFence failed".into());
+            }
+            slot.fence = fence;
+
+            // Mapped once and left mapped. The memory is host-coherent, so nothing
+            // needs invalidating between reads.
+            let mut ptr: *mut c_void = std::ptr::null_mut();
+            if (rb.f.map_memory)(device, memory, 0, rb.size as u64, 0, &mut ptr) != VK_SUCCESS
+                || ptr.is_null()
+            {
+                return Err("vkMapMemory failed".into());
+            }
+            slot.mapped = ptr as *const u8;
         }
-        rb.mapped = ptr as *const u8;
         Ok(rb)
     }
 
-    /// Copy `t` into the mapped buffer and return the pixels, which are valid
-    /// until the next call.
+    /// Submit `t`'s copy into the current free ring slot with its `VkFence` and
+    /// return completed pixels without draining the GPU pipeline.
+    ///
+    /// In steady state (`slots.len() == 3`), waits only on the oldest in-flight
+    /// slot's fence (submitted 2 frames ago) and hands back its pixels while
+    /// the current frame's copy executes asynchronously on the GPU.
     pub fn read(&mut self, queue: u64, t: &Target) -> Result<&[u8], String> {
         let (x, y, width, height) = t.rect;
         if (width, height) != (self.width, self.height) {
@@ -659,13 +756,19 @@ impl Readback {
                 self.width, self.height
             ));
         }
-        let (image, cb) = (t.image, self.cb);
+        let idx = self.submit_idx;
+        let slot_count = self.slots.len();
+        let (image, pool, cb, buffer, fence) = {
+            let s = &self.slots[idx];
+            debug_assert!(!s.in_flight, "submit slot must not be in flight");
+            (t.image, s.pool, s.cb, s.buffer, s.fence)
+        };
         let f = &self.f;
         // The pool is transient and the buffer one-time-submit, so recording
         // again means resetting first. Without it the second frame's
         // `vkBeginCommandBuffer` is a use of a buffer the specification says is
         // invalid, which a driver is free to tolerate on the first run only.
-        (f.reset_command_pool)(self.device, self.pool, 0);
+        (f.reset_command_pool)(self.device, pool, 0);
 
         let begin = CommandBufferBeginInfo {
             s_type: ST_COMMAND_BUFFER_BEGIN_INFO,
@@ -729,7 +832,7 @@ impl Readback {
             image_offset: [x, y, 0],
             image_extent: [width, height, 1],
         };
-        (f.cmd_copy_image_to_buffer)(cb, image, LAYOUT_TRANSFER_SRC_OPTIMAL, self.buffer, 1, &region);
+        (f.cmd_copy_image_to_buffer)(cb, image, LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &region);
 
         let back = ImageMemoryBarrier {
             src_access_mask: ACCESS_TRANSFER_READ,
@@ -767,14 +870,52 @@ impl Readback {
             _pad4: 0,
             signal_semaphores: std::ptr::null(),
         };
-        if (f.queue_submit)(queue, 1, &submit, 0) != VK_SUCCESS {
+        if (f.queue_submit)(queue, 1, &submit, fence) != VK_SUCCESS {
             return Err("vkQueueSubmit failed".into());
         }
-        (f.queue_wait_idle)(queue);
-        // SAFETY: `mapped` is `size` bytes of host-coherent memory that this
-        // value keeps mapped, and the copy above has completed because the
-        // queue was waited on.
-        Ok(unsafe { std::slice::from_raw_parts(self.mapped, self.size) })
+        self.slots[idx].in_flight = true;
+
+        let harvest_idx = if slot_count == 1 || self.last_ready.is_none() {
+            // Single-slot screenshot or frame 0 of recording: wait on this
+            // slot's fence so the caller gets real pixels immediately.
+            if (f.wait_for_fences)(self.device, 1, &fence, VK_TRUE, u64::MAX) != VK_SUCCESS {
+                return Err("vkWaitForFences failed".into());
+            }
+            if (f.reset_fences)(self.device, 1, &fence) != VK_SUCCESS {
+                return Err("vkResetFences failed".into());
+            }
+            self.slots[idx].in_flight = false;
+            self.last_ready = Some(idx);
+            self.submit_idx = (idx + 1) % slot_count;
+            idx
+        } else {
+            let oldest = (idx + 1) % slot_count;
+            if self.slots[oldest].in_flight {
+                // Steady state: harvest the oldest in-flight slot (submitted
+                // 2 frames ago) without stalling on the current frame.
+                let oldest_fence = self.slots[oldest].fence;
+                if (f.wait_for_fences)(self.device, 1, &oldest_fence, VK_TRUE, u64::MAX) != VK_SUCCESS
+                {
+                    return Err("vkWaitForFences failed".into());
+                }
+                if (f.reset_fences)(self.device, 1, &oldest_fence) != VK_SUCCESS {
+                    return Err("vkResetFences failed".into());
+                }
+                self.slots[oldest].in_flight = false;
+                self.last_ready = Some(oldest);
+                self.submit_idx = oldest;
+                oldest
+            } else {
+                // Ring warmup (frames 1..slot_count-1): let newly submitted
+                // copies execute asynchronously while re-serving the primed slot.
+                self.submit_idx = oldest;
+                self.last_ready.expect("checked is_some above")
+            }
+        };
+
+        // SAFETY: `mapped` is `size` bytes of host-coherent memory owned by
+        // `self.slots[harvest_idx]`, which is no longer in flight on the GPU.
+        Ok(unsafe { std::slice::from_raw_parts(self.slots[harvest_idx].mapped, self.size) })
     }
 }
 
@@ -786,7 +927,7 @@ fn copy_to_png(
     path: &str,
 ) -> Result<String, String> {
     let (_, _, width, height) = t.rect;
-    let mut rb = Readback::new(t, gdpa, gpdmp, physical_device)?;
+    let mut rb = Readback::new_with_slots(t, gdpa, gpdmp, physical_device, 1)?;
     let pixels = rb.read(t.queue, t)?;
     write_png(path, width, height, pixels, t.format).map(|_| format!("{path} {width}x{height}"))
 }
@@ -911,4 +1052,259 @@ fn crc32_continue(prev: u32, data: &[u8]) -> u32 {
         c = t[((c ^ x as u32) & 0xff) as usize] ^ (c >> 8);
     }
     c ^ 0xffff_ffff
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::CStr;
+
+    struct MockVk {
+        next_handle: u64,
+        buffers: Vec<(u64, Vec<u8>)>,
+        mem_to_buf: std::collections::HashMap<u64, u64>,
+        cb_to_buf: std::collections::HashMap<u64, u64>,
+        submits: Vec<(u64, u64)>, // (cb, fence)
+        waits: Vec<Vec<u64>>,
+        resets: Vec<u64>,
+        destroyed_fences: Vec<u64>,
+        destroyed_pools: Vec<u64>,
+        destroyed_buffers: Vec<u64>,
+        freed_memories: Vec<u64>,
+        unmapped_memories: Vec<u64>,
+        in_flight_fences: std::collections::HashSet<u64>,
+    }
+
+    impl MockVk {
+        fn new() -> Self {
+            Self {
+                next_handle: 1,
+                buffers: Vec::new(),
+                mem_to_buf: std::collections::HashMap::new(),
+                cb_to_buf: std::collections::HashMap::new(),
+                submits: Vec::new(),
+                waits: Vec::new(),
+                resets: Vec::new(),
+                destroyed_fences: Vec::new(),
+                destroyed_pools: Vec::new(),
+                destroyed_buffers: Vec::new(),
+                freed_memories: Vec::new(),
+                unmapped_memories: Vec::new(),
+                in_flight_fences: std::collections::HashSet::new(),
+            }
+        }
+        fn alloc_handle(&mut self) -> u64 {
+            let h = self.next_handle;
+            self.next_handle += 1;
+            h
+        }
+    }
+
+    static MOCK: Mutex<Option<MockVk>> = Mutex::new(None);
+    static MOCK_GUARD: Mutex<()> = Mutex::new(());
+
+    extern "C" fn mock_create_buffer(_d: u64, info: *const BufferCreateInfo, _: *const c_void, out: *mut u64) -> i32 {
+        let mut g = MOCK.lock().unwrap();
+        let m = g.as_mut().unwrap();
+        let h = m.alloc_handle();
+        let sz = unsafe { (*info).size as usize };
+        m.buffers.push((h, vec![0u8; sz]));
+        unsafe { *out = h };
+        VK_SUCCESS
+    }
+    extern "C" fn mock_get_reqs(_d: u64, buf: u64, req: *mut MemoryRequirements) {
+        let g = MOCK.lock().unwrap();
+        let m = g.as_ref().unwrap();
+        let sz = m.buffers.iter().find(|(h, _)| *h == buf).unwrap().1.len() as u64;
+        unsafe {
+            (*req).size = sz;
+            (*req).alignment = 64;
+            (*req).memory_type_bits = 1;
+        }
+    }
+    extern "C" fn mock_alloc_mem(_d: u64, _i: *const MemoryAllocateInfo, _: *const c_void, out: *mut u64) -> i32 {
+        let mut g = MOCK.lock().unwrap();
+        let h = g.as_mut().unwrap().alloc_handle();
+        unsafe { *out = h };
+        VK_SUCCESS
+    }
+    extern "C" fn mock_bind_mem(_d: u64, buf: u64, mem: u64, _: u64) -> i32 {
+        MOCK.lock().unwrap().as_mut().unwrap().mem_to_buf.insert(mem, buf);
+        VK_SUCCESS
+    }
+    extern "C" fn mock_create_pool(_d: u64, _: *const CommandPoolCreateInfo, _: *const c_void, out: *mut u64) -> i32 {
+        let h = MOCK.lock().unwrap().as_mut().unwrap().alloc_handle();
+        unsafe { *out = h };
+        VK_SUCCESS
+    }
+    extern "C" fn mock_reset_pool(_d: u64, _p: u64, _f: u32) -> i32 { VK_SUCCESS }
+    extern "C" fn mock_alloc_cbs(_d: u64, _: *const CommandBufferAllocateInfo, out: *mut u64) -> i32 {
+        let h = MOCK.lock().unwrap().as_mut().unwrap().alloc_handle();
+        unsafe { *out = h };
+        VK_SUCCESS
+    }
+    extern "C" fn mock_begin_cb(_cb: u64, _: *const CommandBufferBeginInfo) -> i32 { VK_SUCCESS }
+    extern "C" fn mock_barrier(
+        _cb: u64, _: u32, _: u32, _: u32, _: u32, _: *const c_void, _: u32, _: *const c_void, _: u32, _: *const ImageMemoryBarrier,
+    ) {}
+    extern "C" fn mock_copy(cb: u64, image: u64, _: i32, dst_buf: u64, _: u32, _: *const BufferImageCopy) {
+        let mut g = MOCK.lock().unwrap();
+        let m = g.as_mut().unwrap();
+        m.cb_to_buf.insert(cb, dst_buf);
+        // Stamp the buffer with the low byte of `image` so the test can verify
+        // which exact frame's pixels are returned from each slot.
+        let (_, data) = m.buffers.iter_mut().find(|(h, _)| *h == dst_buf).unwrap();
+        data.fill(image as u8);
+    }
+    extern "C" fn mock_end_cb(_cb: u64) -> i32 { VK_SUCCESS }
+    extern "C" fn mock_submit(_q: u64, _cnt: u32, info: *const SubmitInfo, fence: u64) -> i32 {
+        let mut g = MOCK.lock().unwrap();
+        let m = g.as_mut().unwrap();
+        let cb = unsafe { *(*info).command_buffers };
+        assert!(!m.in_flight_fences.contains(&fence), "resubmitted an in-flight fence");
+        m.in_flight_fences.insert(fence);
+        m.submits.push((cb, fence));
+        VK_SUCCESS
+    }
+    extern "C" fn mock_create_fence(_d: u64, _: *const FenceCreateInfo, _: *const c_void, out: *mut u64) -> i32 {
+        let h = MOCK.lock().unwrap().as_mut().unwrap().alloc_handle();
+        unsafe { *out = h };
+        VK_SUCCESS
+    }
+    extern "C" fn mock_destroy_fence(_d: u64, f: u64, _: *const c_void) {
+        let mut g = MOCK.lock().unwrap();
+        let m = g.as_mut().unwrap();
+        assert!(!m.in_flight_fences.contains(&f), "destroyed fence while still in flight");
+        m.destroyed_fences.push(f);
+    }
+    extern "C" fn mock_wait_fences(_d: u64, cnt: u32, fences: *const u64, _: u32, _: u64) -> i32 {
+        let mut g = MOCK.lock().unwrap();
+        let m = g.as_mut().unwrap();
+        let slice = unsafe { std::slice::from_raw_parts(fences, cnt as usize) };
+        for &f in slice {
+            m.in_flight_fences.remove(&f);
+        }
+        m.waits.push(slice.to_vec());
+        VK_SUCCESS
+    }
+    extern "C" fn mock_reset_fences(_d: u64, cnt: u32, fences: *const u64) -> i32 {
+        let mut g = MOCK.lock().unwrap();
+        let m = g.as_mut().unwrap();
+        let slice = unsafe { std::slice::from_raw_parts(fences, cnt as usize) };
+        m.resets.extend_from_slice(slice);
+        VK_SUCCESS
+    }
+    extern "C" fn mock_map(_d: u64, mem: u64, _: u64, _: u64, _: u32, out: *mut *mut c_void) -> i32 {
+        let mut g = MOCK.lock().unwrap();
+        let m = g.as_mut().unwrap();
+        let buf = *m.mem_to_buf.get(&mem).unwrap();
+        let (_, data) = m.buffers.iter_mut().find(|(h, _)| *h == buf).unwrap();
+        unsafe { *out = data.as_mut_ptr() as *mut c_void };
+        VK_SUCCESS
+    }
+    extern "C" fn mock_unmap(_d: u64, mem: u64) {
+        MOCK.lock().unwrap().as_mut().unwrap().unmapped_memories.push(mem);
+    }
+    extern "C" fn mock_destroy_buf(_d: u64, buf: u64, _: *const c_void) {
+        MOCK.lock().unwrap().as_mut().unwrap().destroyed_buffers.push(buf);
+    }
+    extern "C" fn mock_free_mem(_d: u64, mem: u64, _: *const c_void) {
+        MOCK.lock().unwrap().as_mut().unwrap().freed_memories.push(mem);
+    }
+    extern "C" fn mock_destroy_pool(_d: u64, pool: u64, _: *const c_void) {
+        MOCK.lock().unwrap().as_mut().unwrap().destroyed_pools.push(pool);
+    }
+
+    extern "C" fn mock_gdpa(_d: u64, name: *const std::ffi::c_char) -> *mut c_void {
+        match unsafe { CStr::from_ptr(name) }.to_str().unwrap() {
+            "vkCreateBuffer" => mock_create_buffer as *const () as *mut c_void,
+            "vkGetBufferMemoryRequirements" => mock_get_reqs as *const () as *mut c_void,
+            "vkAllocateMemory" => mock_alloc_mem as *const () as *mut c_void,
+            "vkBindBufferMemory" => mock_bind_mem as *const () as *mut c_void,
+            "vkCreateCommandPool" => mock_create_pool as *const () as *mut c_void,
+            "vkResetCommandPool" => mock_reset_pool as *const () as *mut c_void,
+            "vkAllocateCommandBuffers" => mock_alloc_cbs as *const () as *mut c_void,
+            "vkBeginCommandBuffer" => mock_begin_cb as *const () as *mut c_void,
+            "vkCmdPipelineBarrier" => mock_barrier as *const () as *mut c_void,
+            "vkCmdCopyImageToBuffer" => mock_copy as *const () as *mut c_void,
+            "vkEndCommandBuffer" => mock_end_cb as *const () as *mut c_void,
+            "vkQueueSubmit" => mock_submit as *const () as *mut c_void,
+            "vkCreateFence" => mock_create_fence as *const () as *mut c_void,
+            "vkDestroyFence" => mock_destroy_fence as *const () as *mut c_void,
+            "vkWaitForFences" => mock_wait_fences as *const () as *mut c_void,
+            "vkResetFences" => mock_reset_fences as *const () as *mut c_void,
+            "vkMapMemory" => mock_map as *const () as *mut c_void,
+            "vkUnmapMemory" => mock_unmap as *const () as *mut c_void,
+            "vkDestroyBuffer" => mock_destroy_buf as *const () as *mut c_void,
+            "vkFreeMemory" => mock_free_mem as *const () as *mut c_void,
+            "vkDestroyCommandPool" => mock_destroy_pool as *const () as *mut c_void,
+            other => panic!("unexpected Vulkan proc lookup: {other}"),
+        }
+    }
+
+    extern "C" fn mock_gpdmp(_p: *mut c_void, props: *mut PhysicalDeviceMemoryProperties) {
+        unsafe {
+            (*props).memory_type_count = 1;
+            (*props).memory_types[0] = MemoryType {
+                property_flags: MEMORY_HOST_VISIBLE | MEMORY_HOST_COHERENT | 0x8,
+                heap_index: 0,
+            };
+        }
+    }
+
+    fn make_target(image: u64) -> Target {
+        Target {
+            device: 1,
+            queue: 1,
+            queue_family: 0,
+            image,
+            layout: LAYOUT_PRESENT_SRC_KHR,
+            src_access: ACCESS_MEMORY_READ,
+            layer: 0,
+            rect: (0, 0, 2, 2),
+            format: 44,
+        }
+    }
+
+    #[test]
+    fn async_ring_pipelines_fences_and_waits_all_in_flight_on_drop() {
+        let _guard = MOCK_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        *MOCK.lock().unwrap() = Some(MockVk::new());
+
+        let mut rb = Readback::new(&make_target(10), mock_gdpa, mock_gpdmp, std::ptr::null_mut())
+            .expect("ring created");
+        assert_eq!(rb.slots.len(), RING_SLOTS);
+        let fences: Vec<u64> = rb.slots.iter().map(|s| s.fence).collect();
+
+        // Frame 0: primes slot 0, waits on fence[0].
+        assert_eq!(rb.read(1, &make_target(10)).unwrap()[0], 10);
+        // Frame 1 & 2: fill slots 1 & 2 asynchronously with ZERO waits.
+        assert_eq!(rb.read(1, &make_target(11)).unwrap()[0], 10);
+        assert_eq!(rb.read(1, &make_target(12)).unwrap()[0], 10);
+        {
+            let g = MOCK.lock().unwrap();
+            let m = g.as_ref().unwrap();
+            assert_eq!(m.waits.len(), 1, "warmup frames 1 and 2 must not wait on any fence");
+            assert_eq!(m.waits[0], vec![fences[0]]);
+        }
+
+        // Frame 3: submits into slot 0, waits on fence[1] (submitted 2 frames ago!) -> yields frame 11.
+        assert_eq!(rb.read(1, &make_target(13)).unwrap()[0], 11);
+        // Frame 4: submits into slot 1, waits on fence[2] -> yields frame 12.
+        assert_eq!(rb.read(1, &make_target(14)).unwrap()[0], 12);
+        // Frame 5: submits into slot 2, waits on fence[0] -> yields frame 13.
+        assert_eq!(rb.read(1, &make_target(15)).unwrap()[0], 13);
+
+        // Drop with slots 1 and 2 still in flight: Drop must wait on both fences before destroying.
+        drop(rb);
+        let g = MOCK.lock().unwrap();
+        let m = g.as_ref().unwrap();
+        assert_eq!(m.destroyed_fences.len(), RING_SLOTS);
+        assert_eq!(m.destroyed_pools.len(), RING_SLOTS);
+        assert_eq!(m.destroyed_buffers.len(), RING_SLOTS);
+        assert_eq!(m.freed_memories.len(), RING_SLOTS);
+        assert_eq!(m.unmapped_memories.len(), RING_SLOTS);
+        assert!(m.in_flight_fences.is_empty(), "all in-flight fences must be waited before drop");
+        assert_eq!(m.waits.last().unwrap().len(), 2, "drop waits on the two remaining in-flight slots");
+    }
 }
