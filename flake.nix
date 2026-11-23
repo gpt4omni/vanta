@@ -47,17 +47,9 @@
         pkgs = import nixpkgs { inherit system; };
         lib = pkgs.lib;
 
-        # Vanta loads Roblox's official Android **x86-64** build natively —
-        # no emulation, no CPU translation (see docs/multiarch.md and the
-        # rpm spec's `ExclusiveArch: x86_64`). A package for any other system
-        # cannot run the one thing this project exists to run, so rather than
-        # quietly producing an aarch64-linux `packages.default` that builds
-        # and then cannot load anything, the
-        # package and app outputs below are gated to this one system and
-        # everything else gets `{}`. The devShell is NOT gated — it only
-        # builds the tree, which is architecture-general even though the
-        # binary it produces is not.
-        isPackageableSystem = system == "x86_64-linux";
+        # Vanta loads Roblox's official Android x86-64 or ARM64 build natively
+        # (matching the host CPU architecture; see docs/multiarch.md and ADR-043).
+        isPackageableSystem = system == "x86_64-linux" || system == "aarch64-linux";
 
         vanta = pkgs.rustPlatform.buildRustPackage rec {
           pname = "vanta";
@@ -100,6 +92,7 @@
               echo "error: third_party/libjnivm (a git submodule) has no content in this source tree; see above." >&2
               exit 1
             fi
+          '' + lib.optionalString pkgs.stdenv.hostPlatform.isx86_64 ''
             if [ ! -f third_party/dynarmic/externals/xbyak/xbyak/xbyak.h ]; then
               echo "error: third_party/dynarmic or its externals (git submodules) have no content in this source tree; see above." >&2
               exit 1
@@ -208,11 +201,11 @@
             # `-lz` on vanta-linker-sys's native link line
             # (`cargo:rustc-link-lib=dylib=z`); glibc does not bundle zlib.
             zlib
-
+          ] ++ lib.optionals pkgs.stdenv.hostPlatform.isx86_64 [
             # Headers only, for dynarmic (crates/vanta-guest, the VR
-            # mode's translator, behind `vanta-runtime/vr` below), which
-            # find_package()s Boost.
-            boost
+            # mode's translator on x86-64, behind `vanta-runtime/vr` below),
+            # which find_package()s Boost.
+            pkgs.boost
           ];
 
           # Both crates' `webview` feature, and both, not one. The shell
@@ -376,7 +369,8 @@
               "$out/share/licenses/vanta/libjnivm-MIT.txt"
             install -Dm644 third_party/mocktail-webview/LICENSE \
               "$out/share/licenses/vanta/mocktail-webview-Apache-2.0.txt"
-            # dynarmic and its compiled-in externals, the VR translator.
+          '' + lib.optionalString pkgs.stdenv.hostPlatform.isx86_64 ''
+            # dynarmic and its compiled-in externals, the x86-64 VR translator.
             install -Dm644 third_party/dynarmic/LICENSE.txt \
               "$out/share/licenses/vanta/dynarmic-0BSD.txt"
             install -Dm644 third_party/dynarmic/externals/fmt/LICENSE \
@@ -398,12 +392,8 @@
             homepage = "https://github.com/gpt4omni/vanta";
             license = lib.licenses.gpl3Plus;
             mainProgram = "vanta-shell";
-            # Real, not a formality — see `isPackageableSystem` above. The
-            # engine this loads is Roblox's Android **x86-64** build, run
-            # with no emulation, so a `libroblox.so` built for any other
-            # architecture is not a thing this package could ever run even
-            # if it built.
-            platforms = [ "x86_64-linux" ];
+            # Loads Roblox's Android x86-64 or ARM64 build natively (ADR-043).
+            platforms = [ "x86_64-linux" "aarch64-linux" ];
           };
         };
       in
@@ -442,12 +432,12 @@
             # them means everyone builds the same Vanta.
             pipewire
             webkitgtk_6_0
-
+          ] ++ lib.optionals pkgs.stdenv.hostPlatform.isx86_64 [
             # dynarmic's Boost headers, and lld and llvm for
-            # vanta-guest's arm64 test image.
-            boost
-            lld
-            llvm
+            # vanta-guest's arm64 test image (x86-64 VR translator only).
+            pkgs.boost
+            pkgs.lld
+            pkgs.llvm
           ];
 
           shellHook = ''

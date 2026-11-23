@@ -35,7 +35,7 @@ pkgname=vanta
 pkgver=0.40.0
 pkgrel=1
 pkgdesc="Roblox's official Android build, run natively on Linux -- Vanta ships no Roblox code and fetches a signature-verified one"
-arch=('x86_64')
+arch=('x86_64' 'aarch64')
 url="https://github.com/gpt4omni/vanta"
 license=('GPL-3.0-or-later')
 depends=(
@@ -106,9 +106,11 @@ makedepends=(
   'libpipewire'
   'libpulse'
   'alsa-lib'
-  # dynarmic, the VR mode's translator (crates/vanta-guest): Boost's headers,
-  # which it find_package()s, and lld and llvm for that crate's arm64 test
-  # image, which check() builds.
+)
+makedepends_x86_64=(
+  # dynarmic, the VR mode's translator (crates/vanta-guest, x86_64 only):
+  # Boost's headers, which it find_package()s, and lld and llvm for that
+  # crate's arm64 test image, which check() builds.
   'boost'
   'lld'
   'llvm'

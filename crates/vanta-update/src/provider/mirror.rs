@@ -235,46 +235,24 @@ impl Mirror {
     }
 }
 
-/// The `x-abis` value that gets APKPure's **monolithic** bundle -- not "what
-/// Vanta can run" the way it reads, and not `crate::apk::HOST_ABI`.
+/// The primary `x-abis` filter sent to APKPure for this host architecture.
 ///
-/// **This was briefly made `apk::HOST_ABI` during the aarch64 port, and that
-/// was wrong.** The x86_64-only measurement in the module header above (and
-/// `docs/analysis/apk-mirrors.md`, "APKPure is not behind. Settled, and the
-/// narrow filter is why") recorded that asking with `x-abis: x86_64`
-/// specifically returns one 229 MB APK carrying `lib/{arm64-v8a,armeabi-v7a,
-/// x86_64}/libroblox.so` -- every ABI, in one file. That was read as "the
-/// narrow filter for the host's own ABI", which happened to be true only
-/// because the host was x86_64. Asked with `x-abis: arm64-v8a` instead
-/// (2.739.691, measured 2026-09-24), APKPure serves something else entirely:
-/// two XAPK bundles, `config.armeabi_v7a.apk` in one and `config.arm64_v8a.apk`
-/// in the other, neither a plain APK `held()` can look inside without XAPK
-/// support this module does not have. The literal string `"x86_64"` is what
-/// selects the monolithic response, not "the caller's own ABI" -- an artefact
-/// of whatever this mirror indexes its bundles by, not a fact about Android.
-///
-/// So this stays `"x86_64"` unconditionally, on every host architecture,
-/// which is also why x86_64's behaviour is unchanged by this constant existing
-/// at all. What makes the result correct for aarch64 is downstream:
-/// [`crate::apk::LIBRARY_IN_APK`] in `held()`/`classify()` looks for
-/// `lib/arm64-v8a/libroblox.so` inside whatever this filter returns, and the
-/// monolithic bundle has always carried it.
-///
-/// **The known gap, not hidden:** if APKPure ever again lists an ARM-only
-/// release with no x86_64 entry at all -- `docs/analysis/apk-mirrors.md`
-/// records that this already happened once, 2.735.1138 on 2026-08-26 -- an
-/// aarch64 host querying with `"x86_64"` will not see it as the newest
-/// version, for the same reason an x86_64 host does not chase an ARM-only
-/// release today: `newest()`'s own doc comment below explains why that
-/// asymmetry is deliberate on the x86_64 side. On aarch64 it is not deliberate,
-/// it is this constant's side effect, and it means an ARM-only Roblox release
-/// would be invisible to Vanta on ARM until a matching x86_64 build also
-/// ships. Fixing that for real needs XAPK support in `held()`/`classify()`
-/// (option (b) in the discussion that produced this comment) -- not attempted
-/// here, since it needs synthetic-XAPK tests of its own and this fix's job was
-/// to get aarch64 users the build that already exists, not every build that
-/// might.
+/// On x86-64 APKPure serves a monolithic all-ABI APK for `x-abis: x86_64`.
+/// On aarch64 APKPure serves `.xapk` split bundles (`com.roblox.client.apk` +
+/// `config.arm64_v8a.apk`) for `x-abis: arm64-v8a`, which makes ARM64-only
+/// Roblox releases visible and installable on ARM64 hosts. If an endpoint
+/// omits a release under `arm64-v8a` or serves an unusable bundle, aarch64
+/// falls back to [`ABI_MONOLITHIC`] (`"x86_64"`) and [`ABI_BROAD`].
+#[cfg(target_arch = "x86_64")]
 const ABI_EXACT: &str = "x86_64";
+#[cfg(target_arch = "aarch64")]
+const ABI_EXACT: &str = "arm64-v8a";
+
+/// The filter that selects APKPure's monolithic all-ABI APK (which also
+/// carries `lib/arm64-v8a/libroblox.so`), used as an aarch64 fallback when
+/// `x-abis: arm64-v8a` returns no usable bundle.
+const ABI_MONOLITHIC: &str = "x86_64";
+
 /// Every ABI, for the retry. The filtered index is not reliably complete for
 /// older versions -- APKPure sometimes omits a bundle that does contain the
 /// matching split -- so a download that cannot find its version in the narrow
@@ -290,6 +268,12 @@ const MAX_METADATA: u64 = 4 * 1024 * 1024;
 /// One archive. Roblox's is about 150 MB across two files; a gigabyte is
 /// generous and still bounded.
 const MAX_ARCHIVE: u64 = 1024 * 1024 * 1024;
+/// Bounds on an outer `.xapk` split-bundle wrapper (which typically holds
+/// `manifest.json`, `icon.png`, `com.roblox.client.apk`, and a handful of
+/// `config.*.apk` splits).
+const MAX_XAPK_ENTRIES: usize = 256;
+const MAX_XAPK_TOTAL_BYTES: u64 = MAX_ARCHIVE * 2;
+const MAX_XAPK_MANIFEST_BYTES: u64 = 256 * 1024;
 
 /// More than this many candidate archives for one version means the response
 /// was not understood, and downloading them all to find out would cost
@@ -456,14 +440,29 @@ fn metadata(mirror: &Mirror, abi: &str) -> Result<Vec<u8>, Unreachable> {
     Ok(bytes)
 }
 
-/// Every version the mirror lists for x86-64, newest first.
+/// Query metadata for the host's primary ABI, falling back to the monolithic
+/// `x86_64` index on aarch64 when `arm64-v8a` yields no readable versions.
+fn metadata_for_host(mirror: &Mirror) -> Result<Vec<u8>, Unreachable> {
+    let body = metadata(mirror, ABI_EXACT)?;
+    if ABI_EXACT != ABI_MONOLITHIC && versions_in(&body).is_empty() {
+        if let Ok(fallback) = metadata(mirror, ABI_MONOLITHIC) {
+            if !versions_in(&fallback).is_empty() {
+                return Ok(fallback);
+            }
+        }
+    }
+    Ok(body)
+}
+
+/// Every version the mirror lists for this host architecture, newest first.
 ///
 /// For the Version page, which asks when it is shown and never at startup. The
 /// narrow filter only, for the reason `newest` gives: where a version listed
-/// only under the broad filter was checked, it had no x86-64 engine in it.
+/// only under the broad filter was checked on x86-64, it had no x86-64 engine
+/// in it.
 pub fn offered() -> Result<Vec<Available>, Unreachable> {
     let mirror = Mirror::configured()?;
-    let body = metadata(&mirror, ABI_EXACT)?;
+    let body = metadata_for_host(&mirror)?;
     let found = versions_in(&body);
     if found.is_empty() {
         return Err(Unreachable::Malformed {
@@ -663,7 +662,7 @@ impl Provider for ApkPure {
     fn newest(&self, progress: &mut dyn FnMut(Progress)) -> Result<Available, Unreachable> {
         progress(Progress::Asking { provider: self.name() });
         let mirror = Mirror::configured()?;
-        let body = metadata(&mirror, ABI_EXACT)?;
+        let body = metadata_for_host(&mirror)?;
         let marks = markers(&body);
         let first = marks.first().ok_or_else(|| Unreachable::Malformed {
             url: mirror.metadata_url.clone(),
@@ -700,11 +699,16 @@ impl Provider for ApkPure {
             });
         }
 
-        // The narrow filter, then the broad one. See ABI_BROAD: this buys
-        // availability for older versions and cannot buy a wrong answer,
-        // because what arrives is opened and checked for the engine.
+        // The narrow filter, then (on aarch64) the monolithic x86_64 index,
+        // then the broad filter. See ABI_BROAD: this buys availability for
+        // older versions and cannot buy a wrong answer, because what arrives
+        // is opened, unpacked if it is an XAPK, checked for the host's engine,
+        // and signature-verified downstream before anything is installed.
         let mirror = Mirror::configured()?;
         let mut urls = downloads_for(&metadata(&mirror, ABI_EXACT)?, &version.name);
+        if urls.is_empty() && ABI_EXACT != ABI_MONOLITHIC {
+            urls = downloads_for(&metadata(&mirror, ABI_MONOLITHIC)?, &version.name);
+        }
         if urls.is_empty() {
             urls = downloads_for(&metadata(&mirror, ABI_BROAD)?, &version.name);
         }
@@ -735,22 +739,66 @@ impl Provider for ApkPure {
         }
 
         let mut landed: Vec<PathBuf> = Vec::new();
-        let result = (|| -> Result<(), Unreachable> {
-            for (i, url) in urls.iter().enumerate() {
-                let dest = into.join(format!("candidate-{i}.apk"));
+        let mut tried_urls: Vec<String> = Vec::new();
+        let mut next_idx: usize = 0;
+
+        let fetch_batch = |batch: &[String],
+                           landed: &mut Vec<PathBuf>,
+                           tried: &mut Vec<String>,
+                           next_idx: &mut usize,
+                           progress: &mut dyn FnMut(Progress)|
+         -> Result<(), Unreachable> {
+            for url in batch {
+                if tried.contains(url) {
+                    continue;
+                }
+                tried.push(url.clone());
+                let idx = *next_idx;
+                *next_idx += 1;
+                let dest = into.join(format!("candidate-{idx}.apk"));
                 download(&mirror, url, cancel, &dest, progress)?;
-                landed.push(dest);
+                if let Some(inner) = unpack_xapk(&dest, into, &format!("candidate-{idx}"), cancel)? {
+                    // The outer XAPK wrapper is no longer needed once its
+                    // relevant inner APKs have been extracted; remove it now so
+                    // staging disk usage stays bounded.
+                    let _ = std::fs::remove_file(&dest);
+                    landed.extend(inner);
+                } else {
+                    landed.push(dest);
+                }
                 // **Stop as soon as what has landed is enough.** The measured
-                // ordinary case is one monolithic archive carrying both the
-                // engine and the assets -- see the module header, 229 MB in
-                // about thirteen seconds -- and downloading the remaining
-                // candidates after that one lands would double or quadruple
-                // that transfer to answer a question the first archive already
-                // answered. `held` is the same check `classify` ends with, run
-                // early enough to matter.
-                let (engine, assets) = held(&landed);
+                // ordinary case is either one monolithic APK or one matching
+                // XAPK carrying both the engine and the assets; downloading
+                // the remaining candidates after both halves are on disk would
+                // double or quadruple the transfer for nothing.
+                let (engine, assets) = held(landed);
                 if engine.is_some() && assets.is_some() {
                     break;
+                }
+            }
+            Ok(())
+        };
+
+        let result = (|| -> Result<(), Unreachable> {
+            fetch_batch(&urls, &mut landed, &mut tried_urls, &mut next_idx, progress)?;
+            if classify(&landed).is_none() && ABI_EXACT != ABI_MONOLITHIC {
+                // On aarch64, if the arm64-v8a XAPK candidates did not yield a
+                // usable engine (for example if the mirror returned an
+                // armeabi-v7a-only XAPK), fall back to the monolithic bundle.
+                if let Ok(body) = metadata(&mirror, ABI_MONOLITHIC) {
+                    let fallback_urls = downloads_for(&body, &version.name);
+                    if !fallback_urls.is_empty() && fallback_urls.len() <= MAX_CANDIDATES {
+                        for url in &fallback_urls {
+                            url_policy::check(url, &allowed)?;
+                        }
+                        fetch_batch(
+                            &fallback_urls,
+                            &mut landed,
+                            &mut tried_urls,
+                            &mut next_idx,
+                            progress,
+                        )?;
+                    }
                 }
             }
             Ok(())
@@ -766,17 +814,292 @@ impl Provider for ApkPure {
             return Err(e);
         }
 
-        classify(&landed).ok_or_else(|| Unreachable::Malformed {
-            url: mirror.metadata_url.clone(),
-            why: format!(
-                "the mirror served {} archive(s) for version {} and none of them carries \
-                 {}, so there is no engine in what arrived",
-                landed.len(),
-                version.name,
-                crate::apk::LIBRARY_IN_APK
-            ),
-        })
+        let Some(archives) = classify(&landed) else {
+            for p in &landed {
+                let _ = std::fs::remove_file(p);
+            }
+            return Err(Unreachable::Malformed {
+                url: mirror.metadata_url.clone(),
+                why: format!(
+                    "the mirror served {} archive(s) for version {} and none of them carries \
+                     {}, so there is no engine in what arrived",
+                    landed.len(),
+                    version.name,
+                    crate::apk::LIBRARY_IN_APK
+                ),
+            });
+        };
+        Ok(archives)
     }
+}
+
+/// Whether `path` starts with a ZIP local-file / empty-archive / spanned-archive
+/// magic signature (`PK\x03\x04`, `PK\x05\x06`, or `PK\x07\x08`).
+fn has_zip_magic(path: &Path) -> bool {
+    let Ok(mut f) = std::fs::File::open(path) else { return false };
+    let mut head = [0u8; 4];
+    if f.read_exact(&mut head).is_err() {
+        return false;
+    }
+    head[0] == b'P'
+        && head[1] == b'K'
+        && matches!(head[2], 0x03 | 0x05 | 0x07)
+        && matches!(head[3], 0x04 | 0x06 | 0x08)
+}
+
+/// Inspect a single APK ZIP for the host engine and for `assets/`.
+fn inspect_apk_contents(path: &Path) -> (bool, bool) {
+    let Ok(file) = std::fs::File::open(path) else { return (false, false) };
+    let Ok(mut zip) = zip::ZipArchive::new(std::io::BufReader::new(file)) else {
+        return (false, false);
+    };
+    let has_engine = zip.by_name(crate::apk::LIBRARY_IN_APK).is_ok();
+    let has_assets = (0..zip.len())
+        .any(|i| zip.by_index(i).map(|e| e.name().starts_with("assets/")).unwrap_or(false));
+    (has_engine, has_assets)
+}
+
+/// Prioritised inner `.apk` entry names inside an XAPK bundle.
+///
+/// Reads `manifest.json` when present (APKPure's `split_apks` array) and
+/// supplements it with any `.apk` entries found in the ZIP central directory.
+/// Entries likely to hold the base APK or the host's ABI split come first so
+/// we can stop extracting as soon as both halves are found and never waste
+/// disk I/O on unrelated DPI/locale or foreign-ABI splits.
+fn xapk_apk_entries(
+    zip: &mut zip::ZipArchive<std::io::BufReader<std::fs::File>>,
+) -> Vec<String> {
+    let mut manifest_base: Vec<String> = Vec::new();
+    let mut manifest_all: Vec<String> = Vec::new();
+    if let Ok(entry) = zip.by_name("manifest.json") {
+        let mut raw = Vec::new();
+        if entry.take(MAX_XAPK_MANIFEST_BYTES + 1).read_to_end(&mut raw).is_ok()
+            && (raw.len() as u64) <= MAX_XAPK_MANIFEST_BYTES
+        {
+            if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&raw) {
+                if let Some(splits) = val.get("split_apks").and_then(|v| v.as_array()) {
+                    for s in splits {
+                        let Some(file) = s.get("file").and_then(|v| v.as_str()) else {
+                            continue;
+                        };
+                        if !file.to_ascii_lowercase().ends_with(".apk") {
+                            continue;
+                        }
+                        if s.get("id").and_then(|v| v.as_str()) == Some("base") {
+                            manifest_base.push(file.to_string());
+                        }
+                        if !manifest_all.contains(&file.to_string()) {
+                            manifest_all.push(file.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let mut all: Vec<String> = Vec::new();
+    let mut all_in_zip: Vec<String> = Vec::new();
+    for i in 0..zip.len() {
+        if let Ok(entry) = zip.by_index(i) {
+            let name = entry.name().to_string();
+            if name.to_ascii_lowercase().ends_with(".apk") {
+                all_in_zip.push(name);
+            }
+        }
+    }
+    // Keep only manifest entries that actually exist in the ZIP, then append
+    // any remaining `.apk` entries from the central directory.
+    for name in manifest_all {
+        if all_in_zip.contains(&name) && !all.contains(&name) {
+            all.push(name);
+        }
+    }
+    for name in all_in_zip {
+        if !all.contains(&name) {
+            all.push(name);
+        }
+    }
+
+    let host_abi_underscore = crate::apk::HOST_ABI.replace('-', "_");
+    let host_abi_hyphen = crate::apk::HOST_ABI;
+    let rank = |name: &str| -> u8 {
+        let lower = name.to_ascii_lowercase();
+        let is_base = manifest_base.iter().any(|b| b == name)
+            || lower == "base.apk"
+            || lower.ends_with("/base.apk")
+            || lower == "com.roblox.client.apk"
+            || lower.ends_with("/com.roblox.client.apk");
+        let is_host_abi =
+            lower.contains(&host_abi_underscore) || lower.contains(host_abi_hyphen);
+        if is_host_abi || is_base {
+            return 0;
+        }
+        let is_foreign_abi = lower.contains("armeabi")
+            || lower.contains("mips")
+            || (cfg!(target_arch = "aarch64")
+                && (lower.contains("x86_64") || lower.contains(".x86.")))
+            || (cfg!(target_arch = "x86_64") && lower.contains("arm64"));
+        if is_foreign_abi { 2 } else { 1 }
+    };
+
+    all.sort_by_key(|n| rank(n));
+    all
+}
+
+/// If `archive` is an `.xapk` split bundle (a ZIP carrying inner `.apk` files
+/// rather than holding the engine or `assets/` directly), safely inspect it
+/// under ADR-014 bounds and extract the inner APKs that supply the host's
+/// engine and `assets/` into `into`.
+///
+/// Returns `Ok(None)` when `archive` is an ordinary APK (not an XAPK),
+/// `Ok(Some(extracted))` when `archive` was an XAPK (the vector holds the
+/// kept inner APKs — possibly empty if the bundle had no matching ABI split —
+/// each of which must still pass Roblox APK signature verification downstream),
+/// or `Err` on a hostile/corrupt XAPK or cancellation.
+fn unpack_xapk(
+    archive: &Path,
+    into: &Path,
+    prefix: &str,
+    cancel: &super::Cancel,
+) -> Result<Option<Vec<PathBuf>>, Unreachable> {
+    let (direct_engine, direct_assets) = inspect_apk_contents(archive);
+    if direct_engine || direct_assets {
+        return Ok(None);
+    }
+
+    let has_inner_apk = {
+        let Ok(file) = std::fs::File::open(archive) else { return Ok(None) };
+        let Ok(mut zip) = zip::ZipArchive::new(std::io::BufReader::new(file)) else {
+            return Ok(None);
+        };
+        (0..zip.len()).any(|i| {
+            zip.by_index(i)
+                .map(|e| e.name().to_ascii_lowercase().ends_with(".apk"))
+                .unwrap_or(false)
+        })
+    };
+    if !has_inner_apk {
+        return Ok(None);
+    }
+
+    // Apply ADR-014 archive safety refusals (no symlinks, no path traversal,
+    // no setuid, bounded entries and total uncompressed bytes) to the outer
+    // XAPK container before extracting any inner APK.
+    crate::apk::inspect(
+        archive,
+        crate::apk::Limits {
+            max_entries: MAX_XAPK_ENTRIES,
+            max_total_bytes: MAX_XAPK_TOTAL_BYTES,
+        },
+    )
+    .map_err(|e| Unreachable::Malformed {
+        url: archive.display().to_string(),
+        why: format!("refused XAPK bundle: {e}"),
+    })?;
+
+    let file = std::fs::File::open(archive)
+        .map_err(|e| Unreachable::NoSource { why: e.to_string() })?;
+    let mut zip = zip::ZipArchive::new(std::io::BufReader::new(file)).map_err(|e| {
+        Unreachable::Malformed {
+            url: archive.display().to_string(),
+            why: format!("could not open XAPK bundle: {e}"),
+        }
+    })?;
+
+    let entries = xapk_apk_entries(&mut zip);
+    let mut kept: Vec<PathBuf> = Vec::new();
+    let mut found_engine = false;
+    let mut found_assets = false;
+    let mut total_written: u64 = 0;
+
+    let outcome = (|| -> Result<(), Unreachable> {
+        let mut buf = vec![0u8; 256 * 1024];
+        for (idx, entry_name) in entries.iter().enumerate() {
+            if found_engine && found_assets {
+                break;
+            }
+            cancel.check()?;
+            let mut entry = zip.by_name(entry_name).map_err(|e| Unreachable::Malformed {
+                url: archive.display().to_string(),
+                why: format!("could not read XAPK entry {entry_name:?}: {e}"),
+            })?;
+            // Write to a Vanta-chosen filename inside `into`, never trusting
+            // the inner entry's path as a filesystem destination.
+            let dest = into.join(format!("{prefix}-inner-{idx}.apk"));
+            let write_result = (|| -> Result<(), Unreachable> {
+                let mut out = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create(true)
+                    .truncate(true)
+                    .open(&dest)
+                    .map_err(|e| Unreachable::NoSource { why: e.to_string() })?;
+                let mut entry_written: u64 = 0;
+                loop {
+                    let n = entry.read(&mut buf).map_err(|e| Unreachable::Malformed {
+                        url: archive.display().to_string(),
+                        why: format!("could not decompress XAPK entry {entry_name:?}: {e}"),
+                    })?;
+                    if n == 0 {
+                        break;
+                    }
+                    cancel.check()?;
+                    entry_written = entry_written.saturating_add(n as u64);
+                    total_written = total_written.saturating_add(n as u64);
+                    if entry_written > MAX_ARCHIVE || total_written > MAX_XAPK_TOTAL_BYTES {
+                        return Err(Unreachable::Malformed {
+                            url: archive.display().to_string(),
+                            why: format!(
+                                "XAPK entry {entry_name:?} exceeds the extracted archive size limit"
+                            ),
+                        });
+                    }
+                    out.write_all(&buf[..n])
+                        .map_err(|e| Unreachable::NoSource { why: e.to_string() })?;
+                }
+                out.sync_all().map_err(|e| Unreachable::NoSource { why: e.to_string() })?;
+                Ok(())
+            })();
+            if let Err(e) = write_result {
+                let _ = std::fs::remove_file(&dest);
+                return Err(e);
+            }
+
+            if !has_zip_magic(&dest) {
+                let _ = std::fs::remove_file(&dest);
+                continue;
+            }
+            if let Err(e) = crate::apk::inspect(&dest, crate::apk::Limits::default()) {
+                let _ = std::fs::remove_file(&dest);
+                return Err(Unreachable::Malformed {
+                    url: archive.display().to_string(),
+                    why: format!("refused inner APK {entry_name:?} inside XAPK: {e}"),
+                });
+            }
+
+            let (has_engine, has_assets) = inspect_apk_contents(&dest);
+            let useful = (has_engine && !found_engine) || (has_assets && !found_assets);
+            if useful {
+                if has_engine {
+                    found_engine = true;
+                }
+                if has_assets {
+                    found_assets = true;
+                }
+                kept.push(dest);
+            } else {
+                let _ = std::fs::remove_file(&dest);
+            }
+        }
+        Ok(())
+    })();
+
+    if let Err(e) = outcome {
+        for p in &kept {
+            let _ = std::fs::remove_file(p);
+        }
+        return Err(e);
+    }
+    Ok(Some(kept))
 }
 
 /// Which of `files`, if any, holds the engine and which holds the assets.
@@ -1010,6 +1333,152 @@ mod tests {
         let archives = classify(&[base.clone(), split.clone()]).expect("both halves are present");
         assert_eq!(archives.base, base);
         assert_eq!(archives.split, split);
+    }
+
+    #[test]
+    fn xapk_with_manifest_extracts_base_and_abi_split_and_drops_unused_splits() {
+        let dir = scratch("xapk-manifest");
+        let xapk = dir.join("candidate-0.apk");
+        let split_name = format!("config.{}.apk", crate::apk::HOST_ABI.replace('-', "_"));
+        let manifest = format!(
+            r#"{{"package_name":"com.roblox.client","split_apks":[{{"file":"com.roblox.client.apk","id":"base"}},{{"file":"{split_name}","id":"config.abi"}},{{"file":"config.xxhdpi.apk","id":"config.xxhdpi"}},{{"file":"config.armeabi_v7a.apk","id":"config.armeabi_v7a"}}]}}"#
+        );
+        let base_bytes = zip_of(&[("assets/content/fonts/x.json", b"{}")]);
+        let split_bytes = zip_of(&[(crate::apk::LIBRARY_IN_APK, b"\x7fELF")]);
+        let dpi_bytes = zip_of(&[("res/drawable/icon.png", b"png")]);
+        let foreign_bytes = zip_of(&[("lib/armeabi-v7a/libroblox.so", b"\x7fELF32")]);
+
+        std::fs::write(
+            &xapk,
+            zip_of(&[
+                ("manifest.json", manifest.as_bytes()),
+                ("com.roblox.client.apk", &base_bytes),
+                (&split_name, &split_bytes),
+                ("config.xxhdpi.apk", &dpi_bytes),
+                ("config.armeabi_v7a.apk", &foreign_bytes),
+            ]),
+        )
+        .unwrap();
+
+        let staging = dir.join("staging");
+        std::fs::create_dir_all(&staging).unwrap();
+        let cancel = super::super::Cancel::new();
+        let extracted = unpack_xapk(&xapk, &staging, "candidate-0", &cancel)
+            .expect("valid xapk")
+            .expect("recognised as xapk");
+        assert_eq!(extracted.len(), 2, "only base and host ABI split should be kept");
+
+        let archives = classify(&extracted).expect("both halves extracted from xapk");
+        assert_ne!(archives.base, archives.split);
+        let (base_engine, base_assets) = inspect_apk_contents(&archives.base);
+        let (split_engine, split_assets) = inspect_apk_contents(&archives.split);
+        assert!(!base_engine && base_assets);
+        assert!(split_engine && !split_assets);
+
+        // No irrelevant splits left behind in staging.
+        let staging_count = std::fs::read_dir(&staging).unwrap().count();
+        assert_eq!(staging_count, 2);
+
+        // Every extracted APK must still pass Roblox signature verification;
+        // synthetic unsigned inner APKs are refused.
+        for apk in archives.distinct() {
+            assert!(
+                crate::apk_signature::verify_signed_by(apk, &crate::apk_signature::pinned())
+                    .is_err(),
+                "unsigned inner APK {} must never pass signature verification",
+                apk.display()
+            );
+        }
+    }
+
+    #[test]
+    fn xapk_without_manifest_still_extracts_base_and_abi_split() {
+        let dir = scratch("xapk-no-manifest");
+        let xapk = dir.join("bundle.xapk");
+        let base_bytes = zip_of(&[("assets/x.json", b"{}")]);
+        let split_bytes = zip_of(&[(crate::apk::LIBRARY_IN_APK, b"\x7fELF")]);
+        std::fs::write(
+            &xapk,
+            zip_of(&[("base.apk", &base_bytes), ("split_config.abi.apk", &split_bytes)]),
+        )
+        .unwrap();
+
+        let staging = dir.join("staging");
+        std::fs::create_dir_all(&staging).unwrap();
+        let cancel = super::super::Cancel::new();
+        let extracted = unpack_xapk(&xapk, &staging, "cand", &cancel)
+            .unwrap()
+            .expect("recognised as xapk even without manifest.json");
+        let archives = classify(&extracted).expect("both halves extracted");
+        assert_ne!(archives.base, archives.split);
+    }
+
+    #[test]
+    fn xapk_with_only_foreign_abi_yields_no_engine() {
+        let dir = scratch("xapk-wrong-abi");
+        let xapk = dir.join("foreign.xapk");
+        let base_bytes = zip_of(&[("assets/x.json", b"{}")]);
+        let foreign_bytes = zip_of(&[("lib/armeabi-v7a/libroblox.so", b"\x7fELF32")]);
+        std::fs::write(
+            &xapk,
+            zip_of(&[
+                ("com.roblox.client.apk", &base_bytes),
+                ("config.armeabi_v7a.apk", &foreign_bytes),
+            ]),
+        )
+        .unwrap();
+
+        let staging = dir.join("staging");
+        std::fs::create_dir_all(&staging).unwrap();
+        let cancel = super::super::Cancel::new();
+        let extracted = unpack_xapk(&xapk, &staging, "cand", &cancel)
+            .unwrap()
+            .expect("recognised as xapk");
+        assert!(classify(&extracted).is_none(), "no host engine inside foreign-ABI xapk");
+    }
+
+    #[test]
+    fn xapk_with_hostile_traversal_or_symlink_is_refused() {
+        let dir = scratch("xapk-hostile");
+        let staging = dir.join("staging");
+        std::fs::create_dir_all(&staging).unwrap();
+        let cancel = super::super::Cancel::new();
+
+        // 1. Parent directory traversal inside outer XAPK.
+        let trav = dir.join("traversal.xapk");
+        let inner = zip_of(&[(crate::apk::LIBRARY_IN_APK, b"\x7fELF")]);
+        std::fs::write(&trav, zip_of(&[("../../evil.apk", &inner)])).unwrap();
+        assert!(matches!(
+            unpack_xapk(&trav, &staging, "t", &cancel),
+            Err(Unreachable::Malformed { .. })
+        ));
+        assert_eq!(std::fs::read_dir(&staging).unwrap().count(), 0);
+
+        // 2. Symlink inside outer XAPK.
+        let sym = dir.join("symlink.xapk");
+        let mut w = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        w.start_file("com.roblox.client.apk", zip::write::SimpleFileOptions::default()).unwrap();
+        std::io::Write::write_all(&mut w, &inner).unwrap();
+        w.add_symlink("link", "/etc/passwd", zip::write::SimpleFileOptions::default()).unwrap();
+        std::fs::write(&sym, w.finish().unwrap().into_inner()).unwrap();
+        assert!(matches!(
+            unpack_xapk(&sym, &staging, "s", &cancel),
+            Err(Unreachable::Malformed { .. })
+        ));
+        assert_eq!(std::fs::read_dir(&staging).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn unpack_xapk_leaves_monolithic_apk_untouched() {
+        let dir = scratch("xapk-monolithic");
+        let apk = dir.join("mono.apk");
+        std::fs::write(
+            &apk,
+            zip_of(&[("assets/x.json", b"{}" as &[u8]), (crate::apk::LIBRARY_IN_APK, b"\x7fELF")]),
+        )
+        .unwrap();
+        let cancel = super::super::Cancel::new();
+        assert!(unpack_xapk(&apk, &dir, "m", &cancel).unwrap().is_none());
     }
 
     /// Against the real mirror, so run by hand: `cargo test -p vanta-update

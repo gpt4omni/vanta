@@ -1,0 +1,340 @@
+--- a/linker/linker_phdr.cpp
++++ b/linker/linker_phdr.cpp
+@@ -36,6 +36,7 @@
+ #include <sys/stat.h>
+ #include <unistd.h>
+ #include <cstdlib>
++#include <vector>
+ 
+ #include "linker.h"
+ #include "linker_dlwarning.h"
+@@ -527,8 +528,21 @@
+     min_vaddr = 0;
+   }
+ 
+-  min_vaddr = PAGE_START(min_vaddr);
+-  max_vaddr = PAGE_END(max_vaddr);
++  // Vanta, patches/0010: align reservation bounds to the runtime host page size
++  // so 16 KiB (Asahi Linux / Raspberry Pi 5) and 64 KiB ARM64 kernels always
++  // receive host-page-aligned load_bias_ and load_size_.
++  size_t host_page = PAGE_SIZE;
++#if defined(__linux__) && defined(_SC_PAGESIZE)
++  {
++    long ps = sysconf(_SC_PAGESIZE);
++    if (ps > static_cast<long>(PAGE_SIZE) && (ps & (ps - 1)) == 0) {
++      host_page = static_cast<size_t>(ps);
++    }
++  }
++#endif
++  const ElfW(Addr) host_mask = static_cast<ElfW(Addr)>(host_page - 1);
++  min_vaddr = min_vaddr & ~host_mask;
++  max_vaddr = (max_vaddr + host_mask) & ~host_mask;
+ 
+   if (out_min_vaddr != nullptr) {
+     *out_min_vaddr = min_vaddr;
+@@ -562,18 +576,27 @@
+   INFO("Allocated RWX MAP_JIT segment @ %p size %lld", reinterpret_cast<void*>(start), (long long)size);
+   return start;
+ #else
+-  int prot = PROT_NONE;
++  // Vanta, patches/0010: always reserve with PROT_NONE (never RWX, preserving
++  // ADR-001) and compute mmap_size / munmap trim boundaries against the runtime
++  // host page size so munmap never fails with EINVAL on 16 KiB or 64 KiB ARM64
++  // kernels.
++  size_t host_page = PAGE_SIZE;
+ #if defined(__linux__) && defined(_SC_PAGESIZE)
+-  long pagesize = sysconf(_SC_PAGESIZE);
+-  if(pagesize != 4096) {
+-    PRINT("Detected an Android Binary incompatible pagesize of %lld bytes, usually android has a fixed pagesize of 4096", (long long)pagesize);
+-    INFO("Allocating a big RWX segment and copying the elf manually into memory");
+-    prot = PROT_READ | PROT_WRITE | PROT_EXEC;
++  {
++    long ps = sysconf(_SC_PAGESIZE);
++    if (ps > static_cast<long>(PAGE_SIZE) && (ps & (ps - 1)) == 0) {
++      host_page = static_cast<size_t>(ps);
++    }
+   }
+ #endif
++  size = align_up(size, host_page);
++  if (align < host_page) {
++    align = host_page;
++  }
+ 
++  const int prot = PROT_NONE;
+   int mmap_flags = MAP_PRIVATE | MAP_ANONYMOUS;
+-  if (align == PAGE_SIZE) {
++  if (align == host_page) {
+     void* mmap_ptr = mmap(nullptr, size, prot, mmap_flags, -1, 0);
+     if (mmap_ptr == MAP_FAILED) {
+       return nullptr;
+@@ -582,8 +605,8 @@
+   }
+ 
+   // Allocate enough space so that the end of the desired region aligned up is still inside the
+-  // mapping.
+-  size_t mmap_size = align_up(size, align) + align - PAGE_SIZE;
++  // mapping, keeping mmap_size and every munmap trim boundary host_page-aligned.
++  size_t mmap_size = align_up(size, align) + align - host_page;
+   uint8_t* mmap_ptr =
+       reinterpret_cast<uint8_t*>(mmap(nullptr, mmap_size, prot, mmap_flags, -1, 0));
+   if (mmap_ptr == MAP_FAILED) {
+@@ -592,13 +615,20 @@
+ 
+   uint8_t* first = align_up(mmap_ptr, align);
+   uint8_t* last = align_down(mmap_ptr + mmap_size, align) - size;
++  (void)last;
+ 
+   // arc4random* is not available in first stage init because /dev/urandom hasn't yet been
+   // created. Don't randomize then.
+-  size_t n = 0;//is_first_stage_init() ? 0 : arc4random_uniform((last - first) / PAGE_SIZE + 1);
+-  uint8_t* start = first + n * PAGE_SIZE;
+-  munmap(mmap_ptr, start - mmap_ptr);
+-  munmap(start + size, mmap_ptr + mmap_size - (start + size));
++  size_t n = 0;//is_first_stage_init() ? 0 : arc4random_uniform((last - first) / host_page + 1);
++  uint8_t* start = first + n * host_page;
++  if (start > mmap_ptr) {
++    munmap(mmap_ptr, start - mmap_ptr);
++  }
++  uint8_t* end = start + size;
++  uint8_t* mmap_end = mmap_ptr + mmap_size;
++  if (mmap_end > end) {
++    munmap(end, mmap_end - end);
++  }
+   return start;
+ #endif
+ }
+@@ -698,6 +728,158 @@
+     }
+   }
+ #endif
++#if defined(__linux__) && defined(_SC_PAGESIZE)
++  size_t host_page = PAGE_SIZE;
++  {
++    long ps = sysconf(_SC_PAGESIZE);
++    if (ps > static_cast<long>(PAGE_SIZE) && (ps & (ps - 1)) == 0) {
++      host_page = static_cast<size_t>(ps);
++    }
++  }
++  const ElfW(Addr) host_mask = static_cast<ElfW(Addr)>(host_page - 1);
++
++  if (host_page > PAGE_SIZE) {
++    // Vanta, patches/0010: check whether every PT_LOAD segment can be mapped
++    // zero-copy at `host_page` granularity (e.g. Android 15 16 KiB-aligned
++    // libraries on a 16 KiB host). A legacy 4 KiB-only library whose segments
++    // have incongruent offsets mod `host_page` or share a `host_page` across
++    // differing protections falls back to exact-range pread64 copy into a
++    // temporary RW mapping, I-cache invalidation, and per-page mprotect.
++    if (file_size_ <= 0) {
++      DL_ERR("\"%s\" invalid file size: %" PRId64, name_.c_str(), file_size_);
++      return false;
++    }
++    bool host_page_compatible = true;
++    for (size_t i = 0; i < phdr_num_; ++i) {
++      const ElfW(Phdr)* phdr = &phdr_table_[i];
++      if (phdr->p_type != PT_LOAD) {
++        continue;
++      }
++      ElfW(Addr) file_end = phdr->p_offset + phdr->p_filesz;
++      if (file_end > static_cast<size_t>(file_size_)) {
++        DL_ERR("invalid ELF file \"%s\" load segment[%zd]:"
++            " p_offset (%p) + p_filesz (%p) ( = %p) past end of file (0x%" PRIx64 ")",
++            name_.c_str(), i, reinterpret_cast<void*>(phdr->p_offset),
++            reinterpret_cast<void*>(phdr->p_filesz),
++            reinterpret_cast<void*>(file_end), file_size_);
++        return false;
++      }
++      if (phdr->p_memsz == 0) {
++        continue;
++      }
++      ElfW(Addr) seg_start = phdr->p_vaddr + load_bias_;
++      ElfW(Addr) seg_end = seg_start + phdr->p_memsz;
++      uint64_t fd_off = static_cast<uint64_t>(file_offset_) + static_cast<uint64_t>(phdr->p_offset);
++      if ((seg_start & host_mask) != (fd_off & host_mask)) {
++        host_page_compatible = false;
++      }
++      ElfW(Addr) a_start = seg_start & ~host_mask;
++      ElfW(Addr) a_end = (seg_end + host_mask) & ~host_mask;
++      for (size_t j = i + 1; j < phdr_num_ && host_page_compatible; ++j) {
++        const ElfW(Phdr)* other = &phdr_table_[j];
++        if (other->p_type != PT_LOAD || other->p_memsz == 0) {
++          continue;
++        }
++        ElfW(Addr) o_start = (other->p_vaddr + load_bias_) & ~host_mask;
++        ElfW(Addr) o_end = (other->p_vaddr + load_bias_ + other->p_memsz + host_mask) & ~host_mask;
++        if (a_start < o_end && o_start < a_end) {
++          uint64_t o_fd_off = static_cast<uint64_t>(file_offset_) + static_cast<uint64_t>(other->p_offset);
++          if (phdr->p_flags != other->p_flags ||
++              phdr->p_memsz != phdr->p_filesz ||
++              other->p_memsz != other->p_filesz ||
++              (fd_off - seg_start) != (o_fd_off - (other->p_vaddr + load_bias_))) {
++            host_page_compatible = false;
++          }
++        }
++      }
++    }
++
++    if (!host_page_compatible) {
++      // Reserve writable (NEVER RWX!) anonymous pages across the library's
++      // load extent, copy each segment's exact [p_vaddr, p_vaddr + p_filesz)
++      // bytes without clobbering adjacent segments' .bss, clear the I-cache on
++      // executable ranges, then seal every host_page with the union of
++      // permissions of segments overlapping that page (honoring ADR-001).
++      void* rw = mmap(load_start_, load_size_, PROT_READ | PROT_WRITE,
++                      MAP_FIXED | MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
++      if (rw == MAP_FAILED) {
++        DL_ERR("couldn't map RW staging region for \"%s\" (host_page=%zu): %s",
++               name_.c_str(), host_page, strerror(errno));
++        return false;
++      }
++
++      const uintptr_t base = reinterpret_cast<uintptr_t>(load_start_);
++      const size_t num_pages = load_size_ / host_page;
++      std::vector<int> page_prot(num_pages, PROT_NONE);
++
++      for (size_t i = 0; i < phdr_num_; ++i) {
++        const ElfW(Phdr)* phdr = &phdr_table_[i];
++        if (phdr->p_type != PT_LOAD || phdr->p_memsz == 0) {
++          continue;
++        }
++        ElfW(Addr) seg_start = phdr->p_vaddr + load_bias_;
++        ElfW(Addr) seg_end = seg_start + phdr->p_memsz;
++        if (seg_start < base || seg_end > base + load_size_) {
++          DL_ERR("invalid segment[%zd] bounds in \"%s\"", i, name_.c_str());
++          return false;
++        }
++        uint8_t* dst = reinterpret_cast<uint8_t*>(seg_start);
++        size_t filesz = static_cast<size_t>(phdr->p_filesz);
++        off64_t foff = file_offset_ + static_cast<off64_t>(phdr->p_offset);
++        size_t done = 0;
++        while (done < filesz) {
++          ssize_t n = pread64(fd_, dst + done, filesz - done, foff + static_cast<off64_t>(done));
++          if (n > 0) {
++            done += static_cast<size_t>(n);
++          } else if (n < 0 && errno == EINTR) {
++            continue;
++          } else {
++            DL_ERR("couldn't pread64 \"%s\" segment %zd: %s",
++                   name_.c_str(), i, n < 0 ? strerror(errno) : "unexpected EOF");
++            return false;
++          }
++        }
++        if (phdr->p_memsz > phdr->p_filesz) {
++          memset(dst + filesz, 0, static_cast<size_t>(phdr->p_memsz - phdr->p_filesz));
++        }
++        int prot = PFLAGS_TO_PROT(phdr->p_flags);
++        if (guest_machine() != 0) {
++          prot &= ~PROT_EXEC;
++        }
++        if ((prot & PROT_EXEC) != 0) {
++          __builtin___clear_cache(reinterpret_cast<char*>(seg_start),
++                                  reinterpret_cast<char*>(seg_end));
++        }
++        size_t first_page = static_cast<size_t>((seg_start - base) / host_page);
++        size_t last_page = static_cast<size_t>((seg_end - 1 - base) / host_page);
++        for (size_t p = first_page; p <= last_page && p < num_pages; ++p) {
++          page_prot[p] |= prot;
++        }
++      }
++
++      size_t p = 0;
++      while (p < num_pages) {
++        int cur_prot = page_prot[p];
++        size_t q = p + 1;
++        while (q < num_pages && page_prot[q] == cur_prot) {
++          ++q;
++        }
++        void* run_addr = reinterpret_cast<void*>(base + p * host_page);
++        size_t run_len = (q - p) * host_page;
++        if (mprotect(run_addr, run_len, cur_prot) != 0) {
++          DL_ERR("couldn't mprotect \"%s\" pages [%zu, %zu) to 0x%x: %s",
++                 name_.c_str(), p, q, cur_prot, strerror(errno));
++          return false;
++        }
++        p = q;
++      }
++      return true;
++    }
++  }
++#else
++  const size_t host_page = PAGE_SIZE;
++  const ElfW(Addr) host_mask = static_cast<ElfW(Addr)>(PAGE_SIZE - 1);
++#endif
+   for (size_t i = 0; i < phdr_num_; ++i) {
+     const ElfW(Phdr)* phdr = &phdr_table_[i];
+ 
+@@ -709,8 +891,8 @@
+     ElfW(Addr) seg_start = phdr->p_vaddr + load_bias_;
+     ElfW(Addr) seg_end   = seg_start + phdr->p_memsz;
+ 
+-    ElfW(Addr) seg_page_start = PAGE_START(seg_start);
+-    ElfW(Addr) seg_page_end   = PAGE_END(seg_end);
++    ElfW(Addr) seg_page_start = seg_start & ~host_mask;
++    ElfW(Addr) seg_page_end   = (seg_end + host_mask) & ~host_mask;
+ 
+     ElfW(Addr) seg_file_end   = seg_start + phdr->p_filesz;
+ 
+@@ -718,8 +900,10 @@
+     ElfW(Addr) file_start = phdr->p_offset;
+     ElfW(Addr) file_end   = file_start + phdr->p_filesz;
+ 
+-    ElfW(Addr) file_page_start = PAGE_START(file_start);
+-    ElfW(Addr) file_length = file_end - file_page_start;
++    off64_t fd_file_start = file_offset_ + static_cast<off64_t>(file_start);
++    off64_t fd_page_start = fd_file_start & ~static_cast<off64_t>(host_mask);
++    ElfW(Addr) file_page_start = static_cast<ElfW(Addr)>(fd_page_start - file_offset_);
++    ElfW(Addr) file_length = static_cast<ElfW(Addr)>((fd_file_start + static_cast<off64_t>(phdr->p_filesz)) - fd_page_start);
+ 
+     if (file_size_ <= 0) {
+       DL_ERR("\"%s\" invalid file size: %" PRId64, name_.c_str(), file_size_);
+@@ -782,36 +966,7 @@
+     }
+     INFO("[LoadedSegement] %s %zd @ %p file_length=%lld seg_start=%p seg_end=%p load_bias_=%p", name_.c_str(), i, seg_addr, file_length, seg_start, seg_end, load_bias_);
+ #else
+-#if defined(__linux__) && defined(_SC_PAGESIZE)
+-    if(sysconf(_SC_PAGESIZE) != 4096) {
+-      void* seg_addr = reinterpret_cast<void*>(seg_page_start);
+-
+-      if (file_length != 0) {
+-        auto seekoffset = lseek(fd_, file_offset_ + file_page_start, SEEK_SET);
+-        if(seekoffset != (file_offset_ + file_page_start)) {
+-          DL_ERR("couldn't lseek \"%s\" segment %zd: %s, (file_offset_ + file_page_start)=%lld, seekoffset=%lld", name_.c_str(), i, strerror(errno), (long long)(file_offset_ + file_page_start), (long long)seekoffset);
+-          return false;
+-        }
+ 
+-        auto remainingBytes = file_length;
+-        auto dest = (unsigned char*)seg_addr;
+-        unsigned char buffer[4096];
+-        while(remainingBytes > 0) {
+-          auto expectedreadsize = remainingBytes < 4096 ? remainingBytes : 4096;
+-          auto readsize = read(fd_, buffer, expectedreadsize);
+-          if(readsize != expectedreadsize) {
+-            DL_ERR("couldn't read \"%s\" segment %zd: %s, expectedreadsize=%lld, readsize=%lld, remainingBytes=%lld, file_length=%lld", name_.c_str(), i, strerror(errno), (long long)expectedreadsize, (long long)readsize, (long long)remainingBytes, (long long)file_length);
+-            return false;
+-          }
+-          memcpy(dest, buffer, readsize);
+-          dest += readsize;
+-          remainingBytes -= readsize;
+-        }
+-      }
+-      INFO("[LoadedSegement] %s %zd @ %p file_length=%lld seg_start=%p seg_end=%p load_bias_=%p", name_.c_str(), i, seg_addr, file_length, seg_start, seg_end, load_bias_);
+-      continue;
+-    }
+-#endif
+     if (file_length != 0) {
+ #if 0
+       if ((prot & (PROT_EXEC | PROT_WRITE)) == (PROT_EXEC | PROT_WRITE)) {
+@@ -924,11 +1079,11 @@
+ 
+     // if the segment is writable, and does not end on a page boundary,
+     // zero-fill it until the page limit.
+-    if ((phdr->p_flags & PF_W) != 0 && PAGE_OFFSET(seg_file_end) > 0) {
+-      memset(reinterpret_cast<void*>(seg_file_end), 0, PAGE_SIZE - PAGE_OFFSET(seg_file_end));
++    if ((phdr->p_flags & PF_W) != 0 && (seg_file_end & host_mask) > 0) {
++      memset(reinterpret_cast<void*>(seg_file_end), 0, host_page - (seg_file_end & host_mask));
+     }
+ 
+-    seg_file_end = PAGE_END(seg_file_end);
++    seg_file_end = (seg_file_end + host_mask) & ~host_mask;
+ 
+     // seg_file_end is now the first page address after the file
+     // content. If seg_end is larger, we need to zero anything

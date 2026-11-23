@@ -35,7 +35,7 @@
                              MAP_FIXED|MAP_PRIVATE,
                              fd_,
                              file_offset_ + file_page_start);
-@@ -830,6 +845,60 @@
+@@ -830,6 +845,66 @@
          DL_ERR("couldn't map \"%s\" segment %zd: %s", name_.c_str(), i, strerror(errno));
          return false;
        }
@@ -46,8 +46,10 @@
 +      // ELF file via pread64 and sealed at `prot` (r-xp / r--p). Keeps the base
 +      // VMA file-backed so /proc/self/maps still identifies the library at its
 +      // load base, while collapsing ~27,000 4 KiB iTLB entries to ~52 2 MiB
-+      // entries across all engine threads. VANTA_NO_HUGEPAGE_TEXT=1 disables.
++      // entries across all engine threads. Guarded on 4 KiB host pages (2 MiB
++      // PMD size) and disabled when VANTA_NO_HUGEPAGE_TEXT is set.
 +      if ((phdr->p_flags & PF_W) == 0 && file_length >= (4ULL << 20) &&
++          sysconf(_SC_PAGESIZE) == 4096 &&
 +          getenv("VANTA_NO_HUGEPAGE_TEXT") == nullptr) {
 +        constexpr uintptr_t kHuge = 2ULL << 20;
 +        uintptr_t h_start = (static_cast<uintptr_t>(seg_page_start) + kHuge - 1) & ~(kHuge - 1);
@@ -78,6 +80,10 @@
 +              }
 +            }
 +            if (read_ok) {
++              if ((prot & PROT_EXEC) != 0) {
++                __builtin___clear_cache(static_cast<char*>(h_map),
++                                        static_cast<char*>(h_map) + h_len);
++              }
 +#ifdef MADV_COLLAPSE
 +              (void)madvise(h_map, h_len, MADV_COLLAPSE);
 +#endif
@@ -96,3 +102,22 @@
  #if defined(__APPLE__) && defined(__x86_64__)
        // Patch access to the fs:0x28 register to read gs:0x28 instead to avoid an 0x28 access error
        // which cannot be ignored to handle it in a signal handler in lldb
+@@ -861,9 +936,17 @@
+     // map for all extra pages.
+     if (seg_page_end > seg_file_end) {
+       size_t zeromap_size = seg_page_end - seg_file_end;
++      int zero_prot = prot | PROT_WRITE;
++#if defined(__linux__) && defined(__LP64__)
++      // Carry over ADR-001's invariant: anonymous zero pages for a non-writable
++      // segment need no write bit.
++      if ((phdr->p_flags & PF_W) == 0) {
++        zero_prot = prot;
++      }
++#endif
+       void* zeromap = mmap(reinterpret_cast<void*>(seg_file_end),
+                            zeromap_size,
+-                           prot | PROT_WRITE,
++                           zero_prot,
+                            MAP_FIXED|MAP_ANONYMOUS|MAP_PRIVATE,
+                            -1,
+                            0);

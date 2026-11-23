@@ -153,7 +153,7 @@ pub fn uses_x11(vanta_x11_set: bool, wayland_display_set: bool) -> bool {
 /// probe (a child process, bounded) unless `inputs.probe_vulkan` is off.
 pub fn machine(inputs: &Inputs) -> Vec<Check> {
     let env = Env::from_process();
-    let mut out = vec![build_origin(&crate::version::origin()), root(), session(&env)];
+    let mut out = vec![build_origin(&crate::version::origin()), root(), page_size(), session(&env)];
     out.extend(gpu(&env, inputs));
     out.push(audio(&env));
     let bus = session_bus();
@@ -291,6 +291,29 @@ pub fn root() -> Check {
         )
     } else {
         check(Level::Ok, "running as an ordinary user", "")
+    }
+}
+
+/// Host kernel page size (4 KiB on x86-64 and most ARM64 systems, 16 KiB on
+/// Asahi Linux / Raspberry Pi 5, 64 KiB on some ARM64 servers).
+pub fn page_size() -> Check {
+    // SAFETY: `sysconf(_SC_PAGESIZE)` takes a constant and reads no pointers.
+    let ps = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+    let bytes = usize::try_from(ps).ok().filter(|&n| n > 0);
+    page_size_check(bytes)
+}
+
+fn page_size_check(bytes: Option<usize>) -> Check {
+    match bytes {
+        Some(4096) => check(Level::Ok, "host page size is 4 KiB", ""),
+        Some(ps) if ps > 4096 && ps % 1024 == 0 => check(
+            Level::Info,
+            format!("host page size is {} KiB ({ps} bytes)", ps / 1024),
+            "Android 15 16 KiB-aligned libraries map directly; legacy 4 KiB-only libraries use \
+             the loader's page-aligned copy and per-page protection path.",
+        ),
+        Some(ps) => check(Level::Info, format!("host page size is {ps} bytes"), ""),
+        None => check(Level::Info, "host page size could not be read", ""),
     }
 }
 
@@ -1581,6 +1604,24 @@ mod tests {
         assert!(device_of(dir.path()).is_some());
         assert_eq!(device_of(&dir.path().join("a/b")), device_of(dir.path()));
         assert!(free_bytes(dir.path()).is_some());
+    }
+
+    #[test]
+    fn page_size_reports_4k_ok_and_larger_pages_info() {
+        let p4 = page_size_check(Some(4096));
+        assert_eq!(p4.level, Level::Ok);
+        assert!(p4.what.contains("4 KiB"), "{p4:?}");
+
+        let p16 = page_size_check(Some(16384));
+        assert_eq!(p16.level, Level::Info);
+        assert!(p16.what.contains("16 KiB"), "{p16:?}");
+        assert!(!p16.fix.is_empty());
+
+        let p64 = page_size_check(Some(65536));
+        assert_eq!(p64.level, Level::Info);
+        assert!(p64.what.contains("64 KiB"), "{p64:?}");
+
+        assert_eq!(page_size_check(None).level, Level::Info);
     }
 
     #[test]

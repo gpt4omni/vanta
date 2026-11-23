@@ -2390,15 +2390,17 @@ fn main() -> ExitCode {
 
     if android_libpath {
         // Sober's own mapping, for shape reference (flag-init.md §31):
-        //   /data/app/~~<hash>/com.roblox.client-<hash>/lib/x86_64/libroblox.so
+        //   /data/app/~~<hash>/com.roblox.client-<hash>/lib/<abi>/libroblox.so
         // The exact hashes are meaningless to the derivation this is testing
         // — only the directory shape (a `~~`-prefixed app id, a
-        // package-name-plus-hash directory, then `lib/x86_64/`) can matter,
+        // package-name-plus-hash directory, then `lib/<abi>/`) can matter,
         // since that is all a string-walk from the tail could look for.
         let synthetic = std::env::var("VANTA_ANDROID_LIBPATH_VALUE").unwrap_or_else(|_| {
-            "/data/app/~~vantaAAAAAAAAAAAAAA==/com.roblox.client-vantaBBBBBBBBBBBB==\
-             /lib/x86_64/libroblox.so"
-                .to_string()
+            format!(
+                "/data/app/~~vantaAAAAAAAAAAAAAA==/com.roblox.client-vantaBBBBBBBBBBBB==\
+                 /lib/{}/libroblox.so",
+                vanta_update::apk::HOST_ABI
+            )
         });
         linker::set_realpath(lib, &synthetic);
         println!("\nvanta-android-libpath: soinfo realpath overridden to {synthetic}");

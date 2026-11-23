@@ -223,22 +223,14 @@ unsafe fn futex_wake(addr: &AtomicU32, count: c_int, private: bool) {
 
 extern "C" {
     fn pthread_condattr_getclock(attr: *const c_void, clock_id: *mut c_int) -> c_int;
-    #[cfg(not(target_arch = "aarch64"))]
     #[link_name = "pthread_mutex_init"]
     fn host_pthread_mutex_init(mutex: *mut c_void, attr: *const c_void) -> c_int;
-    #[cfg(not(target_arch = "aarch64"))]
     fn pthread_mutexattr_init(attr: *mut c_void) -> c_int;
-    #[cfg(not(target_arch = "aarch64"))]
     fn pthread_mutexattr_destroy(attr: *mut c_void) -> c_int;
-    #[cfg(not(target_arch = "aarch64"))]
     fn pthread_mutexattr_gettype(attr: *const c_void, kind: *mut c_int) -> c_int;
-    #[cfg(not(target_arch = "aarch64"))]
     fn pthread_mutexattr_settype(attr: *mut c_void, kind: c_int) -> c_int;
-    #[cfg(not(target_arch = "aarch64"))]
     fn pthread_mutexattr_getpshared(attr: *const c_void, pshared: *mut c_int) -> c_int;
-    #[cfg(not(target_arch = "aarch64"))]
     fn pthread_mutexattr_getprotocol(attr: *const c_void, protocol: *mut c_int) -> c_int;
-    #[cfg(not(target_arch = "aarch64"))]
     fn pthread_mutexattr_getrobust(attr: *const c_void, robustness: *mut c_int) -> c_int;
     #[cfg(not(target_arch = "aarch64"))]
     fn pthread_mutex_lock(mutex: *mut c_void) -> c_int;
@@ -254,16 +246,16 @@ extern "C" {
 // this fix.
 #[cfg(target_arch = "aarch64")]
 extern "C" {
-    fn pthread_mutex_init(mutex: *mut c_void, attr: *const c_void) -> c_int;
     fn pthread_mutex_destroy(mutex: *mut c_void) -> c_int;
     fn pthread_mutex_lock(mutex: *mut c_void) -> c_int;
     fn pthread_mutex_trylock(mutex: *mut c_void) -> c_int;
     fn pthread_mutex_unlock(mutex: *mut c_void) -> c_int;
     fn pthread_mutex_timedlock(mutex: *mut c_void, abstime: *const c_void) -> c_int;
-
-    fn pthread_mutexattr_init(attr: *mut c_void) -> c_int;
-    fn pthread_mutexattr_destroy(attr: *mut c_void) -> c_int;
-    fn pthread_mutexattr_settype(attr: *mut c_void, kind: c_int) -> c_int;
+    fn pthread_mutex_clocklock(
+        mutex: *mut c_void,
+        clock_id: c_int,
+        abstime: *const c_void,
+    ) -> c_int;
 
     fn pthread_attr_init(attr: *mut c_void) -> c_int;
     fn pthread_attr_destroy(attr: *mut c_void) -> c_int;
@@ -275,6 +267,12 @@ extern "C" {
     fn pthread_attr_getguardsize(attr: *const c_void, guardsize: *mut usize) -> c_int;
     fn pthread_attr_setschedparam(attr: *mut c_void, param: *const c_void) -> c_int;
     fn pthread_attr_getschedparam(attr: *const c_void, param: *mut c_void) -> c_int;
+    fn pthread_attr_setschedpolicy(attr: *mut c_void, policy: c_int) -> c_int;
+    fn pthread_attr_getschedpolicy(attr: *const c_void, policy: *mut c_int) -> c_int;
+    fn pthread_attr_setinheritsched(attr: *mut c_void, inheritsched: c_int) -> c_int;
+    fn pthread_attr_getinheritsched(attr: *const c_void, inheritsched: *mut c_int) -> c_int;
+    fn pthread_attr_setscope(attr: *mut c_void, scope: c_int) -> c_int;
+    fn pthread_attr_getscope(attr: *const c_void, scope: *mut c_int) -> c_int;
     fn pthread_attr_setstack(attr: *mut c_void, stackaddr: *mut c_void, stacksize: usize) -> c_int;
     fn pthread_attr_getstack(
         attr: *const c_void,
@@ -506,7 +504,7 @@ pub unsafe extern "C" fn cond_timedwait(
         return libc_einval();
     }
     let ts = unsafe { &*(abstime as *const libc::timespec) };
-    if ts.tv_nsec < 0 || ts.tv_nsec >= 1_000_000_000 {
+    if ts.tv_sec < 0 || ts.tv_nsec < 0 || ts.tv_nsec >= 1_000_000_000 {
         return libc_einval();
     }
     let clock_id = c.clock_id.load(Ordering::Acquire);
@@ -525,6 +523,8 @@ pub unsafe extern "C" fn cond_timedwait(
     }
     if wait_err == libc::ETIMEDOUT {
         libc::ETIMEDOUT
+    } else if wait_err == libc::EINVAL {
+        libc_einval()
     } else {
         0
     }
@@ -532,13 +532,18 @@ pub unsafe extern "C" fn cond_timedwait(
 
 // ------------------------------------------------------------------ semaphores
 
+#[inline]
+fn sem_einval() -> c_int {
+    unsafe { *libc::__errno_location() = libc_einval() };
+    -1
+}
+
 pub extern "C" fn semaphore_init(sem: *mut c_void, pshared: c_int, value: u32) -> c_int {
     let Some(s) = (unsafe { overlay_ref::<BionicSem>(sem) }) else {
-        return libc_einval();
+        return sem_einval();
     };
     if value > i32::MAX as u32 {
-        unsafe { *libc::__errno_location() = libc_einval() };
-        return -1;
+        return sem_einval();
     }
     s.count.store(value, Ordering::Relaxed);
     s.waiters.store(0, Ordering::Relaxed);
@@ -548,7 +553,7 @@ pub extern "C" fn semaphore_init(sem: *mut c_void, pshared: c_int, value: u32) -
 
 pub extern "C" fn semaphore_destroy(sem: *mut c_void) -> c_int {
     let Some(s) = (unsafe { overlay_ref::<BionicSem>(sem) }) else {
-        return libc_einval();
+        return sem_einval();
     };
     s.count.store(0, Ordering::Relaxed);
     s.waiters.store(0, Ordering::Relaxed);
@@ -558,7 +563,7 @@ pub extern "C" fn semaphore_destroy(sem: *mut c_void) -> c_int {
 
 pub extern "C" fn semaphore_post(sem: *mut c_void) -> c_int {
     let Some(s) = (unsafe { overlay_ref::<BionicSem>(sem) }) else {
-        return libc_einval();
+        return sem_einval();
     };
     let mut cur = s.count.load(Ordering::Relaxed);
     loop {
@@ -581,7 +586,7 @@ pub extern "C" fn semaphore_post(sem: *mut c_void) -> c_int {
 
 pub extern "C" fn semaphore_trywait(sem: *mut c_void) -> c_int {
     let Some(s) = (unsafe { overlay_ref::<BionicSem>(sem) }) else {
-        return libc_einval();
+        return sem_einval();
     };
     let mut cur = s.count.load(Ordering::Relaxed);
     loop {
@@ -598,7 +603,7 @@ pub extern "C" fn semaphore_trywait(sem: *mut c_void) -> c_int {
 
 pub extern "C" fn semaphore_wait(sem: *mut c_void) -> c_int {
     let Some(s) = (unsafe { overlay_ref::<BionicSem>(sem) }) else {
-        return libc_einval();
+        return sem_einval();
     };
     // Lock-free fast path + brief adaptive spin before entering the kernel.
     for _ in 0..32 {
@@ -642,10 +647,8 @@ pub extern "C" fn semaphore_wait(sem: *mut c_void) -> c_int {
 // `PTHREAD_MUTEX_ADAPTIVE_NP` so glibc performs a brief userspace spin before
 // entering futex_wait on sub-microsecond critical sections.
 
-#[cfg(not(target_arch = "aarch64"))]
 const GLIBC_MUTEX_ADAPTIVE_NP: c_int = 3;
 
-#[cfg(not(target_arch = "aarch64"))]
 fn adaptive_mutex_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| {
@@ -654,13 +657,13 @@ fn adaptive_mutex_enabled() -> bool {
     })
 }
 
-/// x86_64 `pthread_mutex_init`: promotes plain private `PTHREAD_MUTEX_NORMAL`
-/// (and `attr == NULL`) mutexes to glibc's `PTHREAD_MUTEX_ADAPTIVE_NP` without
-/// intercepting `pthread_mutex_lock` or `pthread_mutex_unlock` on the hot path.
-/// Recursive, errorcheck, process-shared, priority-inheriting, and robust
-/// mutexes are forwarded untouched.
-#[cfg(not(target_arch = "aarch64"))]
-pub unsafe extern "C" fn x86_mutex_init(mutex: *mut c_void, attr: *const c_void) -> c_int {
+/// Initialise a host glibc `pthread_mutex_t`, promoting plain private
+/// `PTHREAD_MUTEX_NORMAL` (and `attr == NULL`) mutexes to glibc's
+/// `PTHREAD_MUTEX_ADAPTIVE_NP` so brief critical sections spin briefly in
+/// userspace before entering `futex_wait`. Recursive, errorcheck,
+/// process-shared, priority-inheriting, and robust mutexes are forwarded
+/// untouched.
+unsafe fn init_host_mutex(mutex: *mut c_void, attr: *const c_void) -> c_int {
     if mutex.is_null() || !adaptive_mutex_enabled() {
         return unsafe { host_pthread_mutex_init(mutex, attr) };
     }
@@ -702,6 +705,16 @@ pub unsafe extern "C" fn x86_mutex_init(mutex: *mut c_void, attr: *const c_void)
         pthread_mutexattr_destroy(ap);
         rc
     }
+}
+
+/// x86_64 `pthread_mutex_init`: promotes plain private `PTHREAD_MUTEX_NORMAL`
+/// (and `attr == NULL`) mutexes to glibc's `PTHREAD_MUTEX_ADAPTIVE_NP` without
+/// intercepting `pthread_mutex_lock` or `pthread_mutex_unlock` on the hot path.
+/// Recursive, errorcheck, process-shared, priority-inheriting, and robust
+/// mutexes are forwarded untouched.
+#[cfg(not(target_arch = "aarch64"))]
+pub unsafe extern "C" fn x86_mutex_init(mutex: *mut c_void, attr: *const c_void) -> c_int {
+    unsafe { init_host_mutex(mutex, attr) }
 }
 
 /// An overlay on all 40 bytes of bionic's `pthread_mutex_t`
@@ -823,14 +836,14 @@ fn resolve_mutex(m: &BionicMutex) -> *mut c_void {
         unsafe {
             match kind.glibc_type() {
                 None => {
-                    pthread_mutex_init(backing, std::ptr::null());
+                    init_host_mutex(backing, std::ptr::null());
                 }
                 Some(glibc_kind) => {
                     let mut attr_storage = [0u8; BACKING_SIZE];
                     let attr = attr_storage.as_mut_ptr() as *mut c_void;
                     pthread_mutexattr_init(attr);
                     pthread_mutexattr_settype(attr, glibc_kind);
-                    pthread_mutex_init(backing, attr);
+                    host_pthread_mutex_init(backing, attr);
                     pthread_mutexattr_destroy(attr);
                 }
             }
@@ -867,10 +880,13 @@ fn mutex_init_on(m: &BionicMutex, attr: *const c_void) -> c_int {
     // functions are left unintercepted (ordinary passthrough, resolved from
     // the host), `attr` already holds glibc's own encoding by the time it
     // reaches here, not bionic's, and needs no translation.
+    //
+    // Plain private normal mutexes are promoted to `PTHREAD_MUTEX_ADAPTIVE_NP`
+    // via `init_host_mutex`, mirroring x86_64.
     status_of(reinit(m, |p| {
         // SAFETY: `p` is a fresh BACKING_SIZE block, far larger than glibc's
         // `pthread_mutex_t`; `attr` is null or the caller's mutexattr.
-        unsafe { pthread_mutex_init(p, attr) };
+        unsafe { init_host_mutex(p, attr) };
     }))
 }
 
@@ -972,6 +988,21 @@ pub extern "C" fn mutex_timedlock(mutex: *mut c_void, abstime: *const c_void) ->
     // timespec` is identical between the two libcs, the same assumption
     // `cond_timedwait` already makes above.
     unsafe { pthread_mutex_timedlock(backing, abstime) }
+}
+
+#[cfg(target_arch = "aarch64")]
+pub extern "C" fn mutex_clocklock(
+    mutex: *mut c_void,
+    clock_id: c_int,
+    abstime: *const c_void,
+) -> c_int {
+    // SAFETY: bionic's contract is a pointer to a 40-byte pthread_mutex_t.
+    let Some(backing) = (unsafe { overlay_ref::<BionicMutex>(mutex) }).and_then(mutex_backing) else {
+        return libc_einval();
+    };
+    // SAFETY: `backing` is the live glibc mutex behind the caller's; `clockid_t`
+    // and `struct timespec` match Linux UAPI in both libcs.
+    unsafe { pthread_mutex_clocklock(backing, clock_id, abstime) }
 }
 
 // -------------------------------------------------------------- thread attrs
@@ -1097,6 +1128,37 @@ pub extern "C" fn attr_getguardsize(attr: *const c_void, out: *mut usize) -> c_i
     unsafe { with_attr(attr, |b| pthread_attr_getguardsize(b, out)) }
 }
 
+/// bionic and glibc spell `PTHREAD_EXPLICIT_SCHED` and `PTHREAD_INHERIT_SCHED`
+/// with opposite values (bionic: EXPLICIT=0, INHERIT=1 in `bionic/libc/include/pthread.h`;
+/// glibc: INHERIT=0, EXPLICIT=1 in `/usr/include/pthread.h`). Pure helpers,
+/// un-cfg'd so tests exercise the mapping on every host architecture.
+#[cfg_attr(not(target_arch = "aarch64"), allow(dead_code))]
+const BIONIC_EXPLICIT_SCHED: c_int = 0;
+#[cfg_attr(not(target_arch = "aarch64"), allow(dead_code))]
+const BIONIC_INHERIT_SCHED: c_int = 1;
+#[cfg_attr(not(target_arch = "aarch64"), allow(dead_code))]
+const GLIBC_INHERIT_SCHED: c_int = 0;
+#[cfg_attr(not(target_arch = "aarch64"), allow(dead_code))]
+const GLIBC_EXPLICIT_SCHED: c_int = 1;
+
+#[cfg_attr(not(target_arch = "aarch64"), allow(dead_code))]
+fn bionic_inheritsched_to_glibc(value: c_int) -> Option<c_int> {
+    match value {
+        BIONIC_EXPLICIT_SCHED => Some(GLIBC_EXPLICIT_SCHED),
+        BIONIC_INHERIT_SCHED => Some(GLIBC_INHERIT_SCHED),
+        _ => None,
+    }
+}
+
+#[cfg_attr(not(target_arch = "aarch64"), allow(dead_code))]
+fn glibc_inheritsched_to_bionic(value: c_int) -> c_int {
+    match value {
+        GLIBC_EXPLICIT_SCHED => BIONIC_EXPLICIT_SCHED,
+        GLIBC_INHERIT_SCHED => BIONIC_INHERIT_SCHED,
+        other => other,
+    }
+}
+
 #[cfg(target_arch = "aarch64")]
 pub extern "C" fn attr_setschedparam(attr: *mut c_void, param: *const c_void) -> c_int {
     // SAFETY: as above; `struct sched_param` is `{ int sched_priority; }` in
@@ -1111,6 +1173,55 @@ pub extern "C" fn attr_setschedparam(attr: *mut c_void, param: *const c_void) ->
 pub extern "C" fn attr_getschedparam(attr: *const c_void, param: *mut c_void) -> c_int {
     // SAFETY: as above.
     unsafe { with_attr(attr, |b| pthread_attr_getschedparam(b, param)) }
+}
+
+#[cfg(target_arch = "aarch64")]
+pub extern "C" fn attr_setschedpolicy(attr: *mut c_void, policy: c_int) -> c_int {
+    // SAFETY: as above; SCHED_OTHER/FIFO/RR are Linux kernel UAPI constants.
+    unsafe { with_attr(attr, |b| pthread_attr_setschedpolicy(b, policy)) }
+}
+
+#[cfg(target_arch = "aarch64")]
+pub extern "C" fn attr_getschedpolicy(attr: *const c_void, policy: *mut c_int) -> c_int {
+    // SAFETY: as above.
+    unsafe { with_attr(attr, |b| pthread_attr_getschedpolicy(b, policy)) }
+}
+
+#[cfg(target_arch = "aarch64")]
+pub extern "C" fn attr_setinheritsched(attr: *mut c_void, inheritsched: c_int) -> c_int {
+    let Some(glibc_val) = bionic_inheritsched_to_glibc(inheritsched) else {
+        return libc_einval();
+    };
+    // SAFETY: as above; value translated from bionic's enum to glibc's.
+    unsafe { with_attr(attr, |b| pthread_attr_setinheritsched(b, glibc_val)) }
+}
+
+#[cfg(target_arch = "aarch64")]
+pub extern "C" fn attr_getinheritsched(attr: *const c_void, out: *mut c_int) -> c_int {
+    if out.is_null() {
+        return libc_einval();
+    }
+    let mut glibc_val: c_int = 0;
+    // SAFETY: as above; `glibc_val` is a stack local.
+    let rc = unsafe { with_attr(attr, |b| pthread_attr_getinheritsched(b, &mut glibc_val)) };
+    if rc == 0 {
+        // SAFETY: `out` is non-null per the check above.
+        unsafe { store_out(out, glibc_inheritsched_to_bionic(glibc_val)) };
+    }
+    rc
+}
+
+#[cfg(target_arch = "aarch64")]
+pub extern "C" fn attr_setscope(attr: *mut c_void, scope: c_int) -> c_int {
+    // SAFETY: as above; PTHREAD_SCOPE_SYSTEM (0) and PTHREAD_SCOPE_PROCESS (1)
+    // match in both libcs.
+    unsafe { with_attr(attr, |b| pthread_attr_setscope(b, scope)) }
+}
+
+#[cfg(target_arch = "aarch64")]
+pub extern "C" fn attr_getscope(attr: *const c_void, scope: *mut c_int) -> c_int {
+    // SAFETY: as above.
+    unsafe { with_attr(attr, |b| pthread_attr_getscope(b, scope)) }
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -1394,6 +1505,7 @@ fn overrides_with(bypass_cond: bool) -> Vec<(&'static str, *mut c_void)> {
         f!("pthread_mutex_trylock", mutex_trylock),
         f!("pthread_mutex_unlock", mutex_unlock),
         f!("pthread_mutex_timedlock", mutex_timedlock),
+        f!("pthread_mutex_clocklock", mutex_clocklock),
         f!("pthread_attr_init", attr_init),
         f!("pthread_attr_destroy", attr_destroy),
         f!("pthread_attr_setstacksize", attr_setstacksize),
@@ -1404,6 +1516,12 @@ fn overrides_with(bypass_cond: bool) -> Vec<(&'static str, *mut c_void)> {
         f!("pthread_attr_getguardsize", attr_getguardsize),
         f!("pthread_attr_setschedparam", attr_setschedparam),
         f!("pthread_attr_getschedparam", attr_getschedparam),
+        f!("pthread_attr_setschedpolicy", attr_setschedpolicy),
+        f!("pthread_attr_getschedpolicy", attr_getschedpolicy),
+        f!("pthread_attr_setinheritsched", attr_setinheritsched),
+        f!("pthread_attr_getinheritsched", attr_getinheritsched),
+        f!("pthread_attr_setscope", attr_setscope),
+        f!("pthread_attr_getscope", attr_getscope),
         f!("pthread_attr_setstack", attr_setstack),
         f!("pthread_attr_getstack", attr_getstack),
         f!("pthread_getattr_np", getattr_np),
@@ -1806,11 +1924,23 @@ mod tests {
         assert_eq!(cond_destroy(null), einval);
         assert_eq!(cond_signal(null), einval);
         assert_eq!(cond_broadcast(null), einval);
-        assert_eq!(semaphore_init(null, 0, 0), einval);
-        assert_eq!(semaphore_destroy(null), einval);
-        assert_eq!(semaphore_post(null), einval);
-        assert_eq!(semaphore_wait(null), einval);
-        assert_eq!(semaphore_trywait(null), einval);
+
+        // POSIX `sem_*` return -1 and set `errno = EINVAL` rather than
+        // returning the error code directly like `pthread_*`.
+        let check_sem_einval = |rc: c_int| {
+            assert_eq!(rc, -1);
+            assert_eq!(unsafe { *libc::__errno_location() }, einval);
+        };
+        unsafe { *libc::__errno_location() = 0 };
+        check_sem_einval(semaphore_init(null, 0, 0));
+        unsafe { *libc::__errno_location() = 0 };
+        check_sem_einval(semaphore_destroy(null));
+        unsafe { *libc::__errno_location() = 0 };
+        check_sem_einval(semaphore_post(null));
+        unsafe { *libc::__errno_location() = 0 };
+        check_sem_einval(semaphore_wait(null));
+        unsafe { *libc::__errno_location() = 0 };
+        check_sem_einval(semaphore_trywait(null));
 
         // A good condition variable with no mutex to release is refused too,
         // and does so before it blocks.
@@ -1820,6 +1950,29 @@ mod tests {
             assert_eq!(cond_timedwait(live, null, std::ptr::null()), einval);
         }
         assert_eq!(cond_destroy(live), 0);
+    }
+
+    #[test]
+    fn cond_timedwait_rejects_negative_tv_sec_with_einval() {
+        let mut cond_storage = [0u64; 6];
+        let mut mutex_storage = [0u64; 5];
+        let cond = cond_storage.as_mut_ptr() as *mut c_void;
+        let mutex = mutex_storage.as_mut_ptr() as *mut c_void;
+        assert_eq!(mutex_lock_for_test(mutex), 0);
+        let ts = libc::timespec { tv_sec: -1, tv_nsec: 0 };
+        let rc = unsafe { cond_timedwait(cond, mutex, &ts as *const libc::timespec as *const c_void) };
+        assert_eq!(rc, libc_einval(), "negative tv_sec must return EINVAL, never spurious 0");
+        assert_eq!(mutex_unlock_for_test(mutex), 0);
+        assert_eq!(cond_destroy(cond), 0);
+    }
+
+    #[test]
+    fn inheritsched_constants_translate_between_bionic_and_glibc() {
+        assert_eq!(bionic_inheritsched_to_glibc(BIONIC_EXPLICIT_SCHED), Some(GLIBC_EXPLICIT_SCHED));
+        assert_eq!(bionic_inheritsched_to_glibc(BIONIC_INHERIT_SCHED), Some(GLIBC_INHERIT_SCHED));
+        assert_eq!(bionic_inheritsched_to_glibc(42), None);
+        assert_eq!(glibc_inheritsched_to_bionic(GLIBC_EXPLICIT_SCHED), BIONIC_EXPLICIT_SCHED);
+        assert_eq!(glibc_inheritsched_to_bionic(GLIBC_INHERIT_SCHED), BIONIC_INHERIT_SCHED);
     }
 
     #[test]
@@ -2160,6 +2313,44 @@ mod tests {
              pthread_create and pthread_getattr_np (saw {seen})"
         );
         assert_eq!(attr_destroy(attr), 0);
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn attr_sched_and_scope_round_trip_and_mutex_clocklock_works() {
+        let mut attr_storage = [0u64; 7]; // 56 bytes
+        let attr = attr_storage.as_mut_ptr() as *mut c_void;
+        assert_eq!(attr_init(attr), 0);
+
+        assert_eq!(attr_setschedpolicy(attr, libc::SCHED_OTHER), 0);
+        let mut policy: c_int = -1;
+        assert_eq!(attr_getschedpolicy(attr, &mut policy), 0);
+        assert_eq!(policy, libc::SCHED_OTHER);
+
+        for bionic_val in [BIONIC_EXPLICIT_SCHED, BIONIC_INHERIT_SCHED] {
+            assert_eq!(attr_setinheritsched(attr, bionic_val), 0);
+            let mut got: c_int = -1;
+            assert_eq!(attr_getinheritsched(attr, &mut got), 0);
+            assert_eq!(got, bionic_val);
+        }
+        assert_eq!(attr_setinheritsched(attr, 99), libc_einval());
+
+        assert_eq!(attr_setscope(attr, 0 /* PTHREAD_SCOPE_SYSTEM */), 0);
+        let mut scope: c_int = -1;
+        assert_eq!(attr_getscope(attr, &mut scope), 0);
+        assert_eq!(scope, 0);
+        assert_eq!(attr_destroy(attr), 0);
+
+        let mut mutex_storage = [0u64; 5]; // 40 bytes
+        let mutex = mutex_storage.as_mut_ptr() as *mut c_void;
+        assert_eq!(mutex_init(mutex, std::ptr::null()), 0);
+        let ts = libc::timespec { tv_sec: 0, tv_nsec: 1 };
+        assert_eq!(
+            mutex_clocklock(mutex, libc::CLOCK_MONOTONIC, &ts as *const libc::timespec as *const c_void),
+            0
+        );
+        assert_eq!(mutex_unlock(mutex), 0);
+        assert_eq!(mutex_destroy(mutex), 0);
     }
 
     #[cfg(target_arch = "aarch64")]

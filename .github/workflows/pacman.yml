@@ -154,7 +154,8 @@ jobs:
         if: steps.gpg.outputs.signing == 'true'
         uses: actions/download-artifact@v4
         with:
-          name: vanta-arch
+          pattern: vanta-arch-*
+          merge-multiple: true
           path: dist/arch
           github-token: ${{ github.token }}
           run-id: ${{ steps.source.outputs.run_id }}
