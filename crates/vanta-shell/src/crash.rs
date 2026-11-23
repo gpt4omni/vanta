@@ -270,21 +270,21 @@ pub fn present(
     toolbar.add_top_bar(&header);
     toolbar.set_content(Some(&status_page));
 
-    let window = adw::Window::builder()
-        .transient_for(parent.as_ref())
-        .modal(true)
+    let dialog = adw::Dialog::builder()
         .title("Roblox stopped")
-        .default_width(680)
+        .content_width(680)
         // Tall enough that the expander can open without the buttons falling
         // below the fold -- `instructions.rs` records paying for exactly that
         // mistake with a button nobody could see.
-        .default_height(560)
-        .content(&toolbar)
+        .content_height(560)
+        .child(&toolbar)
         .build();
 
-    let to_close = window.clone();
-    close.connect_clicked(move |_| to_close.close());
-    window.present();
+    let to_close = dialog.clone();
+    close.connect_clicked(move |_| {
+        to_close.force_close();
+    });
+    dialog.present(Some(parent.as_ref()));
 }
 
 #[cfg(test)]

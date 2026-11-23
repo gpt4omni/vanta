@@ -452,12 +452,14 @@ static LOCKED_POINTER_INTERFACE: WlInterface = WlInterface {
 const LOCKED_POINTER_DESTROY: u32 = 0;
 const LOCKED_POINTER_SET_CURSOR_POSITION_HINT: u32 = 1;
 
-/// `zwp_pointer_constraints_v1.lifetime.persistent`. The alternative,
-/// `oneshot` (1), makes the compositor destroy the constraint the first time it
-/// deactivates — and it deactivates on every alt-tab. Persistent means the lock
-/// comes back when the window is focused again, which is what a first-person
-/// camera wants; the escape path is Vanta destroying the object, not the
-/// compositor happening to.
+/// `zwp_pointer_constraints_v1.lifetime.oneshot`. Deactivates permanently once
+/// unlocked so a deactivated constraint can never silently reactivate on hover
+/// without keyboard focus (used on Niri).
+const POINTER_CONSTRAINT_LIFETIME_ONESHOT: u32 = 1;
+
+/// `zwp_pointer_constraints_v1.lifetime.persistent`. Persistent means the lock
+/// may be reactivated when focus returns; the escape path is Vanta destroying
+/// the object.
 const POINTER_CONSTRAINT_LIFETIME_PERSISTENT: u32 = 2;
 
 /// `WL_MARSHAL_FLAG_DESTROY`. `wl_proxy_marshal_flags`'s `flags` argument, which
@@ -530,6 +532,7 @@ static TEARING_CONTROL_MANAGER_INTERFACE: WlInterface = WlInterface {
     event_count: 0,
     events: std::ptr::null(),
 };
+const TEARING_CONTROL_MANAGER_DESTROY: u32 = 0;
 const TEARING_CONTROL_MANAGER_GET: u32 = 1;
 
 static TEARING_CONTROL_METHODS: [WlMessage; 2] = [
@@ -549,7 +552,25 @@ static TEARING_CONTROL_INTERFACE: WlInterface = WlInterface {
     events: std::ptr::null(),
 };
 const TEARING_CONTROL_SET_PRESENTATION_HINT: u32 = 0;
+const TEARING_CONTROL_DESTROY: u32 = 1;
 const WP_TEARING_CONTROL_V1_PRESENTATION_HINT_ASYNC: u32 = 1;
+
+/// Whether `wayland::open` should attach `wp_tearing_control_v1` directly to
+/// the canvas `wl_surface`.
+///
+/// Only safe on the GLES/EGL backend (when Vulkan is withheld). When Vulkan
+/// owns the surface and uses `VK_PRESENT_MODE_IMMEDIATE_KHR`, Mesa and NVIDIA
+/// Wayland WSI ALSO call `wp_tearing_control_manager_v1.get_tearing_control` on
+/// the same `wl_surface`, which triggers a fatal Wayland protocol error
+/// (`tearing_control_exists`, Error 71) if Vanta already attached one.
+fn should_attach_tearing_control(
+    want_tearing: bool,
+    offers_vulkan: bool,
+    no_vulkan: bool,
+    withhold_vulkan: bool,
+) -> bool {
+    want_tearing && (!offers_vulkan || no_vulkan || withhold_vulkan)
+}
 
 // ----------------------------------------------------- subsurface opcodes
 //
@@ -1190,6 +1211,11 @@ pub struct WaylandWindow {
     /// Null is not an error: everything except pointer capture works without
     /// it, exactly as text entry works without `zwp_text_input_manager_v3`.
     pointer_constraints: *mut c_void,
+    /// `wp_tearing_control_manager_v1` and `wp_tearing_control_v1` proxies
+    /// attached on the GLES/EGL backend when async tearing was requested, or
+    /// null when unused / already destroyed on teardown.
+    tearing_control_manager: std::sync::atomic::AtomicPtr<c_void>,
+    tearing_control: std::sync::atomic::AtomicPtr<c_void>,
     /// The `zwp_relative_pointer_v1` for GDK's pointer, created once and kept
     /// for the process's life. It delivers `relative_motion` whenever the
     /// pointer has focus, lock or no lock; `dispatch_relative_motion` is what
@@ -1782,13 +1808,23 @@ pub fn open(width: u32, height: u32, title: &str) -> Result<&'static WaylandWind
     println!("[android] wayland: canvas {cw}x{ch} at ({cx},{cy}) as a subsurface of the libadwaita window");
 
     // Opt into Wayland async tearing (`wp_tearing_control_v1`) when the user
-    // asked for an immediate/uncapped present mode or `VANTA_TEARING=1`.
+    // asked for an immediate/uncapped present mode or `VANTA_TEARING=1` AND we
+    // are on the GLES/EGL backend (Vulkan WSI attaches its own tearing control
+    // on `VK_PRESENT_MODE_IMMEDIATE_KHR`; attaching one here as well triggers
+    // fatal protocol error `tearing_control_exists` / Error 71).
     let want_tearing = std::env::var("VANTA_TEARING").ok().as_deref() == Some("1")
         || matches!(
             std::env::var("VANTA_PRESENT_MODE").ok().as_deref().map(str::trim),
             Some("immediate" | "uncapped")
         );
-    if want_tearing {
+    let mut tearing_control_manager = std::ptr::null_mut();
+    let mut tearing_control = std::ptr::null_mut();
+    if should_attach_tearing_control(
+        want_tearing,
+        crate::graphics::choice().backend.offers_vulkan(),
+        std::env::var_os("VANTA_NO_VULKAN").is_some(),
+        super::wl_dmabuf::withhold_vulkan(),
+    ) {
         if let Some((name, ver)) = globals.tearing_control_manager {
             let mgr = bind(name, 1, ver, &TEARING_CONTROL_MANAGER_INTERFACE, "wp_tearing_control_manager_v1");
             if !mgr.is_null() {
@@ -1818,7 +1854,20 @@ pub fn open(width: u32, height: u32, title: &str) -> Result<&'static WaylandWind
                         );
                         (wl.marshal_flags)(surface, WL_SURFACE_COMMIT, std::ptr::null(), 1, 0);
                     }
-                    println!("[android] wayland: wp_tearing_control_v1 async presentation enabled");
+                    tearing_control_manager = mgr;
+                    tearing_control = tc;
+                    println!("[android] wayland: wp_tearing_control_v1 async presentation enabled (GLES)");
+                } else {
+                    // Destroy the manager proxy rather than leaking it.
+                    unsafe {
+                        (wl.marshal_flags)(
+                            mgr,
+                            TEARING_CONTROL_MANAGER_DESTROY,
+                            std::ptr::null(),
+                            1,
+                            WL_MARSHAL_FLAG_DESTROY,
+                        );
+                    }
                 }
             }
         }
@@ -2012,6 +2061,8 @@ pub fn open(width: u32, height: u32, title: &str) -> Result<&'static WaylandWind
         touch: std::sync::atomic::AtomicPtr::new(touch),
         text_input: text_input.unwrap_or(std::ptr::null_mut()),
         pointer_constraints,
+        tearing_control_manager: std::sync::atomic::AtomicPtr::new(tearing_control_manager),
+        tearing_control: std::sync::atomic::AtomicPtr::new(tearing_control),
         relative_pointer: relative_pointer.unwrap_or(std::ptr::null_mut()),
         locked_pointer: Mutex::new(std::ptr::null_mut()),
         lock_requested_at: Mutex::new(None),
@@ -2044,6 +2095,20 @@ pub fn open(width: u32, height: u32, title: &str) -> Result<&'static WaylandWind
         last_placement: Mutex::new(None),
     };
     let host = WINDOW.get_or_init(|| host);
+
+    // Ensure WebView popup dialogs opened via `window.open()` participate in
+    // the exact same `open_web_view_dialogs` / `dialog_up` / stacking refcount
+    // as the primary WebView dialog returned to `load.rs`.
+    #[cfg(feature = "webview")]
+    vanta_shell::webview::set_popup_lifecycle_sink(|opened| {
+        if let Some(w) = current() {
+            if opened {
+                w.webview_dialog_opened();
+            } else {
+                w.webview_dialog_closed();
+            }
+        }
+    });
 
     // Roblox's own font for the editor, out of the APK the user supplied. Done
     // here rather than at window construction because it needs the asset
@@ -2479,12 +2544,16 @@ impl WaylandWindow {
     /// with two dialogs open, closing one must leave the engine hidden behind
     /// whichever is still up.
     pub fn webview_dialog_closed(&self) {
-        self.open_web_view_dialogs.fetch_sub(1, Ordering::SeqCst);
+        let remaining = self
+            .open_web_view_dialogs
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| Some((n - 1).max(0)))
+            .map(|prev| (prev - 1).max(0))
+            .unwrap_or(0);
         self.reconcile_stacking();
         // Only on the last close. With two dialogs up, closing one must leave
         // the window claimed for the other -- the same edge the restack above
         // uses, and for the same reason.
-        if self.open_web_view_dialogs.load(Ordering::SeqCst) == 0 {
+        if remaining == 0 {
             self.host.0.set_dialog_up(false);
         }
         // Nothing should have accumulated while a dialog was in front — see
@@ -2493,6 +2562,40 @@ impl WaylandWindow {
         // and the lock transitions already treat as one, and forgetting here
         // too costs nothing rather than trusting that invariant forever.
         super::input::forget_pending_unlocked_delta();
+    }
+
+    /// Destroy `wp_tearing_control_v1` and `wp_tearing_control_manager_v1`
+    /// proxies if they were bound on the GLES/EGL backend. Idempotent.
+    fn destroy_tearing_control(&self) {
+        let tc = self.tearing_control.swap(std::ptr::null_mut(), Ordering::AcqRel);
+        let mgr = self.tearing_control_manager.swap(std::ptr::null_mut(), Ordering::AcqRel);
+        if tc.is_null() && mgr.is_null() {
+            return;
+        }
+        // SAFETY: `tc` and `mgr` are live proxies created on `self.display` and
+        // atomically taken once above; both destructor requests have empty
+        // signatures and take `WL_MARSHAL_FLAG_DESTROY`.
+        unsafe {
+            if !tc.is_null() {
+                (self.wl.marshal_flags)(
+                    tc,
+                    TEARING_CONTROL_DESTROY,
+                    std::ptr::null(),
+                    1,
+                    WL_MARSHAL_FLAG_DESTROY,
+                );
+            }
+            if !mgr.is_null() {
+                (self.wl.marshal_flags)(
+                    mgr,
+                    TEARING_CONTROL_MANAGER_DESTROY,
+                    std::ptr::null(),
+                    1,
+                    WL_MARSHAL_FLAG_DESTROY,
+                );
+            }
+            (self.wl.flush)(self.display);
+        }
     }
 
     fn update_text_overlay(
@@ -4637,6 +4740,39 @@ fn hyprland_from(current_desktop: &str, session_desktop: &str, has_signature: bo
         || has_signature
 }
 
+/// Whether the compositor is Niri, via its exported `NIRI_SOCKET` or desktop
+/// environment identifiers (`XDG_CURRENT_DESKTOP` / `XDG_SESSION_DESKTOP`).
+fn on_niri() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| {
+        let var = |name: &str| std::env::var(name).unwrap_or_default();
+        niri_from(
+            &var("XDG_CURRENT_DESKTOP"),
+            &var("XDG_SESSION_DESKTOP"),
+            std::env::var_os("NIRI_SOCKET").is_some_and(|v| !v.is_empty()),
+        )
+    })
+}
+
+fn niri_from(current_desktop: &str, session_desktop: &str, has_socket: bool) -> bool {
+    current_desktop.to_ascii_lowercase().contains("niri")
+        || session_desktop.to_ascii_lowercase().contains("niri")
+        || has_socket
+}
+
+/// Choose the `zwp_pointer_constraints_v1` lifetime for the current compositor.
+///
+/// On Niri, `ONESHOT` guarantees a deactivated constraint can never silently
+/// reactivate on hover without keyboard focus; `sync_pointer_lock` re-requests
+/// a fresh lock once the window is focused again and the engine wants capture.
+fn pointer_constraint_lifetime(niri: bool) -> u32 {
+    if niri {
+        POINTER_CONSTRAINT_LIFETIME_ONESHOT
+    } else {
+        POINTER_CONSTRAINT_LIFETIME_PERSISTENT
+    }
+}
+
 /// `VANTA_NO_DRAG_LOCK=1` — leave the engine's own request as the only thing
 /// that captures the pointer.
 ///
@@ -4709,11 +4845,12 @@ unsafe extern "C" fn locked_pointer_locked(_data: *mut c_void, _lp: *mut c_void)
 /// `unlocked` — the compositor took the lock away, which it does on focus loss
 /// and on anything else it considers reason enough.
 ///
-/// The object stays alive because the lifetime is `persistent`: the compositor
-/// may reactivate it when focus returns, and destroying it here would turn a
-/// temporary deactivation into a permanent one. What has to happen is only that
-/// relative motion stops being treated as camera movement.
-unsafe extern "C" fn locked_pointer_unlocked(_data: *mut c_void, _lp: *mut c_void) {
+/// With `oneshot` lifetime (Niri), the constraint is permanently defunct once
+/// `unlocked` arrives: destroy the client-side proxy and clear `locked_pointer`
+/// so `sync_pointer_lock` can cleanly create a fresh lock when focus returns.
+/// With `persistent` lifetime, the object stays alive so the compositor may
+/// reactivate it on focus return unless `sync_pointer_lock` releases it.
+unsafe extern "C" fn locked_pointer_unlocked(_data: *mut c_void, lp: *mut c_void) {
     POINTER_LOCK_ACTIVE.store(false, Ordering::Release);
     let _ = take_pending_locked_delta();
     if let Some(w) = current() {
@@ -4723,9 +4860,33 @@ unsafe extern "C" fn locked_pointer_unlocked(_data: *mut c_void, _lp: *mut c_voi
         if lost != 0 {
             w.release_buttons(lost);
         }
-        let mut since = w.lock_inactive_since.lock().unwrap_or_else(|e| e.into_inner());
-        if since.is_none() {
-            *since = Some(std::time::Instant::now());
+        if pointer_constraint_lifetime(on_niri()) == POINTER_CONSTRAINT_LIFETIME_ONESHOT {
+            let mut slot = w.locked_pointer.lock().unwrap_or_else(|e| e.into_inner());
+            if !lp.is_null() && *slot == lp {
+                // SAFETY: `lp` is the live `zwp_locked_pointer_v1` proxy that
+                // just received `unlocked`; `destroy` has an empty signature
+                // and requires `WL_MARSHAL_FLAG_DESTROY`.
+                unsafe {
+                    (w.wl.marshal_flags)(
+                        lp,
+                        LOCKED_POINTER_DESTROY,
+                        std::ptr::null(),
+                        1,
+                        WL_MARSHAL_FLAG_DESTROY,
+                    );
+                    (w.wl.flush)(w.display);
+                }
+                *slot = std::ptr::null_mut();
+                POINTER_LOCK_REQUESTED.store(false, Ordering::Release);
+                ENGINE_OWNS_LOCK.store(false, Ordering::Release);
+                *w.lock_requested_at.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                *w.lock_inactive_since.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            }
+        } else {
+            let mut since = w.lock_inactive_since.lock().unwrap_or_else(|e| e.into_inner());
+            if since.is_none() {
+                *since = Some(std::time::Instant::now());
+            }
         }
     }
     super::input::reset_mouse_delta();
@@ -5152,29 +5313,22 @@ impl WaylandWindow {
             return;
         }
 
-        // **While the window is not focused, decide nothing.**
-        //
-        // The lock is requested `PERSISTENT`, which means the compositor
-        // deactivates it when focus goes away and reactivates it when focus
-        // comes back. That is the whole contract, and it is the compositor's
-        // job rather than ours -- it is also what gives the user a way out
-        // (Super, an overview, a workspace switch) that no client can take
-        // away from them.
-        //
-        // Acting here anyway is what broke it. Alt-tab makes the engine stop
-        // asking, `asked` goes false, and the arm below calls
-        // `release_pointer`, which *destroys* the very object the compositor
-        // was holding for us. The reactivation then has nothing to reactivate:
-        // coming back needs the engine to re-assert, a fresh `lock_pointer`,
-        // and a fresh activation, and if the engine is slow or does not
-        // re-assert at all the cursor simply stays loose. Reported as the lock
-        // not surviving an alt-tab, and it is Vanta interrupting something
-        // that was working.
+        // **Never hold an active pointer constraint while the window is
+        // unfocused.** If `xdg_toplevel.configure` already dropped `FOCUSED`
+        // (even if `wl_keyboard.leave` raced with it), release any live
+        // `zwp_locked_pointer_v1` immediately before returning so an unfocused
+        // window can never block pointer movement on another window (e.g. Niri).
+        // When focus returns, `sync_pointer_lock` cleanly re-locks if the
+        // engine still wants capture.
         //
         // `Some(false)` only. `None` is "this backend does not track focus" --
         // X11 answers that for every window -- and must keep behaving as it
         // always has rather than freezing the lock state forever.
         if self.host.0.focused() == Some(false) {
+            let held = !self.locked_pointer.lock().unwrap_or_else(|e| e.into_inner()).is_null();
+            if held {
+                self.release_pointer();
+            }
             return;
         }
 
@@ -5367,17 +5521,35 @@ impl WaylandWindow {
 fn constrain_toplevel() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| {
-        match std::env::var("VANTA_POINTER_LOCK_SURFACE").as_deref() {
-            Ok("toplevel") => return true,
-            Ok("canvas") => return false,
-            _ => {}
-        }
-        let desktop = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default().to_ascii_lowercase();
-        let session = std::env::var("XDG_SESSION_DESKTOP").unwrap_or_default().to_ascii_lowercase();
-        let kde = desktop.contains("kde") || desktop.contains("plasma")
-            || session.contains("kde") || session.contains("plasma");
-        kde || on_hyprland()
+        Self::constrain_toplevel_from(
+            std::env::var("VANTA_POINTER_LOCK_SURFACE").ok().as_deref(),
+            &std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default(),
+            &std::env::var("XDG_SESSION_DESKTOP").unwrap_or_default(),
+            on_hyprland(),
+            on_niri(),
+        )
     })
+}
+
+fn constrain_toplevel_from(
+    override_var: Option<&str>,
+    current_desktop: &str,
+    session_desktop: &str,
+    hyprland: bool,
+    niri: bool,
+) -> bool {
+    match override_var {
+        Some("toplevel") => return true,
+        Some("canvas") => return false,
+        _ => {}
+    }
+    let desktop = current_desktop.to_ascii_lowercase();
+    let session = session_desktop.to_ascii_lowercase();
+    let kde = desktop.contains("kde")
+        || desktop.contains("plasma")
+        || session.contains("kde")
+        || session.contains("plasma");
+    kde || hyprland || niri
 }
 
     fn lock_pointer(&self) {
@@ -5426,6 +5598,7 @@ fn constrain_toplevel() -> bool {
         // hitting it should not need a rebuild.
         let on_toplevel = Self::constrain_toplevel();
         let target = if on_toplevel { self.parent_surface } else { self.surface };
+        let lifetime = pointer_constraint_lifetime(on_niri());
         //
         // SAFETY: `pointer_constraints` and `parent_surface` are live proxies,
         // and `capture_pointer` is GDK's live borrowed pointer on this
@@ -5442,7 +5615,7 @@ fn constrain_toplevel() -> bool {
                 target,
                 self.capture_pointer,
                 std::ptr::null_mut::<c_void>(),
-                POINTER_CONSTRAINT_LIFETIME_PERSISTENT,
+                lifetime,
             )
         };
         if lp.is_null() {
@@ -6999,10 +7172,7 @@ impl WaylandWindow {
         // The recording marker in the title (ADR-059), set here for the same
         // reason: this is the GTK thread, and recording starts and stops on others.
         if let Some(on) = crate::recording::take_indicator_change() {
-            const MARK: &str = " \u{25cf} REC";
-            let window = self.host.0.window();
-            let base = window.title().map(|t| t.trim_end_matches(MARK).to_string()).unwrap_or_default();
-            window.set_title(Some(&if on { format!("{base}{MARK}") } else { base }));
+            self.host.0.set_recording(on);
         }
         // Built-in live Performance HUD badge (throttled to ~350 ms; one atomic load when off).
         if let Some(hud) = crate::perf_hud::poll_hud_update() {
@@ -7295,6 +7465,12 @@ pub fn instr_set_minimised(on: bool) {
 /// realized, so this cannot fire for one. A false positive here exits a session
 /// somebody was using, which is worse than the bug being fixed, so the
 /// condition is the narrow one.
+impl Drop for WaylandWindow {
+    fn drop(&mut self) {
+        self.destroy_tearing_control();
+    }
+}
+
 pub fn window_closed() -> bool {
     // Once true, always true. `wl_surface()` is read through GTK, and after
     // teardown has begun there is nothing to be gained from asking it again.
@@ -7304,6 +7480,7 @@ pub fn window_closed() -> bool {
     let Some(w) = current() else { return false };
     if w.host.0.wl_surface().is_none() {
         WINDOW_CLOSED.store(true, Ordering::Release);
+        w.destroy_tearing_control();
         // Say it plainly. A client that ends because its window closed and one
         // that ends because a timer expired look identical from outside, and
         // the difference is the whole of what was just fixed.
@@ -7956,5 +8133,48 @@ mod tests {
         let (text, caret) = splice_preedit("héllo", 2, Some(&("X".to_string(), 0, 0)));
         assert_eq!(text, "héXllo");
         assert_eq!(caret, 2);
+    }
+
+    #[test]
+    fn niri_detection_checks_desktop_vars_and_socket() {
+        assert!(niri_from("niri", "", false));
+        assert!(niri_from("Niri", "", false));
+        assert!(niri_from("GNOME:niri", "", false));
+        assert!(niri_from("", "niri", false));
+        assert!(niri_from("", "NIRI", false));
+        assert!(niri_from("", "", true));
+        assert!(!niri_from("GNOME", "gnome", false));
+        assert!(!niri_from("Hyprland", "hyprland", false));
+    }
+
+    #[test]
+    fn constrain_toplevel_includes_niri_and_honours_env_override() {
+        assert!(WaylandWindow::constrain_toplevel_from(None, "", "", false, true));
+        assert!(WaylandWindow::constrain_toplevel_from(None, "", "", true, false));
+        assert!(WaylandWindow::constrain_toplevel_from(None, "KDE", "", false, false));
+        assert!(!WaylandWindow::constrain_toplevel_from(None, "GNOME", "gnome", false, false));
+        assert!(!WaylandWindow::constrain_toplevel_from(Some("canvas"), "", "", false, true));
+        assert!(WaylandWindow::constrain_toplevel_from(Some("toplevel"), "GNOME", "gnome", false, false));
+    }
+
+    #[test]
+    fn pointer_constraint_lifetime_is_oneshot_on_niri_and_persistent_elsewhere() {
+        assert_eq!(pointer_constraint_lifetime(true), POINTER_CONSTRAINT_LIFETIME_ONESHOT);
+        assert_eq!(pointer_constraint_lifetime(false), POINTER_CONSTRAINT_LIFETIME_PERSISTENT);
+    }
+
+    #[test]
+    fn tearing_control_only_attaches_on_gles_backend_to_avoid_vulkan_wsi_collision() {
+        // When Vulkan is offered, Vulkan WSI owns wp_tearing_control_v1 on the
+        // surface; attaching one here causes fatal Error 71 (tearing_control_exists).
+        assert!(!should_attach_tearing_control(true, true, false, false));
+        // When tearing is not requested, never attach.
+        assert!(!should_attach_tearing_control(false, false, false, false));
+        assert!(!should_attach_tearing_control(false, true, true, false));
+        // When Vulkan is withheld (GLES selected, VANTA_NO_VULKAN, or no dmabuf),
+        // attaching wp_tearing_control_v1 for EGL is safe and enabled.
+        assert!(should_attach_tearing_control(true, false, false, false));
+        assert!(should_attach_tearing_control(true, true, true, false));
+        assert!(should_attach_tearing_control(true, true, false, true));
     }
 }

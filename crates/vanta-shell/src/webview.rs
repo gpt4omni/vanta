@@ -233,6 +233,51 @@ fn hybrid_launch_enabled() -> bool {
 type BridgeSink = dyn Fn(&str) + Send + Sync;
 static BRIDGE_SINK: std::sync::OnceLock<std::sync::Arc<BridgeSink>> = std::sync::OnceLock::new();
 
+/// Invoked with `true` when a popup `AdwDialog` created via `window.open()` is
+/// presented and with `false` when it closes.
+///
+/// The primary WebView dialog returned by [`open`] notifies `WaylandWindow` via
+/// the caller (`load.rs`), which increments/decrements `open_web_view_dialogs`
+/// and updates `HostWindow::set_dialog_up`. Popup dialogs are created inside
+/// [`install_popup_handling`] and never returned to `load.rs`, so without this
+/// sink a popup would bypass the refcount: closing the parent dialog while a
+/// popup is open (or closing them out of order) could desync `dialog_up` /
+/// stacking and leave clicks blocked or swallowed.
+type PopupLifecycleSink = dyn Fn(bool) + Send + Sync;
+static POPUP_LIFECYCLE_SINK: std::sync::OnceLock<std::sync::Arc<PopupLifecycleSink>> =
+    std::sync::OnceLock::new();
+
+/// Install the callback notified whenever a WebView popup dialog opens (`true`)
+/// or closes (`false`).
+pub fn set_popup_lifecycle_sink(sink: impl Fn(bool) + Send + Sync + 'static) {
+    let _ = POPUP_LIFECYCLE_SINK.set(std::sync::Arc::new(sink));
+}
+
+fn notify_popup_lifecycle(opened: bool) {
+    if let Some(sink) = POPUP_LIFECYCLE_SINK.get() {
+        sink(opened);
+    }
+}
+
+/// Ensures every popup dialog emits at most one `opened` (`true`) notification
+/// when presented and at most one matching `closed` (`false`) notification when
+/// dismissed, so duplicate `ready-to-show` or `closed` signals (or an aborted
+/// popup that never presented) can never desynchronise the host dialog refcount.
+#[derive(Default)]
+struct PopupLifecycleGate {
+    presented: std::cell::Cell<bool>,
+}
+
+impl PopupLifecycleGate {
+    fn on_present(&self) -> bool {
+        !self.presented.replace(true)
+    }
+
+    fn on_close(&self) -> bool {
+        self.presented.replace(false)
+    }
+}
+
 /// The dialog most recently presented by [`open`], so a close that did not
 /// originate from the user's own click on it -- the engine asking on
 /// `close-window`, or `vanta_runtime::webview` deciding a join has actually
@@ -1890,15 +1935,36 @@ fn create_popup_view(
     dialog.set_content_width(900);
     dialog.set_content_height(700);
 
+    let lifecycle = std::rc::Rc::new(PopupLifecycleGate::default());
     {
-        let dialog = dialog.clone();
+        let lifecycle = lifecycle.clone();
+        dialog.connect_closed(move |_| {
+            if lifecycle.on_close() {
+                notify_popup_lifecycle(false);
+            }
+        });
+    }
+
+    // Held only until `ready-to-show` presents the dialog (at which point
+    // `chrome_parent` owns the strong reference), avoiding a strong reference
+    // cycle between `dialog` and `view`'s signal closures.
+    let pending_dialog = std::rc::Rc::new(std::cell::RefCell::new(Some(dialog.clone())));
+    {
+        let pending_dialog = pending_dialog.clone();
+        let lifecycle = lifecycle.clone();
         let shown_view = view.clone();
         view.connect_ready_to_show(move |_| {
+            let Some(dialog) = pending_dialog.borrow_mut().take() else {
+                return;
+            };
             let host =
                 webview_policy::evaluate(&shown_view.uri().map(|u| u.to_string()).unwrap_or_default())
                     .host;
             header.set_title_widget(Some(&adw::WindowTitle::new(&host, "")));
             dialog.set_title(&host);
+            if lifecycle.on_present() {
+                notify_popup_lifecycle(true);
+            }
             dialog.present(Some(&chrome_parent));
         });
     }
@@ -1906,23 +1972,17 @@ fn create_popup_view(
     // Closing the dialog rather than leaving an unresponsive window up with
     // nothing left in it to show anything.
     {
-        let dialog = dialog.clone();
+        let dialog_weak = dialog.downgrade();
         // `AdwDialog::close` returns whether it accepted the request, which
         // `connect_close`'s own signature has no room for -- WebKit's `close`
         // signal wants a plain reaction, not a verdict.
         view.connect_close(move |_| {
-            let _ = dialog.close();
+            if let Some(dialog) = dialog_weak.upgrade() {
+                let _ = dialog.close();
+            }
         });
     }
 
-    // **Untested: whether this leaks a closed popup.** `dialog` holds `view`
-    // (through `toolbar`), and `view`'s own signal connections above hold
-    // `dialog` back -- a reference cycle, if GTK's own teardown of a closed
-    // dialog does not break it by dropping the content widget (and with it
-    // the signal closures) before the cycle matters. This crate could not
-    // build to check, so it is written down rather than assumed away; a weak
-    // reference via `glib::clone!` would be the fix if a live run ever shows
-    // popup dialogs surviving their own closure.
     view
 }
 
@@ -1981,5 +2041,18 @@ mod tests {
         let shim = bridge_shim();
         assert!(shim.contains("__globalRobloxAndroidBridge__"));
         assert!(shim.contains(BRIDGE_EXECUTE_ROBLOX));
+    }
+
+    #[test]
+    fn popup_lifecycle_gate_pairs_present_and_close_exactly_once() {
+        let gate = PopupLifecycleGate::default();
+        // Closing a popup that was never presented must not decrement refcount.
+        assert!(!gate.on_close());
+        // Presenting emits open once; a duplicate ready-to-show does not double-count.
+        assert!(gate.on_present());
+        assert!(!gate.on_present());
+        // Closing emits close once; a duplicate closed signal does not underflow.
+        assert!(gate.on_close());
+        assert!(!gate.on_close());
     }
 }

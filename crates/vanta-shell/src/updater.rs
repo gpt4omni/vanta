@@ -349,8 +349,11 @@ pub fn header_button(
                 // Ask means somebody is asked. A badge is what the other modes
                 // leave behind; this one opens the changelog with an Update
                 // button on it, on launch, and that dialog is the whole
-                // difference between the two settings.
-                if automatic == Automatic::Ask {
+                // difference between the two settings. Never auto-present when
+                // the launcher window is hidden (browser auto-launch) or under
+                // `--play`, so a background launcher never opens a stray modal
+                // surface over the game.
+                if automatic == Automatic::Ask && parent.is_visible() && !crate::cli::playing() {
                     present(&parent, config.clone(), last.clone(), button.clone(), installing.clone());
                 }
             });
@@ -687,13 +690,13 @@ thread_local! {
     /// close handler that has to be kept in step with every way a window can go
     /// away. A dead weak reference and no reference at all mean the same thing
     /// here, which is the property that makes this safe to get wrong.
-    static OPEN: RefCell<Option<glib::WeakRef<adw::Window>>> = const { RefCell::new(None) };
+    static OPEN: RefCell<Option<glib::WeakRef<adw::Dialog>>> = const { RefCell::new(None) };
 }
 
-/// The window behind the button: which build is here, what Roblox has published,
+/// The dialog behind the button: which build is here, what Roblox has published,
 /// and one control.
 ///
-/// One window for all three states, with the top group saying which. Three
+/// One dialog for all three states, with the top group saying which. Three
 /// windows would be three places for the same sentence about where a build comes
 /// from, and they would drift.
 ///
@@ -703,18 +706,18 @@ thread_local! {
 /// second settings window. The settings are a tab in the real one now, the
 /// picker is on the Roblox page, and what is left is the question the button can
 /// answer: which build am I on, and is there a newer engine.
-/// Raise the update window if it is already open.
+/// Raise the parent window if the update dialog is already open.
 ///
-/// Returns whether it did. Presenting an already-present `adw::Window` brings it
-/// forward, which is the behaviour somebody pressing the button a second time is
-/// asking for -- they want to see it, and they have no way of knowing a check
-/// opened it a moment ago.
-fn raise_if_open() -> bool {
+/// Returns whether it is already open. Presenting an already-presented
+/// `adw::Dialog` logs a GTK critical warning, so bringing the parent window
+/// forward gives the user what a second button press asks for without
+/// stacking a duplicate dialog.
+fn raise_if_open(parent: &gtk::Window) -> bool {
     OPEN.with(|open| {
-        let Some(existing) = open.borrow().as_ref().and_then(glib::WeakRef::upgrade) else {
+        let Some(_existing) = open.borrow().as_ref().and_then(glib::WeakRef::upgrade) else {
             return false;
         };
-        existing.present();
+        parent.present();
         true
     })
 }
@@ -726,7 +729,7 @@ pub fn present(
     button: gtk::Button,
     installing: Rc<std::cell::Cell<bool>>,
 ) {
-    if raise_if_open() {
+    if raise_if_open(parent) {
         return;
     }
     let automatic = config.borrow().automatic_updates;
@@ -854,19 +857,17 @@ pub fn present(
     footer.append(meter.widget());
     footer.append(&action);
 
-    let window = adw::Window::builder()
-        .transient_for(parent)
-        .modal(true)
+    let dialog = adw::Dialog::builder()
         .title("Roblox Build")
         // 660 while this was three `PreferencesGroup`s that needed the room for
         // their rows. A changelog is a column of prose, and 660 stretched its
         // lines well past a comfortable measure while leaving the full-width
         // button looking like a stretched bar with a word in the middle. This is
         // roughly the same measure a system updater gives the same content.
-        .default_width(460)
+        .content_width(460)
         // The height stayed: this is how much release note is worth having on
         // screen before the scrollbar takes over.
-        .default_height(660)
+        .content_height(660)
         .build();
 
     // **A banner rather than an accent-filled header button.** The interface
@@ -1257,11 +1258,14 @@ pub fn present(
     // has to stay put while a long changelog moves under it, or the control
     // this window exists to offer scrolls off the bottom of it.
     toolbar.add_bottom_bar(&footer);
-    window.set_content(Some(&toolbar));
+    dialog.set_child(Some(&toolbar));
     // The button, not the changelog — see `notes_body.set_can_focus(false)`.
-    GtkWindowExt::set_focus(&window, Some(&action));
-    OPEN.with(|open| *open.borrow_mut() = Some(window.downgrade()));
-    window.present();
+    dialog.set_focus(Some(&action));
+    dialog.connect_closed(|_| {
+        OPEN.with(|open| *open.borrow_mut() = None);
+    });
+    OPEN.with(|open| *open.borrow_mut() = Some(dialog.downgrade()));
+    dialog.present(Some(parent));
 }
 
 /// The label once a check says there is something newer.

@@ -139,16 +139,14 @@ pub fn present(parent: &impl IsA<gtk::Window>, retry: impl Fn() -> bool + 'stati
     toolbar.add_top_bar(&header);
     toolbar.set_content(Some(&status));
 
-    let window = adw::Window::builder()
-        .transient_for(parent)
-        .modal(true)
+    let dialog = adw::Dialog::builder()
         .title("Set up Roblox")
-        .default_width(560)
-        .default_height(if copy.is_some() { 660 } else { 520 })
-        .content(&toolbar)
+        .content_width(560)
+        .content_height(if copy.is_some() { 660 } else { 520 })
+        .child(&toolbar)
         .build();
 
-    let to_close = window.clone();
+    let to_close = dialog.clone();
     let retry = std::rc::Rc::new(retry);
     let (to_close_for_copy, retry_for_copy) = (to_close.clone(), retry.clone());
     let (fetch_for_copy, meter_for_copy) = (fetch.clone(), meter.clone());
@@ -210,7 +208,7 @@ pub fn present(parent: &impl IsA<gtk::Window>, retry: impl Fn() -> bool + 'stati
                     // cannot, the window stays and the bar keeps saying what
                     // happened rather than vanishing into nothing.
                     if retry() {
-                        to_close.close();
+                        to_close.force_close();
                     }
                 }
                 Err(why) => {
@@ -255,7 +253,7 @@ pub fn present(parent: &impl IsA<gtk::Window>, retry: impl Fn() -> bool + 'stati
                     Ok(version) => {
                         meter_done.finish(&version);
                         if retry() {
-                            to_close.close();
+                            to_close.force_close();
                         }
                     }
                     Err(why) => {
@@ -270,7 +268,7 @@ pub fn present(parent: &impl IsA<gtk::Window>, retry: impl Fn() -> bool + 'stati
         });
     }
 
-    window.present();
+    dialog.present(Some(parent.as_ref()));
 }
 
 #[cfg(test)]
