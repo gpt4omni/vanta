@@ -78,6 +78,27 @@
       and is not this change. AppStream shows the newest entry as "what's new",
       so the important one is the top.
     -->
+    <release version="0.45.0" date="2026-11-23">
+      <url type="details">https://github.com/gpt4omni/vanta/releases/tag/v0.45.0</url>
+      <description>
+        <p>
+          Fixes blank AppImage launches across Linux distributions, resolves
+          Niri Wayland mouse-blocking windows and pointer lock traps, adds full
+          ARM64 (aarch64) support including 16 KiB/64 KiB page kernels, and
+          delivers major runtime performance and stability fixes.
+        </p>
+        <p>
+          Highlights include pruning host-coupled graphics and display libraries
+          from the AppImage with working WebKitGTK helper paths, converting
+          blocking modal launcher windows into in-window dialogs, fixing the
+          Wayland tearing protocol disconnect under Vulkan, wiring Asset Mod
+          Manager overlays into the filesystem asset path, replacing synchronous
+          recording readbacks with an async 3-slot VkFence ring, eliminating the
+          input-thread game-log syscall storm, and making PipeWire audio capture
+          lock-free on the real-time thread.
+        </p>
+      </description>
+    </release>
     <release version="0.40.0" date="2026-11-21">
       <url type="details">https://github.com/gpt4omni/vanta/releases/tag/v0.40.0</url>
       <description>
