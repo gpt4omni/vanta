@@ -153,8 +153,8 @@ rustPlatform.buildRustPackage.override { stdenv = clangStdenv; } (finalAttrs: {
       asl20
     ];
     mainProgram = "vanta";
-    # Loads Roblox's Android x86-64 build natively, with no emulation.
-    platforms = [ "x86_64-linux" ];
+    # Loads Roblox's Android x86-64 or ARM64 build natively, with no emulation.
+    platforms = [ "x86_64-linux" "aarch64-linux" ];
     # A maintainer is needed. The upstream author has not agreed to maintain a
     # nixpkgs package, so this is deliberately empty rather than guessed.
     maintainers = [ ];

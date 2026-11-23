@@ -19,10 +19,13 @@ fn main() {
     // The loader patches that change behaviour rather than add a trace:
     // 0005 so a RELR-packed library is relocated at all, 0006 so the x86-64
     // client can link the Quest build's arm64 objects for the translator
-    // (inert until `--guest-arm64` sets a guest machine). In that order, since
-    // 0006 is made against 0005. patches/README.md has both, and
-    // patches/apply.rs why the loader is compiled from a patched overlay
-    // under OUT_DIR rather than from the submodule.
+    // (inert until `--guest-arm64` sets a guest machine), 0009 for 2 MiB THP
+    // text backing on 4 KiB 64-bit Linux hosts with read-only text/bss
+    // protections, and 0010 for runtime host page size (4/16/64 KiB) and
+    // ARM64 I-cache coherency. Applied in order since each builds on the prior.
+    // patches/README.md documents them, and patches/apply.rs explains why the
+    // loader is compiled from a patched overlay under OUT_DIR rather than from
+    // the submodule.
     let linker = PathBuf::from(std::env::var("OUT_DIR").unwrap()).join("mcpelauncher-linker");
     patched_overlay(
         &root.join("third_party/mcpelauncher-linker"),
@@ -33,6 +36,7 @@ fn main() {
             "0005-parse-relr-dynamic-tags",
             "0006-link-guest-arch-objects",
             "0009-hugepage-large-text",
+            "0010-aarch64-pagesize-and-icache",
         ],
     );
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux") {
@@ -95,6 +99,7 @@ fn main() {
     println!("cargo:rustc-link-lib=dylib=pthread");
 
     println!("cargo:rerun-if-env-changed=VANTA_JNI_TRACE");
+    println!("cargo:rerun-if-env-changed=VANTA_JNI_DEBUG");
 
     // Watch the whole native tree, not a hand-maintained list. A file missing
     // from that list is not a build error — Cargo simply does not re-run this

@@ -29,7 +29,7 @@ pkgname=vanta-bin
 pkgver=0.34.0
 pkgrel=1
 pkgdesc="Roblox's official Android build, run natively on Linux -- Vanta ships no Roblox code and fetches a signature-verified one (prebuilt)"
-arch=('x86_64')
+arch=('x86_64' 'aarch64')
 url="https://github.com/gpt4omni/vanta"
 license=('GPL-3.0-or-later')
 depends=(
@@ -57,8 +57,10 @@ install="$pkgname.install"
 # The binaries in the artifact were already stripped by CI's own makepkg;
 # stripping them again fails and would not make them byte-identical.
 options=('!strip' '!debug')
-source=("vanta.pkg.tar.zst::https://github.com/gpt4omni/vanta/releases/download/v$pkgver/vanta-0.34.0.r0.gfe20025-1-$CARCH.pkg.tar.zst")
-sha256sums=('d1a72ea80a2ee936ae129c904b9f3274eeba1bb5f0d4c0467dc3c6e575dc8f88')
+source_x86_64=("vanta.pkg.tar.zst::https://github.com/gpt4omni/vanta/releases/download/v$pkgver/vanta-0.34.0.r0.gfe20025-1-x86_64.pkg.tar.zst")
+sha256sums_x86_64=('d1a72ea80a2ee936ae129c904b9f3274eeba1bb5f0d4c0467dc3c6e575dc8f88')
+source_aarch64=("vanta.pkg.tar.zst::https://github.com/gpt4omni/vanta/releases/download/v$pkgver/vanta-0.34.0.r0.gfe20025-1-aarch64.pkg.tar.zst")
+sha256sums_aarch64=('SKIP')
 
 package() {
   bsdtar -xf "$srcdir/vanta.pkg.tar.zst" -C "$pkgdir"

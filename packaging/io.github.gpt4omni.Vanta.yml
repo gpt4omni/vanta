@@ -306,6 +306,8 @@ modules:
   # Found by the `vanta` module through BOOST_ROOT below; checked with
   # CMake 4.3 configuring dynarmic against exactly this layout.
   - name: boost-headers
+    only-arches:
+      - x86_64
     buildsystem: simple
     build-commands:
       - mkdir -p /app/include

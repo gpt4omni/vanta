@@ -20,7 +20,7 @@
   <summary>Run Roblox on Linux natively</summary>
   <description>
     <p>
-      Vanta loads Roblox's official Android x86-64 engine directly on Linux
+      Vanta loads Roblox's official Android x86-64 and ARM64 engine directly on Linux
       through a purpose-built runtime: the AOSP bionic linker, a bionic/glibc
       shim, a JNI VM in place of Android's, and a framework layer that answers
       the client's calls. No emulator, no container, no virtual machine.

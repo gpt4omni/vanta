@@ -1,6 +1,6 @@
 [package]
 name = "vanta-runtime"
-description = "Loads and (eventually) runs Roblox's Android x86-64 build on Linux"
+description = "Loads and runs Roblox's Android x86-64 and aarch64 builds natively on Linux"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

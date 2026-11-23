@@ -255,9 +255,11 @@ if(PIPEWIRE_FOUND)
   # this binary was for a long time: it printed "ok" for checks that never ran,
   # and one of them was already wrong.
   target_compile_options(vanta_pipewire_backend_test PRIVATE -UNDEBUG)
-  add_custom_command(TARGET vanta_pipewire_backend_test POST_BUILD
-    COMMAND vanta_pipewire_backend_test
-    COMMENT "Running pipewire_backend fill_pcm checks (no PipeWire session needed)")
+  if(NOT CMAKE_CROSSCOMPILING OR CMAKE_CROSSCOMPILING_EMULATOR)
+    add_custom_command(TARGET vanta_pipewire_backend_test POST_BUILD
+      COMMAND vanta_pipewire_backend_test
+      COMMENT "Running pipewire_backend fill_pcm checks (no PipeWire session needed)")
+  endif()
   add_dependencies(vanta_liblog vanta_pipewire_backend_test)
 endif()
 
@@ -266,25 +268,31 @@ endif()
 # checks around it.
 add_executable(vanta_record_tap_test EXCLUDE_FROM_ALL record_tap_test.cpp)
 target_compile_options(vanta_record_tap_test PRIVATE -UNDEBUG)
-add_custom_command(TARGET vanta_record_tap_test POST_BUILD
-  COMMAND vanta_record_tap_test
-  COMMENT "Running recorder audio tap checks")
+if(NOT CMAKE_CROSSCOMPILING OR CMAKE_CROSSCOMPILING_EMULATOR)
+  add_custom_command(TARGET vanta_record_tap_test POST_BUILD
+    COMMAND vanta_record_tap_test
+    COMMENT "Running recorder audio tap checks")
+endif()
 add_dependencies(vanta_liblog vanta_record_tap_test)
 
 add_executable(vanta_aaudio_input_callback_test EXCLUDE_FROM_ALL
   aaudio_input_callback.cpp aaudio_input_callback_test.cpp)
 target_compile_options(vanta_aaudio_input_callback_test PRIVATE -UNDEBUG)
-add_custom_command(TARGET vanta_aaudio_input_callback_test POST_BUILD
-  COMMAND vanta_aaudio_input_callback_test
-  COMMENT "Running AAudio input callback lifecycle checks")
+if(NOT CMAKE_CROSSCOMPILING OR CMAKE_CROSSCOMPILING_EMULATOR)
+  add_custom_command(TARGET vanta_aaudio_input_callback_test POST_BUILD
+    COMMAND vanta_aaudio_input_callback_test
+    COMMENT "Running AAudio input callback lifecycle checks")
+endif()
 add_dependencies(vanta_liblog vanta_aaudio_input_callback_test)
 
 add_executable(vanta_aaudio_input_test EXCLUDE_FROM_ALL
   aaudio.cpp aaudio_input_callback.cpp aaudio_input_test.cpp)
 target_compile_options(vanta_aaudio_input_test PRIVATE -UNDEBUG)
-add_custom_command(TARGET vanta_aaudio_input_test POST_BUILD
-  COMMAND vanta_aaudio_input_test
-  COMMENT "Running AAudio callback and blocking input ABI checks")
+if(NOT CMAKE_CROSSCOMPILING OR CMAKE_CROSSCOMPILING_EMULATOR)
+  add_custom_command(TARGET vanta_aaudio_input_test POST_BUILD
+    COMMAND vanta_aaudio_input_test
+    COMMENT "Running AAudio callback and blocking input ABI checks")
+endif()
 add_dependencies(vanta_liblog vanta_aaudio_input_test)
 
 # The two libc allocators refused in foreign_alloc.cpp. Run at build time, like
@@ -292,9 +300,11 @@ add_dependencies(vanta_liblog vanta_aaudio_input_test)
 add_executable(vanta_foreign_alloc_test EXCLUDE_FROM_ALL
   foreign_alloc.cpp foreign_alloc_test.cpp)
 target_compile_options(vanta_foreign_alloc_test PRIVATE -UNDEBUG)
-add_custom_command(TARGET vanta_foreign_alloc_test POST_BUILD
-  COMMAND vanta_foreign_alloc_test
-  COMMENT "Running foreign-allocation shim checks")
+if(NOT CMAKE_CROSSCOMPILING OR CMAKE_CROSSCOMPILING_EMULATOR)
+  add_custom_command(TARGET vanta_foreign_alloc_test POST_BUILD
+    COMMAND vanta_foreign_alloc_test
+    COMMENT "Running foreign-allocation shim checks")
+endif()
 add_dependencies(vanta_liblog vanta_foreign_alloc_test)
 
 add_library(vanta_linker_shim STATIC shim.cpp)
@@ -396,17 +406,21 @@ target_link_libraries(vanta_jni_shim PUBLIC jnivm)
 add_executable(vanta_jni_shim_test EXCLUDE_FROM_ALL jni_shim.cpp jni_shim_test.cpp)
 target_compile_options(vanta_jni_shim_test PRIVATE -UNDEBUG)
 target_link_libraries(vanta_jni_shim_test PRIVATE jnivm)
-add_custom_command(TARGET vanta_jni_shim_test POST_BUILD
-  COMMAND vanta_jni_shim_test
-  COMMENT "Running JNI worker attachment checks")
+if(NOT CMAKE_CROSSCOMPILING OR CMAKE_CROSSCOMPILING_EMULATOR)
+  add_custom_command(TARGET vanta_jni_shim_test POST_BUILD
+    COMMAND vanta_jni_shim_test
+    COMMENT "Running JNI worker attachment checks")
+endif()
 add_dependencies(vanta_jni_shim vanta_jni_shim_test)
 
 add_executable(vanta_netdb_compat_test EXCLUDE_FROM_ALL netdb_compat.cpp netdb_compat_test.cpp)
 target_compile_options(vanta_netdb_compat_test PRIVATE -UNDEBUG)
 target_link_libraries(vanta_netdb_compat_test PRIVATE pthread)
-add_custom_command(TARGET vanta_netdb_compat_test POST_BUILD
-  COMMAND vanta_netdb_compat_test
-  COMMENT "Running netdb_compat DNS cache checks")
+if(NOT CMAKE_CROSSCOMPILING OR CMAKE_CROSSCOMPILING_EMULATOR)
+  add_custom_command(TARGET vanta_netdb_compat_test POST_BUILD
+    COMMAND vanta_netdb_compat_test
+    COMMENT "Running netdb_compat DNS cache checks")
+endif()
 add_dependencies(vanta_jni_shim vanta_netdb_compat_test)
 
 add_executable(vanta_permissions_transport_test EXCLUDE_FROM_ALL
@@ -414,9 +428,11 @@ add_executable(vanta_permissions_transport_test EXCLUDE_FROM_ALL
 target_compile_options(vanta_permissions_transport_test PRIVATE -UNDEBUG)
 target_include_directories(vanta_permissions_transport_test PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/libjnivm/include)
-add_custom_command(TARGET vanta_permissions_transport_test POST_BUILD
-  COMMAND vanta_permissions_transport_test
-  COMMENT "Running PermissionsProtocol response transport checks")
+if(NOT CMAKE_CROSSCOMPILING OR CMAKE_CROSSCOMPILING_EMULATOR)
+  add_custom_command(TARGET vanta_permissions_transport_test POST_BUILD
+    COMMAND vanta_permissions_transport_test
+    COMMENT "Running PermissionsProtocol response transport checks")
+endif()
 add_dependencies(vanta_jni_shim vanta_permissions_transport_test)
 
 install(TARGETS vanta_jni_shim jnivm logger ARCHIVE DESTINATION lib)

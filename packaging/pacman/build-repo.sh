@@ -60,10 +60,29 @@ here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # different luck.
 repo=$(cd "$here/../.." && pwd)
 
-# Fixed rather than a flag, matching packaging/apt/build-repo.sh's ARCH: this
-# repository ships one architecture today. Widen the day a second one exists.
 DBNAME=vanta
-ARCH=x86_64
+
+# Detect a package's architecture from its embedded `.PKGINFO` (`arch = ...`),
+# falling back to the filename suffix (`*-<arch>.pkg.tar.*`) when bsdtar is
+# unavailable. Each architecture gets its own `$outdir/$arch/` tree and its own
+# `repo-add` database so x86_64 and aarch64 packages can live side by side.
+pkg_arch() {
+    local pkg=$1
+    local arch=""
+    if command -v bsdtar >/dev/null 2>&1; then
+        arch=$(bsdtar -xOqf "$pkg" .PKGINFO 2>/dev/null | sed -n 's/^arch = //p' | head -n1 || true)
+    fi
+    if [ -z "$arch" ]; then
+        local base
+        base=$(basename "$pkg")
+        arch=$(printf '%s\n' "$base" | sed -nE 's/^.*-([A-Za-z0-9_]+)\.pkg\.tar(\.[A-Za-z0-9]+)?$/\1/p')
+    fi
+    if [ -z "$arch" ]; then
+        echo "error: could not determine architecture of $pkg" >&2
+        return 1
+    fi
+    printf '%s\n' "$arch"
+}
 
 outdir="$repo/dist/pacman-repo"
 allow_unsigned=0
@@ -119,44 +138,57 @@ fi
 
 command -v repo-add >/dev/null 2>&1 || { echo "error: repo-add is not installed (pacman-contrib)" >&2; exit 1; }
 
-mkdir -p "$outdir/$ARCH"
+mkdir -p "$outdir"
 outdir=$(cd "$outdir" && pwd)
-destdir="$outdir/$ARCH"
 
-echo "==> copying ${#pkgs[@]} package(s) into $destdir"
+declare -A arch_seen=()
+arches=()
+echo "==> sorting ${#pkgs[@]} package(s) by architecture into $outdir"
 for pkg in "${pkgs[@]}"; do
+    arch=$(pkg_arch "$pkg")
+    destdir="$outdir/$arch"
+    mkdir -p "$destdir"
     install -m644 "$pkg" "$destdir/$(basename "$pkg")"
-    echo "    $(basename "$pkg")"
+    echo "    [$arch] $(basename "$pkg")"
+    if [ -z "${arch_seen[$arch]:-}" ]; then
+        arch_seen[$arch]=1
+        arches+=("$arch")
+    fi
 done
 
-dbfile="$destdir/$DBNAME.db.tar.gz"
+for arch in "${arches[@]}"; do
+    destdir="$outdir/$arch"
+    dbfile="$destdir/$DBNAME.db.tar.gz"
 
-# repo-add's own defaults name the files-database identically to the
-# db-database but with .files.tar.gz -- both are written from one invocation,
-# which is why there is only one repo-add call here rather than a matching
-# pair the way createrepo_c's Packages/Release are two separate steps.
-if [ "$allow_unsigned" -eq 1 ]; then
-    echo "==> repo-add (unsigned)"
-    ( cd "$destdir" && repo-add "$dbfile" ./*.pkg.tar.zst )
-else
-    echo "==> repo-add -s -k $ARCH_GPG_KEY_ID"
-    # -s signs the resulting database (both vanta.db.tar.gz and
-    # vanta.files.tar.gz get a detached .sig alongside them); -k pins which
-    # secret key repo-add's own gpg call signs with, the same reason
-    # packaging/apt/build-repo.sh's gpg invocations always pass
-    # --local-user rather than relying on a homedir default. **Individual
-    # .pkg.tar.zst are deliberately never signed here**: makepkg's own
-    # `--sign` (or `-p`) would do that, but it would rewrite nothing about
-    # the package file itself, only add a sidecar .sig -- so unlike rpm
-    # --addsign, package-level signing does not actually conflict with
-    # cosign's release-page signature covering the same bytes. It is left
-    # out anyway, for the same reason gpgcheck=0 stays permanent in
-    # packaging/vanta.repo: this design signs the index once
-    # (vanta.db.tar.gz) rather than every artefact it lists, the same
-    # shape apt's Release and dnf's repomd.xml already take, so pacman.conf's
-    # SigLevel only has to trust the database, never the package.
-    ( cd "$destdir" && repo-add -s -k "$ARCH_GPG_KEY_ID" "$dbfile" ./*.pkg.tar.zst )
+    # repo-add's own defaults name the files-database identically to the
+    # db-database but with .files.tar.gz -- both are written from one invocation,
+    # which is why there is only one repo-add call here rather than a matching
+    # pair the way createrepo_c's Packages/Release are two separate steps.
+    if [ "$allow_unsigned" -eq 1 ]; then
+        echo "==> repo-add [$arch] (unsigned)"
+        ( cd "$destdir" && repo-add "$dbfile" ./*.pkg.tar.zst )
+    else
+        echo "==> repo-add [$arch] -s -k $ARCH_GPG_KEY_ID"
+        # -s signs the resulting database (both vanta.db.tar.gz and
+        # vanta.files.tar.gz get a detached .sig alongside them); -k pins which
+        # secret key repo-add's own gpg call signs with, the same reason
+        # packaging/apt/build-repo.sh's gpg invocations always pass
+        # --local-user rather than relying on a homedir default. **Individual
+        # .pkg.tar.zst are deliberately never signed here**: makepkg's own
+        # `--sign` (or `-p`) would do that, but it would rewrite nothing about
+        # the package file itself, only add a sidecar .sig -- so unlike rpm
+        # --addsign, package-level signing does not actually conflict with
+        # cosign's release-page signature covering the same bytes. It is left
+        # out anyway, for the same reason gpgcheck=0 stays permanent in
+        # packaging/vanta.repo: this design signs the index once
+        # (vanta.db.tar.gz) rather than every artefact it lists, the same
+        # shape apt's Release and dnf's repomd.xml already take, so pacman.conf's
+        # SigLevel only has to trust the database, never the package.
+        ( cd "$destdir" && repo-add -s -k "$ARCH_GPG_KEY_ID" "$dbfile" ./*.pkg.tar.zst )
+    fi
+done
 
+if [ "$allow_unsigned" -ne 1 ]; then
     # The public half, for a user's pacman-key. Armoured, matching
     # packaging/rpm/build-repo.sh's RPM-GPG-KEY-vanta rather than apt's
     # binary export: `pacman-key --add` reads the armoured form directly.

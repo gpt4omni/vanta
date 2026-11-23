@@ -72,6 +72,7 @@ on:
     paths:
       - 'crates/**'
       - 'native/**'
+      - 'patches/**'
       - 'third_party/**'
       - 'Cargo.lock'
       - 'Cargo.toml'
@@ -88,6 +89,7 @@ on:
     paths:
       - 'crates/**'
       - 'native/**'
+      - 'patches/**'
       - 'third_party/**'
       - 'Cargo.lock'
       - 'Cargo.toml'
@@ -465,8 +467,8 @@ jobs:
         run: |
           set -euo pipefail
           mapfile -t pkgs < <(
-            bash -c 'source packaging/aur/vanta/PKGBUILD; printf "%s\n" "${depends[@]}" "${makedepends[@]}"' \
-              | sed -E 's/[<>=].*$//'
+            bash -c 'source packaging/aur/vanta/PKGBUILD; arch=$(uname -m); eval "arch_makedepends=(\"\${makedepends_${arch}[@]}\")"; printf "%s\n" "${depends[@]}" "${makedepends[@]}" "${arch_makedepends[@]}"' \
+              | sed -E '/^$/d; s/[<>=].*$//'
           )
           pacman -Syu --needed --noconfirm git "${pkgs[@]}"
       - name: Build the package as a non-root user
@@ -508,7 +510,7 @@ jobs:
       - name: Upload the Arch package
         uses: actions/upload-artifact@v4
         with:
-          name: vanta-arch
+          name: vanta-arch-x86_64
           path: |
             dist/arch/*.pkg.tar.zst
             packaging/aur/vanta/PKGBUILD

@@ -159,6 +159,20 @@ fn uname() -> String {
         .unwrap_or_else(|| "unknown".into())
 }
 
+fn page_size() -> String {
+    // SAFETY: `sysconf(_SC_PAGESIZE)` takes a constant and reads no pointers.
+    let ps = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+    if ps <= 0 {
+        return "unknown".into();
+    }
+    let bytes = ps as usize;
+    if bytes % 1024 == 0 {
+        format!("{} KiB ({bytes} bytes)", bytes / 1024)
+    } else {
+        format!("{bytes} bytes")
+    }
+}
+
 fn session() -> String {
     let kind = std::env::var("XDG_SESSION_TYPE").unwrap_or_else(|_| "unknown".into());
     match std::env::var("XDG_CURRENT_DESKTOP") {
@@ -264,6 +278,7 @@ pub fn report() -> String {
         ("Build", vanta_shell::version::origin().text()),
         ("Roblox", roblox()),
         ("System", uname()),
+        ("Page size", page_size()),
         ("Distro", distro()),
         ("Session", session()),
         // The NVIDIA kernel module and, in a Flatpak, whether the sandbox has
@@ -306,8 +321,10 @@ mod tests {
         // literal that have to be remembered together: the literal was 6 when
         // a seventh row was added, and the failure it produced said nothing
         // about which row was new.
-        const LABELS: [&str; 10] =
-            ["Vanta", "Licence", "Install", "Build", "Roblox", "System", "Distro", "Session", "Graphics", "VR"];
+        const LABELS: [&str; 11] = [
+            "Vanta", "Licence", "Install", "Build", "Roblox", "System", "Page size", "Distro",
+            "Session", "Graphics", "VR",
+        ];
         let text = report();
         for label in LABELS {
             let line = text

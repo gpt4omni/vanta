@@ -43,4 +43,4 @@ Title=Vanta
 Url=https://gpt4omni.github.io/vanta/repo/
 Homepage=https://gpt4omni.github.io/vanta/
 Icon=https://raw.githubusercontent.com/gpt4omni/vanta/main/packaging/icons/hicolor/scalable/apps/io.github.gpt4omni.Vanta.svg
-Description=Run Roblox on Linux natively. Vanta loads Roblox's official Android x86-64 engine directly, with no emulator, container or virtual machine. It ships no Roblox code; you supply the Android client yourself.
+Description=Run Roblox on Linux natively. Vanta loads Roblox's official Android x86-64 and ARM64 engine directly, with no emulator, container or virtual machine. It ships no Roblox code; you supply the Android client yourself.
