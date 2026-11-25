@@ -363,21 +363,34 @@ uvec2 encode_bc1(uint px[16], bool punchthrough) {
         if (c0 > c1) {
             uint tmp = c0; c0 = c1; c1 = tmp;
         }
+        if (c0 == c1) {
+            uint bits = 0u;
+            for (uint i = 0u; i < 16u; ++i) {
+                if ((px[i] >> 24u) == 0u) {
+                    bits |= 3u << (i * 2u);
+                }
+            }
+            return uvec2(c0 | (c1 << 16u), bits);
+        }
         ivec3 p0 = unpack_rgb565(c0);
         ivec3 p1 = unpack_rgb565(c1);
         ivec3 p2 = (p0 + p1) >> 1;
+        ivec3 dir = p1 - p0;
+        int d0 = p0.r * dir.r + p0.g * dir.g + p0.b * dir.b;
+        int d1 = p1.r * dir.r + p1.g * dir.g + p1.b * dir.b;
+        int d2 = p2.r * dir.r + p2.g * dir.g + p2.b * dir.b;
+        int m02 = d0 + d2;
+        int m21 = d2 + d1;
         uint bits = 0u;
         for (uint i = 0u; i < 16u; ++i) {
             uint p = px[i];
             uint best = 3u;
             if ((p >> 24u) != 0u) {
-                ivec3 c = ivec3(int(p & 0xFFu), int((p >> 8u) & 0xFFu), int((p >> 16u) & 0xFFu));
-                ivec3 d0 = c - p0; int e0 = d0.r * d0.r + d0.g * d0.g + d0.b * d0.b;
-                ivec3 d1 = c - p1; int e1 = d1.r * d1.r + d1.g * d1.g + d1.b * d1.b;
-                ivec3 d2 = c - p2; int e2 = d2.r * d2.r + d2.g * d2.g + d2.b * d2.b;
-                best = 0u; int eb = e0;
-                if (e1 < eb) { eb = e1; best = 1u; }
-                if (e2 < eb) { best = 2u; }
+                int r = int(p & 0xFFu);
+                int g = int((p >> 8u) & 0xFFu);
+                int b = int((p >> 16u) & 0xFFu);
+                int t = (r * dir.r + g * dir.g + b * dir.b) * 2;
+                best = (t <= m02) ? 0u : ((t <= m21) ? 2u : 1u);
             }
             bits |= best << (i * 2u);
         }
@@ -394,18 +407,22 @@ uvec2 encode_bc1(uint px[16], bool punchthrough) {
     ivec3 p1 = unpack_rgb565(c1);
     ivec3 p2 = (2 * p0 + p1) / 3;
     ivec3 p3 = (p0 + 2 * p1) / 3;
+    ivec3 dir = p0 - p1;
+    int d0 = p0.r * dir.r + p0.g * dir.g + p0.b * dir.b;
+    int d1 = p1.r * dir.r + p1.g * dir.g + p1.b * dir.b;
+    int d2 = p2.r * dir.r + p2.g * dir.g + p2.b * dir.b;
+    int d3 = p3.r * dir.r + p3.g * dir.g + p3.b * dir.b;
+    int m02 = d0 + d2;
+    int m23 = d2 + d3;
+    int m31 = d3 + d1;
     uint bits = 0u;
     for (uint i = 0u; i < 16u; ++i) {
         uint p = px[i];
-        ivec3 c = ivec3(int(p & 0xFFu), int((p >> 8u) & 0xFFu), int((p >> 16u) & 0xFFu));
-        ivec3 d0 = c - p0; int e0 = d0.r * d0.r + d0.g * d0.g + d0.b * d0.b;
-        ivec3 d1 = c - p1; int e1 = d1.r * d1.r + d1.g * d1.g + d1.b * d1.b;
-        ivec3 d2 = c - p2; int e2 = d2.r * d2.r + d2.g * d2.g + d2.b * d2.b;
-        ivec3 d3 = c - p3; int e3 = d3.r * d3.r + d3.g * d3.g + d3.b * d3.b;
-        uint best = 0u; int eb = e0;
-        if (e1 < eb) { eb = e1; best = 1u; }
-        if (e2 < eb) { eb = e2; best = 2u; }
-        if (e3 < eb) { best = 3u; }
+        int r = int(p & 0xFFu);
+        int g = int((p >> 8u) & 0xFFu);
+        int b = int((p >> 16u) & 0xFFu);
+        int t = (r * dir.r + g * dir.g + b * dir.b) * 2;
+        uint best = (t >= m02) ? 0u : ((t >= m23) ? 2u : ((t >= m31) ? 3u : 1u));
         bits |= best << (i * 2u);
     }
     return uvec2(c0 | (c1 << 16u), bits);
@@ -421,12 +438,13 @@ uvec2 encode_bc4_unorm(uint v[16]) {
     if (hi == lo) {
         return uvec2(lo | (lo << 8u), 0u);
     }
+    // 1 reciprocal per block (bit-exact across all span in 1..=255).
     uint span = hi - lo;
-    uint half_span = span >> 1u;
+    uint inv = ((7u << 17u) + span - 1u) / span;
     uint w0 = hi | (lo << 8u);
     uint w1 = 0u;
     for (uint i = 0u; i < 16u; ++i) {
-        uint q = ((hi - v[i]) * 7u + half_span) / span;
+        uint q = ((hi - v[i]) * inv + 65536u) >> 17u;
         uint code = (q == 0u) ? 0u : ((q == 7u) ? 1u : (q + 1u));
         uint bit = 16u + i * 3u;
         if (bit < 32u) {
@@ -453,12 +471,13 @@ uvec2 encode_bc4_snorm(int s[16]) {
     if (hi == lo) {
         return uvec2(uhi | (ulo << 8u), 0u);
     }
-    int span = hi - lo;
-    int half_span = span >> 1;
+    // 1 reciprocal per block (bit-exact across all span in 1..=254).
+    uint span = uint(hi - lo);
+    uint inv = ((7u << 17u) + span - 1u) / span;
     uint w0 = uhi | (ulo << 8u);
     uint w1 = 0u;
     for (uint i = 0u; i < 16u; ++i) {
-        uint q = uint(((hi - s[i]) * 7 + half_span) / span);
+        uint q = (uint(hi - s[i]) * inv + 65536u) >> 17u;
         uint code = (q == 0u) ? 0u : ((q == 7u) ? 1u : (q + 1u));
         uint bit = 16u + i * 3u;
         if (bit < 32u) {

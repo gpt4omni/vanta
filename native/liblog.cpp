@@ -24,15 +24,15 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdint>
 #include <ctime>
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <cstddef>
-#include <deque>
+#include <memory>
 #include <mutex>
-#include <string>
 #include <thread>
 
 extern "C" {
@@ -171,12 +171,23 @@ static void stamp(char* out, size_t n) {
 
 // Asynchronous stderr writer so Roblox render, simulation and worker threads
 // never stall on a synchronous unbuffered `write(2)` to a slow pipe/terminal.
-// Errors and fatals flush synchronously so crash output is never lost.
+// Uses a fixed pre-allocated ring of 512-byte slots for zero heap allocations
+// on hot log bursts. Errors and fatals flush synchronously so crash output is
+// never lost.
 struct AsyncLogWriter {
     static constexpr size_t kMaxQueued = 512;
+    static constexpr size_t kSlotBytes = 512;
+    struct Slot {
+        uint16_t len = 0;
+        char data[kSlotBytes];
+    };
+
     std::mutex mtx;
     std::condition_variable cv;
-    std::deque<std::string> queue;
+    Slot ring[kMaxQueued]{};
+    size_t head = 0;
+    size_t tail = 0;
+    size_t count = 0;
     size_t dropped = 0;
 
     AsyncLogWriter() {
@@ -184,37 +195,59 @@ struct AsyncLogWriter {
     }
 
     void run() {
-        std::deque<std::string> batch;
+        auto batch = std::make_unique<Slot[]>(kMaxQueued);
         for (;;) {
+            size_t batch_n = 0;
             size_t dropped_now = 0;
             {
                 std::unique_lock<std::mutex> lk(mtx);
-                cv.wait(lk, [&]() { return !queue.empty() || dropped > 0; });
-                batch.swap(queue);
+                cv.wait(lk, [&]() { return count > 0 || dropped > 0; });
+                batch_n = count;
+                for (size_t i = 0; i < batch_n; ++i) {
+                    const Slot& src = ring[(head + i) & (kMaxQueued - 1)];
+                    batch[i].len = src.len;
+                    std::memcpy(batch[i].data, src.data, src.len);
+                }
+                head = (head + batch_n) & (kMaxQueued - 1);
+                count = 0;
                 dropped_now = dropped;
                 dropped = 0;
             }
-            for (const auto& line : batch) {
-                fwrite(line.data(), 1, line.size(), stderr);
+            for (size_t i = 0; i < batch_n; ++i) {
+                fwrite(batch[i].data, 1, batch[i].len, stderr);
             }
             if (dropped_now > 0) {
                 fprintf(stderr, "[liblog] dropped %zu log line(s) while stderr was backed up\n",
                         dropped_now);
             }
-            batch.clear();
         }
     }
 
-    void push(std::string&& line) {
+    void push(const char* src, size_t n) {
+        if (n == 0) {
+            return;
+        }
+        bool truncated = false;
+        if (n > kSlotBytes) {
+            n = kSlotBytes;
+            truncated = true;
+        }
         bool wake = false;
         {
             std::lock_guard<std::mutex> lk(mtx);
-            if (queue.size() >= kMaxQueued) {
+            if (count >= kMaxQueued) {
                 ++dropped;
                 return;
             }
-            wake = queue.empty();
-            queue.push_back(std::move(line));
+            Slot& dst = ring[tail];
+            std::memcpy(dst.data, src, n);
+            if (truncated) {
+                dst.data[kSlotBytes - 1] = '\n';
+            }
+            dst.len = static_cast<uint16_t>(n);
+            tail = (tail + 1) & (kMaxQueued - 1);
+            wake = (count == 0);
+            ++count;
         }
         if (wake) {
             cv.notify_one();
@@ -239,21 +272,18 @@ void emit(int prio, const char* tag, const char* text) {
         fprintf(stderr, "%s %c/%-24s %s\n", ts, priority_letter(prio), safe_tag, safe_text);
         return;
     }
-    char stack_buf[512];
+    char stack_buf[AsyncLogWriter::kSlotBytes];
     int n = snprintf(stack_buf, sizeof(stack_buf), "%s %c/%-24s %s\n",
                      ts, priority_letter(prio), safe_tag, safe_text);
     if (n <= 0) {
         return;
     }
-    std::string line;
-    if (static_cast<size_t>(n) < sizeof(stack_buf)) {
-        line.assign(stack_buf, static_cast<size_t>(n));
-    } else {
-        line.resize(static_cast<size_t>(n));
-        snprintf(line.data(), line.size() + 1, "%s %c/%-24s %s\n",
-                 ts, priority_letter(prio), safe_tag, safe_text);
+    size_t len = static_cast<size_t>(n);
+    if (len >= sizeof(stack_buf)) {
+        len = sizeof(stack_buf) - 1;
+        stack_buf[len - 1] = '\n';
     }
-    async_writer().push(std::move(line));
+    async_writer().push(stack_buf, len);
 }
 
 int __android_log_write(int prio, const char* tag, const char* text) {

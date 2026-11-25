@@ -45,6 +45,6 @@ unsafe_op_in_unsafe_fn = "deny"
 undocumented_unsafe_blocks = "warn"
 
 [profile.release]
-debug = true      # the runtime is useless to debug without symbols
+debug = "line-tables-only" # symbolized stack traces at a fraction of full DWARF binary size & cold-load cost
 lto = "thin"      # cross-crate inlining across vanta-runtime, vanta-linker-sys and vanta-shell
 codegen-units = 1 # keep hot runtime modules (etc_decode, vulkan, looper, pthread) in one CGU

@@ -17,9 +17,11 @@
 // onSurfaceCreatedNative, onSurfaceChangedNative, onKeyDownNative and the rest.
 
 #include <jnivm.h>
+#include <jnivm/weak.h>
 
 #include "insets.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
@@ -404,10 +406,40 @@ public:
     jint getHistorySize(ENV*) { return 0; }
     jint getPointerCount(ENV*) { return static_cast<jint>(pointer_count); }
 
-    static std::shared_ptr<MotionEvent> Create(ENV*, jfloat x, jfloat y, jint action,
+    static std::shared_ptr<MotionEvent> Acquire(ENV* env) {
+        static const auto me_cls = env->GetClass("android/view/MotionEvent");
+        thread_local std::shared_ptr<MotionEvent> t_reusable;
+        if (t_reusable && t_reusable.use_count() == 1) {
+            auto* p = t_reusable.get();
+            p->deviceId = 1;
+            p->source = kSourceMouse;
+            p->action = 0;
+            p->eventTime = 0;
+            p->downTime = 0;
+            p->flags = 0;
+            p->metaState = 0;
+            p->actionButton = 0;
+            p->buttonState = 0;
+            p->pointers[0] = MotionPointer{0, 0.0f, 0.0f};
+            p->pointer_count = 1;
+            p->toolType = kToolTypeMouse;
+            p->vscroll = 0.0f;
+            p->hscroll = 0.0f;
+            if (p->clazz.expired()) {
+                p->clazz = me_cls;
+            }
+            return t_reusable;
+        }
+        auto p = std::make_shared<MotionEvent>();
+        p->clazz = me_cls;
+        t_reusable = p;
+        return p;
+    }
+
+    static std::shared_ptr<MotionEvent> Create(ENV* env, jfloat x, jfloat y, jint action,
                                                jint buttonState, jint actionButton,
                                                jlong eventTime, jlong downTime) {
-        auto p = std::make_shared<MotionEvent>();
+        auto p = Acquire(env);
         p->pointers[0] = MotionPointer{0, x, y};
         p->pointer_count = 1;
         p->action = action;
@@ -418,9 +450,9 @@ public:
         return p;
     }
 
-    static std::shared_ptr<MotionEvent> CreateScroll(ENV*, jfloat x, jfloat y, jfloat hscroll,
+    static std::shared_ptr<MotionEvent> CreateScroll(ENV* env, jfloat x, jfloat y, jfloat hscroll,
                                                      jfloat vscroll, jlong eventTime) {
-        auto p = std::make_shared<MotionEvent>();
+        auto p = Acquire(env);
         p->pointers[0] = MotionPointer{0, x, y};
         p->pointer_count = 1;
         // AMOTION_EVENT_ACTION_SCROLL.
@@ -432,10 +464,10 @@ public:
         return p;
     }
 
-    static std::shared_ptr<MotionEvent> CreateTouch(ENV*, const VantaTouchContact* contacts,
+    static std::shared_ptr<MotionEvent> CreateTouch(ENV* env, const VantaTouchContact* contacts,
                                                     int count, jint action, jlong eventTime,
                                                     jlong downTime) {
-        auto p = std::make_shared<MotionEvent>();
+        auto p = Acquire(env);
         if (contacts && count > 0) {
             const size_t n = std::min(static_cast<size_t>(count), kMaxPointers);
             for (size_t i = 0; i < n; ++i) {
@@ -451,31 +483,125 @@ public:
         return p;
     }
 
+    // Direct zero-dynamic_cast, zero-atomic MethodHandle wrappers for MotionEvent's
+    // hot accessors, skipping libjnivm's UnpackJObject<T> (3x __dynamic_cast +
+    // shared_from_this()) on every AGDK pointer/axis poll.
+    static inline const void* g_vptr_me = nullptr;
+    static inline const void* g_vptr_global = nullptr;
+    static inline const void* g_vptr_weak = nullptr;
+    static inline ptrdiff_t g_global_delta = 0;
+    static inline ptrdiff_t g_weak_delta = 0;
+
+    struct UnwrappedME {
+        MotionEvent* ptr = nullptr;
+        std::shared_ptr<jnivm::Object> pin;
+    };
+
+    static inline UnwrappedME fast_unwrap_me(jobject o) noexcept {
+        if (__builtin_expect(!o, 0)) {
+            return {};
+        }
+        auto* obj = reinterpret_cast<jnivm::Object*>(o);
+        const void* vp = *reinterpret_cast<const void* const*>(obj);
+        if (__builtin_expect(vp == g_vptr_me, 1)) {
+            return {static_cast<MotionEvent*>(obj), {}};
+        }
+        if (vp == g_vptr_global) {
+            auto* g = reinterpret_cast<jnivm::Global*>(reinterpret_cast<char*>(obj) + g_global_delta);
+            jnivm::Object* inner = g->wrapped.get();
+            if (inner && *reinterpret_cast<const void* const*>(inner) == g_vptr_me) {
+                return {static_cast<MotionEvent*>(inner), {}};
+            }
+            return {dynamic_cast<MotionEvent*>(inner), {}};
+        }
+        if (vp == g_vptr_weak) {
+            auto* w = reinterpret_cast<jnivm::Weak*>(reinterpret_cast<char*>(obj) + g_weak_delta);
+            auto sp = w->wrapped.lock();
+            jnivm::Object* inner = sp.get();
+            if (inner && *reinterpret_cast<const void* const*>(inner) == g_vptr_me) {
+                return {static_cast<MotionEvent*>(inner), std::move(sp)};
+            }
+            return {dynamic_cast<MotionEvent*>(inner), std::move(sp)};
+        }
+        return {dynamic_cast<MotionEvent*>(obj), {}};
+    }
+
+    template <class Ret, class Fn>
+    class FastMEHandle final : public jnivm::MethodHandle {
+        Fn fn_;
+    public:
+        explicit FastMEHandle(Fn fn) : fn_(fn) {}
+        Ret InstanceInvoke(ENV*, jobject obj, const jvalue* values,
+                           jnivm::impl::MethodHandleBase<Ret>) override {
+            auto me = fast_unwrap_me(obj);
+            if (__builtin_expect(!me.ptr, 0)) {
+                return Ret{};
+            }
+            return fn_(me.ptr, values);
+        }
+    };
+
+    template <class Ret, class Fn>
+    static void hook_fast(const std::shared_ptr<Class>& cls, const char* name, const char* sig,
+                          Fn fn) {
+        std::lock_guard<std::mutex> lock(cls->mtx);
+        std::shared_ptr<jnivm::Method> method;
+        for (const auto& m : cls->methods) {
+            if (!m->_static && m->name == name && m->signature == sig) {
+                method = m;
+                break;
+            }
+        }
+        if (!method) {
+            method = std::make_shared<jnivm::Method>();
+            method->name = name;
+            method->_static = false;
+            method->signature = sig;
+            cls->methods.push_back(method);
+        }
+        method->nativehandle = std::make_shared<FastMEHandle<Ret, Fn>>(fn);
+    }
+
     static void Register(ENV* env) {
+        MotionEvent probe_me;
+        jnivm::Global probe_g;
+        jnivm::Weak probe_w;
+        jnivm::Object* g_obj = &probe_g;
+        jnivm::Object* w_obj = &probe_w;
+        g_vptr_me = *reinterpret_cast<const void* const*>(static_cast<jnivm::Object*>(&probe_me));
+        g_vptr_global = *reinterpret_cast<const void* const*>(g_obj);
+        g_vptr_weak = *reinterpret_cast<const void* const*>(w_obj);
+        g_global_delta = reinterpret_cast<const char*>(&probe_g) - reinterpret_cast<const char*>(g_obj);
+        g_weak_delta = reinterpret_cast<const char*>(&probe_w) - reinterpret_cast<const char*>(w_obj);
+
         env->GetClass<MotionEvent>("android/view/MotionEvent");
         auto c = env->GetClass("android/view/MotionEvent");
-        c->HookInstanceFunction(env, "getPointerId", &MotionEvent::getPointerId);
-        c->HookInstanceFunction(env, "getToolType", &MotionEvent::getToolType);
-        c->HookInstanceFunction(env, "getRawX", &MotionEvent::getRawX);
-        c->HookInstanceFunction(env, "getRawY", &MotionEvent::getRawY);
-        c->HookInstanceFunction(env, "getXPrecision", &MotionEvent::getXPrecision);
-        c->HookInstanceFunction(env, "getYPrecision", &MotionEvent::getYPrecision);
-        c->HookInstanceFunction(env, "getAxisValue", &MotionEvent::getAxisValue);
-        c->HookInstanceFunction(env, "getHistoricalEventTime", &MotionEvent::getHistoricalEventTime);
-        c->HookInstanceFunction(env, "getHistoricalAxisValue", &MotionEvent::getHistoricalAxisValue);
-        c->HookInstanceFunction(env, "getDeviceId", &MotionEvent::getDeviceId);
-        c->HookInstanceFunction(env, "getSource", &MotionEvent::getSource);
-        c->HookInstanceFunction(env, "getAction", &MotionEvent::getAction);
-        c->HookInstanceFunction(env, "getEventTime", &MotionEvent::getEventTime);
-        c->HookInstanceFunction(env, "getDownTime", &MotionEvent::getDownTime);
-        c->HookInstanceFunction(env, "getFlags", &MotionEvent::getFlags);
-        c->HookInstanceFunction(env, "getMetaState", &MotionEvent::getMetaState);
-        c->HookInstanceFunction(env, "getActionButton", &MotionEvent::getActionButton);
-        c->HookInstanceFunction(env, "getButtonState", &MotionEvent::getButtonState);
-        c->HookInstanceFunction(env, "getClassification", &MotionEvent::getClassification);
-        c->HookInstanceFunction(env, "getEdgeFlags", &MotionEvent::getEdgeFlags);
-        c->HookInstanceFunction(env, "getHistorySize", &MotionEvent::getHistorySize);
-        c->HookInstanceFunction(env, "getPointerCount", &MotionEvent::getPointerCount);
+        hook_fast<jint>(c, "getPointerId", "(I)I", [](MotionEvent* m, const jvalue* v) { return m->at(v[0].i).id; });
+        hook_fast<jint>(c, "getToolType", "(I)I", [](MotionEvent* m, const jvalue*) { return m->toolType; });
+        hook_fast<jfloat>(c, "getRawX", "(I)F", [](MotionEvent* m, const jvalue* v) { return m->at(v[0].i).x; });
+        hook_fast<jfloat>(c, "getRawY", "(I)F", [](MotionEvent* m, const jvalue* v) { return m->at(v[0].i).y; });
+        hook_fast<jfloat>(c, "getXPrecision", "()F", [](MotionEvent*, const jvalue*) { return 1.0f; });
+        hook_fast<jfloat>(c, "getYPrecision", "()F", [](MotionEvent*, const jvalue*) { return 1.0f; });
+        hook_fast<jfloat>(c, "getAxisValue", "(II)F", [](MotionEvent* m, const jvalue* v) {
+            return m->getAxisValue(nullptr, v[0].i, v[1].i);
+        });
+        hook_fast<jlong>(c, "getHistoricalEventTime", "(I)J", [](MotionEvent* m, const jvalue*) { return m->eventTime; });
+        hook_fast<jfloat>(c, "getHistoricalAxisValue", "(III)F", [](MotionEvent*, const jvalue*) { return 0.0f; });
+        hook_fast<jint>(c, "getDeviceId", "()I", [](MotionEvent* m, const jvalue*) { return m->deviceId; });
+        hook_fast<jint>(c, "getSource", "()I", [](MotionEvent* m, const jvalue*) { return m->source; });
+        hook_fast<jint>(c, "getAction", "()I", [](MotionEvent* m, const jvalue*) { return m->action; });
+        hook_fast<jlong>(c, "getEventTime", "()J", [](MotionEvent* m, const jvalue*) { return m->eventTime; });
+        hook_fast<jlong>(c, "getDownTime", "()J", [](MotionEvent* m, const jvalue*) { return m->downTime; });
+        hook_fast<jint>(c, "getFlags", "()I", [](MotionEvent* m, const jvalue*) { return m->flags; });
+        hook_fast<jint>(c, "getMetaState", "()I", [](MotionEvent* m, const jvalue*) { return m->metaState; });
+        hook_fast<jint>(c, "getActionButton", "()I", [](MotionEvent* m, const jvalue*) { return m->actionButton; });
+        hook_fast<jint>(c, "getButtonState", "()I", [](MotionEvent* m, const jvalue*) { return m->buttonState; });
+        hook_fast<jint>(c, "getClassification", "()I", [](MotionEvent*, const jvalue*) { return 0; });
+        hook_fast<jint>(c, "getEdgeFlags", "()I", [](MotionEvent*, const jvalue*) { return 0; });
+        hook_fast<jint>(c, "getHistorySize", "()I", [](MotionEvent*, const jvalue*) { return 0; });
+        hook_fast<jint>(c, "getPointerCount", "()I", [](MotionEvent* m, const jvalue*) {
+            return static_cast<jint>(m->pointer_count);
+        });
     }
 };
 
@@ -802,6 +928,32 @@ static std::shared_ptr<jnivm::Class> cached_native_input_class(jnivm::ENV* env) 
     return cls;
 }
 
+/// Immortal static `jclass` for `NativeInputInterface`: keeps the underlying
+/// `Class` alive for the process lifetime with `clazz` populated once so hot
+/// 1000+ Hz mouse/touch/gamepad natives skip `PushLocalFrame`/`PopLocalFrame`
+/// and `to_jni()`'s per-call shared_ptr atomic churn.
+static jobject cached_native_input_jclass(jnivm::ENV* env) {
+    static const auto cls = [&]() {
+        auto c = cached_native_input_class(env);
+        if (c && c->clazz.expired()) {
+            c->clazz = env->GetClass("java/lang/Class");
+        }
+        return c;
+    }();
+    return reinterpret_cast<jobject>(cls.get());
+}
+
+static jobject cached_shared_activity_jobj(jnivm::ENV* env) {
+    static const auto act = [&]() {
+        auto a = vanta::shared_activity(env);
+        if (a && a->clazz.expired()) {
+            a->clazz = cached_game_activity_class(env);
+        }
+        return a;
+    }();
+    return reinterpret_cast<jobject>(act.get());
+}
+
 static void* resolve_ga_native(jnivm::Class* cls, const char* name, std::atomic<void*>& slot) {
     if (void* p = slot.load(std::memory_order_acquire)) {
         return p;
@@ -836,12 +988,15 @@ int deliver_motion(long handle, Build&& build, int* consumed, char* err, size_t 
         }
 
         // RAII frame guarantees PopLocalFrame runs even on an exception path,
-        // preventing unbounded local-frame growth across a long session.
+        // reclaiming any local refs AGDK itself creates during onTouchEventNative.
         LocalFrame frame(jni, 8);
 
-        auto jactivity = vanta::to_jni(env, vanta::shared_activity(env));
+        jobject jactivity = cached_shared_activity_jobj(env);
         auto event = build(env);
-        auto jevent = vanta::to_jni(env, event);
+        // `event` already carries `clazz` and stays pinned on this stack frame
+        // for the entire call, avoiding `to_jni()`'s extra localframe push +
+        // weak_ptr lock so the thread-local MotionEvent returns to use_count==1.
+        jobject jevent = reinterpret_cast<jobject>(event.get());
 
         using TouchFn = jboolean (*)(JNIEnv*, jobject, jlong, jobject, jint, jint, jint, jint,
                                      jint, jlong, jlong, jint, jint, jint, jint, jint, jint,
@@ -1645,15 +1800,10 @@ int vanta_input_mouse_move(void* fn, float x, float y, float dx, float dy, char*
         return -1;
     }
     try {
-        JNIEnv* jni = env->GetJNIEnv();
-        // Pop the local reference parked by `to_jni` on every call; this runs
-        // at up to 1000-8000 Hz during mouse movement plus the 250 Hz idle
-        // keepalive, and without a frame it grows libjnivm's root local-ref
-        // vector without bound.
-        vanta::LocalFrame frame(jni, 4);
-        auto cls = vanta::cached_native_input_class(env);
-        reinterpret_cast<Call>(fn)(jni, (jobject)vanta::to_jni(env, cls), x, y, dx,
-                                   dy);
+        // Immortal static jclass: avoids PushLocalFrame/PopLocalFrame and 6
+        // shared_ptr/weak_ptr atomics on every 1000-8000 Hz mouse packet.
+        reinterpret_cast<Call>(fn)(env->GetJNIEnv(), vanta::cached_native_input_jclass(env),
+                                   x, y, dx, dy);
         return 0;
     } catch (const std::exception& e) {
         snprintf(err, err_len, "%s", e.what());
@@ -1673,11 +1823,8 @@ int vanta_input_mouse_button(void* fn, float x, float y, int down, int button, c
         return -1;
     }
     try {
-        JNIEnv* jni = env->GetJNIEnv();
-        vanta::LocalFrame frame(jni, 4);
-        auto cls = vanta::cached_native_input_class(env);
-        reinterpret_cast<Call>(fn)(jni, (jobject)vanta::to_jni(env, cls), x, y,
-                                   down ? JNI_TRUE : JNI_FALSE, button);
+        reinterpret_cast<Call>(fn)(env->GetJNIEnv(), vanta::cached_native_input_jclass(env),
+                                   x, y, down ? JNI_TRUE : JNI_FALSE, button);
         return 0;
     } catch (const std::exception& e) {
         snprintf(err, err_len, "%s", e.what());
@@ -1709,11 +1856,8 @@ int vanta_input_mouse_wheel(void* fn, float x, float y, float delta, char* err, 
         return -1;
     }
     try {
-        JNIEnv* jni = env->GetJNIEnv();
-        vanta::LocalFrame frame(jni, 4);
-        auto cls = vanta::cached_native_input_class(env);
-        reinterpret_cast<Call>(fn)(jni, (jobject)vanta::to_jni(env, cls), x, y,
-                                   delta);
+        reinterpret_cast<Call>(fn)(env->GetJNIEnv(), vanta::cached_native_input_jclass(env),
+                                   x, y, delta);
         return 0;
     } catch (const std::exception& e) {
         snprintf(err, err_len, "%s", e.what());
@@ -1754,11 +1898,8 @@ int vanta_input_pass_input(void* fn, int pointer_id, float x, float y, int actio
         return -1;
     }
     try {
-        JNIEnv* jni = env->GetJNIEnv();
-        vanta::LocalFrame frame(jni, 4);
-        auto cls = vanta::cached_native_input_class(env);
-        reinterpret_cast<Call>(fn)(jni, (jobject)vanta::to_jni(env, cls), pointer_id,
-                                   x, y, action, width, height);
+        reinterpret_cast<Call>(fn)(env->GetJNIEnv(), vanta::cached_native_input_jclass(env),
+                                   pointer_id, x, y, action, width, height);
         return 0;
     } catch (const std::exception& e) {
         snprintf(err, err_len, "%s", e.what());
@@ -1871,11 +2012,8 @@ int vanta_input_gamepad_button(void* fn, int id, int key_code, int action, char*
         return -1;
     }
     try {
-        JNIEnv* jni = env->GetJNIEnv();
-        vanta::LocalFrame frame(jni, 4);
-        auto cls = vanta::cached_native_input_class(env);
-        reinterpret_cast<Call>(fn)(jni, (jobject)vanta::to_jni(env, cls), id,
-                                   key_code, action);
+        reinterpret_cast<Call>(fn)(env->GetJNIEnv(), vanta::cached_native_input_jclass(env),
+                                   id, key_code, action);
         return 0;
     } catch (const std::exception& e) {
         snprintf(err, err_len, "%s", e.what());
@@ -1905,11 +2043,8 @@ int vanta_input_gamepad_axis(void* fn, int id, int axis, float x, float y, float
         return -1;
     }
     try {
-        JNIEnv* jni = env->GetJNIEnv();
-        vanta::LocalFrame frame(jni, 4);
-        auto cls = vanta::cached_native_input_class(env);
-        reinterpret_cast<Call>(fn)(jni, (jobject)vanta::to_jni(env, cls), id, axis,
-                                   x, y, z);
+        reinterpret_cast<Call>(fn)(env->GetJNIEnv(), vanta::cached_native_input_jclass(env),
+                                   id, axis, x, y, z);
         return 0;
     } catch (const std::exception& e) {
         snprintf(err, err_len, "%s", e.what());

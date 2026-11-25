@@ -53,14 +53,15 @@ pub fn function_overrides() -> Vec<(&'static str, *mut c_void)> {
         // TLS-cached gettid/getpid (1 ns vs ~250 ns raw syscall in glibc).
         f!("gettid", bionic_gettid),
         f!("getpid", bionic_getpid),
-        // Promote >= 2 MiB anonymous RW allocations (Luau GC, mimalloc arenas,
-        // large mesh buffers) to 2 MiB transparent huge pages to slash dTLB misses.
+        // Promote >= 16 MiB anonymous RW allocations (Luau GC, mimalloc arenas,
+        // large mesh buffers) to 2 MiB transparent huge pages without triggering
+        // 2 MiB fault amplification on small sparse heaps.
         f!("mmap", bionic_mmap),
         f!("mmap64", bionic_mmap),
-        // Elide small (< 4 MiB) advisory MADV_FREE purges on >= 8 GiB desktops.
-        // libroblox.so forces mimalloc mi_option_purge_delay=0 (with purge_decommits=0),
-        // triggering constant madvise(MADV_FREE) mmap_lock + TLB-shootdown IPI storms.
-        // MADV_DONTNEED (zeroing guarantee) and >= 4 MiB purges are always forwarded.
+        // Elide small advisory MADV_FREE purges (< 256 KiB on >= 8 GiB hosts,
+        // < 128 KiB on 4-7 GiB hosts) so mimalloc's mi_option_purge_delay=0
+        // avoids TLB-shootdown IPI storms on tiny bursts while multi-MB freed
+        // game heaps still return to Linux promptly. MADV_DONTNEED is always forwarded.
         f!("madvise", bionic_madvise),
         // Android system properties. Desktop values, so Roblox stops believing
         // it is on a phone. Framework-layer policy, implemented here because the
@@ -391,6 +392,8 @@ fn hugepage_heap_disabled() -> bool {
     *OFF.get_or_init(|| std::env::var_os("VANTA_NO_HUGEPAGE_HEAP").is_some())
 }
 
+const HUGEPAGE_HEAP_MIN_BYTES: usize = 16 << 20;
+
 extern "C" fn bionic_mmap(
     addr: *mut c_void,
     len: usize,
@@ -401,17 +404,15 @@ extern "C" fn bionic_mmap(
 ) -> *mut c_void {
     // SAFETY: forwards caller arguments unchanged to host libc mmap.
     let p = unsafe { libc::mmap(addr, len, prot, flags, fd, offset) };
-    const TWO_MIB: usize = 2 << 20;
     if p != libc::MAP_FAILED
-        && len >= TWO_MIB
+        && len >= HUGEPAGE_HEAP_MIN_BYTES
         && (flags & libc::MAP_ANONYMOUS) != 0
         && (prot & (libc::PROT_READ | libc::PROT_WRITE)) == (libc::PROT_READ | libc::PROT_WRITE)
         && (prot & libc::PROT_EXEC) == 0
         && !hugepage_heap_disabled()
     {
         // Linux only requires page alignment for MADV_HUGEPAGE; advising the
-        // entire mapping avoids skipping exact 2 MiB allocations and avoids
-        // splitting larger mappings into three separate kernel VMAs.
+        // entire mapping avoids splitting larger mappings into separate VMAs.
         // SAFETY: [p, p + len) is the just-mapped page-aligned anonymous RW region.
         unsafe { libc::madvise(p, len, libc::MADV_HUGEPAGE) };
     }
@@ -420,39 +421,55 @@ extern "C" fn bionic_mmap(
 
 // ------------------------------------------------ Advisory MADV_FREE elision
 
-/// Sub-4 MiB `MADV_FREE` hints from mimalloc (`mi_option_purge_delay=0`,
-/// `mi_option_purge_decommits=0`) are elided on desktops with >= 8 GiB RAM.
-/// Larger (>= 4 MiB) `MADV_FREE` calls still reach the kernel so leaving a
-/// place / DataModel teardown reclaims bulk RAM, and `MADV_DONTNEED` is NEVER
-/// elided because callers may rely on its zero-fill guarantee.
-const MADVISE_FREE_ELIDE_MAX_BYTES: usize = 4 << 20;
-const MADVISE_FILTER_MIN_RAM_BYTES: u64 = 8 << 30;
+/// Small advisory `MADV_FREE` hints from mimalloc (`mi_option_purge_delay=0`,
+/// `mi_option_purge_decommits=0`) are elided to prevent TLB-shootdown IPI storms:
+///   - `>= 8 GiB` RAM hosts: elide `< 256 KiB`
+///   - `4..8 GiB` RAM hosts: elide `< 128 KiB`
+///   - `< 4 GiB` RAM hosts (or `VANTA_NO_MADVISE_FILTER=1`): disabled (`0`)
+/// Larger (`>= 256 KiB` / `>= 128 KiB`) `MADV_FREE` calls reach the kernel so
+/// freed game heaps return promptly to Linux instead of bloating RSS, and
+/// `MADV_DONTNEED` is NEVER elided because callers rely on its zero-fill guarantee.
+const MADVISE_FREE_ELIDE_HIGH_RAM_BYTES: usize = 256 << 10;
+const MADVISE_FREE_ELIDE_MID_RAM_BYTES: usize = 128 << 10;
+const MADVISE_FILTER_HIGH_RAM_BYTES: u64 = 8 << 30;
+const MADVISE_FILTER_MID_RAM_BYTES: u64 = 4 << 30;
 
-fn madvise_free_filter_enabled() -> bool {
-    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ENABLED.get_or_init(|| {
+#[inline]
+fn madvise_free_elide_limit_for_ram(ram_bytes: u64) -> usize {
+    if ram_bytes >= MADVISE_FILTER_HIGH_RAM_BYTES {
+        MADVISE_FREE_ELIDE_HIGH_RAM_BYTES
+    } else if ram_bytes >= MADVISE_FILTER_MID_RAM_BYTES {
+        MADVISE_FREE_ELIDE_MID_RAM_BYTES
+    } else {
+        0
+    }
+}
+
+fn madvise_free_elide_limit() -> usize {
+    static LIMIT: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *LIMIT.get_or_init(|| {
         if std::env::var_os("VANTA_NO_MADVISE_FILTER")
             .is_some_and(|v| !v.is_empty() && v != "0")
         {
-            return false;
+            return 0;
         }
         // SAFETY: glibc `_SC_PHYS_PAGES` (85) and `_SC_PAGESIZE` (30).
         let pages = unsafe { libc::sysconf(libc::_SC_PHYS_PAGES) };
         let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
         if pages <= 0 || page_size <= 0 {
-            return false;
+            return 0;
         }
-        (pages as u64).saturating_mul(page_size as u64) >= MADVISE_FILTER_MIN_RAM_BYTES
+        madvise_free_elide_limit_for_ram((pages as u64).saturating_mul(page_size as u64))
     })
 }
 
 #[inline]
-fn should_elide_madvise(advice: c_int, len: usize, filter_enabled: bool) -> bool {
-    filter_enabled && advice == libc::MADV_FREE && len < MADVISE_FREE_ELIDE_MAX_BYTES
+fn should_elide_madvise(advice: c_int, len: usize, elide_limit: usize) -> bool {
+    elide_limit > 0 && advice == libc::MADV_FREE && len < elide_limit
 }
 
 extern "C" fn bionic_madvise(addr: *mut c_void, len: usize, advice: c_int) -> c_int {
-    if should_elide_madvise(advice, len, madvise_free_filter_enabled()) {
+    if should_elide_madvise(advice, len, madvise_free_elide_limit()) {
         // Per Linux madvise(2), MADV_FREE is strictly advisory and the kernel
         // is allowed to keep the pages untouched without discarding or zeroing
         // them; mimalloc's `_mi_os_reset` sets `is_zero = false` for MADV_FREE.
@@ -1125,16 +1142,29 @@ mod pathconf_tests {
     }
 
     #[test]
-    fn madvise_filter_only_elides_sub_4mib_advisory_madv_free() {
-        assert!(should_elide_madvise(libc::MADV_FREE, 64 * 1024, true));
-        assert!(should_elide_madvise(libc::MADV_FREE, MADVISE_FREE_ELIDE_MAX_BYTES - 1, true));
-        assert!(!should_elide_madvise(libc::MADV_FREE, MADVISE_FREE_ELIDE_MAX_BYTES, true));
-        assert!(!should_elide_madvise(libc::MADV_FREE, 8 << 20, true));
-        assert!(!should_elide_madvise(libc::MADV_FREE, 64 * 1024, false));
+    fn madvise_filter_tiered_elision_and_dontneed_safety() {
+        assert_eq!(madvise_free_elide_limit_for_ram(2 << 30), 0);
+        assert_eq!(madvise_free_elide_limit_for_ram((4 << 30) - 1), 0);
+        assert_eq!(madvise_free_elide_limit_for_ram(4 << 30), MADVISE_FREE_ELIDE_MID_RAM_BYTES);
+        assert_eq!(madvise_free_elide_limit_for_ram(6 << 30), MADVISE_FREE_ELIDE_MID_RAM_BYTES);
+        assert_eq!(madvise_free_elide_limit_for_ram(8 << 30), MADVISE_FREE_ELIDE_HIGH_RAM_BYTES);
+        assert_eq!(madvise_free_elide_limit_for_ram(32 << 30), MADVISE_FREE_ELIDE_HIGH_RAM_BYTES);
+
+        let hi = MADVISE_FREE_ELIDE_HIGH_RAM_BYTES;
+        assert!(should_elide_madvise(libc::MADV_FREE, 64 * 1024, hi));
+        assert!(should_elide_madvise(libc::MADV_FREE, hi - 1, hi));
+        assert!(!should_elide_madvise(libc::MADV_FREE, hi, hi));
+        assert!(!should_elide_madvise(libc::MADV_FREE, 1 << 20, hi));
+
+        let mid = MADVISE_FREE_ELIDE_MID_RAM_BYTES;
+        assert!(should_elide_madvise(libc::MADV_FREE, mid - 1, mid));
+        assert!(!should_elide_madvise(libc::MADV_FREE, mid, mid));
+
+        assert!(!should_elide_madvise(libc::MADV_FREE, 64 * 1024, 0));
         // MADV_DONTNEED carries a zero-fill guarantee and must never be elided.
-        assert!(!should_elide_madvise(libc::MADV_DONTNEED, 64 * 1024, true));
-        assert!(!should_elide_madvise(libc::MADV_HUGEPAGE, 2 << 20, true));
-        assert!(!should_elide_madvise(libc::MADV_DONTDUMP, 64 * 1024, true));
+        assert!(!should_elide_madvise(libc::MADV_DONTNEED, 64 * 1024, hi));
+        assert!(!should_elide_madvise(libc::MADV_HUGEPAGE, 16 << 20, hi));
+        assert!(!should_elide_madvise(libc::MADV_DONTDUMP, 64 * 1024, hi));
     }
 
     #[test]

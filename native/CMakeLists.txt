@@ -5,6 +5,17 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
+# Release/optimized native codegen flags: enable full -O3 vectorization,
+# devirtualization/inlining without PLT semantic-interposition barriers, and
+# section GC friendliness across vanta_jni_shim, vanta_liblog, jnivm, and linker.
+add_compile_options(
+  $<$<NOT:$<CONFIG:Debug>>:-O3>
+  $<$<NOT:$<CONFIG:Debug>>:-fno-semantic-interposition>
+  $<$<NOT:$<CONFIG:Debug>>:-ffunction-sections>
+  $<$<NOT:$<CONFIG:Debug>>:-fdata-sections>
+  $<$<AND:$<NOT:$<CONFIG:Debug>>,$<COMPILE_LANGUAGE:CXX>>:-fvisibility-inlines-hidden>
+)
+
 # Clang is not a preference. AOSP bionic uses C11 _Atomic inside C++ headers
 # (bionic_elf_tls.h, bionic_fdsan.h) — a Clang extension GCC rejects, producing
 # 144 errors on an otherwise clean tree. See docs/base-evaluation.md §2.1.

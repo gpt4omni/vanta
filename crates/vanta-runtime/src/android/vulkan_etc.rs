@@ -1,13 +1,131 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::{c_char, c_void, CStr};
+use std::hash::{BuildHasherDefault, Hasher};
+use std::mem::MaybeUninit;
+use std::ops::{Deref, DerefMut};
+use std::path::PathBuf;
 use std::sync::atomic::{
-    AtomicPtr, AtomicU32, AtomicUsize, Ordering::Acquire, Ordering::Relaxed, Ordering::Release,
+    AtomicPtr, AtomicU32, AtomicU64, AtomicUsize, Ordering::AcqRel, Ordering::Acquire, Ordering::Relaxed,
+    Ordering::Release,
 };
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use super::etc_decode::{self, EtcFormat, Surface};
 use super::etc_decode_spv::ETC_DECODE_SPV;
 use super::glcount;
+
+#[derive(Default)]
+struct FxHasher(u64);
+
+impl Hasher for FxHasher {
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    #[inline]
+    fn write(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.0 = (self.0.rotate_left(5) ^ u64::from(b)).wrapping_mul(0x517c_c1b7_2722_0a95);
+        }
+    }
+    #[inline]
+    fn write_u64(&mut self, i: u64) {
+        self.0 = (self.0.rotate_left(5) ^ i).wrapping_mul(0x517c_c1b7_2722_0a95);
+    }
+    #[inline]
+    fn write_usize(&mut self, i: usize) {
+        self.write_u64(i as u64);
+    }
+}
+
+type FxBuildHasher = BuildHasherDefault<FxHasher>;
+type FxHashMap<K, V> = HashMap<K, V, FxBuildHasher>;
+type FxHashSet<K> = HashSet<K, FxBuildHasher>;
+
+/// Fixed-capacity inline stack buffer that spills to `Vec<T>` only above `N`
+/// elements, avoiding per-upload heap allocations on the render thread.
+enum SmallBuf<T, const N: usize> {
+    Inline { buf: [MaybeUninit<T>; N], len: usize },
+    Heap(Vec<T>),
+}
+
+impl<T, const N: usize> SmallBuf<T, N> {
+    #[inline]
+    fn new() -> Self {
+        Self::Inline { buf: [const { MaybeUninit::uninit() }; N], len: 0 }
+    }
+
+    #[inline]
+    fn push(&mut self, val: T) {
+        match self {
+            Self::Inline { buf, len } if *len < N => {
+                buf[*len].write(val);
+                *len += 1;
+            }
+            Self::Inline { buf, len } => {
+                let mut v = Vec::with_capacity(N * 2 + 1);
+                let n = *len;
+                *len = 0;
+                for slot in &mut buf[..n] {
+                    // SAFETY: indices `0..n` were initialized via `MaybeUninit::write`
+                    // and `*len` is zeroed before transferring ownership to `v`.
+                    v.push(unsafe { slot.assume_init_read() });
+                }
+                v.push(val);
+                *self = Self::Heap(v);
+            }
+            Self::Heap(v) => v.push(val),
+        }
+    }
+
+    #[inline]
+    fn clear(&mut self) {
+        match self {
+            Self::Inline { buf, len } => {
+                let n = *len;
+                *len = 0;
+                for slot in &mut buf[..n] {
+                    // SAFETY: indices `0..n` were initialized and `len` is already 0.
+                    unsafe { slot.assume_init_drop() };
+                }
+            }
+            Self::Heap(v) => v.clear(),
+        }
+    }
+}
+
+impl<T, const N: usize> Drop for SmallBuf<T, N> {
+    fn drop(&mut self) {
+        self.clear();
+    }
+}
+
+impl<T, const N: usize> Deref for SmallBuf<T, N> {
+    type Target = [T];
+    #[inline]
+    fn deref(&self) -> &[T] {
+        match self {
+            Self::Inline { buf, len } => {
+                // SAFETY: `buf[..*len]` are initialized and `MaybeUninit<T>` has identical layout to `T`.
+                unsafe { std::slice::from_raw_parts(buf.as_ptr() as *const T, *len) }
+            }
+            Self::Heap(v) => v.as_slice(),
+        }
+    }
+}
+
+impl<T, const N: usize> DerefMut for SmallBuf<T, N> {
+    #[inline]
+    fn deref_mut(&mut self) -> &mut [T] {
+        match self {
+            Self::Inline { buf, len } => {
+                // SAFETY: `buf[..*len]` are initialized and `MaybeUninit<T>` has identical layout to `T`.
+                unsafe { std::slice::from_raw_parts_mut(buf.as_mut_ptr() as *mut T, *len) }
+            }
+            Self::Heap(v) => v.as_mut_slice(),
+        }
+    }
+}
 
 const VK_SUCCESS: i32 = 0;
 const VK_ERROR_INITIALIZATION_FAILED: i32 = -3;
@@ -16,6 +134,7 @@ const VK_ERROR_FORMAT_NOT_SUPPORTED: i32 = -11;
 const ST_BUFFER_CREATE_INFO: u32 = 12;
 const ST_MEMORY_ALLOCATE_INFO: u32 = 5;
 const ST_SHADER_MODULE_CREATE_INFO: u32 = 16;
+const ST_PIPELINE_CACHE_CREATE_INFO: u32 = 17;
 const ST_PIPELINE_SHADER_STAGE_CREATE_INFO: u32 = 18;
 const ST_COMPUTE_PIPELINE_CREATE_INFO: u32 = 29;
 const ST_PIPELINE_LAYOUT_CREATE_INFO: u32 = 30;
@@ -71,11 +190,14 @@ const ACCESS_HOST_WRITE_BIT: u32 = 0x4000;
 const QUEUE_COMPUTE_BIT: u32 = 0x2;
 const QUEUE_FAMILY_IGNORED: u32 = u32::MAX;
 
-const STAGING_CHUNK: u64 = 8 << 20;
+const STAGING_CHUNK: u64 = 4 << 20;
 const STAGING_ALIGN: u64 = 16;
-const MAX_POOLED_CHUNKS: usize = 8;
+const MAX_POOLED_CHUNKS: usize = 2;
 const DS_POOL_SETS: u32 = 64;
-const MAX_POOLED_DS_POOLS: usize = 8;
+const MAX_POOLED_DS_POOLS: usize = 4;
+/// Free idle pooled CPU/GPU staging chunks after ~9 s without ETC2 uploads so
+/// post-load steady-state gameplay does not hold unused staging buffers.
+const IDLE_TRIM_MS: u64 = 9_000;
 /// Regions at or below this texel count decode inline on the CPU fallback
 /// without paying snapshot allocation, mutex/condvar and thread wake overhead.
 const CPU_INLINE_TEXELS: usize = 64 * 64;
@@ -699,6 +821,17 @@ struct VkShaderModuleCreateInfo {
 }
 
 #[repr(C)]
+struct VkPipelineCacheCreateInfo {
+    s_type: u32,
+    _pad: u32,
+    p_next: *const c_void,
+    flags: u32,
+    _pad2: u32,
+    initial_data_size: usize,
+    p_initial_data: *const c_void,
+}
+
+#[repr(C)]
 struct VkDescriptorSetLayoutBinding {
     binding: u32,
     descriptor_type: u32,
@@ -855,15 +988,175 @@ struct DsPool {
     cap: u32,
 }
 
+struct PipelineCacheIdentity {
+    vendor_id: u32,
+    device_id: u32,
+    driver_version: u32,
+    uuid: [u8; 16],
+}
+
+fn spv_hash() -> u64 {
+    // SAFETY: `ETC_DECODE_SPV` is a `'static` slice of `u32`, validly readable as raw bytes.
+    let bytes = unsafe {
+        std::slice::from_raw_parts(
+            ETC_DECODE_SPV.as_ptr() as *const u8,
+            std::mem::size_of_val(ETC_DECODE_SPV),
+        )
+    };
+    hash(bytes)
+}
+
+fn query_pipeline_cache_identity(pd: *mut c_void) -> Option<PipelineCacheIdentity> {
+    if pd.is_null() {
+        return None;
+    }
+    let props_fn: extern "C" fn(*mut c_void, *mut c_void) =
+        as_fn(super::vulkan::host_instance_proc(c"vkGetPhysicalDeviceProperties") as usize)?;
+    // `VkPhysicalDeviceProperties` is 824 bytes on 64-bit Linux; allocate 1024 bytes aligned to 8.
+    let mut raw = [0u64; 128];
+    let p = raw.as_mut_ptr() as *mut c_void;
+    props_fn(pd, p);
+    let base = raw.as_ptr() as *const c_void;
+    Some(PipelineCacheIdentity {
+        driver_version: rd::<u32>(base, 4),
+        vendor_id: rd::<u32>(base, 8),
+        device_id: rd::<u32>(base, 12),
+        uuid: rd::<[u8; 16]>(base, 276),
+    })
+}
+
+fn pipeline_cache_path(id: &PipelineCacheIdentity) -> Option<PathBuf> {
+    let base = std::env::var_os("XDG_CACHE_HOME")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .filter(|v| !v.is_empty())
+                .map(|h| PathBuf::from(h).join(".cache"))
+        })?;
+    let name = format!(
+        "etc-pipeline-{:04x}-{:04x}-{:08x}-{:016x}.bin",
+        id.vendor_id,
+        id.device_id,
+        id.driver_version,
+        spv_hash(),
+    );
+    Some(base.join("vanta").join(name))
+}
+
+fn validate_pipeline_cache_header(data: &[u8], id: &PipelineCacheIdentity) -> bool {
+    // Vulkan 1.0 `VkPipelineCacheHeaderVersionOne`:
+    //   0..4:  headerSize (>= 32, <= data.len())
+    //   4..8:  headerVersion == 1
+    //   8..12: vendorID
+    //  12..16: deviceID
+    //  16..32: pipelineCacheUUID
+    if data.len() < 32 {
+        return false;
+    }
+    let header_size = u32::from_ne_bytes(data[0..4].try_into().unwrap()) as usize;
+    let header_version = u32::from_ne_bytes(data[4..8].try_into().unwrap());
+    let vendor_id = u32::from_ne_bytes(data[8..12].try_into().unwrap());
+    let device_id = u32::from_ne_bytes(data[12..16].try_into().unwrap());
+    header_size >= 32
+        && header_size <= data.len()
+        && header_version == 1
+        && vendor_id == id.vendor_id
+        && device_id == id.device_id
+        && data[16..32] == id.uuid
+}
+
+fn save_pipeline_cache_atomic(path: &PathBuf, data: &[u8]) {
+    let Some(dir) = path.parent() else { return };
+    if std::fs::create_dir_all(dir).is_err() {
+        return;
+    }
+    let pid = std::process::id();
+    let mut tmp = path.clone();
+    let file_name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("etc-pipeline.bin");
+    tmp.set_file_name(format!("{file_name}.tmp.{pid}"));
+    if std::fs::write(&tmp, data).is_ok() {
+        if std::fs::rename(&tmp, path).is_err() {
+            let _ = std::fs::remove_file(&tmp);
+        }
+    } else {
+        let _ = std::fs::remove_file(&tmp);
+    }
+}
+
+fn now_ms() -> u64 {
+    static EPOCH: OnceLock<std::time::Instant> = OnceLock::new();
+    EPOCH.get_or_init(std::time::Instant::now).elapsed().as_millis() as u64
+}
+
+static LAST_ETC_UPLOAD_MS: AtomicU64 = AtomicU64::new(0);
+static POOLED_CHUNK_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+#[inline]
+fn note_etc_upload() {
+    LAST_ETC_UPLOAD_MS.store(now_ms().max(1), Relaxed);
+}
+
+fn trim_idle_pools(dev: &Dev) {
+    trim_idle_pools_at(dev, now_ms());
+}
+
+fn trim_idle_pools_at(dev: &Dev, now: u64) {
+    if POOLED_CHUNK_COUNT.load(Relaxed) == 0 {
+        return;
+    }
+    let last = LAST_ETC_UPLOAD_MS.load(Relaxed);
+    if last == 0 {
+        return;
+    }
+    if now.saturating_sub(last) < IDLE_TRIM_MS {
+        return;
+    }
+    if LAST_ETC_UPLOAD_MS
+        .compare_exchange(last, 0, Relaxed, Relaxed)
+        .is_err()
+    {
+        return;
+    }
+    let cpu_chunks: Vec<Chunk> = {
+        let mut pool = dev.free_cpu_chunks.lock().unwrap_or_else(|e| e.into_inner());
+        std::mem::take(&mut *pool)
+    };
+    let mut freed = cpu_chunks.len();
+    for c in cpu_chunks {
+        (dev.destroy_buffer)(dev.device, c.buffer, std::ptr::null());
+        (dev.free_memory)(dev.device, c.memory, std::ptr::null());
+    }
+    if let Some(gpu) = dev.gpu_if_initialized() {
+        let gpu_chunks: Vec<Chunk> = {
+            let mut pool = gpu.free_gpu_chunks.lock().unwrap_or_else(|e| e.into_inner());
+            std::mem::take(&mut *pool)
+        };
+        freed += gpu_chunks.len();
+        for c in gpu_chunks {
+            (dev.destroy_buffer)(dev.device, c.buffer, std::ptr::null());
+            (dev.free_memory)(dev.device, c.memory, std::ptr::null());
+        }
+    }
+    if freed > 0 {
+        let _ = POOLED_CHUNK_COUNT.fetch_update(Relaxed, Relaxed, |n| Some(n.saturating_sub(freed)));
+        trace(format_args!("idle trim freed {freed} pooled staging chunk(s)"));
+    }
+}
+
 struct GpuDecoder {
     shader_module: u64,
     ds_layout: u64,
     pipeline_layout: u64,
+    pipeline_cache: u64,
     pipeline: u64,
-    compute_queue_families: Vec<bool>,
     destroy_shader_module: extern "C" fn(usize, u64, *const c_void),
     destroy_ds_layout: extern "C" fn(usize, u64, *const c_void),
     destroy_pipeline_layout: extern "C" fn(usize, u64, *const c_void),
+    destroy_pipeline_cache: Option<extern "C" fn(usize, u64, *const c_void)>,
     destroy_pipeline: extern "C" fn(usize, u64, *const c_void),
     create_ds_pool: extern "C" fn(usize, *const VkDescriptorPoolCreateInfo, *const c_void, *mut u64) -> i32,
     destroy_ds_pool: extern "C" fn(usize, u64, *const c_void),
@@ -893,20 +1186,6 @@ impl GpuDecoder {
         if gpu_decode_disabled() {
             return None;
         }
-        let qf_fn: extern "C" fn(*mut c_void, *mut u32, *mut VkQueueFamilyProperties) =
-            as_fn(super::vulkan::host_instance_proc(c"vkGetPhysicalDeviceQueueFamilyProperties") as usize)?;
-        let mut qf_count = 0u32;
-        qf_fn(pd, &mut qf_count, std::ptr::null_mut());
-        let mut qf_props = vec![VkQueueFamilyProperties::default(); qf_count as usize];
-        if qf_count > 0 {
-            qf_fn(pd, &mut qf_count, qf_props.as_mut_ptr());
-        }
-        let compute_queue_families: Vec<bool> =
-            qf_props.iter().map(|q| q.queue_flags & QUEUE_COMPUTE_BIT != 0).collect();
-        if !compute_queue_families.iter().any(|&c| c) {
-            return None;
-        }
-
         let create_shader_module: extern "C" fn(usize, *const VkShaderModuleCreateInfo, *const c_void, *mut u64) -> i32 =
             as_fn(get(c"vkCreateShaderModule"))?;
         let destroy_shader_module: extern "C" fn(usize, u64, *const c_void) =
@@ -923,6 +1202,14 @@ impl GpuDecoder {
             as_fn(get(c"vkCreateComputePipelines"))?;
         let destroy_pipeline: extern "C" fn(usize, u64, *const c_void) =
             as_fn(get(c"vkDestroyPipeline"))?;
+        let create_pipeline_cache: Option<
+            extern "C" fn(usize, *const VkPipelineCacheCreateInfo, *const c_void, *mut u64) -> i32,
+        > = as_fn(get(c"vkCreatePipelineCache"));
+        let get_pipeline_cache_data: Option<
+            extern "C" fn(usize, u64, *mut usize, *mut c_void) -> i32,
+        > = as_fn(get(c"vkGetPipelineCacheData"));
+        let destroy_pipeline_cache: Option<extern "C" fn(usize, u64, *const c_void)> =
+            as_fn(get(c"vkDestroyPipelineCache"));
         let create_ds_pool = as_fn(get(c"vkCreateDescriptorPool"))?;
         let destroy_ds_pool = as_fn(get(c"vkDestroyDescriptorPool"))?;
         let reset_ds_pool = as_fn(get(c"vkResetDescriptorPool"))?;
@@ -1001,6 +1288,44 @@ impl GpuDecoder {
             return None;
         }
 
+        // Load on-disk VkPipelineCache if present and header-valid for this GPU/driver/SPIR-V.
+        let cache_id = query_pipeline_cache_identity(pd);
+        let cache_path = cache_id.as_ref().and_then(pipeline_cache_path);
+        let initial_cache_bytes = cache_id.as_ref().zip(cache_path.as_ref()).and_then(|(id, p)| {
+            let bytes = std::fs::read(p).ok()?;
+            validate_pipeline_cache_header(&bytes, id).then_some(bytes)
+        });
+        let mut pipeline_cache = 0u64;
+        if let Some(create_cache) = create_pipeline_cache {
+            let loaded = initial_cache_bytes.as_deref();
+            let pcci = VkPipelineCacheCreateInfo {
+                s_type: ST_PIPELINE_CACHE_CREATE_INFO,
+                _pad: 0,
+                p_next: std::ptr::null(),
+                flags: 0,
+                _pad2: 0,
+                initial_data_size: loaded.map_or(0, <[u8]>::len),
+                p_initial_data: loaded.map_or(std::ptr::null(), |b| b.as_ptr() as *const c_void),
+            };
+            if create_cache(device, &pcci, std::ptr::null(), &mut pipeline_cache) != VK_SUCCESS {
+                pipeline_cache = 0;
+                if loaded.is_some() {
+                    let empty = VkPipelineCacheCreateInfo {
+                        s_type: ST_PIPELINE_CACHE_CREATE_INFO,
+                        _pad: 0,
+                        p_next: std::ptr::null(),
+                        flags: 0,
+                        _pad2: 0,
+                        initial_data_size: 0,
+                        p_initial_data: std::ptr::null(),
+                    };
+                    if create_cache(device, &empty, std::ptr::null(), &mut pipeline_cache) != VK_SUCCESS {
+                        pipeline_cache = 0;
+                    }
+                }
+            }
+        }
+
         let cp_ci = VkComputePipelineCreateInfo {
             s_type: ST_COMPUTE_PIPELINE_CREATE_INFO,
             _pad: 0,
@@ -1023,22 +1348,45 @@ impl GpuDecoder {
             _pad3: 0,
         };
         let mut pipeline = 0u64;
-        if create_compute_pipelines(device, 0, 1, &cp_ci, std::ptr::null(), &mut pipeline) != VK_SUCCESS {
+        if create_compute_pipelines(device, pipeline_cache, 1, &cp_ci, std::ptr::null(), &mut pipeline) != VK_SUCCESS {
+            if pipeline_cache != 0 {
+                if let Some(d) = destroy_pipeline_cache {
+                    d(device, pipeline_cache, std::ptr::null());
+                }
+            }
             destroy_pipeline_layout(device, pipeline_layout, std::ptr::null());
             destroy_ds_layout(device, ds_layout, std::ptr::null());
             destroy_shader_module(device, shader_module, std::ptr::null());
             return None;
         }
 
+        // Persist updated pipeline cache atomically if the driver produced cache data
+        // different from what was loaded.
+        if pipeline_cache != 0 {
+            if let (Some(get_data), Some(path)) = (get_pipeline_cache_data, cache_path.as_ref()) {
+                let mut size = 0usize;
+                if get_data(device, pipeline_cache, &mut size, std::ptr::null_mut()) == VK_SUCCESS && size >= 32 {
+                    let mut buf = vec![0u8; size];
+                    if get_data(device, pipeline_cache, &mut size, buf.as_mut_ptr() as *mut c_void) == VK_SUCCESS {
+                        buf.truncate(size);
+                        if buf.len() >= 32 && initial_cache_bytes.as_deref() != Some(buf.as_slice()) {
+                            save_pipeline_cache_atomic(path, &buf);
+                        }
+                    }
+                }
+            }
+        }
+
         Some(Self {
             shader_module,
             ds_layout,
             pipeline_layout,
+            pipeline_cache,
             pipeline,
-            compute_queue_families,
             destroy_shader_module,
             destroy_ds_layout,
             destroy_pipeline_layout,
+            destroy_pipeline_cache,
             destroy_pipeline,
             create_ds_pool,
             destroy_ds_pool,
@@ -1072,6 +1420,11 @@ impl GpuDecoder {
             (self.destroy_ds_pool)(dev.device, p.pool, std::ptr::null());
         }
         (self.destroy_pipeline)(dev.device, self.pipeline, std::ptr::null());
+        if self.pipeline_cache != 0 {
+            if let Some(d) = self.destroy_pipeline_cache {
+                d(dev.device, self.pipeline_cache, std::ptr::null());
+            }
+        }
         (self.destroy_pipeline_layout)(dev.device, self.pipeline_layout, std::ptr::null());
         (self.destroy_ds_layout)(dev.device, self.ds_layout, std::ptr::null());
         (self.destroy_shader_module)(dev.device, self.shader_module, std::ptr::null());
@@ -1080,7 +1433,12 @@ impl GpuDecoder {
 
 struct Dev {
     device: usize,
+    pd: usize,
+    gdpa: usize,
     bc_mode: bool,
+    gpu_capable: bool,
+    owned: bool,
+    compute_queue_families: Vec<bool>,
     create_buffer: extern "C" fn(usize, *const c_void, *const c_void, *mut u64) -> i32,
     destroy_buffer: extern "C" fn(usize, u64, *const c_void),
     buffer_requirements: extern "C" fn(usize, u64, *mut [u64; 3]),
@@ -1091,7 +1449,30 @@ struct Dev {
     copy_buffer_to_image: extern "C" fn(*mut c_void, u64, u64, i32, u32, *const c_void),
     memory_types: Vec<u32>,
     free_cpu_chunks: Mutex<Vec<Chunk>>,
-    gpu: Option<GpuDecoder>,
+    gpu: OnceLock<Option<GpuDecoder>>,
+}
+
+impl Dev {
+    /// Lazily initialize the GPU compute pipeline on first ETC2 image/copy so
+    /// probe devices and non-ETC workloads pay 0 ms and 0 B.
+    fn gpu(&self) -> Option<&GpuDecoder> {
+        if !self.gpu_capable {
+            return None;
+        }
+        self.gpu
+            .get_or_init(|| {
+                let gdpa = as_fn::<extern "C" fn(*mut c_void, *const c_char) -> *mut c_void>(self.gdpa)?;
+                let device_ptr = self.device as *mut c_void;
+                let get = |n: &CStr| gdpa(device_ptr, n.as_ptr()) as usize;
+                GpuDecoder::init(self.pd as *mut c_void, self.device, &get)
+            })
+            .as_ref()
+    }
+
+    /// Inspect an already-initialized GPU decoder without triggering lazy init.
+    fn gpu_if_initialized(&self) -> Option<&GpuDecoder> {
+        self.gpu.get().and_then(Option::as_ref)
+    }
 }
 
 static DEV: AtomicPtr<Dev> = AtomicPtr::new(std::ptr::null_mut());
@@ -1105,8 +1486,8 @@ pub fn device_created(pd: *mut c_void, device: *mut c_void) {
         emulating().push(device as usize);
         EMULATING_FAST.store(device as usize, Relaxed);
     }
-    let gdpa = super::vulkan::host_instance_proc(c"vkGetDeviceProcAddr");
-    let Some(gdpa) = as_fn::<extern "C" fn(*mut c_void, *const c_char) -> *mut c_void>(gdpa as usize) else {
+    let gdpa_raw = super::vulkan::host_instance_proc(c"vkGetDeviceProcAddr") as usize;
+    let Some(gdpa) = as_fn::<extern "C" fn(*mut c_void, *const c_char) -> *mut c_void>(gdpa_raw) else {
         unhandled(format_args!("no host vkGetDeviceProcAddr; ETC uploads cannot be decoded"));
         return;
     };
@@ -1122,10 +1503,32 @@ pub fn device_created(pd: *mut c_void, device: *mut c_void) {
             let o = 4 + i * 8;
             memory_types.push(u32::from_ne_bytes(raw[o..o + 4].try_into().ok()?));
         }
-        let gpu = GpuDecoder::init(pd, device as usize, &get);
+        let compute_queue_families = if !gpu_decode_disabled() {
+            if let Some(qf_fn) = as_fn::<extern "C" fn(*mut c_void, *mut u32, *mut VkQueueFamilyProperties)>(
+                super::vulkan::host_instance_proc(c"vkGetPhysicalDeviceQueueFamilyProperties") as usize,
+            ) {
+                let mut qf_count = 0u32;
+                qf_fn(pd, &mut qf_count, std::ptr::null_mut());
+                let mut qf_props = vec![VkQueueFamilyProperties::default(); qf_count as usize];
+                if qf_count > 0 {
+                    qf_fn(pd, &mut qf_count, qf_props.as_mut_ptr());
+                }
+                qf_props.iter().map(|q| q.queue_flags & QUEUE_COMPUTE_BIT != 0).collect()
+            } else {
+                Vec::new()
+            }
+        } else {
+            Vec::new()
+        };
+        let gpu_capable = !gpu_decode_disabled() && compute_queue_families.iter().any(|&c| c);
         Some(Dev {
             device: device as usize,
+            pd: pd as usize,
+            gdpa: gdpa_raw,
             bc_mode: use_bc,
+            gpu_capable,
+            owned: true,
+            compute_queue_families,
             create_buffer: as_fn(get(c"vkCreateBuffer"))?,
             destroy_buffer: as_fn(get(c"vkDestroyBuffer"))?,
             buffer_requirements: as_fn(get(c"vkGetBufferMemoryRequirements"))?,
@@ -1136,37 +1539,14 @@ pub fn device_created(pd: *mut c_void, device: *mut c_void) {
             copy_buffer_to_image: as_fn(get(c"vkCmdCopyBufferToImage"))?,
             memory_types,
             free_cpu_chunks: Mutex::new(Vec::new()),
-            gpu,
+            gpu: OnceLock::new(),
         })
     })();
     match dev {
         Some(d) => {
-            // Pre-warm GPU compute scratch chunks (2 x 8 MiB) and descriptor
-            // pools (2 x 64 sets) during device initialization so early
-            // texture streaming bursts never trigger synchronous vkCreateBuffer /
-            // vkAllocateMemory / vkCreateDescriptorPool stalls on the render thread.
-            if let Some(gpu) = d.gpu.as_ref() {
-                const PREWARM_CHUNKS: usize = 2;
-                const PREWARM_DS_POOLS: usize = 2;
-                let mut chunks = gpu.free_gpu_chunks.lock().unwrap_or_else(|e| e.into_inner());
-                for _ in 0..PREWARM_CHUNKS {
-                    match alloc_gpu_chunk(&d, STAGING_CHUNK) {
-                        Ok(c) => chunks.push(c),
-                        Err(_) => break,
-                    }
-                }
-                drop(chunks);
-                let mut ds_pools = gpu.free_ds_pools.lock().unwrap_or_else(|e| e.into_inner());
-                for _ in 0..PREWARM_DS_POOLS {
-                    match create_ds_pool(&d, gpu) {
-                        Ok(p) => ds_pools.push(p),
-                        Err(_) => break,
-                    }
-                }
-            }
             println!(
                 "[android] vulkan-etc: ETC2/EAC emulation active (gpu compute: {}, target: {})",
-                if d.gpu.is_some() { "on" } else { "off" },
+                if d.gpu_capable { "on (lazy)" } else { "off" },
                 if d.bc_mode { "BC1/BC3/BC4/BC5 (4x-8x compressed)" } else { "RGBA8/R16/RG16" }
             );
             forget_device();
@@ -1186,7 +1566,11 @@ fn active_device(device: usize) -> Option<&'static Dev> {
 }
 
 fn forget_device() {
-    let Some(dev) = active() else { return };
+    let ptr = DEV.swap(std::ptr::null_mut(), AcqRel);
+    // SAFETY: `DEV` either holds a leaked `Box<Dev>` (`owned = true`) or a test harness
+    // pointer (`owned = false`) whose lifetime outlives `forget_device()`. Atomic `swap`
+    // guarantees only this call cleans up and frees `ptr`.
+    let Some(dev) = (unsafe { ptr.as_ref() }) else { return };
     let cmds: Vec<SharedCmd> = {
         let mut st = state_write();
         st.images.clear();
@@ -1210,6 +1594,8 @@ fn forget_device() {
     LIVE_CPU_CMDS.store(0, Relaxed);
     LIVE_IMAGES.store(0, Relaxed);
     COMPUTE_BOUND_CMDS.store(0, Relaxed);
+    POOLED_CHUNK_COUNT.store(0, Relaxed);
+    LAST_ETC_UPLOAD_MS.store(0, Relaxed);
     let n = cmds.len();
     for c in cmds {
         release_cmd(dev, c, false);
@@ -1222,11 +1608,16 @@ fn forget_device() {
         (dev.destroy_buffer)(dev.device, c.buffer, std::ptr::null());
         (dev.free_memory)(dev.device, c.memory, std::ptr::null());
     }
-    if let Some(gpu) = dev.gpu.as_ref() {
+    if let Some(gpu) = dev.gpu_if_initialized() {
         gpu.destroy(dev);
     }
-    DEV.store(std::ptr::null_mut(), Release);
-    trace(format_args!("device 0x{:x}: emulation state dropped, {n} command buffer(s) of staging freed", dev.device));
+    let dev_handle = dev.device;
+    let owned = dev.owned;
+    trace(format_args!("device 0x{:x}: emulation state dropped, {n} command buffer(s) of staging freed", dev_handle));
+    if owned {
+        // SAFETY: `device_created` allocated `ptr` with `Box::into_raw(Box::new(d))`.
+        unsafe { drop(Box::from_raw(ptr)) };
+    }
 }
 
 extern "C" fn destroy_device(device: *mut c_void, alloc: *const c_void) {
@@ -1308,6 +1699,7 @@ struct CmdState {
     gpu_chunks: Vec<Chunk>,
     ds_pools: Vec<DsPool>,
     last_ds: Option<(u64, u64, u64)>,
+    gpu_pipeline_bound: bool,
     pending: Vec<Pending>,
     secondaries: Vec<usize>,
     has_cpu_work: bool,
@@ -1322,13 +1714,13 @@ fn command(cmd: &SharedCmd) -> MutexGuard<'_, CmdState> {
 
 #[derive(Default)]
 struct State {
-    images: HashMap<u64, EmuImage>,
-    storage_buffers: HashSet<u64>,
-    pool_compute: HashMap<u64, bool>,
-    cmd_pool: HashMap<usize, u64>,
-    pool_cmds: HashMap<u64, Vec<usize>>,
-    compute_bound: HashSet<usize>,
-    cmds: HashMap<usize, SharedCmd>,
+    images: FxHashMap<u64, EmuImage>,
+    storage_buffers: FxHashSet<u64>,
+    pool_compute: FxHashMap<u64, bool>,
+    cmd_pool: FxHashMap<usize, u64>,
+    pool_cmds: FxHashMap<u64, Vec<usize>>,
+    compute_bound: FxHashSet<usize>,
+    cmds: FxHashMap<usize, SharedCmd>,
 }
 
 fn state_lock() -> &'static RwLock<State> {
@@ -1348,16 +1740,16 @@ fn state_write() -> RwLockWriteGuard<'static, State> {
 /// and submit-time hashes can run concurrently without blocking image/buffer/
 /// command metadata, while `vkUnmapMemory` takes a write lock and waits for
 /// in-flight readers before forwarding to the driver.
-fn mapped_lock() -> &'static RwLock<HashMap<u64, (usize, u64, u64)>> {
-    static MAPPED: OnceLock<RwLock<HashMap<u64, (usize, u64, u64)>>> = OnceLock::new();
+fn mapped_lock() -> &'static RwLock<FxHashMap<u64, (usize, u64, u64)>> {
+    static MAPPED: OnceLock<RwLock<FxHashMap<u64, (usize, u64, u64)>>> = OnceLock::new();
     MAPPED.get_or_init(Default::default)
 }
 
-fn mapped_read() -> RwLockReadGuard<'static, HashMap<u64, (usize, u64, u64)>> {
+fn mapped_read() -> RwLockReadGuard<'static, FxHashMap<u64, (usize, u64, u64)>> {
     mapped_lock().read().unwrap_or_else(|e| e.into_inner())
 }
 
-fn mapped_write() -> RwLockWriteGuard<'static, HashMap<u64, (usize, u64, u64)>> {
+fn mapped_write() -> RwLockWriteGuard<'static, FxHashMap<u64, (usize, u64, u64)>> {
     mapped_lock().write().unwrap_or_else(|e| e.into_inner())
 }
 
@@ -1420,29 +1812,29 @@ static STORAGE_BUF_BLOOM: CountingBloom4K = CountingBloom4K::new();
 static TRANSFER_SRC_BUF_BLOOM: CountingBloom4K = CountingBloom4K::new();
 static MAPPED_MEM_BLOOM: CountingBloom4K = CountingBloom4K::new();
 
-fn transfer_src_lock() -> &'static RwLock<HashSet<u64>> {
-    static TRANSFER_SRC: OnceLock<RwLock<HashSet<u64>>> = OnceLock::new();
+fn transfer_src_lock() -> &'static RwLock<FxHashSet<u64>> {
+    static TRANSFER_SRC: OnceLock<RwLock<FxHashSet<u64>>> = OnceLock::new();
     TRANSFER_SRC.get_or_init(Default::default)
 }
 
-fn transfer_src_read() -> RwLockReadGuard<'static, HashSet<u64>> {
+fn transfer_src_read() -> RwLockReadGuard<'static, FxHashSet<u64>> {
     transfer_src_lock().read().unwrap_or_else(|e| e.into_inner())
 }
 
-fn transfer_src_write() -> RwLockWriteGuard<'static, HashSet<u64>> {
+fn transfer_src_write() -> RwLockWriteGuard<'static, FxHashSet<u64>> {
     transfer_src_lock().write().unwrap_or_else(|e| e.into_inner())
 }
 
-fn buffers_lock() -> &'static RwLock<HashMap<u64, (u64, u64)>> {
-    static BUFFERS: OnceLock<RwLock<HashMap<u64, (u64, u64)>>> = OnceLock::new();
+fn buffers_lock() -> &'static RwLock<FxHashMap<u64, (u64, u64)>> {
+    static BUFFERS: OnceLock<RwLock<FxHashMap<u64, (u64, u64)>>> = OnceLock::new();
     BUFFERS.get_or_init(Default::default)
 }
 
-fn buffers_read() -> RwLockReadGuard<'static, HashMap<u64, (u64, u64)>> {
+fn buffers_read() -> RwLockReadGuard<'static, FxHashMap<u64, (u64, u64)>> {
     buffers_lock().read().unwrap_or_else(|e| e.into_inner())
 }
 
-fn buffers_write() -> RwLockWriteGuard<'static, HashMap<u64, (u64, u64)>> {
+fn buffers_write() -> RwLockWriteGuard<'static, FxHashMap<u64, (u64, u64)>> {
     buffers_lock().write().unwrap_or_else(|e| e.into_inner())
 }
 
@@ -1570,6 +1962,11 @@ extern "C" fn create_image(device: *mut c_void, info: *const c_void, alloc: *con
     copy[24..28].copy_from_slice(&sub.to_ne_bytes());
     let rc = f(device, copy.as_ptr() as *const c_void, alloc, out);
     if rc == VK_SUCCESS && !out.is_null() {
+        // Trigger lazy GPU compute pipeline init on the first ETC2 image so
+        // probe devices and non-ETC workloads pay 0 ms and 0 B.
+        if dev.gpu_capable && dev.gpu.get().is_none() {
+            let _ = dev.gpu();
+        }
         let image: u64 = rd(out as *const c_void, 0);
         if state_write()
             .images
@@ -1947,7 +2344,7 @@ fn validate_job(job: &Job, src: &[u8]) -> Result<(), String> {
 }
 
 fn source_bytes(
-    mapped: &HashMap<u64, (usize, u64, u64)>,
+    mapped: &FxHashMap<u64, (usize, u64, u64)>,
     memory: u64,
     mem_offset: u64,
     len: usize,
@@ -1990,6 +2387,7 @@ fn staging(dev: &Dev, cmd: &mut CmdState, len: u64) -> Result<(u64, u64, usize),
             pool.pop()
         };
         if let Some(mut c) = recycled {
+            let _ = POOLED_CHUNK_COUNT.fetch_update(Relaxed, Relaxed, |n| Some(n.saturating_sub(1)));
             if len <= c.size {
                 let (buffer, mapped) = (c.buffer, c.mapped);
                 c.used = len;
@@ -2133,6 +2531,7 @@ fn gpu_staging(dev: &Dev, gpu: &GpuDecoder, cmd: &mut CmdState, len: u64) -> Res
             pool.pop()
         };
         if let Some(mut c) = recycled {
+            let _ = POOLED_CHUNK_COUNT.fetch_update(Relaxed, Relaxed, |n| Some(n.saturating_sub(1)));
             if len <= c.size {
                 let buffer = c.buffer;
                 c.used = len;
@@ -2198,6 +2597,7 @@ fn alloc_ds(dev: &Dev, gpu: &GpuDecoder, cmd: &mut CmdState) -> Result<u64, Stri
 fn release_cmd(dev: &Dev, cmd: SharedCmd, recycle: bool) {
     let mut cmd = command(&cmd);
     cmd.retired = true;
+    cmd.gpu_pipeline_bound = false;
     for mut pending in cmd.pending.drain(..) {
         if let Err(error) = pending.finish() {
             unhandled(format_args!("retiring command buffer: decode failed: {error}"));
@@ -2213,19 +2613,21 @@ fn release_cmd(dev: &Dev, cmd: SharedCmd, recycle: bool) {
             let mut pool = dev.free_cpu_chunks.lock().unwrap_or_else(|e| e.into_inner());
             if pool.len() < MAX_POOLED_CHUNKS {
                 pool.push(c);
+                POOLED_CHUNK_COUNT.fetch_add(1, Relaxed);
                 continue;
             }
         }
         (dev.destroy_buffer)(dev.device, c.buffer, std::ptr::null());
         (dev.free_memory)(dev.device, c.memory, std::ptr::null());
     }
-    if let Some(gpu) = dev.gpu.as_ref() {
+    if let Some(gpu) = dev.gpu_if_initialized() {
         for mut c in cmd.gpu_chunks.drain(..) {
             if recycle && c.size <= STAGING_CHUNK {
                 c.used = 0;
                 let mut pool = gpu.free_gpu_chunks.lock().unwrap_or_else(|e| e.into_inner());
                 if pool.len() < MAX_POOLED_CHUNKS {
                     pool.push(c);
+                    POOLED_CHUNK_COUNT.fetch_add(1, Relaxed);
                     continue;
                 }
             }
@@ -2343,18 +2745,35 @@ fn record_work(job: &Job, bytes: Box<[u8]>) -> Result<(Option<Arc<DecodeWork>>, 
 
 static COMPUTE_BOUND_CMDS: AtomicUsize = AtomicUsize::new(0);
 
-fn can_gpu_decode_cmd(dev: &Dev, cmd: usize, src_buffer: u64) -> bool {
-    if dev.gpu.is_none() || !STORAGE_BUF_BLOOM.may_contain(src_buffer) {
-        return false;
-    }
-    let st = state_read();
-    if !st.storage_buffers.contains(&src_buffer) || st.compute_bound.contains(&cmd) {
-        return false;
-    }
-    st.cmd_pool
-        .get(&cmd)
-        .and_then(|pool| st.pool_compute.get(pool).copied())
-        .unwrap_or(false)
+/// Look up (or create) the per-command-buffer `SharedCmd` and simultaneously
+/// check whether `(cmd, src_buffer)` is eligible for GPU compute decode under a
+/// single `state_read()` acquisition (no double-locking on the hot upload path).
+fn lookup_cmd_and_gpu_eligible(dev: &Dev, cmd: usize, src_buffer: u64) -> (SharedCmd, bool) {
+    let check_gpu = dev.gpu_capable && STORAGE_BUF_BLOOM.may_contain(src_buffer);
+    let (existing, gpu_ok) = {
+        let st = state_read();
+        let gpu_ok = check_gpu
+            && st.storage_buffers.contains(&src_buffer)
+            && !st.compute_bound.contains(&cmd)
+            && st
+                .cmd_pool
+                .get(&cmd)
+                .and_then(|pool| st.pool_compute.get(pool).copied())
+                .unwrap_or(false);
+        (st.cmds.get(&cmd).cloned(), gpu_ok)
+    };
+    let shared = match existing {
+        Some(c) => c,
+        None => {
+            let mut st = state_write();
+            Arc::clone(st.cmds.entry(cmd).or_insert_with(|| {
+                CMD_BLOOM.insert(cmd as u64);
+                LIVE_CMDS.fetch_add(1, Relaxed);
+                SharedCmd::default()
+            }))
+        }
+    };
+    (shared, gpu_ok)
 }
 
 #[inline]
@@ -2406,6 +2825,7 @@ fn rollback_gpu_staging(
             let mut pool = gpu.free_gpu_chunks.lock().unwrap_or_else(|e| e.into_inner());
             if pool.len() < MAX_POOLED_CHUNKS {
                 pool.push(c);
+                POOLED_CHUNK_COUNT.fetch_add(1, Relaxed);
                 continue;
             }
         }
@@ -2430,15 +2850,12 @@ fn emulate_copy_gpu_batch(
     layout: i32,
     regions: &[BufferImageCopy],
 ) -> Result<(), String> {
-    // Hoist the single state_read() check out of the per-region mip loop.
-    if !can_gpu_decode_cmd(dev, cmd as usize, src_buffer) {
-        return Err("command/buffer not eligible for GPU compute decode".into());
-    }
     let fmt = emu.format;
     let bc_mode = emu.bc_mode;
 
     // Phase 1: Pure validation of ALL regions before mutating `entry` or
-    // emitting any Vulkan commands into `cmd`.
+    // emitting any Vulkan commands into `cmd`. Uses inline stack buffers for
+    // <= 16 regions (zero heap allocations on the render thread).
     struct ValidatedRegion {
         region: BufferImageCopy,
         w: usize,
@@ -2450,7 +2867,7 @@ fn emulate_copy_gpu_batch(
         dst_row_texels: usize,
         dst_bytes: u64,
     }
-    let mut validated = Vec::with_capacity(regions.len());
+    let mut validated: SmallBuf<ValidatedRegion, 16> = SmallBuf::new();
     let mut min_src_off = u64::MAX;
     let mut max_src_end = 0u64;
 
@@ -2511,12 +2928,12 @@ fn emulate_copy_gpu_batch(
     let saved_last_used = entry.gpu_chunks.last().map(|c| c.used);
     let saved_last_ds = entry.last_ds;
 
-    let mut prepared = Vec::with_capacity(validated.len());
+    let mut prepared: SmallBuf<GpuPreparedRegion, 16> = SmallBuf::new();
     let mut last_scratch_alloc = 0u64;
     let mut last_ds_handle = 0u64;
 
     let prep_result: Result<(), String> = (|| {
-        for v in validated {
+        for v in validated.iter() {
             let (scratch_buf, scratch_off) = gpu_staging(dev, gpu, entry, v.dst_bytes)?;
             let ds = if scratch_buf == last_scratch_alloc && last_ds_handle != 0 {
                 last_ds_handle
@@ -2626,14 +3043,17 @@ fn emulate_copy_gpu_batch(
         std::ptr::null(),
     );
 
-    // Bind compute pipeline once for the entire batch; reuse descriptor sets
-    // across regions that land in the same GPU scratch chunk (typical for mip chains).
-    (gpu.cmd_bind_pipeline)(cmd, PIPELINE_BIND_POINT_COMPUTE, gpu.pipeline);
+    // Bind compute pipeline once per command buffer (cleared if the app binds
+    // another compute pipeline or resets the command buffer).
+    if !entry.gpu_pipeline_bound {
+        (gpu.cmd_bind_pipeline)(cmd, PIPELINE_BIND_POINT_COMPUTE, gpu.pipeline);
+        entry.gpu_pipeline_bound = true;
+    }
     let mut last_scratch = 0u64;
-    let mut post_barriers: Vec<VkBufferMemoryBarrier> = Vec::with_capacity(2);
+    let mut post_barriers: SmallBuf<VkBufferMemoryBarrier, 16> = SmallBuf::new();
     let fmt_bits = etc_format_code(fmt) | if bc_mode { FMT_BC_FLAG } else { 0 };
 
-    for p in &prepared {
+    for p in prepared.iter() {
         if p.scratch_buf != last_scratch {
             (gpu.cmd_bind_ds)(
                 cmd,
@@ -2708,9 +3128,9 @@ fn emulate_copy_gpu_batch(
     );
 
     // Emit one batched vkCmdCopyBufferToImage per contiguous scratch buffer run.
-    let mut copies: Vec<BufferImageCopy> = Vec::with_capacity(prepared.len());
+    let mut copies: SmallBuf<BufferImageCopy, 16> = SmallBuf::new();
     let mut cur_buf = prepared[0].scratch_buf;
-    for p in &prepared {
+    for p in prepared.iter() {
         if p.scratch_buf != cur_buf && !copies.is_empty() {
             (dev.copy_buffer_to_image)(
                 cmd,
@@ -2741,6 +3161,7 @@ fn emulate_copy_gpu_batch(
         );
     }
 
+    note_etc_upload();
     let n = prepared.len() as u64;
     glcount::ETC_REGION_DECODED.fetch_add(n, Relaxed);
     glcount::ETC_REGION_GPU.fetch_add(n, Relaxed);
@@ -2776,50 +3197,39 @@ fn emulate_copy(
         w * h * layers * fmt.texel_bytes()
     };
 
-    let shared = {
-        let existing = state_read().cmds.get(&(cmd as usize)).cloned();
-        match existing {
-            Some(c) => c,
-            None => {
-                let mut st = state_write();
-                Arc::clone(st.cmds.entry(cmd as usize).or_insert_with(|| {
-                    CMD_BLOOM.insert(cmd as u64);
-                    LIVE_CMDS.fetch_add(1, Relaxed);
-                    SharedCmd::default()
-                }))
-            }
-        }
-    };
+    let (shared, gpu_ok) = lookup_cmd_and_gpu_eligible(dev, cmd as usize, src_buffer);
     let mut entry = command(&shared);
     if entry.retired {
         return Err("command buffer was retired during recording".into());
     }
 
-    if let Some(gpu) = dev.gpu.as_ref() {
-        if emulate_copy_gpu_batch(
-            dev,
-            gpu,
-            &mut entry,
-            cmd,
-            src_buffer,
-            image,
-            emu,
-            layout,
-            std::slice::from_ref(region),
-        )
-        .is_ok()
-        {
-            return Ok(if crate::android::tracing() {
-                format!(
-                    "gpu compute ({}): src buffer 0x{src_buffer:x}+{} {src_len} B, rowLength={} imageHeight={} -> {dst_len} B",
-                    if emu.bc_mode { "BC" } else { "RGBA" },
-                    region.buffer_offset,
-                    region.buffer_row_length,
-                    region.buffer_image_height
-                )
-            } else {
-                String::new()
-            });
+    if gpu_ok {
+        if let Some(gpu) = dev.gpu() {
+            if emulate_copy_gpu_batch(
+                dev,
+                gpu,
+                &mut entry,
+                cmd,
+                src_buffer,
+                image,
+                emu,
+                layout,
+                std::slice::from_ref(region),
+            )
+            .is_ok()
+            {
+                return Ok(if crate::android::tracing() {
+                    format!(
+                        "gpu compute ({}): src buffer 0x{src_buffer:x}+{} {src_len} B, rowLength={} imageHeight={} -> {dst_len} B",
+                        if emu.bc_mode { "BC" } else { "RGBA" },
+                        region.buffer_offset,
+                        region.buffer_row_length,
+                        region.buffer_image_height
+                    )
+                } else {
+                    String::new()
+                });
+            }
         }
     }
 
@@ -2843,23 +3253,52 @@ fn emulate_copy(
             .ok_or_else(|| format!("source buffer 0x{src_buffer:x} has no recorded binding"))?
     };
     let mem_offset = bind_offset + region.buffer_offset;
-    // Pinning a mapping does not prevent legal writes after recording. Taking
-    // a shared read lock on `MAPPED` lets concurrent uploads copy in parallel
-    // without blocking image/buffer metadata, while `vkUnmapMemory` takes a
-    // write lock and waits for in-flight readers.
-    let snapshot = {
+    // Small single-layer regions (<= 64x64) decode directly from the mapped
+    // source into staging inline — zero Box<[u8]> snapshot allocation, zero
+    // Arc<DecodeWork>, zero worker mutex/condvar wakeups.
+    let (work, decoded, h64, note) = if w * h <= CPU_INLINE_TEXELS && layers == 1 {
         let mapped = mapped_read();
-        source_bytes(&mapped, memory, mem_offset, src_len).map(|bytes| bytes.to_vec().into_boxed_slice())
-    };
-    let (work, decoded, h64, note) = match snapshot {
-        Ok(bytes) => {
-            let (work, decoded, hash) = record_work(&job, bytes)?;
-            (work, decoded, hash, "prepared snapshot for decode")
+        match source_bytes(&mapped, memory, mem_offset, src_len) {
+            Ok(bytes) => {
+                validate_job(&job, bytes)?;
+                let fingerprint = hash(bytes);
+                if w > 0 && h > 0 {
+                    let surface = Surface { data: bytes, row_blocks, rows_of_blocks };
+                    let out_slice = slice_mut(dst as *mut c_void, dst_len);
+                    if emu.bc_mode {
+                        etc_decode::transcode_region_bc(fmt, &surface, w, h, out_slice)?;
+                    } else {
+                        etc_decode::decode_region(fmt, &surface, w, h, out_slice)?;
+                    }
+                }
+                (None, true, fingerprint, "decoded inline")
+            }
+            Err(e) => {
+                drop(mapped);
+                slice_mut(dst as *mut c_void, dst_len).fill(0);
+                unhandled(format_args!("source not readable at record time ({e}); will retry at submit"));
+                (None, false, 0, "deferred to submit")
+            }
         }
-        Err(e) => {
-            slice_mut(dst as *mut c_void, dst_len).fill(0);
-            unhandled(format_args!("source not readable at record time ({e}); will retry at submit"));
-            (None, false, 0, "deferred to submit")
+    } else {
+        // Pinning a mapping does not prevent legal writes after recording. Taking
+        // a shared read lock on `MAPPED` lets concurrent uploads copy in parallel
+        // without blocking image/buffer metadata, while `vkUnmapMemory` takes a
+        // write lock and waits for in-flight readers.
+        let snapshot = {
+            let mapped = mapped_read();
+            source_bytes(&mapped, memory, mem_offset, src_len).map(|bytes| bytes.to_vec().into_boxed_slice())
+        };
+        match snapshot {
+            Ok(bytes) => {
+                let (work, decoded, hash) = record_work(&job, bytes)?;
+                (work, decoded, hash, "prepared snapshot for decode")
+            }
+            Err(e) => {
+                slice_mut(dst as *mut c_void, dst_len).fill(0);
+                unhandled(format_args!("source not readable at record time ({e}); will retry at submit"));
+                (None, false, 0, "deferred to submit")
+            }
         }
     };
     if !entry.has_cpu_work {
@@ -2872,6 +3311,7 @@ fn emulate_copy(
     if let Some(work) = work {
         DecodePool::get().publish(&work);
     }
+    note_etc_upload();
     glcount::ETC_REGION_DECODED.fetch_add(1, Relaxed);
     Ok(if crate::android::tracing() {
         format!(
@@ -2902,9 +3342,11 @@ extern "C" fn cmd_copy_buffer_to_image(
         copy_regions(dev, cmd, src, image, emu, layout, std::slice::from_ref(&r), "vkCmdCopyBufferToImage");
         return;
     }
-    let regions: Vec<BufferImageCopy> =
-        (0..count as usize).map(|i| rd(regions, i * std::mem::size_of::<BufferImageCopy>())).collect();
-    copy_regions(dev, cmd, src, image, emu, layout, &regions, "vkCmdCopyBufferToImage");
+    let mut buf: SmallBuf<BufferImageCopy, 16> = SmallBuf::new();
+    for i in 0..count as usize {
+        buf.push(rd(regions, i * std::mem::size_of::<BufferImageCopy>()));
+    }
+    copy_regions(dev, cmd, src, image, emu, layout, &buf, "vkCmdCopyBufferToImage");
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2922,38 +3364,27 @@ fn copy_regions(
     // Fast batched GPU compute path for multi-region uploads (e.g. full mip chains):
     // one pre-barrier, one pipeline bind, cached DS reuse, N overlapping dispatches,
     // one post-barrier, and one batched vkCmdCopyBufferToImage.
-    if regions.len() > 1 {
-        if let Some(gpu) = dev.gpu.as_ref() {
-            let shared = {
-                let existing = state_read().cmds.get(&(cmd as usize)).cloned();
-                match existing {
-                    Some(c) => c,
-                    None => {
-                        let mut st = state_write();
-                        Arc::clone(st.cmds.entry(cmd as usize).or_insert_with(|| {
-                            CMD_BLOOM.insert(cmd as u64);
-                            LIVE_CMDS.fetch_add(1, Relaxed);
-                            SharedCmd::default()
-                        }))
+    if regions.len() > 1 && dev.gpu_capable {
+        let (shared, gpu_ok) = lookup_cmd_and_gpu_eligible(dev, cmd as usize, src);
+        if gpu_ok {
+            if let Some(gpu) = dev.gpu() {
+                let mut entry = command(&shared);
+                if !entry.retired
+                    && emulate_copy_gpu_batch(dev, gpu, &mut entry, cmd, src, image, emu, layout, regions).is_ok()
+                {
+                    if tracing {
+                        trace(format_args!(
+                            "{via}(image=0x{image:x} {}x{} fmt={}->{}): gpu compute batch ({}, {} regions)",
+                            emu.width,
+                            emu.height,
+                            emu.etc,
+                            emu.substitute,
+                            if emu.bc_mode { "BC" } else { "RGBA" },
+                            regions.len()
+                        ));
                     }
+                    return;
                 }
-            };
-            let mut entry = command(&shared);
-            if !entry.retired
-                && emulate_copy_gpu_batch(dev, gpu, &mut entry, cmd, src, image, emu, layout, regions).is_ok()
-            {
-                if tracing {
-                    trace(format_args!(
-                        "{via}(image=0x{image:x} {}x{} fmt={}->{}): gpu compute batch ({}, {} regions)",
-                        emu.width,
-                        emu.height,
-                        emu.etc,
-                        emu.substitute,
-                        if emu.bc_mode { "BC" } else { "RGBA" },
-                        regions.len()
-                    ));
-                }
-                return;
             }
         }
     }
@@ -3000,26 +3431,25 @@ extern "C" fn cmd_copy_buffer_to_image2(cmd: *mut c_void, info: *const c_void) {
     let layout: i32 = rd(info, 32);
     let count: u32 = rd(info, 36);
     let p: *const c_void = rd(info, 40);
-    let regions: Vec<BufferImageCopy> = (0..count as usize)
-        .map(|i| {
-            let r = (p as *const u8).wrapping_add(i * 72) as *const c_void;
-            if !rd::<*const c_void>(r, 8).is_null() {
-                unhandled(format_args!("vkCmdCopyBufferToImage2 region with a pNext chain; the chain is ignored"));
-            }
-            BufferImageCopy {
-                buffer_offset: rd(r, 16),
-                buffer_row_length: rd(r, 24),
-                buffer_image_height: rd(r, 28),
-                aspect_mask: rd(r, 32),
-                mip_level: rd(r, 36),
-                base_array_layer: rd(r, 40),
-                layer_count: rd(r, 44),
-                image_offset: rd(r, 48),
-                image_extent: rd(r, 60),
-            }
-        })
-        .collect();
-    copy_regions(dev, cmd, src, image, emu, layout, &regions, "vkCmdCopyBufferToImage2");
+    let mut buf: SmallBuf<BufferImageCopy, 16> = SmallBuf::new();
+    for i in 0..count as usize {
+        let r = (p as *const u8).wrapping_add(i * 72) as *const c_void;
+        if !rd::<*const c_void>(r, 8).is_null() {
+            unhandled(format_args!("vkCmdCopyBufferToImage2 region with a pNext chain; the chain is ignored"));
+        }
+        buf.push(BufferImageCopy {
+            buffer_offset: rd(r, 16),
+            buffer_row_length: rd(r, 24),
+            buffer_image_height: rd(r, 28),
+            aspect_mask: rd(r, 32),
+            mip_level: rd(r, 36),
+            base_array_layer: rd(r, 40),
+            layer_count: rd(r, 44),
+            image_offset: rd(r, 48),
+            image_extent: rd(r, 60),
+        });
+    }
+    copy_regions(dev, cmd, src, image, emu, layout, &buf, "vkCmdCopyBufferToImage2");
 }
 
 extern "C" fn cmd_copy_image(
@@ -3165,7 +3595,7 @@ extern "C" fn create_buffer(
     let usage: u32 = rd(info, 32);
     if usage & BUFFER_USAGE_TRANSFER_SRC != 0 {
         let mut added_storage = false;
-        let rc = if dev.gpu.is_some() {
+        let rc = if dev.gpu_capable {
             if usage & BUFFER_USAGE_STORAGE_BUFFER == 0 {
                 let mut copy: [u8; 56] = rd(info, 0);
                 let patched = usage | BUFFER_USAGE_STORAGE_BUFFER;
@@ -3223,8 +3653,8 @@ extern "C" fn bind_buffer_memory2(device: *mut c_void, count: u32, infos: *const
     };
     let rc = f(device, count, infos);
     if rc == VK_SUCCESS && !infos.is_null() && active_device(device as usize).is_some() {
-        let mut transfer_src: Option<RwLockReadGuard<'static, HashSet<u64>>> = None;
-        let mut bufs: Option<RwLockWriteGuard<'static, HashMap<u64, (u64, u64)>>> = None;
+        let mut transfer_src: Option<RwLockReadGuard<'static, FxHashSet<u64>>> = None;
+        let mut bufs: Option<RwLockWriteGuard<'static, FxHashMap<u64, (u64, u64)>>> = None;
         for i in 0..count as usize {
             let base = (infos as *const u8).wrapping_add(i * 40) as *const c_void;
             let buffer: u64 = rd(base, 16);
@@ -3411,7 +3841,8 @@ fn check_pending(cmds: impl Iterator<Item = usize>) {
         if children.is_empty() {
             continue;
         }
-        let mut visited = HashSet::from([c]);
+        let mut visited = FxHashSet::default();
+        visited.insert(c);
         while let Some(child) = children.pop() {
             if visited.insert(child) {
                 children.extend(check_command(child, &mut same, &mut gone));
@@ -3476,6 +3907,11 @@ extern "C" fn queue_submit(queue: *mut c_void, count: u32, submits: *const c_voi
         });
         check_pending(all);
     }
+    if POOLED_CHUNK_COUNT.load(Relaxed) != 0 {
+        if let Some(dev) = active() {
+            trim_idle_pools(dev);
+        }
+    }
     f(queue, count, submits, fence)
 }
 
@@ -3493,6 +3929,11 @@ extern "C" fn queue_submit2(queue: *mut c_void, count: u32, submits: *const c_vo
             (0..n as usize).map(move |j| rd::<usize>(p, j * 32 + 16))
         });
         check_pending(all);
+    }
+    if POOLED_CHUNK_COUNT.load(Relaxed) != 0 {
+        if let Some(dev) = active() {
+            trim_idle_pools(dev);
+        }
     }
     f(queue, count, submits, fence)
 }
@@ -3514,9 +3955,9 @@ extern "C" fn create_command_pool(
             let pool: u64 = rd(out as *const c_void, 0);
             let family: u32 = rd(info, 20);
             let compute = dev
-                .gpu
-                .as_ref()
-                .and_then(|g| g.compute_queue_families.get(family as usize).copied())
+                .compute_queue_families
+                .get(family as usize)
+                .copied()
                 .unwrap_or(false);
             state_write().pool_compute.insert(pool, compute);
         }
@@ -3527,6 +3968,16 @@ extern "C" fn create_command_pool(
 extern "C" fn cmd_bind_pipeline(cmd: *mut c_void, bind_point: u32, pipeline: u64) {
     if bind_point == PIPELINE_BIND_POINT_COMPUTE && active().is_some() {
         let key = cmd as usize;
+        // If our GPU compute pipeline was previously bound on this command
+        // buffer, clear the cached bind bit before forwarding.
+        let existing_cmd = if CMD_BLOOM.may_contain(key as u64) {
+            state_read().cmds.get(&key).cloned()
+        } else {
+            None
+        };
+        if let Some(shared) = existing_cmd {
+            command(&shared).gpu_pipeline_bound = false;
+        }
         // Fast path: if this command buffer already bound a compute pipeline
         // in this recording, verify under a shared read lock and skip the
         // global exclusive write lock completely.
@@ -3557,13 +4008,14 @@ extern "C" fn allocate_command_buffers(device: *mut c_void, info: *const c_void,
         let pool: u64 = rd(info, 16);
         let n: u32 = rd(info, 28);
         let mut st = state_write();
-        let mut added = Vec::with_capacity(n as usize);
+        let State { cmd_pool, pool_cmds, .. } = &mut *st;
+        let list = pool_cmds.entry(pool).or_default();
+        list.reserve(n as usize);
         for i in 0..n as usize {
             let c: usize = rd(out as *const c_void, i * 8);
-            st.cmd_pool.insert(c, pool);
-            added.push(c);
+            cmd_pool.insert(c, pool);
+            list.push(c);
         }
-        st.pool_cmds.entry(pool).or_default().extend(added);
     }
     rc
 }
@@ -3748,12 +4200,14 @@ mod tests {
             extern "C" fn map(_: usize, _: u64, _: u64, _: u64, _: u32, _: *mut *mut c_void) -> i32 { -1 }
             extern "C" fn copy(_: *mut c_void, _: u64, _: u64, _: i32, _: u32, _: *const c_void) {}
             let dev = Box::new(Dev {
-                device: 0x8001, bc_mode: false, create_buffer: create, destroy_buffer: destroy,
+                device: 0x8001, pd: 0, gdpa: 0, bc_mode: false, gpu_capable: false, owned: false,
+                compute_queue_families: Vec::new(),
+                create_buffer: create, destroy_buffer: destroy,
                 buffer_requirements: requirements, allocate_memory: create, free_memory: destroy,
                 bind_buffer_memory: bind, map_memory: map, copy_buffer_to_image: copy,
                 memory_types: vec![MEMORY_HOST_VISIBLE | MEMORY_HOST_COHERENT],
                 free_cpu_chunks: Mutex::new(Vec::new()),
-                gpu: None,
+                gpu: OnceLock::new(),
             });
             let mut seed = 0x1234_5678u32;
             let src = (0..width * width).map(|_| {
@@ -4046,7 +4500,10 @@ mod tests {
         let _turn = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mut harness = CopyHarness::new(64);
         harness.record().unwrap();
-        assert!(command(&state().cmds[&3]).pending[0].work.is_some());
+        // <= 64x64 single-layer regions decode inline without Box<[u8]> snapshot or worker queue.
+        assert!(command(&state().cmds[&3]).pending[0].work.is_none());
+        assert!(command(&state().cmds[&3]).pending[0].decoded);
+        assert_eq!(harness.dst, harness.expected());
         harness.submit(false);
         assert_eq!(harness.dst, harness.expected());
         harness.rewind();
@@ -4067,6 +4524,13 @@ mod tests {
         harness.width = 0;
         assert!(harness.record().is_ok());
         assert_eq!(harness.submit(false), VK_SUCCESS);
+        drop(harness);
+        // Regions larger than 64x64 still dispatch asynchronously to the decode pool.
+        let large = CopyHarness::new(128);
+        large.record().unwrap();
+        assert!(command(&state().cmds[&3]).pending[0].work.is_some());
+        assert_eq!(large.submit(false), VK_SUCCESS);
+        assert_eq!(large.dst, large.expected());
     }
 
     #[test]
@@ -4573,7 +5037,12 @@ mod tests {
 
         let dev = Box::new(Dev {
             device: 0x8009,
+            pd: 0,
+            gdpa: 0,
             bc_mode: false,
+            gpu_capable: false,
+            owned: false,
+            compute_queue_families: Vec::new(),
             create_buffer: create,
             destroy_buffer: destroy,
             buffer_requirements: requirements,
@@ -4584,7 +5053,7 @@ mod tests {
             copy_buffer_to_image: copy,
             memory_types: vec![MEMORY_HOST_VISIBLE | MEMORY_HOST_COHERENT | MEMORY_HOST_CACHED],
             free_cpu_chunks: Mutex::new(Vec::new()),
-            gpu: None,
+            gpu: OnceLock::new(),
         });
         let mut backing = vec![0u8; 4096];
         let ptr = backing.as_mut_ptr() as usize;
@@ -4767,9 +5236,9 @@ mod tests {
             assert_eq!(create_compute_pipelines(device as usize, 0, 1, &cp_ci, std::ptr::null(), &mut pipeline), VK_SUCCESS);
 
             let gpu = GpuDecoder {
-                shader_module, ds_layout, pipeline_layout, pipeline,
-                compute_queue_families: qfs.iter().map(|q| q.queue_flags & QUEUE_COMPUTE_BIT != 0).collect(),
-                destroy_shader_module, destroy_ds_layout, destroy_pipeline_layout, destroy_pipeline,
+                shader_module, ds_layout, pipeline_layout, pipeline_cache: 0, pipeline,
+                destroy_shader_module, destroy_ds_layout, destroy_pipeline_layout,
+                destroy_pipeline_cache: None, destroy_pipeline,
                 create_ds_pool: as_fn(get(c"vkCreateDescriptorPool"))?,
                 destroy_ds_pool: as_fn(get(c"vkDestroyDescriptorPool"))?,
                 reset_ds_pool: as_fn(get(c"vkResetDescriptorPool"))?,
@@ -5324,5 +5793,112 @@ mod tests {
         (vk.destroy_buffer)(vk.device as usize, dst_buf, std::ptr::null());
         (vk.free_mem)(vk.device as usize, dst_mem, std::ptr::null());
         (vk.gpu.destroy_ds_pool)(vk.device as usize, ds_pool, std::ptr::null());
+    }
+
+    #[test]
+    fn pipeline_cache_header_validation_rejects_corrupt_and_mismatched_caches() {
+        let id = PipelineCacheIdentity {
+            vendor_id: 0x10de,
+            device_id: 0x2684,
+            driver_version: 0x1234_5678,
+            uuid: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16],
+        };
+        let mut valid = vec![0u8; 64];
+        valid[0..4].copy_from_slice(&32u32.to_ne_bytes());
+        valid[4..8].copy_from_slice(&1u32.to_ne_bytes());
+        valid[8..12].copy_from_slice(&id.vendor_id.to_ne_bytes());
+        valid[12..16].copy_from_slice(&id.device_id.to_ne_bytes());
+        valid[16..32].copy_from_slice(&id.uuid);
+        assert!(validate_pipeline_cache_header(&valid, &id));
+
+        assert!(!validate_pipeline_cache_header(&valid[..31], &id));
+        let mut bad_ver = valid.clone();
+        bad_ver[4..8].copy_from_slice(&2u32.to_ne_bytes());
+        assert!(!validate_pipeline_cache_header(&bad_ver, &id));
+
+        let mut bad_vendor = valid.clone();
+        bad_vendor[8..12].copy_from_slice(&0x8086u32.to_ne_bytes());
+        assert!(!validate_pipeline_cache_header(&bad_vendor, &id));
+
+        let mut bad_uuid = valid.clone();
+        bad_uuid[31] ^= 0xff;
+        assert!(!validate_pipeline_cache_header(&bad_uuid, &id));
+
+        let mut huge_header = valid.clone();
+        huge_header[0..4].copy_from_slice(&128u32.to_ne_bytes());
+        assert!(!validate_pipeline_cache_header(&huge_header, &id));
+    }
+
+    #[test]
+    fn small_buf_handles_inline_and_heap_spill_cleanly() {
+        let drops = Arc::new(AtomicUsize::new(0));
+        struct Tracked(usize, Arc<AtomicUsize>);
+        impl Drop for Tracked {
+            fn drop(&mut self) {
+                self.1.fetch_add(1, Relaxed);
+            }
+        }
+        {
+            let mut sb: SmallBuf<Tracked, 4> = SmallBuf::new();
+            for i in 0..4 {
+                sb.push(Tracked(i, Arc::clone(&drops)));
+            }
+            assert!(matches!(sb, SmallBuf::Inline { len: 4, .. }));
+            assert_eq!(sb.iter().map(|t| t.0).collect::<Vec<_>>(), vec![0, 1, 2, 3]);
+            sb.push(Tracked(4, Arc::clone(&drops)));
+            assert!(matches!(sb, SmallBuf::Heap(_)));
+            assert_eq!(sb.iter().map(|t| t.0).collect::<Vec<_>>(), vec![0, 1, 2, 3, 4]);
+            assert_eq!(drops.load(Relaxed), 0);
+        }
+        assert_eq!(drops.load(Relaxed), 5);
+    }
+
+    #[test]
+    fn idle_trim_and_owned_forget_device_reclaim_resources() {
+        let _turn = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        static FREED: AtomicUsize = AtomicUsize::new(0);
+        extern "C" fn create(_: usize, _: *const c_void, _: *const c_void, _: *mut u64) -> i32 { -1 }
+        extern "C" fn destroy(_: usize, _: u64, _: *const c_void) { FREED.fetch_add(1, Relaxed); }
+        extern "C" fn requirements(_: usize, _: u64, _: *mut [u64; 3]) {}
+        extern "C" fn bind(_: usize, _: u64, _: u64, _: u64) -> i32 { 0 }
+        extern "C" fn map(_: usize, _: u64, _: u64, _: u64, _: u32, _: *mut *mut c_void) -> i32 { -1 }
+        extern "C" fn copy(_: *mut c_void, _: u64, _: u64, _: i32, _: u32, _: *const c_void) {}
+
+        let dev = Box::new(Dev {
+            device: 0x8020,
+            pd: 0,
+            gdpa: 0,
+            bc_mode: false,
+            gpu_capable: false,
+            owned: true,
+            compute_queue_families: Vec::new(),
+            create_buffer: create,
+            destroy_buffer: destroy,
+            buffer_requirements: requirements,
+            allocate_memory: create,
+            free_memory: destroy,
+            bind_buffer_memory: bind,
+            map_memory: map,
+            copy_buffer_to_image: copy,
+            memory_types: vec![MEMORY_HOST_VISIBLE | MEMORY_HOST_COHERENT],
+            free_cpu_chunks: Mutex::new(vec![Chunk { buffer: 77, memory: 78, mapped: 0, size: 4096, used: 0 }]),
+            gpu: OnceLock::new(),
+        });
+        DEV.store(Box::into_raw(dev), Release);
+        POOLED_CHUNK_COUNT.store(1, Relaxed);
+        LAST_ETC_UPLOAD_MS.store(1, Relaxed);
+        let before = FREED.load(Relaxed);
+        // Before idle window: nothing freed.
+        trim_idle_pools_at(active().unwrap(), IDLE_TRIM_MS);
+        assert_eq!(FREED.load(Relaxed), before);
+        assert_eq!(POOLED_CHUNK_COUNT.load(Relaxed), 1);
+        // Past idle window: pooled chunk is freed.
+        trim_idle_pools_at(active().unwrap(), IDLE_TRIM_MS + 1);
+        assert_eq!(FREED.load(Relaxed), before + 2);
+        assert_eq!(POOLED_CHUNK_COUNT.load(Relaxed), 0);
+        // forget_device must drop the owned Box<Dev> cleanly without leaking or double-freeing.
+        forget_device();
+        assert!(active().is_none());
+        forget_device();
     }
 }
