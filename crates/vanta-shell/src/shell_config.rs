@@ -57,16 +57,24 @@ impl AppearanceScheme {
         }
     }
 
-    /// Applies to this process only. `ColorScheme::Default` is what makes
-    /// `System` live — libadwaita keeps tracking the portal itself once the
-    /// override is lifted, nothing here has to poll or resubscribe.
-    pub fn apply(self) {
-        let scheme = match self {
+    /// The libadwaita colour scheme corresponding to this preference.
+    ///
+    /// `System` uses `ColorScheme::PreferDark`, which lets libadwaita track
+    /// `org.freedesktop.appearance color-scheme` natively and live without
+    /// blocking startup on a synchronous D-Bus portal RPC, while still
+    /// defaulting to dark when the desktop reports no preference.
+    pub fn adw_scheme(self) -> libadwaita::ColorScheme {
+        match self {
             AppearanceScheme::Light => libadwaita::ColorScheme::ForceLight,
             AppearanceScheme::Dark => libadwaita::ColorScheme::ForceDark,
-            AppearanceScheme::System => system_scheme(portal_colour_scheme()),
-        };
-        libadwaita::StyleManager::default().set_color_scheme(scheme);
+            AppearanceScheme::System => libadwaita::ColorScheme::PreferDark,
+        }
+    }
+
+    /// Applies to this process only. `ColorScheme::PreferDark` keeps `System`
+    /// tracking the desktop portal live without a blocking D-Bus round-trip.
+    pub fn apply(self) {
+        libadwaita::StyleManager::default().set_color_scheme(self.adw_scheme());
     }
 }
 
@@ -74,89 +82,6 @@ impl Default for AppearanceScheme {
     fn default() -> Self {
         AppearanceScheme::System
     }
-}
-
-/// How long to wait for the settings portal before deciding nobody is there.
-///
-/// ADR-002 budgets the shell's first paint in milliseconds and this call sits in
-/// front of it, so the number is a compromise rather than a safety margin: on a
-/// session with a portal the reply comes back in about a millisecond and this is
-/// never reached, and on one without it the bus refuses immediately rather than
-/// hanging. What it actually bounds is the case in between — a portal that is
-/// starting, or wedged — where half a second of default theming is a better
-/// outcome than a launcher that appears to have failed to start.
-const PORTAL_TIMEOUT_MS: i32 = 500;
-
-/// What `System` has to resolve to right now, given what the desktop said.
-///
-/// **A preference, not a correctness fix, and the branch looks wrong until you
-/// know why.** `ColorScheme::Default` is the value that means "follow the
-/// desktop", and it is what `System` should be whenever the desktop can be
-/// asked — someone on a light desktop must still get light, and `Default` is
-/// also what keeps the window tracking a change made while it is open, which is
-/// worth more than any startup decision taken once.
-///
-/// The single source libadwaita consults for that is the settings portal's
-/// `org.freedesktop.appearance color-scheme`. When nothing answers it, there is
-/// no preference to follow — but `Default` does not mean "unknown", it renders
-/// light, so an unreachable portal presents as a deliberate light theme. That is
-/// how the owner's launcher kept appearing in light on a `prefer-dark` desktop:
-/// a process without the session bus in its environment has no portal to ask,
-/// and light is what falls out. A game launcher guessing light when it has not
-/// been told is the worse guess, so the unknown case is dark.
-///
-/// The cost is stated rather than hidden: if the portal is unreachable *and*
-/// libadwaita's non-sandboxed GSettings fallback would have found a genuine
-/// light preference, this overrides it. That is accepted — the owner asked for
-/// dark as the answer to "we do not know", and the portal is what defines
-/// knowing here.
-fn system_scheme(portal: Option<u32>) -> libadwaita::ColorScheme {
-    match portal {
-        Some(_) => libadwaita::ColorScheme::Default,
-        None => libadwaita::ColorScheme::ForceDark,
-    }
-}
-
-/// The desktop's `org.freedesktop.appearance color-scheme`, asked for directly.
-///
-/// Only the *presence* of an answer is used — see [`system_scheme`] — so this
-/// deliberately does not interpret the value it returns. `ReadOne` first because
-/// it is what current portals implement, then `Read`, which older ones offer and
-/// which boxes the value one variant deeper; either shape is unwrapped by
-/// following `v` down until something that is not a variant comes out.
-///
-/// Through `gio`: the shell already holds a GDBus connection through GTK, so
-/// this portal query reuses it. The shared secret backend uses `zbus` separately.
-fn portal_colour_scheme() -> Option<u32> {
-    use libadwaita::gtk::gio;
-    use libadwaita::gtk::glib::prelude::*;
-
-    let bus = gio::bus_get_sync(gio::BusType::Session, gio::Cancellable::NONE).ok()?;
-    let arguments = ("org.freedesktop.appearance", "color-scheme").to_variant();
-
-    for method in ["ReadOne", "Read"] {
-        let Ok(reply) = bus.call_sync(
-            Some("org.freedesktop.portal.Desktop"),
-            "/org/freedesktop/portal/desktop",
-            "org.freedesktop.portal.Settings",
-            method,
-            Some(&arguments),
-            None,
-            gio::DBusCallFlags::NONE,
-            PORTAL_TIMEOUT_MS,
-            gio::Cancellable::NONE,
-        ) else {
-            continue;
-        };
-        let mut value = reply.child_value(0);
-        while let Some(inner) = value.as_variant() {
-            value = inner;
-        }
-        if let Some(scheme) = value.get::<u32>() {
-            return Some(scheme);
-        }
-    }
-    None
 }
 
 /// When Vanta stops holding the engine at full rate.
@@ -585,9 +510,23 @@ pub enum GraphicsOptimization {
     /// [`vanta_runtime::flags::Performance::Latency`]:
     /// fewer threads and a smaller physics batch, for a machine short of cores.
     FewerCores,
+    /// The default `pc-windows-11` identity, plus `VANTA_PERFORMANCE=speed`:
+    /// aggressive low-overhead tuning for weak or older CPUs while preserving
+    /// full render distance.
+    Speed,
 }
 
 impl GraphicsOptimization {
+    /// All modes in Settings combo order.
+    pub const ALL: [GraphicsOptimization; 6] = [
+        GraphicsOptimization::Balanced,
+        GraphicsOptimization::RobloxApp,
+        GraphicsOptimization::MobileTier,
+        GraphicsOptimization::MoreCores,
+        GraphicsOptimization::FewerCores,
+        GraphicsOptimization::Speed,
+    ];
+
     /// Order matches the `AdwComboRow` model in `settings.rs`, on the same
     /// footing as [`ThrottleWhen::index`].
     pub fn index(self) -> u32 {
@@ -597,6 +536,7 @@ impl GraphicsOptimization {
             GraphicsOptimization::MobileTier => 2,
             GraphicsOptimization::MoreCores => 3,
             GraphicsOptimization::FewerCores => 4,
+            GraphicsOptimization::Speed => 5,
         }
     }
 
@@ -606,7 +546,53 @@ impl GraphicsOptimization {
             1 => GraphicsOptimization::RobloxApp,
             2 => GraphicsOptimization::MobileTier,
             3 => GraphicsOptimization::MoreCores,
-            _ => GraphicsOptimization::FewerCores,
+            4 => GraphicsOptimization::FewerCores,
+            5 => GraphicsOptimization::Speed,
+            _ => GraphicsOptimization::Balanced,
+        }
+    }
+
+    /// Short display label for launcher pills and status indicators.
+    pub fn short_label(self) -> &'static str {
+        match self {
+            GraphicsOptimization::Balanced => "Balanced",
+            GraphicsOptimization::RobloxApp => "Roblox App",
+            GraphicsOptimization::MobileTier => "Mobile Tier",
+            GraphicsOptimization::MoreCores => "Performance",
+            GraphicsOptimization::FewerCores => "Fewer Cores",
+            GraphicsOptimization::Speed => "Speed",
+        }
+    }
+
+    /// Full label for the Settings → General → Launch mode dropdown.
+    pub fn settings_label(self) -> &'static str {
+        match self {
+            GraphicsOptimization::Balanced => "Balanced (Windows PC)",
+            GraphicsOptimization::RobloxApp => "Roblox app",
+            GraphicsOptimization::MobileTier => "Android tablet",
+            GraphicsOptimization::MoreCores => "Performance (more cores)",
+            GraphicsOptimization::FewerCores => "Fewer cores",
+            GraphicsOptimization::Speed => "Speed (Weak / Old CPUs)",
+        }
+    }
+
+    /// Concise summary shown in tooltips, launcher badges, and settings.
+    pub fn description(self) -> &'static str {
+        match self {
+            GraphicsOptimization::Balanced => "Default PC identity and balanced engine threading.",
+            GraphicsOptimization::RobloxApp => "Bare RobloxApp identity with default threading.",
+            GraphicsOptimization::MobileTier => {
+                "Android tablet identity (reported to affect some PC UI features)."
+            }
+            GraphicsOptimization::MoreCores => {
+                "More engine worker threads and parallel prerender."
+            }
+            GraphicsOptimization::FewerCores => {
+                "Fewer worker threads and smaller physics batches."
+            }
+            GraphicsOptimization::Speed => {
+                "Low-overhead tuning for weak or older CPUs while keeping full render distance."
+            }
         }
     }
 
@@ -623,7 +609,8 @@ impl GraphicsOptimization {
         match self {
             GraphicsOptimization::Balanced
             | GraphicsOptimization::MoreCores
-            | GraphicsOptimization::FewerCores => None,
+            | GraphicsOptimization::FewerCores
+            | GraphicsOptimization::Speed => None,
             GraphicsOptimization::RobloxApp => Some("roblox-app"),
             GraphicsOptimization::MobileTier => Some("android-tablet"),
         }
@@ -638,6 +625,7 @@ impl GraphicsOptimization {
             | GraphicsOptimization::MobileTier => None,
             GraphicsOptimization::MoreCores => Some("throughput"),
             GraphicsOptimization::FewerCores => Some("latency"),
+            GraphicsOptimization::Speed => Some("speed"),
         }
     }
 }
@@ -1299,24 +1287,40 @@ mod tests {
     }
 
     #[test]
-    fn an_unanswered_portal_is_dark_rather_than_light() {
-        // The owner's report, in one assertion: their launcher kept opening in
-        // light on a `prefer-dark` desktop, because `ColorScheme::Default`
-        // renders light when nothing told it otherwise and a process without
-        // the session bus has nothing to ask. Unknown is dark now.
-        assert_eq!(system_scheme(None), libadwaita::ColorScheme::ForceDark);
+    fn system_appearance_uses_prefer_dark_without_blocking_portal_rpc() {
+        assert_eq!(AppearanceScheme::Light.adw_scheme(), libadwaita::ColorScheme::ForceLight);
+        assert_eq!(AppearanceScheme::Dark.adw_scheme(), libadwaita::ColorScheme::ForceDark);
+        assert_eq!(AppearanceScheme::System.adw_scheme(), libadwaita::ColorScheme::PreferDark);
     }
 
     #[test]
-    fn a_desktop_that_answers_is_still_followed_live() {
-        // The half that must not be lost in fixing the other one. `Default` is
-        // the only value that keeps tracking a change made while the window is
-        // open, and forcing dark on an answering desktop would take light away
-        // from somebody who chose it. The value itself is not inspected on
-        // purpose, so every answer maps the same way.
-        for reported in [0, 1, 2] {
-            assert_eq!(system_scheme(Some(reported)), libadwaita::ColorScheme::Default);
+    fn graphics_optimization_speed_round_trips_serde_index_and_env() {
+        for mode in GraphicsOptimization::ALL {
+            assert_eq!(GraphicsOptimization::from_index(mode.index()), mode);
+            assert!(!mode.short_label().is_empty());
+            assert!(!mode.description().is_empty());
+            let json = serde_json::to_string(&mode).unwrap();
+            let parsed: GraphicsOptimization = serde_json::from_str(&json).unwrap();
+            assert_eq!(parsed, mode);
         }
+        assert_eq!(GraphicsOptimization::Speed.index(), 5);
+        assert_eq!(GraphicsOptimization::from_index(5), GraphicsOptimization::Speed);
+        assert_eq!(GraphicsOptimization::from_index(99), GraphicsOptimization::Balanced);
+        assert_eq!(GraphicsOptimization::Speed.performance_env(), Some("speed"));
+        assert_eq!(GraphicsOptimization::Speed.device_profile_env(), None);
+        assert_eq!(GraphicsOptimization::Speed.short_label(), "Speed");
+        assert_eq!(serde_json::to_string(&GraphicsOptimization::Speed).unwrap(), "\"speed\"");
+
+        let p = scratch("speed-mode.json");
+        save(
+            &p,
+            &ShellConfig {
+                graphics_optimization_mode: GraphicsOptimization::Speed,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(load(&p).graphics_optimization_mode, GraphicsOptimization::Speed);
     }
 
     fn sinks() -> Vec<String> {

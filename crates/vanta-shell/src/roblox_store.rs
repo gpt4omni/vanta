@@ -11,10 +11,12 @@
 //! The pure functions here are what is worth pinning, and a `gtk::ListBox`
 //! cannot be built without `gtk::init`, so they are separate from the widgets.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
+use std::path::PathBuf;
 use std::rc::Rc;
 
 use libadwaita as adw;
+use libadwaita::gio;
 use libadwaita::glib;
 use libadwaita::gtk;
 use libadwaita::prelude::*;
@@ -103,11 +105,50 @@ pub fn cleanup_line(unused: &[String], entries: &[Entry]) -> String {
     format!("Removes {} and frees {}.", unused.join(", "), profile::human_bytes(freed))
 }
 
+struct StoreSnapshot {
+    entries: Vec<(Entry, u64)>,
+    latest: Option<String>,
+    profiles: Vec<ProfilePin>,
+    pinned_anywhere: Vec<String>,
+    running: Vec<String>,
+    root: PathBuf,
+    unused: Vec<String>,
+    cleanup_text: Option<String>,
+}
+
+fn scan_store_snapshot() -> StoreSnapshot {
+    let entries = store::list();
+    let latest = store::latest(&entries).map(|e| e.version.clone());
+    let profiles = profile_pins();
+    let pinned_anywhere = profile::all_pinned_versions();
+    let running: Vec<String> =
+        entries.iter().filter(|e| store::is_in_use(&e.dir)).map(|e| e.version.clone()).collect();
+    let root = store::root();
+    let unused = unused_builds(&entries, &pinned_anywhere, &running);
+    let cleanup_text = (!unused.is_empty()).then(|| cleanup_line(&unused, &entries));
+    let sized_entries = entries
+        .into_iter()
+        .map(|entry| {
+            let bytes = store::tree_bytes(&entry.dir);
+            (entry, bytes)
+        })
+        .collect();
+    StoreSnapshot {
+        entries: sized_entries,
+        latest,
+        profiles,
+        pinned_anywhere,
+        running,
+        root,
+        unused,
+        cleanup_text,
+    }
+}
+
 /// The group, and the closure that redraws it from disk.
 ///
-/// Rebuilt rather than patched: the store changes under this page whenever a
-/// download, an import or an update lands, and a list assembled once is wrong by
-/// the next one. The caller invokes the closure when any of those ends.
+/// Rebuilt asynchronously via `gio::spawn_blocking` so recursive `tree_bytes`
+/// walks never block the GTK main thread when Settings opens.
 pub fn build_group(window: &gtk::Window) -> (adw::PreferencesGroup, Rc<dyn Fn()>) {
     let group = adw::PreferencesGroup::builder()
         .title("Builds Vanta keeps")
@@ -121,100 +162,147 @@ pub fn build_group(window: &gtk::Window) -> (adw::PreferencesGroup, Rc<dyn Fn()>
     let status = adw::ActionRow::builder().title("").build();
     status.set_visible(false);
     status.set_subtitle_lines(4);
+    let generation = Rc::new(Cell::new(0u64));
 
     let redraw: Rc<RefCell<Option<Rc<dyn Fn()>>>> = Rc::new(RefCell::new(None));
     let refresh: Rc<dyn Fn()> = {
-        let (group, rows, status, redraw) = (group.clone(), rows.clone(), status.clone(), redraw.clone());
+        let (group, rows, status, redraw, generation) = (
+            group.clone(),
+            rows.clone(),
+            status.clone(),
+            redraw.clone(),
+            generation.clone(),
+        );
         let window = window.clone();
         Rc::new(move || {
-            for row in rows.borrow_mut().drain(..) {
-                group.remove(&row);
-            }
-            group.remove(&status);
-            let entries = store::list();
-            let latest = store::latest(&entries).map(|e| e.version.clone());
-            let profiles = profile_pins();
-            let pinned_anywhere = profile::all_pinned_versions();
-            let running: Vec<String> =
-                entries.iter().filter(|e| store::is_in_use(&e.dir)).map(|e| e.version.clone()).collect();
-            let root = store::root();
+            let ticket = generation.get().wrapping_add(1);
+            generation.set(ticket);
 
-            if entries.is_empty() {
-                let row = adw::ActionRow::builder()
-                    .title("No builds yet")
-                    .subtitle("Press Download Roblox above, or import one.")
+            if rows.borrow().is_empty() {
+                let loading = adw::ActionRow::builder()
+                    .title("Checking kept builds…")
                     .build();
-                group.add(&row);
-                rows.borrow_mut().push(row);
+                group.add(&loading);
+                rows.borrow_mut().push(loading);
             }
-            for entry in &entries {
-                let users = used_by(&entry.version, latest.as_deref(), &profiles);
-                let row = adw::ActionRow::builder()
-                    .title(format!("Roblox {}", entry.version))
-                    .subtitle(glib::markup_escape_text(&describe_kept(
-                        entry,
-                        latest.as_deref(),
-                        &users,
-                        store::tree_bytes(&entry.dir),
-                    )))
-                    .build();
-                row.set_subtitle_lines(3);
 
-                let remove = gtk::Button::from_icon_name("user-trash-symbolic");
-                remove.set_valign(gtk::Align::Center);
-                remove.add_css_class("flat");
-                remove.set_tooltip_text(Some("Remove this build"));
-                let blocked = removal_blocked(&entry.version, latest.as_deref(), &pinned_anywhere)
-                    .or_else(|| running.contains(&entry.version).then_some("A client is running this build"));
-                if let Some(why) = blocked {
-                    remove.set_sensitive(false);
-                    remove.set_tooltip_text(Some(why));
+            let weak_group = group.downgrade();
+            let rows = rows.clone();
+            let status = status.clone();
+            let redraw = redraw.clone();
+            let generation = generation.clone();
+            let _ = &window;
+            glib::spawn_future_local(async move {
+                let Ok(snapshot) = gio::spawn_blocking(scan_store_snapshot).await else {
+                    return;
+                };
+                if generation.get() != ticket {
+                    return;
                 }
-                let (version, root, pins) = (entry.version.clone(), root.clone(), pinned_anywhere.clone());
-                let (status, redraw) = (status.clone(), redraw.clone());
-                remove.connect_clicked(move |_| match store::remove_in(&root, &version, &pins) {
-                    Ok(()) => {
+                let Some(group) = weak_group.upgrade() else {
+                    return;
+                };
+
+                for row in rows.borrow_mut().drain(..) {
+                    group.remove(&row);
+                }
+                if status.parent().is_some() {
+                    group.remove(&status);
+                }
+
+                if snapshot.entries.is_empty() {
+                    let row = adw::ActionRow::builder()
+                        .title("No builds yet")
+                        .subtitle("Press Download Roblox above, or import one.")
+                        .build();
+                    group.add(&row);
+                    rows.borrow_mut().push(row);
+                }
+                for (entry, bytes) in &snapshot.entries {
+                    let users = used_by(&entry.version, snapshot.latest.as_deref(), &snapshot.profiles);
+                    let row = adw::ActionRow::builder()
+                        .title(format!("Roblox {}", entry.version))
+                        .subtitle(glib::markup_escape_text(&describe_kept(
+                            entry,
+                            snapshot.latest.as_deref(),
+                            &users,
+                            *bytes,
+                        )))
+                        .build();
+                    row.set_subtitle_lines(3);
+
+                    let remove = gtk::Button::from_icon_name("user-trash-symbolic");
+                    remove.set_valign(gtk::Align::Center);
+                    remove.add_css_class("flat");
+                    remove.set_tooltip_text(Some("Remove this build"));
+                    let blocked = removal_blocked(
+                        &entry.version,
+                        snapshot.latest.as_deref(),
+                        &snapshot.pinned_anywhere,
+                    )
+                    .or_else(|| {
+                        snapshot
+                            .running
+                            .contains(&entry.version)
+                            .then_some("A client is running this build")
+                    });
+                    if let Some(why) = blocked {
+                        remove.set_sensitive(false);
+                        remove.set_tooltip_text(Some(why));
+                    }
+                    let (version, root, pins) = (
+                        entry.version.clone(),
+                        snapshot.root.clone(),
+                        snapshot.pinned_anywhere.clone(),
+                    );
+                    let (status, redraw) = (status.clone(), redraw.clone());
+                    remove.connect_clicked(move |_| match store::remove_in(&root, &version, &pins) {
+                        Ok(()) => {
+                            if let Some(redraw) = redraw.borrow().as_ref() {
+                                let redraw = redraw.clone();
+                                glib::idle_add_local_once(move || redraw());
+                            }
+                        }
+                        Err(e) => {
+                            status.set_title("The build was not removed");
+                            status.set_subtitle(&glib::markup_escape_text(&e));
+                            status.set_visible(true);
+                        }
+                    });
+                    row.add_suffix(&remove);
+                    group.add(&row);
+                    rows.borrow_mut().push(row);
+                }
+
+                // The clean-up, only when there is something for it to do.
+                if !snapshot.unused.is_empty() {
+                    let subtitle_text = snapshot.cleanup_text.as_deref().unwrap_or_default();
+                    let row = adw::ActionRow::builder()
+                        .title("Remove builds nothing uses")
+                        .subtitle(glib::markup_escape_text(subtitle_text))
+                        .build();
+                    row.set_subtitle_lines(3);
+                    let clean = gtk::Button::with_label("Remove");
+                    clean.set_valign(gtk::Align::Center);
+                    clean.add_css_class("destructive-action");
+                    let (root, pins, redraw) = (
+                        snapshot.root.clone(),
+                        snapshot.pinned_anywhere.clone(),
+                        redraw.clone(),
+                    );
+                    clean.connect_clicked(move |_| {
+                        store::gc_in(&root, &pins, store::SPARE);
                         if let Some(redraw) = redraw.borrow().as_ref() {
                             let redraw = redraw.clone();
                             glib::idle_add_local_once(move || redraw());
                         }
-                    }
-                    Err(e) => {
-                        status.set_title("The build was not removed");
-                        status.set_subtitle(&glib::markup_escape_text(&e));
-                        status.set_visible(true);
-                    }
-                });
-                row.add_suffix(&remove);
-                group.add(&row);
-                rows.borrow_mut().push(row);
-            }
-
-            // The clean-up, only when there is something for it to do.
-            let unused = unused_builds(&entries, &pinned_anywhere, &running);
-            if !unused.is_empty() {
-                let row = adw::ActionRow::builder()
-                    .title("Remove builds nothing uses")
-                    .subtitle(glib::markup_escape_text(&cleanup_line(&unused, &entries)))
-                    .build();
-                row.set_subtitle_lines(3);
-                let clean = gtk::Button::with_label("Remove");
-                clean.set_valign(gtk::Align::Center);
-                clean.add_css_class("destructive-action");
-                let (root, pins, redraw) = (root.clone(), pinned_anywhere.clone(), redraw.clone());
-                clean.connect_clicked(move |_| {
-                    store::gc_in(&root, &pins, store::SPARE);
-                    if let Some(redraw) = redraw.borrow().as_ref() {
-                        let redraw = redraw.clone();
-                        glib::idle_add_local_once(move || redraw());
-                    }
-                });
-                row.add_suffix(&clean);
-                group.add(&row);
-                rows.borrow_mut().push(row);
-            }
-            group.add(&status);
-            let _ = &window;
+                    });
+                    row.add_suffix(&clean);
+                    group.add(&row);
+                    rows.borrow_mut().push(row);
+                }
+                group.add(&status);
+            });
         })
     };
     *redraw.borrow_mut() = Some(refresh.clone());

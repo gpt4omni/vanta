@@ -245,6 +245,8 @@ struct Switcher {
     delete: gio::SimpleAction,
     /// Under the Launch button. Empty, and hidden, in the ordinary case.
     note: gtk::Label,
+    /// Optional hook notified whenever the active profile changes.
+    on_change: Rc<RefCell<Option<Box<dyn Fn()>>>>,
 }
 
 impl Switcher {
@@ -258,6 +260,9 @@ impl Switcher {
         self.config.borrow_mut().profile = name.to_string();
         persist(&self.config, &self.config_path);
         self.describe();
+        if let Some(cb) = self.on_change.borrow().as_ref() {
+            cb();
+        }
     }
 
     /// Re-read the disk and redraw. Called when the button is built, after a
@@ -352,6 +357,14 @@ pub struct Chooser {
     /// Re-read what both say. Settings can pin the profile shown here, and
     /// nothing else would tell them until the profile was switched.
     pub refresh: Rc<dyn Fn()>,
+    /// Optional listener invoked whenever the user selects, creates, or deletes a profile.
+    pub on_change: Rc<RefCell<Option<Box<dyn Fn()>>>>,
+}
+
+impl Chooser {
+    pub fn connect_changed(&self, f: impl Fn() + 'static) {
+        *self.on_change.borrow_mut() = Some(Box::new(f));
+    }
 }
 
 pub fn build(config: Rc<RefCell<ShellConfig>>, config_path: Rc<PathBuf>) -> Chooser {
@@ -397,6 +410,7 @@ pub fn build(config: Rc<RefCell<ShellConfig>>, config_path: Rc<PathBuf>) -> Choo
     note.add_css_class("dim-label");
     note.set_visible(false);
 
+    let on_change: Rc<RefCell<Option<Box<dyn Fn()>>>> = Rc::new(RefCell::new(None));
     let switcher = Switcher {
         config,
         config_path,
@@ -406,6 +420,7 @@ pub fn build(config: Rc<RefCell<ShellConfig>>, config_path: Rc<PathBuf>) -> Choo
         choose: choose.clone(),
         delete: delete.clone(),
         note: note.clone(),
+        on_change: on_change.clone(),
     };
 
     {
@@ -446,10 +461,13 @@ pub fn build(config: Rc<RefCell<ShellConfig>>, config_path: Rc<PathBuf>) -> Choo
         button.set_create_popup_func(move |_| switcher.refresh());
     }
 
-    switcher.refresh();
+    // Only update the button label and note at startup; `set_create_popup_func`
+    // builds the popover menu on demand so startup avoids probing `flock` on
+    // every profile directory on disk.
+    switcher.describe();
 
-    let refresh: Rc<dyn Fn()> = Rc::new(move || switcher.refresh());
-    Chooser { button, note, refresh }
+    let refresh: Rc<dyn Fn()> = Rc::new(move || switcher.describe());
+    Chooser { button, note, refresh, on_change }
 }
 
 
@@ -484,16 +502,32 @@ fn delete_current(parent: &gtk::Window, switcher: &Switcher) {
     if !offered().contains(&name) {
         return;
     }
-    let bytes = profile::dir(&name).map(|d| profile::engine_data_bytes(&d)).unwrap_or(0);
     let dialog = adw::AlertDialog::builder()
         .heading(format!("Delete profile {name:?}?"))
-        .body(delete_body(&name, bytes))
+        .body(delete_body(&name, 0))
         .build();
     dialog.add_response("cancel", "Cancel");
     dialog.add_response("delete", "Delete");
     dialog.set_response_appearance("delete", adw::ResponseAppearance::Destructive);
     dialog.set_default_response(Some("cancel"));
     dialog.set_close_response("cancel");
+
+    // Compute the profile's stored data size off the GTK main thread so
+    // opening the confirmation dialog never freezes on large Roblox caches.
+    if let Ok(dir) = profile::dir(&name) {
+        let weak_dialog = dialog.downgrade();
+        let name_for_size = name.clone();
+        glib::spawn_future_local(async move {
+            let bytes = gio::spawn_blocking(move || profile::engine_data_bytes(&dir))
+                .await
+                .unwrap_or(0);
+            if bytes > 0 {
+                if let Some(dialog) = weak_dialog.upgrade() {
+                    dialog.set_body(&delete_body(&name_for_size, bytes));
+                }
+            }
+        });
+    }
 
     let switcher = switcher.clone();
     let parent = parent.clone();
@@ -567,12 +601,16 @@ fn create(parent: &gtk::Window, switcher: &Switcher) {
     // it.
     dialog.set_response_enabled("create", false);
 
+    // Snapshot the existing profiles once when the dialog opens rather than
+    // walking the profile root directory on every keystroke.
+    let existing = Rc::new(offered());
     {
         let dialog = dialog.clone();
         let hint = hint.clone();
+        let existing = existing.clone();
         entry.connect_changed(move |entry| {
             let name = entry.text().to_string();
-            match check_name(&name, &offered()) {
+            match check_name(&name, &existing) {
                 NameCheck::Empty => {
                     entry.remove_css_class("error");
                     hint.set_text("");

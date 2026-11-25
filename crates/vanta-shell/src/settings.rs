@@ -25,11 +25,12 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use libadwaita as adw;
+use libadwaita::gio;
 use libadwaita::glib;
 use libadwaita::gtk;
 use libadwaita::prelude::*;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use vanta_plugins::capability::Capability;
 use vanta_plugins::consent;
@@ -676,17 +677,13 @@ fn build_roblox_page(
 
     let profile_name = config.borrow().profile.clone();
     let profile_dir = vanta_shell::profile::dir(&profile_name).ok();
-    let bytes = profile_dir.as_ref().map(|d| vanta_shell::profile::engine_data_bytes(d)).unwrap_or(0);
 
     let clear_row = adw::ActionRow::builder()
         .title("Clear Roblox's stored data")
-        .subtitle(if bytes == 0 {
-            format!("Nothing stored for the {profile_name} profile yet.")
+        .subtitle(if profile_dir.is_some() {
+            format!("Calculating stored data for the {profile_name} profile…")
         } else {
-            format!(
-                "{} for the {profile_name} profile. It is downloaded again as you use Roblox.",
-                vanta_shell::profile::human_bytes(bytes)
-            )
+            format!("Nothing stored for the {profile_name} profile yet.")
         })
         .build();
     clear_row.set_subtitle_lines(2);
@@ -694,10 +691,33 @@ fn build_roblox_page(
     let clear = gtk::Button::with_label("Clear");
     clear.set_valign(gtk::Align::Center);
     clear.add_css_class("destructive-action");
-    // Nothing to clear is not a reason to draw a button that cannot work, the
-    // same rule the plugin gear and the remove-dialog checkbox already follow.
-    clear.set_sensitive(bytes > 0 && profile_dir.is_some());
+    clear.set_sensitive(false);
     clear_row.add_suffix(&clear);
+
+    // Compute `engine_data_bytes` off the GTK main thread so opening Settings
+    // never freezes on multi-gigabyte Roblox cache directories.
+    if let Some(dir) = profile_dir.clone() {
+        let weak_row = clear_row.downgrade();
+        let weak_btn = clear.downgrade();
+        let name = profile_name.clone();
+        glib::spawn_future_local(async move {
+            let bytes = gio::spawn_blocking(move || vanta_shell::profile::engine_data_bytes(&dir))
+                .await
+                .unwrap_or(0);
+            if let (Some(row), Some(btn)) = (weak_row.upgrade(), weak_btn.upgrade()) {
+                if bytes == 0 {
+                    row.set_subtitle(&format!("Nothing stored for the {name} profile yet."));
+                    btn.set_sensitive(false);
+                } else {
+                    row.set_subtitle(&format!(
+                        "{} for the {name} profile. It is downloaded again as you use Roblox.",
+                        vanta_shell::profile::human_bytes(bytes)
+                    ));
+                    btn.set_sensitive(true);
+                }
+            }
+        });
+    }
     {
         let window = parent.as_ref().clone();
         let dir = profile_dir.clone();
@@ -1167,98 +1187,93 @@ fn output_picker_rows(
     (labels, names)
 }
 
-/// "Audio" — which output Roblox plays through.
+/// "Audio" — which output Roblox plays through and which microphone it records from.
+///
+/// PipeWire sink/source enumeration runs off the GTK main thread via
+/// `gio::spawn_blocking` so opening Settings never stalls on a slow or
+/// unreachable audio daemon.
 fn build_audio_group(
     config: Rc<RefCell<ShellConfig>>,
     config_path: Rc<PathBuf>,
 ) -> adw::PreferencesGroup {
-    // No description: the Graphics group is first on the General page this
-    // group is added to, and it already carries "takes effect the next time
-    // you press Roblox" -- with no search on this dialog
-    // (search_enabled(false)), every reader meets that sentence before this
-    // group, so repeating it here is the boilerplate the Appearance group's
-    // own history argues against.
     let group = adw::PreferencesGroup::builder().title("Audio").build();
 
-    let sinks = audio_devices::sinks();
-    let chosen = config.borrow().audio_output.clone();
-    let (labels, names) = output_picker_rows(&sinks, &chosen);
+    let loading = adw::ActionRow::builder()
+        .title("Detecting audio devices…")
+        .sensitive(false)
+        .build();
+    group.add(&loading);
 
-    // Nothing to choose between, and the reason is not the user's fault. An
-    // empty list means no PipeWire session was reachable, which is the same
-    // condition under which Roblox gets no audio at all -- so the row says
-    // that rather than offering a menu with one entry that would not work
-    // either.
-    if sinks.is_empty() {
-        let row = adw::ActionRow::builder()
+    let weak_group = group.downgrade();
+    let weak_loading = loading.downgrade();
+    glib::spawn_future_local(async move {
+        let Ok((sinks, sources)) =
+            gio::spawn_blocking(|| (audio_devices::sinks(), audio_devices::sources())).await
+        else {
+            return;
+        };
+        let Some(group) = weak_group.upgrade() else {
+            return;
+        };
+        if let Some(loading) = weak_loading.upgrade() {
+            group.remove(&loading);
+        }
+
+        let chosen = config.borrow().audio_output.clone();
+        let (labels, names) = output_picker_rows(&sinks, &chosen);
+
+        if sinks.is_empty() {
+            let row = adw::ActionRow::builder()
+                .title("Output device")
+                .subtitle("No PipeWire devices found, so Roblox has nowhere to send sound either.")
+                .sensitive(false)
+                .build();
+            row.set_subtitle_lines(2);
+            group.add(&row);
+            return;
+        }
+
+        let label_refs: Vec<&str> = labels.iter().map(String::as_str).collect();
+        let model = gtk::StringList::new(&label_refs);
+        let row = adw::ComboRow::builder()
             .title("Output device")
-            // Insensitive, so this cannot move behind a `detail` button and is
-            // shortened in place instead. The half that is kept is the one
-            // that redirects: the problem is not this setting.
-            .subtitle("No PipeWire devices found, so Roblox has nowhere to send sound either.")
-            .sensitive(false)
+            .subtitle("Where Roblox's sound goes. Nothing else on the desktop moves with it.")
+            .model(&model)
+            .selected(chosen.index_in(&names))
             .build();
         row.set_subtitle_lines(2);
+        row.add_suffix(&detail(
+            "System default is a standing instruction rather than a snapshot: change your \
+             desktop's default while playing and the game follows.\n\nThis is Vanta's \
+             routing, not Roblox's own device list. The in-game picker belongs to the \
+             engine's audio library and cannot be filled from here.",
+        ));
+
+        {
+            let config = config.clone();
+            let config_path = config_path.clone();
+            let names = names.clone();
+            row.connect_selected_notify(move |row| {
+                config.borrow_mut().audio_output = AudioOutput::from_index(row.selected(), &names);
+                persist(&config, &config_path);
+            });
+        }
         group.add(&row);
-        return group;
-    }
+        group.add(&build_microphone_row(&sources, config, config_path));
+    });
 
-    let label_refs: Vec<&str> = labels.iter().map(String::as_str).collect();
-    let model = gtk::StringList::new(&label_refs);
-    let row = adw::ComboRow::builder()
-        .title("Output device")
-        // The half that is misleading if omitted, twice over. First: this is
-        // Vanta's routing, not Roblox's own device list -- the in-game
-        // picker is FMOD's and cannot be filled from here (see `AudioOutput`).
-        // Second: "System default" is a standing instruction rather than a
-        // snapshot, so somebody who switches their desktop's default while
-        // playing will find the game follows, which is what they want and not
-        // what a picker usually implies.
-        .subtitle("Where Roblox's sound goes. Nothing else on the desktop moves with it.")
-        .model(&model)
-        .selected(chosen.index_in(&names))
-        .build();
-    row.set_subtitle_lines(2);
-    row.add_suffix(&detail(
-        "System default is a standing instruction rather than a snapshot: change your \
-         desktop's default while playing and the game follows.\n\nThis is Vanta's \
-         routing, not Roblox's own device list. The in-game picker belongs to the \
-         engine's audio library and cannot be filled from here.",
-    ));
-
-    {
-        let config = config.clone();
-        let config_path = config_path.clone();
-        // Moved into the closure: the model outlives this function and the row
-        // is indexed against exactly the list it was built from, including the
-        // "not connected" entry. Re-reading the live sinks on selection would
-        // reindex against a different list.
-        let names = names.clone();
-        row.connect_selected_notify(move |row| {
-            config.borrow_mut().audio_output = AudioOutput::from_index(row.selected(), &names);
-            persist(&config, &config_path);
-        });
-    }
-    group.add(&row);
-    group.add(&build_microphone_row(config, config_path));
     group
 }
 
 /// The Microphone row beside the output one: which input Roblox's voice chat
-/// records from. The rows, the stored form and the "not connected" rule are the
-/// output picker's, through [`output_picker_rows`] and `AudioInput`, so the two
-/// cannot disagree about what a missing device looks like.
-///
-/// **Listing the microphones opens none.** `audio_devices::sources` walks the
-/// registry and nothing else, which `audio_devices.rs` pins with a test, so
-/// opening Settings does not light the desktop's recording indicator.
+/// records from. Built from the pre-enumerated `sources` list fetched off-thread.
 fn build_microphone_row(
+    sources: &[audio_devices::Sink],
     config: Rc<RefCell<ShellConfig>>,
     config_path: Rc<PathBuf>,
 ) -> gtk::Widget {
-    let sources = audio_devices::sources();
     let chosen = config.borrow().audio_input.clone();
-    let (labels, names) = output_picker_rows(&sources, &chosen);
+    let (labels, names) = output_picker_rows(sources, &chosen);
 
     if sources.is_empty() {
         let row = adw::ActionRow::builder()
@@ -1404,58 +1419,24 @@ fn build_general_page(
 
     group.add(&row);
 
-    // Order has to match GraphicsOptimization::index/from_index.
-    //
-    // Five entries rather than a device dropdown beside a CPU dropdown. The
-    // reasoning is in `GraphicsOptimization`'s own doc: they are two
-    // parameters and one question, and a cross product of them would be six
-    // rows for combinations nobody has measured. Each label here names what it
-    // actually sets.
-    // **Short enough that the row can show which one is selected.** These read
-    // "Windows PC, more CPU cores" and the row rendered "Windows PC, more..."
-    // -- the ellipsis landing exactly on the word that distinguishes the three
-    // Windows PC entries from each other, so the control could not be read at
-    // a glance and the two core-count variants were indistinguishable.
-    // Reported alongside the same fault on Frame pacing.
-    //
-    // The device and the core count are two facts, so they are separated by a
-    // dash rather than run together into a sentence: the eye can find "more
-    // cores" at the end of a short label in a way it cannot find "more CPU
-    // cores" at the end of a long one.
-    let optimisation_model = gtk::StringList::new(&[
-        "Windows PC",
-        "Roblox app",
-        "Android tablet",
-        "Windows PC - more cores",
-        "Windows PC - fewer cores",
-    ]);
+    // Order matches GraphicsOptimization::ALL / index / from_index (0..=5).
+    let optimisation_labels: Vec<&str> = crate::shell_config::GraphicsOptimization::ALL
+        .iter()
+        .map(|m| m.settings_label())
+        .collect();
+    let optimisation_model = gtk::StringList::new(&optimisation_labels);
     let optimisation = adw::ComboRow::builder()
-        .title("Graphics optimisation")
-        // **The honest half, and the half that would be misleading if left
-        // out.** It would be easy to write this row as though picking a
-        // different device made Roblox draw less, and nothing has shown that.
-        // What is established is what each identity makes roblox.com serve
-        // (`native/init_params.cpp`'s `device_identity`) and that `isTablet` is
-        // a field the engine reads; the step from there to a frame rate is an
-        // inference, and a settings page is the last place it should be stated
-        // as fact.
-        // Trimmed to three lines from five, for the same reason as the labels:
-        // a subtitle long enough to squeeze the value out of the row is not
-        // helping anybody read the row. The parts kept are the two that change
-        // what somebody picks -- that Android tablet has been reported to
-        // break things, and that none of this has been measured to change the
-        // frame rate. The rest, including which identity roblox.com serves
-        // what to, is in `GraphicsOptimization`'s own doc beside the code.
-        .subtitle("What Vanta tells Roblox it is, and how many cores the engine may use.")
+        .title("Launch mode")
+        .subtitle("Engine threading, device identity, and Speed tuning for weak or older CPUs.")
         .model(&optimisation_model)
         .selected(config.borrow().graphics_optimization_mode.index())
         .build();
     optimisation.set_subtitle_lines(2);
     optimisation.add_suffix(&detail(
-        "Android tablet claims a mobile screen, and has been reported to break some \
-         features.\n\nNone of these has been measured to change the frame rate. What is \
-         established is what each identity makes roblox.com serve, which is a different \
-         thing from how fast the client draws.",
+        "Balanced, Performance (more cores), and Speed are also selectable directly on the \
+         launcher.\n\nSpeed tunes engine threading and render overhead for weak or older CPUs \
+         while keeping full render distance.\n\nAndroid tablet claims a mobile screen and has \
+         been reported to break some PC features.",
     ));
     {
         let config = config.clone();
@@ -1733,12 +1714,59 @@ fn refresh_plugin_subtitle(
     expander.set_subtitle(&plugin_row_subtitle(plugin, profile_dir, enabled, tier));
 }
 
+/// Preloaded per-profile plugin metadata read ONCE when building the Plugins
+/// page so constructing `N` plugin rows avoids `O(N)` redundant JSON reads.
+#[derive(Default)]
+struct ProfilePluginState {
+    grants: BTreeMap<String, BTreeSet<Capability>>,
+    failures: vanta_plugins::health::Record,
+    denials: BTreeMap<String, BTreeSet<Capability>>,
+    enablement: BTreeMap<String, bool>,
+}
+
+impl ProfilePluginState {
+    fn load(profile_dir: Option<&PathBuf>) -> Self {
+        let Some(dir) = profile_dir else {
+            return Self::default();
+        };
+        Self {
+            grants: grants::load(&grants::path_in(dir)),
+            failures: vanta_plugins::health::load(&vanta_plugins::health::path_in(dir)),
+            denials: denials::load(&denials::path_in(dir)),
+            enablement: enablement::load(&enablement::path_in(dir)),
+        }
+    }
+
+    fn plugins_allowed(&self) -> bool {
+        self.enablement.get(enablement::ALL).copied().unwrap_or(true)
+    }
+
+    fn is_enabled(&self, id: &str) -> bool {
+        if !self.plugins_allowed() {
+            return false;
+        }
+        self.enablement
+            .get(id)
+            .copied()
+            .unwrap_or_else(|| enablement::default_for(id))
+    }
+}
+
 /// The summary line under a plugin's name. A development plugin leads with the
 /// folder it is loaded from, because that is the one thing that tells two
 /// working copies of the same plugin apart.
 fn plugin_row_subtitle(plugin: &Plugin, profile_dir: Option<&PathBuf>, enabled: bool, tier: Tier) -> String {
     let granted = profile_dir.map(|dir| grants::load(&grants::path_in(dir))).unwrap_or_default();
-    let status = capability_summary(plugin, granted.get(&plugin.manifest.id), enabled);
+    plugin_row_subtitle_with_grants(plugin, granted.get(&plugin.manifest.id), enabled, tier)
+}
+
+fn plugin_row_subtitle_with_grants(
+    plugin: &Plugin,
+    granted: Option<&BTreeSet<Capability>>,
+    enabled: bool,
+    tier: Tier,
+) -> String {
+    let status = capability_summary(plugin, granted, enabled);
     if tier == Tier::Development {
         vanta_shell::plugin_listing::dev_subtitle(&plugin.dir.display().to_string(), &status)
     } else {
@@ -1760,6 +1788,7 @@ fn build_plugin_row(
     group: &adw::PreferencesGroup,
     tier: Tier,
     consent: Option<&BuiltinConsent>,
+    state: Option<&ProfilePluginState>,
 ) -> adw::ExpanderRow {
     let title = if plugin.manifest.name.is_empty() {
         plugin.manifest.id.clone()
@@ -1767,53 +1796,41 @@ fn build_plugin_row(
         plugin.manifest.name.clone()
     };
     let id = plugin.manifest.id.clone();
-    let enabled = profile_dir.is_none_or(|dir| enablement::is_enabled(dir, &id));
+    let enabled = match state {
+        Some(s) => profile_dir.is_none_or(|_| s.is_enabled(&id)),
+        None => profile_dir.is_none_or(|dir| enablement::is_enabled(dir, &id)),
+    };
+    let initial_subtitle = match state {
+        Some(s) => plugin_row_subtitle_with_grants(plugin, s.grants.get(&id), enabled, tier),
+        None => plugin_row_subtitle(plugin, profile_dir, enabled, tier),
+    };
 
     let expander = adw::ExpanderRow::builder()
         .title(title.clone())
-        .subtitle(plugin_row_subtitle(plugin, profile_dir, enabled, tier))
+        .subtitle(initial_subtitle)
         .build();
     expander.set_subtitle_lines(if tier == Tier::Development { 3 } else { 2 });
 
-    // **A plugin that failed says so on its own row.**
-    //
-    // Without this a plugin whose process will not start looks exactly like
-    // one that works and has not done anything yet: the failure reaches a
-    // `println!` that a packaged launch has no terminal for, and a line in
-    // `plugin.log` that nobody thinks to open.
-    //
-    // **The pattern is libadwaita's, not GNOME Extensions'.** That app marks a
-    // broken extension with an orange gear, which is a coloured version of the
-    // control beside it and means nothing to anyone who has not learned it.
-    // The documented shape is a symbolic icon in the row's suffix carrying the
-    // `error` style class, so it takes the theme's own error colour in both
-    // light and dark and in high contrast.
-    //
-    // **And the message is text, not colour.** The icon says *something* is
-    // wrong; the tooltip says what. Colour alone would be unreadable to anyone
-    // who cannot distinguish it and invisible to a screen reader, so the icon
-    // also carries an accessible label -- `set_tooltip_text` alone is not
-    // announced.
-    if let Some(dir) = profile_dir {
-        let failures = vanta_plugins::health::load(&vanta_plugins::health::path_in(dir));
-        if let Some(failure) = failures.get(&id) {
-            // **An update waiting for approval is not a failure.** It is the
-            // reconciler declining to run a new version on a grant nobody
-            // gave it (ADR-038), and the way out is the switches below, so
-            // it gets the warning icon and no "Failed:" in front of it.
-            let approval = vanta_plugins::health::is_approval_notice(&failure.message);
-            let warning = gtk::Image::from_icon_name(if approval {
-                "dialog-warning-symbolic"
-            } else {
-                "dialog-error-symbolic"
-            });
-            warning.add_css_class(if approval { "warning" } else { "error" });
-            warning.set_tooltip_text(Some(&failure.message));
-            let label =
-                if approval { failure.message.clone() } else { format!("Failed: {}", failure.message) };
-            warning.update_property(&[gtk::accessible::Property::Label(&label)]);
-            expander.add_suffix(&warning);
-        }
+    let failure = if let Some(s) = state {
+        s.failures.get(&id).cloned()
+    } else {
+        profile_dir
+            .map(|dir| vanta_plugins::health::load(&vanta_plugins::health::path_in(dir)))
+            .and_then(|f| f.get(&id).cloned())
+    };
+    if let Some(failure) = failure {
+        let approval = vanta_plugins::health::is_approval_notice(&failure.message);
+        let warning = gtk::Image::from_icon_name(if approval {
+            "dialog-warning-symbolic"
+        } else {
+            "dialog-error-symbolic"
+        });
+        warning.add_css_class(if approval { "warning" } else { "error" });
+        warning.set_tooltip_text(Some(&failure.message));
+        let label =
+            if approval { failure.message.clone() } else { format!("Failed: {}", failure.message) };
+        warning.update_property(&[gtk::accessible::Property::Label(&label)]);
+        expander.add_suffix(&warning);
     }
 
     // A freshly installed plugin has never been granted anything (ADR-003's
@@ -2015,11 +2032,14 @@ fn build_plugin_row(
     if plugin.requested.is_empty() {
         expander.add_row(&adw::ActionRow::builder().title("Requests no capabilities").build());
     } else if let Some(dir) = profile_dir {
-        let granted_here = grants::load(&grants::path_in(dir)).get(&id).cloned().unwrap_or_default();
-        // Read once per row build, the same moment grants and enablement
-        // already are — see the Plugins page's own doc comment for why "as of
-        // when the window opened" is the posture every control here takes.
-        let refused_here = denials::load(&denials::path_in(dir)).get(&id).cloned().unwrap_or_default();
+        let granted_here = match state {
+            Some(s) => s.grants.get(&id).cloned().unwrap_or_default(),
+            None => grants::load(&grants::path_in(dir)).get(&id).cloned().unwrap_or_default(),
+        };
+        let refused_here = match state {
+            Some(s) => s.denials.get(&id).cloned().unwrap_or_default(),
+            None => denials::load(&denials::path_in(dir)).get(&id).cloned().unwrap_or_default(),
+        };
         for &cap in &plugin.requested {
             let cap_row = adw::SwitchRow::builder()
                 .title(cap.name())
@@ -2466,6 +2486,7 @@ fn build_install_group(
                         &installed_group,
                         Tier::User,
                         None,
+                        None,
                     );
                     installed_group.add(&new_row);
                 }
@@ -2718,6 +2739,7 @@ fn build_marketplace_entry_row(
                                         &installed_group,
                                         Tier::User,
                                         None,
+                                        None,
                                     );
                                     installed_group.add(&new_row);
                                 }
@@ -2927,22 +2949,6 @@ fn build_marketplace_groups(
 /// **Everything greys out rather than disappearing when the master switch is
 /// off.** Hiding the lists would leave somebody unable to see what they have
 /// installed, or to find the one plugin they wanted to check on, without first
-/// turning plugins back on — and the state they are trying to reason about is
-/// exactly the one where plugins are off.
-/// Returns the page, the Installed group and the master switch, because "Get
-/// Plugins" has to add a row to that exact group the moment an install
-/// succeeds, and every group added to the page afterwards has to be governed
-/// by that switch too. Handing the group
-/// back is what keeps one `build_plugin_row` serving both — the alternative
-/// this project has already been bitten by is a second, similar-looking row
-/// built in the installer's callback that drifts from this one.
-struct PluginsPage {
-    page: adw::PreferencesPage,
-    /// Holds installed and development plugins alike.
-    installed: adw::PreferencesGroup,
-    master: adw::SwitchRow,
-}
-
 /// Make `group` follow the "Use Plugins" switch: insensitive whenever it is
 /// off, now and for any row added to the group later.
 ///
@@ -2957,35 +2963,23 @@ fn govern(master: &adw::SwitchRow, group: &impl IsA<gtk::Widget>) {
     master.bind_property("active", group, "sensitive").sync_create().build();
 }
 
-fn build_plugins_page(
+fn populate_plugins_page(
+    page: &adw::PreferencesPage,
     parent: &adw::PreferencesDialog,
     config: Rc<RefCell<ShellConfig>>,
     config_path: Rc<PathBuf>,
-) -> PluginsPage {
-    let page = adw::PreferencesPage::builder()
-        .title("Plugins")
-        .name("plugins")
-        .icon_name("application-x-addon-symbolic")
-        .build();
-
+) -> (adw::PreferencesGroup, adw::SwitchRow) {
     let root = manifest::plugin_root();
     let system_root = manifest::system_plugin_root();
     let (system, user, shadowed) = discover_tiers(&system_root, &root);
 
     let profile_name = config.borrow().profile.clone();
-    // A profile whose name will not resolve has no grants and no enablement
-    // file to read, and the page still has to render. `None` here means every
-    // row shows nothing allowed, which is what such a profile would in fact
-    // give a plugin.
     let profile_dir = vanta_shell::profile::dir(&profile_name).ok();
 
-    // ---- the master switch ------------------------------------------------
-    // Named on the page, because permissions are per profile and the page gave
-    // no sign of which one it meant. Somebody who allowed FPS Flex everything
-    // it asked for under one profile, then opened this window under another,
-    // was told "you have not allowed it to do anything yet" -- true, and
-    // indistinguishable from the grant having failed. Grants stopped being
-    // global on purpose; saying so costs one line.
+    // Load grants, health, denials, and enablement ONCE for the entire page
+    // rather than re-reading JSON files O(N) times across plugin rows.
+    let plugin_state = ProfilePluginState::load(profile_dir.as_ref());
+
     let master_group = adw::PreferencesGroup::builder()
         .description(format!(
             "What you allow here applies to the {profile_name} profile. Other profiles decide separately."
@@ -2993,23 +2987,12 @@ fn build_plugins_page(
         .build();
     let master = adw::SwitchRow::builder()
         .title("Use Plugins")
-        // GNOME's register, and the same honesty: a consequence the user can
-        // weigh in one line. Not a promise that plugins are dangerous, and not
-        // silence either.
         .subtitle("Plugins can cause performance and stability issues.")
-        .active(profile_dir.as_ref().is_none_or(|d| enablement::plugins_allowed(d)))
+        .active(profile_dir.as_ref().is_none_or(|_| plugin_state.plugins_allowed()))
         .build();
     master_group.add(&master);
     page.add(&master_group);
 
-    // ---- the interpreter, when the host has none ---------------------------
-    //
-    // **Shown only when it is missing**, because a row that is always there
-    // asking you to download something is noise on every other machine. Arch
-    // packages `deno` and Vanta depends on it there; Fedora and Debian have
-    // no such package, and inside the Flatpak there is no host to install one
-    // on at all -- so for most installs this row is the only route a plugin
-    // has to ever run. See `vanta_update::deno`.
     if !vanta_plugins::sandbox::interpreter_present() {
         let group = adw::PreferencesGroup::builder().title("Plugin runtime").build();
         let row = adw::ActionRow::builder()
@@ -3031,47 +3014,39 @@ fn build_plugins_page(
                 return;
             };
             button.set_sensitive(false);
-            // **On this thread, pumping, rather than on a worker.**
-            // `install.rs` states the house position for the 115 MB engine
-            // extraction: the calling thread is the one GTK draws on, and a
-            // worker plus the two states it needs costs more than the freeze
-            // -- "if that stops being true, this is the place to move". A
-            // network download of 39 MB does cross that line for *progress*,
-            // because it is seconds on this connection and minutes on a bad
-            // one, but not for a worker: pumping the main context from inside
-            // the progress callback keeps the window drawing without a second
-            // state machine to get wrong.
-            let row = row_for_click.clone();
-            let mut progress = move |done: u64, total: Option<u64>| {
-                const MB: u64 = 1024 * 1024;
-                row.set_subtitle(&match total {
-                    Some(t) if t > 0 => format!("Downloading — {} of {} MB", done / MB, t / MB),
-                    _ => format!("Downloading — {} MB", done / MB),
-                });
-                let ctx = glib::MainContext::default();
-                for _ in 0..16 {
-                    if !ctx.iteration(false) {
-                        break;
+            row_for_click.set_subtitle("Downloading Deno…");
+            let row_prog = row_for_click.clone();
+            let row_done = row_for_click.clone();
+            let btn_done = button.clone();
+            // Run the 39 MB Deno download off the GTK main thread so the
+            // Settings dialog stays completely responsive throughout.
+            crate::updater::on_worker_reporting(
+                move |report: &dyn Fn((u64, Option<u64>))| {
+                    let mut progress = |done: u64, total: Option<u64>| report((done, total));
+                    vanta_update::deno::install(&dir, &mut progress).map_err(|e| e.to_string())
+                },
+                move |(done, total)| {
+                    const MB: u64 = 1024 * 1024;
+                    row_prog.set_subtitle(&match total {
+                        Some(t) if t > 0 => format!("Downloading — {} of {} MB", done / MB, t / MB),
+                        _ => format!("Downloading — {} MB", done / MB),
+                    });
+                },
+                move |result| match result {
+                    Ok(path) => {
+                        row_done.set_title("Deno is installed");
+                        row_done.set_subtitle(&format!(
+                            "{}. A running client starts the plugins that were waiting for it within a few seconds; no restart needed.",
+                            path.display()
+                        ));
+                        btn_done.set_visible(false);
                     }
-                }
-            };
-            match vanta_update::deno::install(&dir, &mut progress) {
-                Ok(path) => {
-                    row_for_click.set_title("Deno is installed");
-                    row_for_click.set_subtitle(&format!(
-                        "{}. A running client starts the plugins that were waiting for it within a few seconds; no restart needed.",
-                        path.display()
-                    ));
-                    button.set_visible(false);
-                }
-                Err(why) => {
-                    // Named, not "download failed": the reasons are a refused
-                    // URL, a hash that did not match and no disk, and they
-                    // want different things done about them.
-                    row_for_click.set_subtitle(&format!("Could not install it — {why}"));
-                    button.set_sensitive(true);
-                }
-            }
+                    Err(why) => {
+                        row_done.set_subtitle(&format!("Could not install it — {why}"));
+                        btn_done.set_sensitive(true);
+                    }
+                },
+            );
         });
     }
 
@@ -3079,9 +3054,6 @@ fn build_plugins_page(
     let builtin_group = adw::PreferencesGroup::builder().title("Built-In").build();
     let consent = BuiltinConsent::new(parent, &master, profile_dir.as_ref());
     if system.is_empty() {
-        // Said rather than left as an empty group, and said without naming the
-        // path: a user who has never installed Vanta from a package has no
-        // built-in plugins and does not need to know where they would live.
         builtin_group.add(&adw::ActionRow::builder().title("None").build());
     } else {
         for plugin in &system {
@@ -3093,6 +3065,7 @@ fn build_plugins_page(
                 &builtin_group,
                 Tier::BuiltIn,
                 Some(&consent),
+                Some(&plugin_state),
             );
             builtin_group.add(&row);
         }
@@ -3100,11 +3073,6 @@ fn build_plugins_page(
     consent.wire(parent);
 
     // ---- user-installed, and the folders being developed ------------------
-    //
-    // One list. A plugin loaded from a working folder has a switch, permissions
-    // and a health line like any other, and a person looking for it does not
-    // know it is kept somewhere different. It sits after the installed ones and
-    // says "Development" on its row.
     let user_group = adw::PreferencesGroup::builder().title("Installed").build();
     let taken: BTreeSet<String> =
         system.iter().chain(user.iter()).map(|p| p.manifest.id.clone()).collect();
@@ -3125,6 +3093,7 @@ fn build_plugins_page(
                     &user_group,
                     Tier::User,
                     None,
+                    Some(&plugin_state),
                 );
                 user_group.add(&row);
             }
@@ -3136,17 +3105,13 @@ fn build_plugins_page(
                     profile_dir.as_ref(),
                     entry,
                     &user_group,
+                    Some(&plugin_state),
                 );
                 user_group.add(&row);
             }
         }
     }
 
-    // A user plugin that was dropped for sharing a built-in id is the one thing
-    // on this page a user cannot see the cause of: the plugin is on disk, it
-    // parses, and it is simply not in either list. `flags::collect` reports the
-    // same collision on stdout, which is no use to somebody in a settings
-    // window.
     for id in &shadowed {
         user_group.add(
             &adw::ActionRow::builder()
@@ -3168,10 +3133,6 @@ fn build_plugins_page(
             let on = row.is_active();
             if let Some(dir) = &dir {
                 if let Err(e) = enablement::set_plugins_allowed(dir, on) {
-                    // Put back to what is on disk, the same posture the
-                    // per-plugin switch takes: a switch resting somewhere the
-                    // file disagrees with is a lie the user cannot see. The
-                    // groups follow the switch, so they are put back with it.
                     eprintln!("shell: could not record that plugins are {}: {e}", if on { "on" } else { "off" });
                     row.set_active(!on);
                 }
@@ -3183,7 +3144,53 @@ fn build_plugins_page(
         master.set_subtitle("This profile's directory could not be read, so nothing can be saved.");
     }
 
-    PluginsPage { page, installed: user_group, master }
+    // Trigger built-in consent check now that the Plugins page is mapped.
+    offer_soon(&Rc::downgrade(&consent.0));
+
+    (user_group, master)
+}
+
+fn build_plugins_page(
+    parent_window: &impl IsA<gtk::Window>,
+    dialog: &adw::PreferencesDialog,
+    config: Rc<RefCell<ShellConfig>>,
+    config_path: Rc<PathBuf>,
+) -> adw::PreferencesPage {
+    let page = adw::PreferencesPage::builder()
+        .title("Plugins")
+        .name("plugins")
+        .icon_name("application-x-addon-symbolic")
+        .build();
+
+    let populated = Rc::new(Cell::new(false));
+    let parent_window = parent_window.as_ref().clone();
+    let dialog = dialog.clone();
+    page.connect_map(move |page| {
+        if populated.replace(true) {
+            return;
+        }
+        let (installed, master) =
+            populate_plugins_page(page, &dialog, config.clone(), config_path.clone());
+        add_get_plugins_groups(
+            &parent_window,
+            &dialog,
+            config.clone(),
+            config_path.clone(),
+            &installed,
+            page,
+            &master,
+        );
+        add_developer_group(
+            &parent_window,
+            &dialog,
+            config.clone(),
+            config_path.clone(),
+            page,
+            &installed,
+            &master,
+        );
+    });
+    page
 }
 
 /// "Get Plugins" — installing from a file, and the marketplace.
@@ -3300,6 +3307,7 @@ fn add_developer_group(
                         profile_dir.as_ref(),
                         entry,
                         &installed_group,
+                        None,
                     );
                     installed_group.add(&row);
                 }
@@ -3337,13 +3345,22 @@ fn build_development_row(
     profile_dir: Option<&PathBuf>,
     entry: &vanta_shell::plugin_listing::DevEntry,
     group: &adw::PreferencesGroup,
+    state: Option<&ProfilePluginState>,
 ) -> adw::PreferencesRow {
     use vanta_shell::plugin_listing::{DevState, Shadowing};
 
     let (row, name): (adw::PreferencesRow, String) = match &entry.state {
         DevState::Loaded(plugin) => {
-            let expander =
-                build_plugin_row(dialog, plugin, profile_dir, &plugin.dir, group, Tier::Development, None);
+            let expander = build_plugin_row(
+                dialog,
+                plugin,
+                profile_dir,
+                &plugin.dir,
+                group,
+                Tier::Development,
+                None,
+                state,
+            );
             let name = display_name(plugin);
             (expander.clone().upcast(), name)
         }
@@ -3526,6 +3543,55 @@ pub(crate) const CONTENT_HEIGHT: i32 = 720;
 /// which is what the platform now expects of transient in-app content. It also
 /// takes no `transient_for` and no `modal` -- it is presented *against* a
 /// parent widget instead, so those builder calls go away rather than moving.
+fn collect_preferences_groups(widget: &gtk::Widget, out: &mut Vec<adw::PreferencesGroup>) {
+    if let Ok(group) = widget.clone().downcast::<adw::PreferencesGroup>() {
+        out.push(group);
+        return;
+    }
+    let mut child = widget.first_child();
+    while let Some(c) = child {
+        collect_preferences_groups(&c, out);
+        child = c.next_sibling();
+    }
+}
+
+/// Lazy shell for Settings → VR: defers `vr_settings::build_vr_page` (Quest
+/// build scan, OpenXR runtime discovery) until the user maps the VR page.
+fn build_lazy_vr_page(
+    dialog: &adw::PreferencesDialog,
+    parent: &gtk::Window,
+    config: Rc<RefCell<ShellConfig>>,
+    config_path: Rc<PathBuf>,
+) -> adw::PreferencesPage {
+    let page = adw::PreferencesPage::builder()
+        .title("VR")
+        .name("vr")
+        .icon_name("view-dual-symbolic")
+        .build();
+    let populated = Rc::new(Cell::new(false));
+    let dialog = dialog.clone();
+    let parent = parent.clone();
+    page.connect_map(move |page| {
+        if populated.replace(true) {
+            return;
+        }
+        let built = crate::vr_settings::build_vr_page(
+            &dialog,
+            &parent,
+            config.clone(),
+            config_path.clone(),
+        );
+        page.set_description(&built.description());
+        let mut groups = Vec::new();
+        collect_preferences_groups(built.upcast_ref(), &mut groups);
+        for group in groups {
+            built.remove(&group);
+            page.add(&group);
+        }
+    });
+    page
+}
+
 pub fn build_preferences_window(
     parent: &impl IsA<gtk::Window>,
     config: Rc<RefCell<ShellConfig>>,
@@ -3546,29 +3612,42 @@ pub fn build_preferences_window(
     window.add(&crate::updater::build_update_page(config.clone(), config_path.clone()));
     // Beside Updates, because the question it answers -- which build, and can I
     // go back -- is the one somebody an update just broke arrives with.
+    // Populates lazily on first `connect_map`.
     window.add(&crate::roblox_versions::build_version_page(config.clone()));
     // Only where the Quest build can run, after the pages about the phone
     // build: VR is a second way to play, not a setting of the first (ADR-053).
+    // Populates lazily on first `connect_map`.
     if vanta_shell::vr::HOST_SUPPORTED {
-        window.add(&crate::vr_settings::build_vr_page(&window, parent.upcast_ref(), config.clone(), config_path.clone()));
+        window.add(&build_lazy_vr_page(
+            &window,
+            parent.upcast_ref(),
+            config.clone(),
+            config_path.clone(),
+        ));
     }
-    // **Five pages where there were seven**, reported as "why are there so many
-    // tabs". Appearance held two groups and Get Plugins three; neither was a
-    // destination, and a tab per group makes somebody hunt through seven pages
-    // for the one row they came to change.
     let general = build_general_page(config.clone(), config_path.clone());
     add_appearance_groups(&general, config.clone(), config_path.clone());
     window.add(&general);
+
     let config_for_flags = config.clone();
     let config_for_mods = config.clone();
     let config_path_for_mods = config_path.clone();
-    let PluginsPage { page: plugins, installed, master } =
-        build_plugins_page(&window, config.clone(), config_path.clone());
-    add_get_plugins_groups(parent, &window, config.clone(), config_path.clone(), &installed, &plugins, &master);
-    add_developer_group(parent, &window, config, config_path, &plugins, &installed, &master);
-    window.add(&plugins);
-    window.add(&crate::mods_ui::build_mods_page(parent, &window, config_for_mods, config_path_for_mods));
+
+    // Plugins, Mods, and FastFlags all populate lazily on first `connect_map`
+    // so opening Settings is instant.
+    window.add(&build_plugins_page(parent, &window, config, config_path));
+    window.add(&crate::mods_ui::build_mods_page(
+        parent,
+        &window,
+        config_for_mods,
+        config_path_for_mods,
+    ));
     window.add(&build_fastflags_page(config_for_flags, &window));
+
+    // Return freed GTK/Pango heap pages back to the OS once Settings closes.
+    window.connect_closed(|_| {
+        glib::idle_add_local_once(crate::trim_heap);
+    });
 
     window
 }
@@ -3643,72 +3722,258 @@ fn recolour(tags: &HighlightTags, dark: bool) {
     }
 }
 
-/// Recolour the whole buffer.
-///
-/// Every pass clears and re-tags the lot. That is the naive approach and it is
-/// the right one at this size: a FastFlags document is a flat object of a few
-/// hundred lines, and the alternative -- tracking which lines changed -- is
-/// where highlighters grow their stale-colour bugs.
-fn apply_highlight(buffer: &gtk::TextBuffer, tags: &HighlightTags) {
+/// Recolour the whole buffer in a single linear forward pass over a reused
+/// `TextIter`, using the already-extracted `text` so the buffer is only read
+/// once per refresh.
+fn apply_highlight(buffer: &gtk::TextBuffer, text: &str, tags: &HighlightTags) {
     let (start, end) = buffer.bounds();
     for (_, tag) in tags.iter() {
         buffer.remove_tag(tag, &start, &end);
     }
-    let text = buffer.text(&start, &end, false).to_string();
-    for (from, to, token) in vanta_shell::json_highlight::spans(&text) {
+    let mut iter_from = start;
+    let mut cur_offset: usize = 0;
+    for (from, to, token) in vanta_shell::json_highlight::spans(text) {
         if let Some((_, tag)) = tags.iter().find(|(t, _)| *t == token) {
-            buffer.apply_tag(
-                tag,
-                &buffer.iter_at_offset(from as i32),
-                &buffer.iter_at_offset(to as i32),
-            );
+            if from >= cur_offset {
+                iter_from.forward_chars((from - cur_offset) as i32);
+            } else {
+                iter_from = buffer.iter_at_offset(from as i32);
+            }
+            let mut iter_to = iter_from;
+            iter_to.forward_chars((to - from) as i32);
+            buffer.apply_tag(tag, &iter_from, &iter_to);
+            iter_from = iter_to;
+            cur_offset = to;
         }
     }
+}
+
+const FRM_QUALITY_KEY: &str = "DFIntDebugFRMQualityLevelOverride";
+
+const FRM_QUALITY_LABELS: &[&str] = &[
+    "Default (Auto)",
+    "1 — Ultra Low / Max FPS (keeps render distance)",
+    "2 — Low",
+    "4 — Medium",
+    "6 — High",
+    "10 — Ultra",
+];
+
+fn render_quality_value(index: u32) -> Option<&'static str> {
+    match index {
+        1 => Some("1"),
+        2 => Some("2"),
+        3 => Some("4"),
+        4 => Some("6"),
+        5 => Some("10"),
+        _ => None,
+    }
+}
+
+fn render_quality_index(value: Option<&str>) -> u32 {
+    match value.map(str::trim) {
+        Some("1") => 1,
+        Some("2") => 2,
+        Some("4") => 3,
+        Some("6") => 4,
+        Some("10") => 5,
+        _ => 0,
+    }
+}
+
+const PRESET_SPEED_WEAK_CPU: &[(&str, &str)] = &[
+    (FRM_QUALITY_KEY, "1"),
+    ("FFlagDisablePostFx", "True"),
+    ("FIntRenderShadowIntensity", "0"),
+    ("FFlagDebugForceFutureIsBrightPhase2", "False"),
+    ("DFIntTextureQualityOverride", "1"),
+    ("DFFlagTextureQualityOverrideEnabled", "True"),
+];
+
+const PRESET_MAX_FPS: &[(&str, &str)] = &[
+    ("FFlagDisablePostFx", "True"),
+    ("FIntRenderShadowIntensity", "0"),
+    ("DFIntTaskSchedulerTargetFps", "240"),
+];
+
+const PRESET_CLEAN_VISUALS: &[(&str, &str)] = &[
+    ("FFlagDisablePostFx", "True"),
+    ("FIntRenderShadowIntensity", "0"),
+    ("FFlagDebugSkyGray", "False"),
+];
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum FastFlagValidation {
+    Valid {
+        values: BTreeMap<String, String>,
+        unknown_prefixes: Vec<String>,
+    },
+    Invalid(String),
+}
+
+/// Validate a FastFlags JSON document including per-flag type checks via
+/// `vanta_plugins::flag_document::check` and unknown-prefix detection.
+fn validate_fastflags_text(text: &str) -> FastFlagValidation {
+    use vanta_plugins::flag_document as fd;
+    let raw_values = match fd::parse(text) {
+        Ok(v) => v,
+        Err(e) => return FastFlagValidation::Invalid(e),
+    };
+    let mut normalised = BTreeMap::new();
+    let mut unknown_prefixes = Vec::new();
+    for (name, raw) in raw_values {
+        match fd::check(&name, &raw) {
+            Ok(val) => {
+                if fd::kind_of(&name) == fd::Kind::Unknown {
+                    unknown_prefixes.push(name.clone());
+                }
+                normalised.insert(name, val);
+            }
+            Err(err) => return FastFlagValidation::Invalid(err),
+        }
+    }
+    FastFlagValidation::Valid { values: normalised, unknown_prefixes }
+}
+
+/// Merge a preset of `(flag, value)` pairs into the current JSON document and
+/// return pretty-printed JSON so the user can inspect it before pressing Apply.
+fn merge_fastflag_preset(current_json: &str, preset: &[(&str, &str)]) -> Result<String, String> {
+    let mut values = vanta_plugins::flag_document::parse(current_json)?;
+    for (key, val) in preset {
+        values.insert((*key).to_string(), (*val).to_string());
+    }
+    let pretty = serde_json::to_string_pretty(&values).map_err(|e| e.to_string())?;
+    Ok(format!("{pretty}\n"))
+}
+
+/// Update or remove `DFIntDebugFRMQualityLevelOverride` inside the JSON text.
+fn set_render_quality_in_json(
+    current_json: &str,
+    level: Option<&str>,
+) -> Result<String, String> {
+    let mut values = vanta_plugins::flag_document::parse(current_json)?;
+    match level {
+        Some(v) => {
+            values.insert(FRM_QUALITY_KEY.to_string(), v.to_string());
+        }
+        None => {
+            values.remove(FRM_QUALITY_KEY);
+        }
+    }
+    let pretty = serde_json::to_string_pretty(&values).map_err(|e| e.to_string())?;
+    Ok(format!("{pretty}\n"))
+}
+
+/// Find character-offset `(start, end)` spans of case-insensitive matches for
+/// `query` in `text`.
+fn find_text_matches(text: &str, query: &str) -> Vec<(i32, i32)> {
+    let query_lower = query.trim().to_ascii_lowercase();
+    if query_lower.is_empty() {
+        return Vec::new();
+    }
+    let q_chars: Vec<char> = query_lower.chars().collect();
+    let t_chars: Vec<char> = text.chars().map(|c| c.to_ascii_lowercase()).collect();
+    if q_chars.len() > t_chars.len() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i + q_chars.len() <= t_chars.len() {
+        if t_chars[i..i + q_chars.len()] == q_chars[..] {
+            out.push((i as i32, (i + q_chars.len()) as i32));
+            i += q_chars.len();
+        } else {
+            i += 1;
+        }
+    }
+    out
 }
 
 fn build_fastflags_page(
     config: Rc<RefCell<ShellConfig>>,
     dialog: &adw::PreferencesDialog,
 ) -> adw::PreferencesPage {
-    use gtk::prelude::TextBufferExt;
-    use gtk::prelude::TextViewExt;
-
     let page = adw::PreferencesPage::builder()
         .title("FastFlags")
         .name("fastflags")
         .icon_name("preferences-system-symbolic")
         .build();
 
+    let populated = Rc::new(Cell::new(false));
+    let dialog = dialog.clone();
+    page.connect_map(move |page| {
+        if populated.replace(true) {
+            return;
+        }
+        populate_fastflags_page(page, config.clone(), &dialog);
+    });
+    page
+}
+
+fn populate_fastflags_page(
+    page: &adw::PreferencesPage,
+    config: Rc<RefCell<ShellConfig>>,
+    dialog: &adw::PreferencesDialog,
+) {
+    use gtk::prelude::TextBufferExt;
+    use gtk::prelude::TextViewExt;
+
     let profile = config.borrow().profile.clone();
     let profile_dir = vanta_shell::profile::dir(&profile).ok();
     let path = profile_dir.as_ref().map(|d| vanta_plugins::flag_document::path_in(d));
 
-    // **The actions sit under the editor, in a row with the path, and this is
-    // the third arrangement.** They started as a floating button box below the
-    // editor with a bare status label beside them, which had no structure --
-    // three things loose at the bottom of a page. That was read as "the bottom
-    // is wrong" and they moved into the group's header suffix, which was the
-    // wrong lesson: the problem was that nothing was grouped, not where the
-    // group was.
-    //
-    // The header made it worse in a way only a screenshot shows. A suffix
-    // shares its row with the title *and* the description, so a two-line
-    // description squeezes into a narrow column while the buttons take a third
-    // of the width, and a suffix box with no `valign` stretches to the height
-    // of all of it -- two slabs the height of a paragraph. libadwaita means a
-    // suffix for one small control, a switch or a single button, not a
-    // destructive action and a suggested one side by side.
-    //
-    // So: back to the bottom, but as one row rather than three loose widgets.
-    // The path and the actions share it, which is the structure that was
-    // missing the first time. It also puts them in reading order -- what this
-    // is, then the thing you edit, then where it goes and what to press --
-    // where the header put "Apply" above the box it applies.
-    //
-    // Not a pinned `GtkActionBar`: an `AdwPreferencesPage` scrolls its own
-    // content and the dialog's view switcher already owns the real bottom of
-    // the window, so a second pinned bar would stack two bars for one page.
-    // This page fits without scrolling anyway.
+    // ---- Quick Controls & Presets -----------------------------------------
+    let quick_group = adw::PreferencesGroup::builder()
+        .title("Quick controls & presets")
+        .description("Presets merge into the JSON editor below so you can review everything before clicking Apply.")
+        .build();
+
+    let quality_model = gtk::StringList::new(FRM_QUALITY_LABELS);
+    let quality_row = adw::ComboRow::builder()
+        .title("Render Quality Lock")
+        .subtitle("Sets DFIntDebugFRMQualityLevelOverride — lowers shading/effects while keeping render distance.")
+        .model(&quality_model)
+        .selected(0)
+        .build();
+    quality_row.set_subtitle_lines(2);
+    quick_group.add(&quality_row);
+
+    let chips_box = gtk::FlowBox::builder()
+        .selection_mode(gtk::SelectionMode::None)
+        .column_spacing(6)
+        .row_spacing(6)
+        .homogeneous(false)
+        .margin_top(8)
+        .margin_bottom(2)
+        .build();
+
+    let chip_speed = gtk::Button::with_label("Speed / Weak CPU");
+    chip_speed.add_css_class("pill");
+    chip_speed.set_tooltip_text(Some("Merge low-overhead weak-CPU FastFlags (keeps render distance)"));
+
+    let chip_fps = gtk::Button::with_label("Max FPS");
+    chip_fps.add_css_class("pill");
+    chip_fps.set_tooltip_text(Some("Disable PostFx, shadows, and raise task scheduler FPS target"));
+
+    let chip_clean = gtk::Button::with_label("Clean Visuals");
+    chip_clean.add_css_class("pill");
+    chip_clean.set_tooltip_text(Some("Disable PostFx and shadows with crisp sky lighting"));
+
+    let chip_format = gtk::Button::with_label("Format JSON");
+    chip_format.add_css_class("pill");
+    chip_format.set_tooltip_text(Some("Pretty-print and normalise flag values in the editor"));
+
+    let chip_copy = gtk::Button::with_label("Copy");
+    chip_copy.add_css_class("pill");
+    chip_copy.set_tooltip_text(Some("Copy the FastFlags JSON to the clipboard"));
+
+    for chip in [&chip_speed, &chip_fps, &chip_clean, &chip_format, &chip_copy] {
+        chips_box.insert(chip, -1);
+    }
+    quick_group.add(&chips_box);
+    page.add(&quick_group);
+
+    // ---- JSON Editor group ------------------------------------------------
     let group = adw::PreferencesGroup::builder()
         .title("Engine flag overrides")
         .description(
@@ -3717,6 +3982,36 @@ fn build_fastflags_page(
              Roblox.",
         )
         .build();
+
+    // Inline search bar above the editor
+    let search_bar = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(6)
+        .margin_bottom(8)
+        .build();
+    let search_entry = gtk::SearchEntry::builder()
+        .placeholder_text("Search flags in editor…")
+        .hexpand(true)
+        .build();
+    let match_label = gtk::Label::builder()
+        .xalign(1.0)
+        .valign(gtk::Align::Center)
+        .css_classes(["caption", "dim-label"])
+        .build();
+    let prev_btn = gtk::Button::from_icon_name("go-up-symbolic");
+    prev_btn.add_css_class("flat");
+    prev_btn.set_tooltip_text(Some("Previous match"));
+    prev_btn.set_sensitive(false);
+    let next_btn = gtk::Button::from_icon_name("go-down-symbolic");
+    next_btn.add_css_class("flat");
+    next_btn.set_tooltip_text(Some("Next match"));
+    next_btn.set_sensitive(false);
+
+    search_bar.append(&search_entry);
+    search_bar.append(&match_label);
+    search_bar.append(&prev_btn);
+    search_bar.append(&next_btn);
+    group.add(&search_bar);
 
     let import = gtk::Button::with_label("Import…");
     let clear = gtk::Button::with_label("Clear all");
@@ -3736,10 +4031,6 @@ fn build_fastflags_page(
         .unwrap_or_else(|| "{}\n".to_string());
     view.buffer().set_text(&existing);
 
-    // A framed scroller and nothing else in the card. The path used to sit in
-    // an `AdwActionRow` above the text inside the same card, which read as a
-    // header welded to the editor rather than as the note it is; it is a
-    // caption under the box now.
     let scroller = gtk::ScrolledWindow::builder()
         .child(&view)
         .min_content_height(280)
@@ -3760,12 +4051,6 @@ fn build_fastflags_page(
     where_label.add_css_class("dim-label");
     where_label.add_css_class("caption");
 
-    // **What the document says right now, said as you type.** Applying used to
-    // be the only way to find out whether a paste was valid, which meant the
-    // feedback for a misplaced comma was a toast after a save that did not
-    // happen. A long list pasted from somewhere else is the normal case here,
-    // and it is exactly the case where "somewhere there is a syntax error" is
-    // least useful.
     let status_label = gtk::Label::builder().wrap(true).xalign(0.0).build();
     status_label.add_css_class("caption");
 
@@ -3778,9 +4063,6 @@ fn build_fastflags_page(
     status_column.append(&status_label);
     status_column.append(&where_label);
 
-    // The one row. `valign: Center` on the buttons is what stops them growing
-    // to the height of a wrapped path, which is the same mistake the header
-    // suffix made one paragraph up.
     let actions = gtk::Box::builder().spacing(6).valign(gtk::Align::Center).build();
     actions.append(&import);
     actions.append(&clear);
@@ -3796,67 +4078,317 @@ fn build_fastflags_page(
     group.add(&footer);
     page.add(&group);
 
-    // Colour tags, made once and recoloured when the theme flips. A `TextTag`
-    // holds a literal colour, so unlike a CSS class it does not follow the
-    // palette on its own -- a page that looked right in dark mode would be
-    // unreadable the moment somebody switched to light.
+    // Colour tags, made once and recoloured when the theme flips.
+    // Hold a WeakRef to the TextBuffer and disconnect the StyleManager handler
+    // when the Settings dialog closes so closing Settings never leaks the buffer.
     let tags = highlight_tags(&view.buffer());
     {
-        let buffer = view.buffer();
+        let weak_buffer = view.buffer().downgrade();
         let tags = tags.clone();
-        adw::StyleManager::default().connect_dark_notify(move |manager| {
+        let handler_id = adw::StyleManager::default().connect_dark_notify(move |manager| {
             recolour(&tags, manager.is_dark());
-            apply_highlight(&buffer, &tags);
+            if let Some(buffer) = weak_buffer.upgrade() {
+                let text = buffer.text(&buffer.start_iter(), &buffer.end_iter(), false).to_string();
+                apply_highlight(&buffer, &text, &tags);
+            }
+        });
+        let handler_slot = RefCell::new(Some(handler_id));
+        dialog.connect_closed(move |_| {
+            if let Some(id) = handler_slot.borrow_mut().take() {
+                adw::StyleManager::default().disconnect(id);
+            }
         });
     }
     recolour(&tags, adw::StyleManager::default().is_dark());
 
-    // One handler for both jobs, because they answer the same question about
-    // the same text and running them apart would let the colours and the
-    // status disagree for a keystroke.
-    let refresh = {
+    let syncing_quality = Rc::new(Cell::new(false));
+    let pending_refresh: Rc<Cell<Option<glib::SourceId>>> = Rc::new(Cell::new(None));
+
+    // One single-extraction pass: highlight, validate via `flag_document::check`,
+    // and sync the Render Quality Lock combo bidirectionally with the JSON buffer.
+    let refresh_now: Rc<dyn Fn(&gtk::TextBuffer)> = {
         let tags = tags.clone();
         let status_label = status_label.clone();
         let apply = apply.clone();
-        move |buffer: &gtk::TextBuffer| {
-            apply_highlight(buffer, &tags);
+        let quality_row = quality_row.clone();
+        let syncing_quality = syncing_quality.clone();
+        Rc::new(move |buffer: &gtk::TextBuffer| {
             let text = buffer.text(&buffer.start_iter(), &buffer.end_iter(), false).to_string();
+            apply_highlight(buffer, &text, &tags);
             status_label.remove_css_class("error");
-            match vanta_plugins::flag_document::parse(&text) {
-                Ok(values) => {
-                    status_label.add_css_class("dim-label");
-                    status_label.set_label(&match values.len() {
+            status_label.remove_css_class("warning");
+            status_label.remove_css_class("dim-label");
+            match validate_fastflags_text(&text) {
+                FastFlagValidation::Valid { values, unknown_prefixes } => {
+                    let q_idx = render_quality_index(values.get(FRM_QUALITY_KEY).map(String::as_str));
+                    if quality_row.selected() != q_idx {
+                        syncing_quality.set(true);
+                        quality_row.set_selected(q_idx);
+                        syncing_quality.set(false);
+                    }
+                    let count_str = match values.len() {
                         0 => "No overrides. The engine's own defaults apply.".to_string(),
                         1 => "1 override.".to_string(),
                         n => format!("{n} overrides."),
-                    });
+                    };
+                    if unknown_prefixes.is_empty() {
+                        status_label.add_css_class("dim-label");
+                        status_label.set_label(&count_str);
+                    } else {
+                        status_label.add_css_class("warning");
+                        let sample = if unknown_prefixes.len() <= 3 {
+                            unknown_prefixes.join(", ")
+                        } else {
+                            format!(
+                                "{}, +{} more",
+                                unknown_prefixes[..3].join(", "),
+                                unknown_prefixes.len() - 3
+                            )
+                        };
+                        status_label.set_label(&format!(
+                            "{count_str} Unknown prefix (check spelling): {sample}"
+                        ));
+                    }
                     apply.set_sensitive(true);
                 }
-                Err(e) => {
-                    status_label.remove_css_class("dim-label");
+                FastFlagValidation::Invalid(e) => {
                     status_label.add_css_class("error");
                     status_label.set_label(&e);
-                    // **Insensitive rather than allowed-and-refused.** Nothing
-                    // is written when the document does not parse either way,
-                    // so the only difference is whether pressing the button
-                    // teaches you that.
                     apply.set_sensitive(false);
                 }
             }
-        }
+        })
     };
-    view.buffer().connect_changed({
-        let refresh = refresh.clone();
-        move |buffer| refresh(buffer)
-    });
-    refresh(&view.buffer());
 
-    // **Import merges into what is there and saves at once**, unlike the text
-    // box, which saves on Apply: choosing a file is the whole gesture, and a
-    // second press to confirm it would be the step people forget. What was in
-    // the box, saved or not, is kept and the file's flags land on top; the box
-    // then shows what was written. Per entry, so one value the check refuses
-    // costs that flag and not the list -- see `flag_document::import`.
+    // Debounce keystroke highlighting & validation (~70 ms) so rapid typing or
+    // large pastes feel instantaneous, while programmatic updates run immediately.
+    let suppress_debounce = Rc::new(Cell::new(false));
+    {
+        let pending = pending_refresh.clone();
+        let refresh_now = refresh_now.clone();
+        let suppress = suppress_debounce.clone();
+        view.buffer().connect_changed(move |buffer| {
+            if let Some(id) = pending.take() {
+                id.remove();
+            }
+            if suppress.get() {
+                refresh_now(buffer);
+                return;
+            }
+            let weak_buf = buffer.downgrade();
+            let pending_inner = pending.clone();
+            let refresh_now = refresh_now.clone();
+            let id = glib::timeout_add_local_once(std::time::Duration::from_millis(70), move || {
+                pending_inner.set(None);
+                if let Some(buf) = weak_buf.upgrade() {
+                    refresh_now(&buf);
+                }
+            });
+            pending.set(Some(id));
+        });
+    }
+    {
+        let pending = pending_refresh.clone();
+        dialog.connect_closed(move |_| {
+            if let Some(id) = pending.take() {
+                id.remove();
+            }
+        });
+    }
+
+    // Helper to replace buffer text and run instant highlight/validation.
+    let set_buffer_instant: Rc<dyn Fn(&str)> = {
+        let buffer = view.buffer();
+        let suppress = suppress_debounce.clone();
+        Rc::new(move |text: &str| {
+            suppress.set(true);
+            buffer.set_text(text);
+            suppress.set(false);
+        })
+    };
+
+    // Initial instant highlight + validation + quality combo sync.
+    refresh_now(&view.buffer());
+
+    // Render Quality Lock combo -> JSON buffer
+    {
+        let view = view.clone();
+        let dialog = dialog.clone();
+        let syncing_quality = syncing_quality.clone();
+        let set_buffer_instant = set_buffer_instant.clone();
+        quality_row.connect_selected_notify(move |row| {
+            if syncing_quality.get() {
+                return;
+            }
+            let buffer = view.buffer();
+            let current = buffer.text(&buffer.start_iter(), &buffer.end_iter(), false).to_string();
+            match set_render_quality_in_json(&current, render_quality_value(row.selected())) {
+                Ok(updated) => set_buffer_instant(&updated),
+                Err(e) => {
+                    dialog.add_toast(adw::Toast::new(&format!(
+                        "Fix JSON syntax before changing Render Quality Lock: {e}"
+                    )));
+                }
+            }
+        });
+    }
+
+    // Preset chips
+    for (chip, preset, label) in [
+        (&chip_speed, PRESET_SPEED_WEAK_CPU, "Speed / Weak CPU"),
+        (&chip_fps, PRESET_MAX_FPS, "Max FPS"),
+        (&chip_clean, PRESET_CLEAN_VISUALS, "Clean Visuals"),
+    ] {
+        let view = view.clone();
+        let dialog = dialog.clone();
+        let set_buffer_instant = set_buffer_instant.clone();
+        chip.connect_clicked(move |_| {
+            let buffer = view.buffer();
+            let current = buffer.text(&buffer.start_iter(), &buffer.end_iter(), false).to_string();
+            match merge_fastflag_preset(&current, preset) {
+                Ok(updated) => {
+                    set_buffer_instant(&updated);
+                    dialog.add_toast(adw::Toast::new(&format!(
+                        "Merged {label} preset into editor. Click Apply to save."
+                    )));
+                }
+                Err(e) => dialog.add_toast(adw::Toast::new(&format!(
+                    "Fix JSON syntax first: {e}"
+                ))),
+            }
+        });
+    }
+
+    // Format JSON chip
+    {
+        let view = view.clone();
+        let dialog = dialog.clone();
+        let set_buffer_instant = set_buffer_instant.clone();
+        chip_format.connect_clicked(move |_| {
+            let buffer = view.buffer();
+            let current = buffer.text(&buffer.start_iter(), &buffer.end_iter(), false).to_string();
+            match validate_fastflags_text(&current) {
+                FastFlagValidation::Valid { values, .. } => {
+                    if let Ok(pretty) = serde_json::to_string_pretty(&values) {
+                        set_buffer_instant(&format!("{pretty}\n"));
+                    }
+                }
+                FastFlagValidation::Invalid(e) => {
+                    dialog.add_toast(adw::Toast::new(&format!("Cannot format: {e}")));
+                }
+            }
+        });
+    }
+
+    // Copy chip
+    {
+        let view = view.clone();
+        let dialog = dialog.clone();
+        chip_copy.connect_clicked(move |btn| {
+            let buffer = view.buffer();
+            let text = buffer.text(&buffer.start_iter(), &buffer.end_iter(), false).to_string();
+            WidgetExt::display(btn).clipboard().set_text(&text);
+            dialog.add_toast(adw::Toast::new("Copied FastFlags JSON to clipboard."));
+        });
+    }
+
+    // Inline Search wiring
+    {
+        let matches: Rc<RefCell<Vec<(i32, i32)>>> = Rc::new(RefCell::new(Vec::new()));
+        let current_idx = Rc::new(Cell::new(0usize));
+
+        let jump_to: Rc<dyn Fn(usize)> = {
+            let view = view.clone();
+            let matches = matches.clone();
+            let current_idx = current_idx.clone();
+            let match_label = match_label.clone();
+            Rc::new(move |idx: usize| {
+                let list = matches.borrow();
+                if list.is_empty() {
+                    return;
+                }
+                let idx = idx % list.len();
+                current_idx.set(idx);
+                let (from, to) = list[idx];
+                let buffer = view.buffer();
+                let mut start_iter = buffer.iter_at_offset(from);
+                let end_iter = buffer.iter_at_offset(to);
+                buffer.select_range(&start_iter, &end_iter);
+                view.scroll_to_iter(&mut start_iter, 0.18, false, 0.0, 0.0);
+                match_label.set_label(&format!("{} / {}", idx + 1, list.len()));
+            })
+        };
+
+        let recompute_search: Rc<dyn Fn(&str, bool)> = {
+            let view = view.clone();
+            let matches = matches.clone();
+            let match_label = match_label.clone();
+            let prev_btn = prev_btn.clone();
+            let next_btn = next_btn.clone();
+            let jump_to = jump_to.clone();
+            Rc::new(move |query: &str, jump: bool| {
+                let buffer = view.buffer();
+                let text = buffer.text(&buffer.start_iter(), &buffer.end_iter(), false).to_string();
+                let found = find_text_matches(&text, query);
+                let count = found.len();
+                *matches.borrow_mut() = found;
+                prev_btn.set_sensitive(count > 0);
+                next_btn.set_sensitive(count > 0);
+                if query.trim().is_empty() {
+                    match_label.set_label("");
+                } else if count == 0 {
+                    match_label.set_label("No matches");
+                } else if jump {
+                    jump_to(0);
+                } else {
+                    match_label.set_label(&format!("{count} match{}", if count == 1 { "" } else { "es" }));
+                }
+            })
+        };
+
+        {
+            let recompute = recompute_search.clone();
+            search_entry.connect_search_changed(move |entry| {
+                recompute(entry.text().as_str(), true);
+            });
+        }
+        {
+            let matches = matches.clone();
+            let current_idx = current_idx.clone();
+            let jump_to = jump_to.clone();
+            let recompute = recompute_search.clone();
+            search_entry.connect_activate(move |entry| {
+                if matches.borrow().is_empty() {
+                    recompute(entry.text().as_str(), true);
+                } else {
+                    jump_to(current_idx.get() + 1);
+                }
+            });
+        }
+        {
+            let matches = matches.clone();
+            let current_idx = current_idx.clone();
+            let jump_to = jump_to.clone();
+            next_btn.connect_clicked(move |_| {
+                if !matches.borrow().is_empty() {
+                    jump_to(current_idx.get() + 1);
+                }
+            });
+        }
+        {
+            let matches = matches.clone();
+            let current_idx = current_idx.clone();
+            let jump_to = jump_to.clone();
+            prev_btn.connect_clicked(move |_| {
+                let len = matches.borrow().len();
+                if len > 0 {
+                    jump_to((current_idx.get() + len - 1) % len);
+                }
+            });
+        }
+    }
+
+    // Import button
     {
         let view = view.clone();
         let dialog = dialog.clone();
@@ -3879,7 +4411,6 @@ fn build_fastflags_page(
                 .filters(&filters)
                 .build()
                 .open(parent.as_ref(), gtk::gio::Cancellable::NONE, move |result| {
-                    // A dismissed picker is an error result too.
                     let Ok(file) = result else { return };
                     let Some(source) = file.path() else {
                         dialog.add_toast(adw::Toast::new("That file has no path Vanta can read."));
@@ -3890,16 +4421,15 @@ fn build_fastflags_page(
         });
     }
     {
-        let view = view.clone();
+        let set_buffer_instant = set_buffer_instant.clone();
         clear.connect_clicked(move |_| {
-            // Only the box. Nothing is written until Apply, so a mis-click is
-            // one undo away rather than a file that is already gone.
-            view.buffer().set_text("{}\n");
+            set_buffer_instant("{}\n");
         });
     }
     {
         let view = view.clone();
         let dialog = dialog.clone();
+        let set_buffer_instant = set_buffer_instant.clone();
         apply.connect_clicked(move |_| {
             let buffer = view.buffer();
             let text = buffer.text(&buffer.start_iter(), &buffer.end_iter(), false).to_string();
@@ -3907,29 +4437,19 @@ fn build_fastflags_page(
                 dialog.add_toast(adw::Toast::new("There is no profile directory to save into."));
                 return;
             };
-            match vanta_plugins::flag_document::parse(&text) {
-                // Named, because "invalid JSON" against a long paste makes
-                // somebody bisect their own document by hand.
-                Err(e) => dialog.add_toast(adw::Toast::new(&format!("Not saved — {e}"))),
-                Ok(values) => {
+            match validate_fastflags_text(&text) {
+                FastFlagValidation::Invalid(e) => {
+                    dialog.add_toast(adw::Toast::new(&format!("Not saved — {e}")))
+                }
+                FastFlagValidation::Valid { values, .. } => {
                     let target = vanta_plugins::flag_document::path_in(&dir);
                     match vanta_plugins::flag_document::write(&target, &values) {
                         Err(e) => {
                             dialog.add_toast(adw::Toast::new(&format!("Could not save: {e}")))
                         }
                         Ok(()) => {
-                            // **Show back what was written, not what was
-                            // typed.** A paste arrives with whatever
-                            // indentation its author used, tabs included, and
-                            // the file is written two-space pretty-printed
-                            // regardless -- so leaving the box as typed means
-                            // the editor and the file disagree the moment you
-                            // save. Rewriting it is also the whole of "make
-                            // the whitespace apply automatically": no
-                            // formatter to configure, because the canonical
-                            // form is whatever the loader will read back.
                             if let Ok(pretty) = serde_json::to_string_pretty(&values) {
-                                buffer.set_text(&format!("{pretty}\n"));
+                                set_buffer_instant(&format!("{pretty}\n"));
                             }
                             dialog.add_toast(adw::Toast::new(&format!(
                                 "Saved {} flag{}. Applies at the next launch.",
@@ -3942,8 +4462,6 @@ fn build_fastflags_page(
             }
         });
     }
-
-    page
 }
 
 /// The body of the FastFlags page's Import button: read `source`, merge it into
@@ -4371,6 +4889,52 @@ mod tests {
         assert!(refused.starts_with(Capability::PresenceSet.consequence()));
         assert!(refused.contains("refused"), "{refused}");
         assert_ne!(plain, refused);
+    }
+
+    #[test]
+    fn fastflag_validation_catches_type_errors_and_flags_unknown_prefixes() {
+        let bad = validate_fastflags_text(r#"{"FFlagDebugDisplayFPS": "maybe"}"#);
+        assert!(matches!(bad, FastFlagValidation::Invalid(ref e) if e.contains("FFlagDebugDisplayFPS")), "{bad:?}");
+
+        let bad_int = validate_fastflags_text(r#"{"DFIntTaskSchedulerTargetFps": "fast"}"#);
+        assert!(matches!(bad_int, FastFlagValidation::Invalid(ref e) if e.contains("DFIntTaskSchedulerTargetFps")), "{bad_int:?}");
+
+        let warn = validate_fastflags_text(r#"{"FFlagDisablePostFx": true, "CustomFlag": "1"}"#);
+        match warn {
+            FastFlagValidation::Valid { values, unknown_prefixes } => {
+                assert_eq!(values["FFlagDisablePostFx"], "True");
+                assert_eq!(unknown_prefixes, vec!["CustomFlag".to_string()]);
+            }
+            other => panic!("expected Valid with unknown prefix warning, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn render_quality_lock_round_trips_and_edits_json_cleanly() {
+        for idx in 0..FRM_QUALITY_LABELS.len() as u32 {
+            assert_eq!(render_quality_index(render_quality_value(idx)), idx);
+        }
+        let with_one = set_render_quality_in_json(r#"{"FFlagDisablePostFx": "True"}"#, Some("1")).unwrap();
+        let parsed = vanta_plugins::flag_document::parse(&with_one).unwrap();
+        assert_eq!(parsed.get(FRM_QUALITY_KEY).map(String::as_str), Some("1"));
+        assert_eq!(parsed.get("FFlagDisablePostFx").map(String::as_str), Some("True"));
+
+        let cleared = set_render_quality_in_json(&with_one, None).unwrap();
+        let parsed_cleared = vanta_plugins::flag_document::parse(&cleared).unwrap();
+        assert!(!parsed_cleared.contains_key(FRM_QUALITY_KEY));
+        assert_eq!(parsed_cleared.get("FFlagDisablePostFx").map(String::as_str), Some("True"));
+    }
+
+    #[test]
+    fn preset_merge_preserves_existing_flags_and_search_finds_case_insensitive_matches() {
+        let merged = merge_fastflag_preset(r#"{"DFIntCustom": "7"}"#, PRESET_SPEED_WEAK_CPU).unwrap();
+        let parsed = vanta_plugins::flag_document::parse(&merged).unwrap();
+        assert_eq!(parsed.get("DFIntCustom").map(String::as_str), Some("7"));
+        assert_eq!(parsed.get(FRM_QUALITY_KEY).map(String::as_str), Some("1"));
+        assert_eq!(parsed.get("FFlagDisablePostFx").map(String::as_str), Some("True"));
+
+        let hits = find_text_matches("{\"FFlagDisablePostFx\": \"True\", \"fflagOther\": \"False\"}", "fflag");
+        assert_eq!(hits.len(), 2);
     }
 
     #[test]

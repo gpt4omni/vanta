@@ -325,6 +325,9 @@ pub fn spawn(
     let run = request.run_seconds.unwrap_or(DEFAULT_RUN_SECONDS).to_string();
 
     let mut command = Command::new(&loader);
+    // Restore whatever `GSK_RENDERER` the user originally had before
+    // `vanta-shell` defaulted itself to `cairo`.
+    crate::restore_gsk_renderer(&mut command);
     command
         .arg("--lib-dir")
         .arg(&build.lib_dir)
@@ -464,34 +467,6 @@ pub fn spawn(
     }
     if std::env::var_os("__GL_SHADER_DISK_CACHE_SIZE").is_none() {
         command.env("__GL_SHADER_DISK_CACHE_SIZE", "1073741824");
-    }
-
-    // Desktop mimalloc tuning inherited by both `vanta-run`'s global allocator
-    // and `libroblox.so`'s statically linked mimalloc (eliminates 10 ms purge
-    // TLB-shootdown spikes).
-    if std::env::var_os("VANTA_NO_MIMALLOC_TUNE").is_none() {
-        let total_mb = std::fs::read_to_string("/proc/meminfo")
-            .ok()
-            .and_then(|s| {
-                s.lines()
-                    .find(|l| l.starts_with("MemTotal:"))
-                    .and_then(|l| l.split_whitespace().nth(1))
-                    .and_then(|kb| kb.parse::<u64>().ok())
-                    .map(|kb| kb / 1024)
-            })
-            .unwrap_or(8192);
-        for (k, v) in [
-            ("MIMALLOC_PURGE_DELAY", if total_mb >= 12_000 { "10000" } else { "5000" }),
-            ("MIMALLOC_PURGE_DECOMMITS", "0"),
-            ("MIMALLOC_ALLOW_LARGE_OS_PAGES", "1"),
-            ("MIMALLOC_EAGER_COMMIT", "1"),
-            ("MIMALLOC_ARENA_EAGER_COMMIT", "2"),
-            ("MIMALLOC_RESERVE_OS_MEMORY", if total_mb >= 12_000 { "1G" } else { "512M" }),
-        ] {
-            if std::env::var_os(k).is_none() {
-                command.env(k, v);
-            }
-        }
     }
 
     // Vulkan implicit-layer hygiene: bypass Mesa's device-select and anti-lag

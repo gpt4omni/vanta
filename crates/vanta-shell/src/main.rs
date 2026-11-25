@@ -92,6 +92,37 @@ use libadwaita::prelude::*;
 use std::cell::RefCell;
 use std::rc::Rc;
 
+/// The user's original `GSK_RENDERER` environment variable captured before
+/// `vanta-shell` defaults itself to `cairo`. Restored when spawning `vanta-run`
+/// so the launcher's software-renderer optimization does not override the
+/// client's own GSK renderer selection.
+static ORIGINAL_GSK_RENDERER: std::sync::OnceLock<Option<std::ffi::OsString>> =
+    std::sync::OnceLock::new();
+
+pub(crate) fn restore_gsk_renderer(command: &mut std::process::Command) {
+    if let Some(original) = ORIGINAL_GSK_RENDERER.get() {
+        match original {
+            Some(val) => {
+                command.env("GSK_RENDERER", val);
+            }
+            None => {
+                command.env_remove("GSK_RENDERER");
+            }
+        }
+    }
+}
+
+/// Ask glibc to release freed heap pages back to the OS after heavy UI
+/// surfaces close or hide while the launcher stays alive under ADR-031.
+pub(crate) fn trim_heap() {
+    #[cfg(target_env = "gnu")]
+    // SAFETY: `malloc_trim(0)` is a thread-safe glibc hint with no pointer
+    // arguments that returns unused heap pages to the OS.
+    unsafe {
+        let _ = libc::malloc_trim(0);
+    }
+}
+
 /// Must match `packaging/io.github.gpt4omni.Vanta.desktop`'s file name and
 /// `StartupWMClass`. GNOME Shell uses the application id to find the desktop
 /// entry for window-to-launcher matching; let the two drift and the taskbar
@@ -230,6 +261,17 @@ fn main() -> libadwaita::glib::ExitCode {
     // Problem -> Save logs) wants what it has printed. After every flag that
     // answers and exits, so those keep their plain stdout.
     vanta_shell::session_log::install();
+
+    // Capture the user's original `GSK_RENDERER` before defaulting `vanta-shell`
+    // to Cairo software rendering. The launcher UI is lightweight static chrome
+    // that stays resident while games run (ADR-031); skipping GPU shader init
+    // cuts 150-350 ms off startup and saves 60-120 MiB of resident GPU driver
+    // memory. `launch::spawn` restores the original value for `vanta-run`.
+    let original_gsk = std::env::var_os("GSK_RENDERER");
+    let _ = ORIGINAL_GSK_RENDERER.set(original_gsk.clone());
+    if original_gsk.is_none() {
+        std::env::set_var("GSK_RENDERER", "cairo");
+    }
 
     // Both flags, and the second one is the load-bearing one.
     //
