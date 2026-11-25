@@ -37,9 +37,10 @@ Homepage: https://github.com/gpt4omni/vanta
 # rpm's soname Requires, so it is listed here too, as an ordinary Depends,
 # rather than left implicit.
 Depends: libgtk-4-1, libadwaita-1-0, libwebkitgtk-6.0-4,
- libglib2.0-0, libpango-1.0-0, libgraphene-1.0-0, libsoup-3.0-0,
+ libglib2.0-0t64 | libglib2.0-0, libpango-1.0-0, libgraphene-1.0-0, libsoup-3.0-0,
  libgcc-s1, libstdc++6, libc6, libvulkan1, libwayland-client0,
- libwayland-egl1, libxkbcommon0, libegl1, libgles2, libpipewire-0.3-0,
+ libwayland-egl1, libxkbcommon0, libegl1, libgles2,
+ libpipewire-0.3-0t64 | libpipewire-0.3-0,
  hicolor-icon-theme
 # **No `deno` dependency, and that is not an oversight.** Plugins are Deno
 # programs (ADR-008) and Vanta bundles no runtime, so without `deno` on PATH

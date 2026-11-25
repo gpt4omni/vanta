@@ -133,7 +133,23 @@ detect_arch() {
     local raw="${VANTA_INSTALL_ARCH:-$(uname -m)}"
     case "$raw" in
         x86_64|amd64)  printf 'x86_64' ;;
-        aarch64|arm64) printf 'aarch64' ;;
+        aarch64|arm64)
+            # Raspberry Pi OS (32-bit) boots a 64-bit kernel (`uname -m` == aarch64)
+            # with a 32-bit armhf userspace. Vanta requires 64-bit arm64 userspace.
+            if [ -z "${VANTA_INSTALL_ARCH:-}" ]; then
+                local bits="" dpkg_arch=""
+                if command -v getconf >/dev/null 2>&1; then
+                    bits=$(getconf LONG_BIT 2>/dev/null || true)
+                fi
+                if command -v dpkg >/dev/null 2>&1; then
+                    dpkg_arch=$(dpkg --print-architecture 2>/dev/null || true)
+                fi
+                if [ "$bits" = "32" ] || [ "$dpkg_arch" = "armhf" ] || [ "$dpkg_arch" = "armel" ]; then
+                    die "Detected 32-bit ARM userspace (${dpkg_arch:-32-bit}) on a 64-bit kernel (e.g. Raspberry Pi OS 32-bit). Vanta requires a 64-bit OS such as Raspberry Pi OS (64-bit)."
+                fi
+            fi
+            printf 'aarch64'
+            ;;
         *) die "Unsupported CPU architecture: ${raw}. Vanta supports x86_64 and aarch64 Linux." ;;
     esac
 }
@@ -197,6 +213,46 @@ os_is_family() {
     return 1
 }
 
+# Returns 0 if the host APT repositories can actually satisfy Vanta's core
+# runtime dependencies (notably libwebkitgtk-6.0-4, which is absent or broken
+# on Raspberry Pi OS Bookworm and some Debian/Ubuntu derivatives).
+apt_deps_installable() {
+    local arch="$1"
+    if [ -n "${VANTA_INSTALL_APT_DEPS_OK:-}" ]; then
+        [ "$VANTA_INSTALL_APT_DEPS_OK" = "1" ]
+        return
+    fi
+
+    # Verify dpkg native architecture matches the target .deb architecture.
+    if command -v dpkg >/dev/null 2>&1; then
+        local dpkg_arch expected_dpkg_arch
+        dpkg_arch=$(dpkg --print-architecture 2>/dev/null || true)
+        case "$arch" in
+            x86_64)  expected_dpkg_arch="amd64" ;;
+            aarch64) expected_dpkg_arch="arm64" ;;
+            *) return 1 ;;
+        esac
+        if [ -n "$dpkg_arch" ] && [ "$dpkg_arch" != "$expected_dpkg_arch" ]; then
+            return 1
+        fi
+    fi
+
+    command -v apt-cache >/dev/null 2>&1 || return 1
+    local pkg cand
+    for pkg in libgtk-4-1 libadwaita-1-0 libwebkitgtk-6.0-4; do
+        cand=$(apt-cache policy "$pkg" 2>/dev/null | awk '/Candidate:/ { print $2; exit }')
+        if [ -z "$cand" ] || [ "$cand" = "(none)" ]; then
+            return 1
+        fi
+    done
+
+    # Simulate installing the core runtime libraries without touching the system
+    # so broken/conflicting transitive deps (e.g. libwebkitgtk on Raspberry Pi OS)
+    # are caught before adding the APT repo.
+    apt-get -s -o Debug::NoLocking=true install \
+        libgtk-4-1 libadwaita-1-0 libwebkitgtk-6.0-4 >/dev/null 2>&1
+}
+
 choose_method() {
     local arch="$1"
 
@@ -215,9 +271,11 @@ choose_method() {
         return 0
     fi
 
-    # Debian / Ubuntu family: signed APT repo when glibc >= 2.39 and repo is live.
+    # Debian / Ubuntu / Raspberry Pi OS family: signed APT repo only when
+    # glibc >= 2.39, core runtime deps (including libwebkitgtk-6.0-4) are
+    # installable, and the repo is live.
     if os_is_family "ubuntu" || os_is_family "debian"; then
-        if command -v apt-get >/dev/null 2>&1 && glibc_meets_floor; then
+        if command -v apt-get >/dev/null 2>&1 && glibc_meets_floor && apt_deps_installable "$arch"; then
             if [ "$DRY_RUN" -eq 1 ] || url_ok "${BASE_URL}/apt/dists/stable/InRelease"; then
                 printf 'apt'
                 return 0
@@ -241,8 +299,14 @@ choose_method() {
         fi
     fi
 
-    # Universal fallback: Flatpak (recommended across all distros), else AppImage.
+    # Universal fallback:
+    # - Prefer Flatpak when installed, OR on older glibc (< 2.39, e.g. Debian 12 /
+    #   Raspberry Pi OS Bookworm) where apt-get can bootstrap flatpak and the
+    #   AppImage would fail the glibc 2.39 floor.
+    # - Otherwise fall back to the self-contained AppImage (bundles GTK 4 + WebKitGTK 6.0).
     if command -v flatpak >/dev/null 2>&1; then
+        printf 'flatpak'
+    elif ! glibc_meets_floor && command -v apt-get >/dev/null 2>&1; then
         printf 'flatpak'
     else
         printf 'appimage'
@@ -252,7 +316,15 @@ choose_method() {
 # ---- Installers ------------------------------------------------------------
 
 install_flatpak() {
-    need_cmd flatpak
+    if ! command -v flatpak >/dev/null 2>&1; then
+        if command -v apt-get >/dev/null 2>&1; then
+            info "Flatpak is not installed yet; installing flatpak via apt..."
+            as_root apt-get update
+            as_root apt-get install -y flatpak
+        else
+            need_cmd flatpak
+        fi
+    fi
     info "Installing Vanta via signed Flatpak remote (branch: ${CHANNEL})..."
 
     # Ensure Flathub exists so GNOME Platform runtime can be pulled automatically.
@@ -281,6 +353,7 @@ install_flatpak() {
 }
 
 install_apt() {
+    local arch="$1"
     need_cmd apt-get
     if ! glibc_meets_floor; then
         warn "Your system glibc is older than 2.39 (Ubuntu 24.04 floor). The native .deb may not run; consider --method flatpak instead."
@@ -305,7 +378,22 @@ install_apt() {
     as_root install -m 0644 "$list_tmp" /etc/apt/sources.list.d/vanta.list
 
     as_root apt-get update
-    as_root apt-get install -y vanta
+    if ! as_root apt-get install -y vanta; then
+        warn "APT could not satisfy vanta's dependencies (commonly libwebkitgtk-6.0-4 on Raspberry Pi OS or older Debian/Ubuntu)."
+        as_root rm -f /etc/apt/sources.list.d/vanta.list
+        if [ "$METHOD" = "auto" ]; then
+            if command -v flatpak >/dev/null 2>&1 || ! glibc_meets_floor; then
+                info "Falling back to signed Flatpak (includes its own GTK 4 + WebKitGTK 6.0 runtime)..."
+                install_flatpak
+                return 0
+            else
+                info "Falling back to self-contained AppImage (bundles GTK 4 + WebKitGTK 6.0)..."
+                install_appimage "$arch"
+                return 0
+            fi
+        fi
+        die "APT install failed due to unmet system dependencies. Re-run with --method flatpak or --method appimage."
+    fi
 
     ok "Vanta installed via signed APT repository."
     info "Launch from your application menu or run: vanta"
@@ -414,7 +502,29 @@ install_appimage() {
     info "Downloading ${download_url}..."
     run curl -fL --progress-bar "$download_url" -o "$dl_tmp"
     run install -m 0755 "$dl_tmp" "$target_appimage"
-    run ln -sf "$target_appimage" "$target_link"
+
+    # Install a thin launcher at ~/.local/bin/vanta that automatically sets
+    # APPIMAGE_EXTRACT_AND_RUN=1 when libfuse.so.2 is absent (e.g. Raspberry Pi OS
+    # and Ubuntu 24.04+), so AppImage launches work without libfuse2.
+    if [ "$DRY_RUN" -eq 1 ]; then
+        printf '  %s[dry-run]%s write launcher wrapper %q -> %q\n' "${C_YELLOW}" "${C_RESET}" "$target_link" "$target_appimage"
+    else
+        rm -f "$target_link"
+        cat > "$target_link" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+if [ -z "\${APPIMAGE_EXTRACT_AND_RUN:-}" ]; then
+    if ! { command -v ldconfig >/dev/null 2>&1 && ldconfig -p 2>/dev/null | grep -q 'libfuse\.so\.2'; } \
+        && [ ! -e /usr/lib/libfuse.so.2 ] \
+        && [ ! -e /usr/lib/x86_64-linux-gnu/libfuse.so.2 ] \
+        && [ ! -e /usr/lib/aarch64-linux-gnu/libfuse.so.2 ]; then
+        export APPIMAGE_EXTRACT_AND_RUN=1
+    fi
+fi
+exec "${target_appimage}" "\$@"
+EOF
+        chmod 0755 "$target_link"
+    fi
 
     if [ "$DRY_RUN" -eq 1 ]; then
         printf '  %s[dry-run]%s download icon to %q\n' "${C_YELLOW}" "${C_RESET}" "$target_icon"
@@ -427,7 +537,7 @@ Type=Application
 Name=Vanta
 GenericName=Roblox Client
 Comment=Run Roblox natively on Linux
-Exec=${target_appimage} %u
+Exec=${target_link} %u
 Icon=${APP_ID}
 Terminal=false
 Categories=Game;
@@ -448,7 +558,7 @@ EOF
     info "Desktop entry and roblox:// link handler configured."
     case ":${PATH}:" in
         *":${install_bin_dir}:"*) info "Launch from your application menu or run: vanta" ;;
-        *) info "Launch from your application menu or run: ${target_appimage} (add ~/.local/bin to PATH for 'vanta')" ;;
+        *) info "Launch from your application menu or run: ${target_link} (add ~/.local/bin to PATH for 'vanta')" ;;
     esac
 }
 
@@ -532,7 +642,7 @@ main() {
 
     case "$chosen" in
         flatpak)  install_flatpak ;;
-        apt)      install_apt ;;
+        apt)      install_apt "$arch" ;;
         dnf)      install_dnf ;;
         pacman)   install_pacman "$arch" ;;
         appimage) install_appimage "$arch" ;;
