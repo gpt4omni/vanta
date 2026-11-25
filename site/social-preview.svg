@@ -1,14 +1,14 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640" role="img" aria-labelledby="title desc">
   <title id="title">Vanta - Open-Source Native Roblox on Linux</title>
-  <desc id="desc">Vanta obsidian silver V emblem with feature highlights and one-line Linux installer command.</desc>
+  <desc id="desc">Tilted white and black Vanta emblem with feature highlights and one-line Linux installer command.</desc>
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0%" stop-color="#14161b"/>
       <stop offset="55%" stop-color="#0a0b0e"/>
       <stop offset="100%" stop-color="#050507"/>
     </linearGradient>
-    <radialGradient id="glow" cx="22%" cy="44%" r="44%">
-      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.10"/>
+    <radialGradient id="glow" cx="19%" cy="44%" r="36%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.11"/>
       <stop offset="55%" stop-color="#9ca3af" stop-opacity="0.03"/>
       <stop offset="100%" stop-color="#000000" stop-opacity="0"/>
     </radialGradient>
@@ -16,19 +16,6 @@
       <stop offset="0%" stop-color="#a1a8b8" stop-opacity="0.07"/>
       <stop offset="100%" stop-color="#000000" stop-opacity="0"/>
     </radialGradient>
-    <linearGradient id="tile" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="#22242a"/>
-      <stop offset="55%" stop-color="#0e0f13"/>
-      <stop offset="100%" stop-color="#060709"/>
-    </linearGradient>
-    <linearGradient id="vLeft" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="#ffffff"/>
-      <stop offset="100%" stop-color="#9da0a8"/>
-    </linearGradient>
-    <linearGradient id="vRight" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#bcbec6"/>
-      <stop offset="100%" stop-color="#555760"/>
-    </linearGradient>
     <linearGradient id="divider" x1="0" y1="0" x2="1" y2="0">
       <stop offset="0%" stop-color="#7c808c"/>
       <stop offset="100%" stop-color="#7c808c" stop-opacity="0"/>
@@ -36,6 +23,9 @@
     <pattern id="grid" width="48" height="48" patternUnits="userSpaceOnUse">
       <path d="M 48 0 L 0 0 0 48" fill="none" stroke="#ffffff" stroke-opacity="0.028" stroke-width="1"/>
     </pattern>
+    <clipPath id="vanta-frame">
+      <path clip-rule="evenodd" d="M110 5 L504.5 111.5 L397 507 L4.5 400.5 Z M209.5 175.5 L174.5 300.5 L299.5 337 L336 210 Z"/>
+    </clipPath>
   </defs>
 
   <!-- Canvas background -->
@@ -48,11 +38,13 @@
   <rect x="24" y="24" width="1232" height="592" rx="28" fill="none" stroke="#262930" stroke-width="1.5"/>
 
   <!-- Official Vanta Mark (scaled & centered left) -->
-  <g transform="translate(88 122) scale(0.56)">
-    <rect x="40" y="40" width="432" height="432" rx="104" fill="url(#tile)" stroke="#444750" stroke-width="3"/>
-    <path d="M124 150h73l86 190-34 37z" fill="url(#vLeft)"/>
-    <path d="M315 150h73L283 377h-34z" fill="url(#vRight)"/>
-    <path d="m315 150-66 227 34-37z" fill="#e4e6ec" opacity=".32"/>
+  <g transform="translate(96 146) scale(0.50)">
+    <g clip-path="url(#vanta-frame)">
+      <path d="M-20 -20 L532 -20 L532 264 L456.5 293 L223 388 L62.5 184 L-10 92 Z" fill="#ffffff"/>
+      <path d="M-10 90.4 L62.5 182.5 L223 386.5 L456.5 291.5 L530 261.6 L532 532 L-20 532 Z" fill="#000000"/>
+      <path d="M210.5 394 L233.5 394 L255 429 L276.5 394 L299.5 394 L255 462.5 Z" fill="#ffffff"/>
+      <path fill="none" stroke="#858a99" stroke-opacity="0.34" stroke-width="3" d="M110 5 L504.5 111.5 L397 507 L4.5 400.5 Z M209.5 175.5 L174.5 300.5 L299.5 337 L336 210 Z"/>
+    </g>
   </g>
 
   <!-- Wordmark + Open Source pill -->
@@ -74,20 +66,20 @@
   <!-- Feature pills row -->
   <g font-family="Adwaita Sans, Noto Sans, sans-serif" font-size="17" font-weight="500">
     <g transform="translate(412 376)">
-      <rect width="166" height="40" rx="10" fill="#14161c" stroke="#2d313b" stroke-width="1.2"/>
-      <text x="83" y="26" text-anchor="middle" fill="#d9dce4">Live Perf HUD</text>
+      <rect width="182" height="40" rx="10" fill="#14161c" stroke="#2d313b" stroke-width="1.2"/>
+      <text x="91" y="26" text-anchor="middle" fill="#d9dce4">Speed Mode &amp; HUD</text>
     </g>
-    <g transform="translate(592 376)">
-      <rect width="150" height="40" rx="10" fill="#14161c" stroke="#2d313b" stroke-width="1.2"/>
-      <text x="75" y="26" text-anchor="middle" fill="#d9dce4">Asset Mods</text>
+    <g transform="translate(608 376)">
+      <rect width="146" height="40" rx="10" fill="#14161c" stroke="#2d313b" stroke-width="1.2"/>
+      <text x="73" y="26" text-anchor="middle" fill="#d9dce4">Asset Mods</text>
     </g>
-    <g transform="translate(756 376)">
-      <rect width="196" height="40" rx="10" fill="#14161c" stroke="#2d313b" stroke-width="1.2"/>
-      <text x="98" y="26" text-anchor="middle" fill="#d9dce4">Wayland, Niri &amp; VR</text>
+    <g transform="translate(768 376)">
+      <rect width="198" height="40" rx="10" fill="#14161c" stroke="#2d313b" stroke-width="1.2"/>
+      <text x="99" y="26" text-anchor="middle" fill="#d9dce4">Wayland, Niri &amp; VR</text>
     </g>
-    <g transform="translate(966 376)">
-      <rect width="190" height="40" rx="10" fill="#14161c" stroke="#2d313b" stroke-width="1.2"/>
-      <text x="95" y="26" text-anchor="middle" fill="#d9dce4">x86-64 &amp; ARM64</text>
+    <g transform="translate(980 376)">
+      <rect width="186" height="40" rx="10" fill="#14161c" stroke="#2d313b" stroke-width="1.2"/>
+      <text x="93" y="26" text-anchor="middle" fill="#d9dce4">x86-64 &amp; ARM64</text>
     </g>
   </g>
 

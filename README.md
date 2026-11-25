@@ -4,147 +4,43 @@
 
 ### Run Roblox natively on Linux.
 
-Vanta runs Roblox's official, unmodified Android client directly on **x86-64** and **ARM64 (`aarch64`)** Linux. No emulator, container, or virtual machine.
-
-<p>
-  <a href="https://github.com/gpt4omni/vanta/releases/latest">
-    <img src="https://img.shields.io/github/v/release/gpt4omni/vanta?style=for-the-badge&color=18181B&label=Release" alt="Latest Release">
-  </a>
-  <a href="docs/README.md">
-    <img src="https://img.shields.io/badge/Docs-Read%20Docs-27272A?style=for-the-badge&logo=readthedocs&logoColor=white" alt="Documentation">
-  </a>
-  <a href="https://discord.gg/Jt5MW7UBsC">
-    <img src="https://img.shields.io/badge/Discord-Join%20Community-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Join the Vanta Discord">
-  </a>
-  <a href="LICENSE">
-    <img src="https://img.shields.io/badge/License-GPL--3.0--or--later-3F3F46?style=for-the-badge" alt="GPL-3.0-or-later">
-  </a>
-</p>
-
-<p>
-  <a href="#install">Install</a> &bull;
-  <a href="#features">Features</a> &bull;
-  <a href="#demo">Demo</a> &bull;
-  <a href="#shortcuts--commands">Shortcuts</a> &bull;
-  <a href="#notes--disclaimer">Notes</a> &bull;
-  <a href="docs/README.md">Docs</a>
-</p>
+[Releases](https://github.com/gpt4omni/vanta/releases/latest) · [Install](#install) · [Docs](docs/README.md) · [Discord](https://discord.gg/Jt5MW7UBsC)
 
 </div>
 
----
+Vanta runs Roblox's official, unmodified Android client directly on x86-64 and ARM64 Linux with no emulator, Wine, or virtual machine. On first launch, fetch the signature-verified Android APK directly or import an existing build from [Sober](https://sober.vinegarhq.org/).
+
+## What you get
+
+- **Fast by default, plus Speed mode.** Runs Roblox natively on Vulkan/Wayland and X11, with a dedicated **Speed** launch mode built for old and weak CPUs.
+- **FastFlags that actually stick.** Layered per-profile `flags.json` that survives Roblox's periodic flag refresh, with `DFIntDebugFRMQualityLevelOverride` preserving full render distance automatically.
+- **Built-in WebView.** Sign-in, captchas, Servers, and Roblox pages open inside Vanta instead of kicking you to an external browser.
+- **Live Performance HUD and recording.** Press `F8` for live FPS, 1% lows, and frametime; press `F9` to record gameplay with game audio.
+- **Non-destructive asset mods.** Swap fonts, cursors, sounds, skies, and textures from Settings without touching the APK. Survives every Roblox update.
+- **Server region and quick rejoin.** Resolves your server region locally with zero tracking, plus one-click copy invite and quick rejoin.
+- **Profiles, plugins, and VR.** Run multiple accounts side by side, extend Vanta with sandboxed Deno plugins, or play Meta Quest VR over OpenXR.
+- **Open source.** GPL-3.0, zero in-process hooking or memory patching of Roblox, and GPG-signed packages for x86-64 and ARM64.
 
 ## Install
 
-> **First launch:** Vanta does not include Roblox. When you open Vanta, click **Download Roblox** to fetch the official Android APK (verified against Roblox's signing certificate), or import an existing copy from [Sober](https://sober.vinegarhq.org/).
-
-### Quick Install (Auto-Detect OS & Arch)
-
-Automatically detects your Linux distro and CPU architecture (`x86_64` or `aarch64`), verifies Vanta's signing key, and installs via the best signed channel for your system (Flatpak, APT, DNF, Pacman, or AppImage):
+**One-line installer (recommended):**
 
 ```bash
 curl -fsSL https://gpt4omni.github.io/vanta/install.sh | bash
 ```
 
-Pass `--method flatpak`, `--method apt`, `--method dnf`, `--method pacman`, `--method appimage`, or `--dry-run` with `bash -s --` if you want to override auto-detection.
+Auto-detects your distro and CPU architecture (`x86_64` or `aarch64`), verifies Vanta's signing key, and installs via Flatpak, APT, DNF, Pacman, or AppImage.
 
-### Flatpak (Recommended, GPG-Signed)
+| Platform | Command |
+| :--- | :--- |
+| **Flatpak** (x86-64 & ARM64) | `flatpak remote-add --if-not-exists vanta https://gpt4omni.github.io/vanta/vanta.flatpakrepo && flatpak install vanta io.github.gpt4omni.Vanta` |
+| **Debian / Ubuntu** (APT) | `curl -fsSL https://gpt4omni.github.io/vanta/install.sh \| bash -s -- --method apt` |
+| **Fedora 44** (DNF) | `sudo curl -fsSL https://gpt4omni.github.io/vanta/vanta.repo -o /etc/yum.repos.d/vanta.repo && sudo dnf install vanta` |
+| **Arch Linux** (Pacman) | `curl -fsSL https://gpt4omni.github.io/vanta/install.sh \| bash -s -- --method pacman` |
+| **AppImage** (x86-64 & ARM64) | Download `Vanta-*.AppImage` from [Releases](https://github.com/gpt4omni/vanta/releases/latest), `chmod +x Vanta-*.AppImage && ./Vanta-*.AppImage` |
+| **Nix Flake** (x86-64 & ARM64) | `nix build '.?submodules=1#vanta'` |
 
-Works on most Linux distros (x86-64 & ARM64) with automatic updates and the exact GTK4, WebKitGTK, Vulkan, and audio libraries Vanta is tested against:
-
-```bash
-flatpak remote-add --if-not-exists vanta https://gpt4omni.github.io/vanta/vanta.flatpakrepo
-flatpak install vanta io.github.gpt4omni.Vanta
-flatpak run io.github.gpt4omni.Vanta
-```
-
-To test the latest commits from `main` instead of tagged releases, install `io.github.gpt4omni.Vanta//master`.
-
-### Native Signed Repositories (Automatic Updates)
-
-<details>
-<summary><b>Debian / Ubuntu (APT, x86-64 & ARM64)</b></summary>
-
-```bash
-sudo install -m 0755 -d /etc/apt/keyrings
-sudo curl -fsSL https://gpt4omni.github.io/vanta/apt/vanta-archive-keyring.gpg \
-    -o /etc/apt/keyrings/vanta-archive-keyring.gpg
-echo "deb [signed-by=/etc/apt/keyrings/vanta-archive-keyring.gpg] https://gpt4omni.github.io/vanta/apt stable main" \
-    | sudo tee /etc/apt/sources.list.d/vanta.list
-sudo apt update && sudo apt install vanta
-```
-
-</details>
-
-<details>
-<summary><b>Fedora 44 (DNF, x86-64 & ARM64)</b></summary>
-
-```bash
-sudo curl -fsSL https://gpt4omni.github.io/vanta/vanta.repo \
-    -o /etc/yum.repos.d/vanta.repo
-sudo dnf install vanta
-```
-
-</details>
-
-<details>
-<summary><b>Arch Linux (Pacman, x86-64)</b></summary>
-
-```bash
-curl -fsSL https://gpt4omni.github.io/vanta/arch/vanta-archive-keyring.asc \
-    | sudo pacman-key --add -
-sudo pacman-key --lsign-key A75EDC4B9B7383BB2FF0F6BEB5018BF3AB2ACA11
-```
-
-Then add this to `/etc/pacman.conf` and run `sudo pacman -Syu vanta`:
-
-```ini
-[vanta]
-Server = https://gpt4omni.github.io/vanta/arch/$arch
-SigLevel = DatabaseRequired PackageNever
-```
-
-</details>
-
-### AppImage & Direct Downloads (x86-64 & ARM64)
-
-Download `Vanta-*-x86_64.AppImage`, `Vanta-*-aarch64.AppImage`, `.deb`, `.rpm`, or `.pkg.tar.zst` (all signed with Sigstore/cosign) from [GitHub Releases](https://github.com/gpt4omni/vanta/releases/latest):
-
-```bash
-chmod +x Vanta-*.AppImage
-./Vanta-*.AppImage
-```
-
-Key fingerprints, cosign verification, and Nix flake setup are in [`docs/install.md`](docs/install.md).
-
-<details>
-<summary><b>Build from Source</b></summary>
-
-Requires **Clang** (AOSP bionic does not compile with GCC), **GTK4 (>= 4.12)**, and **libadwaita (>= 1.5)** development headers. `pipewire` and `webkitgtk6.0` headers are optional; add `--features vanta-runtime/vr` and Boost headers for VR support.
-
-```bash
-git clone --recursive https://github.com/gpt4omni/vanta
-cd vanta
-cargo build --release
-```
-
-Full dependency list and Nix flake instructions are in [`docs/install.md`](docs/install.md#from-source) and [`CONTRIBUTING.md`](CONTRIBUTING.md).
-
-</details>
-
----
-
-## Features
-
-- **Native Linux performance on x86-64 and ARM64 (`aarch64`):** Runs Roblox's official Android client directly with no emulator or VM. Works on Wayland and X11, including tiling compositors like Hyprland and Niri.
-- **Performance HUD (`F8`):** Press `F8` anytime to see live FPS, 1% lows, and frametime in the title bar.
-- **Built-in Recording (`F9`):** Record gameplay with game audio using `ffmpeg` without setting up an external recorder ([recording guide](docs/recording.md)).
-- **Asset Mods:** Load custom fonts, cursors, sounds, skyboxes, and textures from **Settings > Mods** without modifying Roblox's APK, so your mods survive Roblox updates ([asset mod guide](docs/asset-overrides.md)).
-- **Server Region & Quick Rejoin:** See your current server region right in the title bar, copy an invite link, or rejoin the same server in one click.
-- **Multi-Account Profiles, FastFlags & Plugins:** Run multiple accounts side by side ([PartyDeck / gamescope guide](docs/partydeck.md)), edit or import [FastFlags](docs/fastflags.md), and install sandboxed [plugins](docs/plugins.md).
-- **Meta Quest VR:** Play Roblox in VR on Linux over OpenXR / WiVRn ([VR guide](docs/vr.md)).
-
----
+See [docs/install.md](docs/install.md) for manual APT/Pacman repo setup, GPG fingerprints, cosign verification, and building from source.
 
 ## Demo
 
@@ -154,39 +50,43 @@ Full dependency list and Nix flake instructions are in [`docs/install.md`](docs/
     <td align="center" width="58%">
       <img src="docs/media/vanta-doors.gif" alt="Roblox DOORS running under Vanta on Linux" width="100%">
       <br>
-      <sub><b>Roblox DOORS</b> running natively on Linux (<a href="docs/media/vanta-doors.mp4">full video</a> &bull; <a href="docs/media">more media</a>)</sub>
+      <sub><b>Roblox DOORS</b> running natively on Linux (<a href="docs/media/vanta-doors.mp4">full video</a> · <a href="docs/media">more media</a>)</sub>
     </td>
     <td align="center" width="42%">
       <img src="docs/media/vanta-vr.webp" alt="Roblox Meta Quest build in VR on Linux, playing TUNNELER" width="100%">
       <br>
-      <sub><b>Meta Quest VR</b> playing <a href="https://www.roblox.com/games/4635669637/TUNNELER">TUNNELER</a> (<a href="docs/media/vanta-vr.mp4">full video</a> &bull; <a href="docs/vr.md">VR guide</a>)</sub>
+      <sub><b>Meta Quest VR</b> playing <a href="https://www.roblox.com/games/4635669637/TUNNELER">TUNNELER</a> (<a href="docs/media/vanta-vr.mp4">full video</a> · <a href="docs/vr.md">VR guide</a>)</sub>
     </td>
   </tr>
 </table>
 </div>
 
----
-
-## Shortcuts & Commands
+## Shortcuts
 
 | Shortcut / Command | What it does |
 | :--- | :--- |
 | **`F8`** | Toggle the live Performance HUD (FPS, 1% lows, frametime) |
-| **`F9`** | Start or stop built-in game recording |
+| **`F9`** | Start or stop built-in gameplay recording with game audio |
+| **Settings > Mods** | Manage non-destructive font, cursor, sound, sky, and texture overrides |
+| **Settings > FastFlags** | Edit layered per-profile FastFlags or import from Bloxstrap, Fishstrap, and Sober |
 | **`vanta --doctor`** | Check your display, Vulkan, audio, keyring, and Roblox setup |
-| **`vanta --profile P1 --play`** | Launch a specific account profile directly |
-| **`vanta --import-flags <file>`** | Import FastFlags from Bloxstrap, Fishstrap, or Sober |
 
-Looking for architecture notes, troubleshooting, or full feature status? See [`docs/`](docs/README.md) and [`docs/status.md`](docs/status.md).
+## Documentation
 
----
+- [Install & Repo Setup](docs/install.md) - Flatpak, APT, DNF, Pacman, AppImage, Nix, GPG keys, and building from source.
+- [FastFlags](docs/fastflags.md) - Layered `flags.json`, presets, and preserving render distance.
+- [Asset Mods](docs/asset-overrides.md) - Custom fonts, cursors, sounds, skies, and textures.
+- [Recording](docs/recording.md) - Built-in `F9` capture with game audio.
+- [Meta Quest VR](docs/vr.md) - Running Roblox VR over OpenXR and WiVRn.
+- [Multi-Account & PartyDeck](docs/partydeck.md) - Side-by-side profiles and gamescope setup.
+- [Full Docs Index](docs/README.md) - Architecture, ADRs, plugins, controllers, and troubleshooting.
 
-## Notes & Disclaimer
+## Contributing & Community
 
-- **Not affiliated with Roblox Corporation.** Roblox does not officially support third-party Linux runtimes and runs automated ban waves. Do not risk an account you cannot afford to lose.
-- **Does not ship Roblox.** Vanta contains no Roblox code or assets; you fetch or import the official signature-verified Android APK yourself.
-- **Not a cheat or injector.** Vanta never patches or hooks `libroblox.so`, and has no script execution or memory-access APIs. Plugins extend Vanta, not Roblox.
-- **Work in progress.** Wayland is the primary backend and X11 is also supported. Common controllers work, though button prompts may differ and rumble is not yet supported ([`docs/controllers.md`](docs/controllers.md)). ARM64 (`aarch64`) support is available and still maturing ([`docs/multiarch.md`](docs/multiarch.md)).
-- **Credits:** Forked from [Cordial](https://github.com/luohoa97/cordial). Credit to [Sober](https://sober.vinegarhq.org/) for proving native Android Roblox on Linux works (Sober's closed source was never read; only public issue reports were referenced). Development also makes heavy use of AI coding agents, with design decisions recorded openly in [`docs/`](docs/README.md).
-- **Community & Support:** Join our [Discord](https://discord.gg/Jt5MW7UBsC) for help and discussion, open a bug report on [GitHub Issues](https://github.com/gpt4omni/vanta/issues/new/choose) (attach `vanta --diagnostics`), or report security issues privately via [GitHub Security Advisories](https://github.com/gpt4omni/vanta/security/advisories/new).
-- **License & Contributing:** Licensed under **GPL-3.0-or-later** ([`LICENSE`](LICENSE)), except [`crates/vanta-protocol`](crates/vanta-protocol) which is dual-licensed **`MIT OR Apache-2.0`**. Third-party attributions are in [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md), and contributor guidelines are in [`CONTRIBUTING.md`](CONTRIBUTING.md).
+Found a bug or want to help build Vanta? Read [CONTRIBUTING.md](CONTRIBUTING.md), open an issue on [GitHub Issues](https://github.com/gpt4omni/vanta/issues/new/choose) (attach `vanta --diagnostics`), or join the community on [Discord](https://discord.gg/Jt5MW7UBsC).
+
+## Notes & License
+
+Vanta is not affiliated with Roblox Corporation, ships no Roblox code or assets, and is not a cheat or injector (it never patches or hooks `libroblox.so`).
+Forked from [Cordial](https://github.com/luohoa97/cordial) and inspired by [Sober](https://sober.vinegarhq.org/).
+Licensed under GPL-3.0-or-later ([LICENSE](LICENSE)), except [crates/vanta-protocol](crates/vanta-protocol) which is dual-licensed MIT OR Apache-2.0.
