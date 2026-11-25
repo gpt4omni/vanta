@@ -283,6 +283,11 @@ pub const POLL_ERROR: c_int = -4;
 /// measured against.
 const ZERO_TIMEOUT_COALESCE_US_DEFAULT: u64 = 250;
 
+/// Wider coalesce window used in `Performance::Speed` when
+/// `VANTA_POLL_COALESCE_US` is unset, saving busy-poll CPU cycles on
+/// weak/2-core CPUs.
+const ZERO_TIMEOUT_COALESCE_US_SPEED: u64 = 500;
+
 /// Empty zero-timeout polls in a row before the loop is treated as idle.
 ///
 /// High enough that a normal burst of polling during a frame is never slowed,
@@ -329,14 +334,20 @@ extern "C" {
     fn nanosleep(req: *const Timespec, rem: *mut Timespec) -> c_int;
 }
 
+fn resolve_poll_coalesce_us(env_val: Option<&str>, mode: crate::flags::Performance) -> u64 {
+    env_val
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(match mode {
+            crate::flags::Performance::Speed => ZERO_TIMEOUT_COALESCE_US_SPEED,
+            _ => ZERO_TIMEOUT_COALESCE_US_DEFAULT,
+        })
+}
+
 fn zero_timeout_coalesce_ns() -> u64 {
     static NS: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
     *NS.get_or_init(|| {
-        std::env::var("VANTA_POLL_COALESCE_US")
-            .ok()
-            .and_then(|v| v.trim().parse::<u64>().ok())
-            .unwrap_or(ZERO_TIMEOUT_COALESCE_US_DEFAULT)
-            * 1_000
+        let env = std::env::var("VANTA_POLL_COALESCE_US").ok();
+        resolve_poll_coalesce_us(env.as_deref(), crate::flags::performance()) * 1_000
     })
 }
 
@@ -2468,5 +2479,17 @@ mod tests {
         t.join().unwrap();
         // SAFETY: closing the descriptor this test opened.
         unsafe { close(fd) };
+    }
+
+    #[test]
+    fn speed_mode_defaults_poll_coalesce_to_500us_unless_env_overrides() {
+        use crate::flags::Performance;
+        assert_eq!(resolve_poll_coalesce_us(None, Performance::Balanced), 250);
+        assert_eq!(resolve_poll_coalesce_us(None, Performance::Throughput), 250);
+        assert_eq!(resolve_poll_coalesce_us(None, Performance::Latency), 250);
+        assert_eq!(resolve_poll_coalesce_us(None, Performance::Speed), 500);
+        assert_eq!(resolve_poll_coalesce_us(Some("0"), Performance::Speed), 0);
+        assert_eq!(resolve_poll_coalesce_us(Some("125"), Performance::Speed), 125);
+        assert_eq!(resolve_poll_coalesce_us(Some("bad"), Performance::Speed), 500);
     }
 }

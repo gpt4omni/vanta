@@ -120,10 +120,18 @@ pub fn parse_line(line: &str) -> Option<Event> {
     // Two wordings of the end of a refresh: `finished flag fetch`, seen in every
     // log that ran past two minutes, and `Skipping flag cache write: ...`, which
     // a contributor's log shows in its place in a session on another channel.
+    // The initial 2-4 s startup fetch also logs under `[DFLog::FlagCache]` when
+    // writing or verifying the flag cache.
     // The failed fetch (`Could not fetch settings`) and the rollout-time line
     // after it apply no document and revert nothing, so they are not events.
     if line.contains("[FLog::DynamicFastVariableReloader]")
         && (line.contains("finished flag fetch") || line.contains("Skipping flag cache write"))
+    {
+        return Some(Event::SettingsRefreshed);
+    }
+    if line.contains("[DFLog::FlagCache]")
+        && (line.contains("writeFlagCache: Successfully wrote")
+            || line.contains("Signature matches last written signature"))
     {
         return Some(Event::SettingsRefreshed);
     }
@@ -481,19 +489,51 @@ const ROBLOX_BADGE_KEY: &str = "roblox";
 /// Resolved once per experience by [`resolve_game_in_background`].
 static DEFAULTS: Mutex<Option<crate::roblox_api::GameDetails>> = Mutex::new(None);
 
+/// Monotonically increasing session generation counter, incremented on every
+/// [`Event::Joined`] and [`Event::Left`]. Background HTTP lookups capture the
+/// generation at spawn time and discard their result if the session changed
+/// before the request finished (fast leave or game switch).
+static SESSION_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn next_session_generation() -> u64 {
+    SESSION_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1
+}
+
+fn current_session_generation() -> u64 {
+    SESSION_GEN.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// Commit a background game-metadata lookup only if `gen` still matches the
+/// active session generation while holding `DEFAULTS`. Returns `true` when the
+/// details were accepted and `false` when discarded as stale.
+fn commit_resolved_game(gen: u64, details: Option<crate::roblox_api::GameDetails>) -> bool {
+    let mut slot = DEFAULTS.lock().unwrap_or_else(|e| e.into_inner());
+    if current_session_generation() != gen {
+        return false;
+    }
+    *slot = details;
+    true
+}
+
 /// Look up the experience and republish, off the poll thread.
 ///
 /// **Spawned rather than called inline.** These are HTTP requests on the house
 /// client's twenty-second worst case, and the log watcher's poll loop is not a
 /// place to spend that -- a stalled watcher stops noticing BloxstrapRPC lines,
 /// which is the one thing it exists to notice.
-fn resolve_game_in_background(universe_id: u64) {
+fn resolve_game_in_background(universe_id: u64, gen: u64) {
     std::thread::spawn(move || {
         let details = crate::roblox_api::resolve_game(universe_id);
-        if let Some(d) = &details {
-            println!("[vanta] game: {} by {}", d.name, d.creator);
+        let log_line = details.as_ref().map(|d| format!("[vanta] game: {} by {}", d.name, d.creator));
+        if !commit_resolved_game(gen, details) {
+            return;
         }
-        *DEFAULTS.lock().unwrap_or_else(|e| e.into_inner()) = details;
+        if let Some(line) = log_line {
+            println!("{line}");
+        }
+        if current_session_generation() != gen {
+            return;
+        }
         // The join already published a presence without any of this; this is
         // the second one, with the name and the icon filled in.
         crate::plugin_host::publish_core(
@@ -586,8 +626,10 @@ pub fn poll() {
                 println!(
                     "[vanta] game: joined place {place_id} (universe {universe_id}) as {user_id}"
                 );
-                {
+                let gen = next_session_generation();
+                let universe_changed = {
                     let mut state = STATE.lock().unwrap_or_else(|e| e.into_inner());
+                    let changed = state.universe_id != Some(universe_id);
                     // A job id belongs to the place it was seen for. Keeping
                     // one across a teleport would name a server the player has
                     // left, and the join button would send people to it.
@@ -603,6 +645,10 @@ pub fn poll() {
                     // `SessionState` -- so two plugins asking a second apart
                     // agree.
                     state.joined_at = Some(now_secs());
+                    changed
+                };
+                if universe_changed {
+                    *DEFAULTS.lock().unwrap_or_else(|e| e.into_inner()) = None;
                 }
                 // Told to the launcher from the same update that wrote the state,
                 // so the snapshot it can ask for and the event it hears are one
@@ -614,7 +660,7 @@ pub fn poll() {
                     vanta_plugins::core_events::GAME_PRESENCE,
                     presence_payload(),
                 );
-                resolve_game_in_background(universe_id);
+                resolve_game_in_background(universe_id, gen);
             }
             Event::Joining { job_id, place_id } => {
                 println!("[vanta] game: joining server {job_id} of place {place_id}");
@@ -636,6 +682,7 @@ pub fn poll() {
             }
             Event::Left => {
                 println!("[vanta] game: left");
+                let _ = next_session_generation();
                 crate::server_region::on_left();
                 // The experience's presence goes with the experience. Without
                 // this, leaving a game that set a presence would leave its
@@ -698,6 +745,7 @@ pub fn poll() {
                             .map(|image| image.asset_id.clone())
                             .collect();
                         drop(merged);
+                        let gen = current_session_generation();
                         crate::plugin_host::publish_core(
                             vanta_plugins::core_events::GAME_PRESENCE,
                             presence_payload(),
@@ -706,6 +754,9 @@ pub fn poll() {
                             std::thread::spawn(move || {
                                 for asset in &wanted {
                                     crate::roblox_api::resolve_asset(asset);
+                                }
+                                if current_session_generation() != gen {
+                                    return;
                                 }
                                 crate::plugin_host::publish_core(
                                     vanta_plugins::core_events::GAME_PRESENCE,
@@ -1093,5 +1144,61 @@ mod tests {
         assert_eq!(w.poll(), vec![Event::Left]);
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn flag_cache_write_and_signature_match_lines_trigger_settings_refreshed() {
+        let wrote = "2026-11-21T13:45:04.150Z,4.150123,c616d6c0,6,Info \
+             [DFLog::FlagCache] writeFlagCache: Successfully wrote 372673 bytes";
+        let sig_match = "2026-11-21T13:45:04.151Z,4.151000,c616d6c0,6,Info \
+             [DFLog::FlagCache] Signature matches last written signature";
+        let unrelated = "2026-11-21T13:45:01.010Z,1.010000,c616d6c0,6,Info \
+             [DFLog::FlagCache] readFlagCache: cache missing";
+
+        assert_eq!(parse_line(wrote), Some(Event::SettingsRefreshed));
+        assert_eq!(parse_line(sig_match), Some(Event::SettingsRefreshed));
+        assert_eq!(parse_line(unrelated), None);
+    }
+
+    #[test]
+    fn stale_async_game_metadata_lookup_is_discarded_after_leave_or_switch() {
+        let details = |name: &str, creator: &str| {
+            Some(crate::roblox_api::GameDetails {
+                name: name.to_string(),
+                creator: creator.to_string(),
+            })
+        };
+
+        // Case 1: Join game A, then leave before HTTP returns.
+        *DEFAULTS.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        let gen_a = next_session_generation();
+        let _gen_left = next_session_generation();
+        *DEFAULTS.lock().unwrap_or_else(|e| e.into_inner()) = None;
+
+        assert!(
+            !commit_resolved_game(gen_a, details("Stale Game A", "Studio A")),
+            "response from before Event::Left must be discarded"
+        );
+        assert!(
+            DEFAULTS.lock().unwrap_or_else(|e| e.into_inner()).is_none(),
+            "DEFAULTS must stay empty after leave"
+        );
+
+        // Case 2: Join game A, immediately switch to game B; B finishes first, then slow A arrives.
+        let gen_first = next_session_generation();
+        let gen_second = next_session_generation();
+
+        assert!(commit_resolved_game(gen_second, details("Game B", "Studio B")));
+        assert!(
+            !commit_resolved_game(gen_first, details("Slow Game A", "Studio A")),
+            "late response from previous game must not overwrite current game's DEFAULTS"
+        );
+        let guard = DEFAULTS.lock().unwrap_or_else(|e| e.into_inner());
+        let active = guard.as_ref().expect("Game B details should remain");
+        assert_eq!(active.name, "Game B");
+        assert_eq!(active.creator, "Studio B");
+        drop(guard);
+
+        *DEFAULTS.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
 }

@@ -263,6 +263,11 @@ pub enum Update {
     PerfHud(bool),
     /// Whether desktop notifications are sent on game join with detected server region.
     ServerRegionNotify(bool),
+    /// One-shot signal asking the running client to re-read its profile's
+    /// `flags.json` and re-apply dynamic overrides (`DF*`) immediately
+    /// (ADR-051). Not a persistent `shell.json` setting, so it lives in
+    /// [`ACTION_KEYS`] rather than [`KEYS`].
+    ReloadFlags,
 }
 
 /// A title-bar choice in the words `VANTA_TITLE_BAR` and `shell.json` use.
@@ -301,6 +306,11 @@ pub const KEYS: [&str; 12] = [
     "server_region_notify",
 ];
 
+/// One-shot action keys accepted by `settings.set` that are not persistent
+/// `shell.json` settings and are therefore omitted from [`KEYS`] and
+/// `settings.get`.
+pub const ACTION_KEYS: [&str; 1] = ["reload_flags"];
+
 /// Longest sink name accepted. PipeWire node names are short; the bound is
 /// there so a value cannot approach [`MAX_LINE`] and so the client never hands
 /// a hostile length to the native side.
@@ -327,6 +337,7 @@ impl Update {
             Update::FrameRateLimit(_) => "frame_rate_limit",
             Update::PerfHud(_) => "perf_hud",
             Update::ServerRegionNotify(_) => "server_region_notify",
+            Update::ReloadFlags => "reload_flags",
         }
     }
 
@@ -343,6 +354,7 @@ impl Update {
             Update::AudioOutput(name) | Update::AudioInput(name) => Value::from(name.as_str()),
             Update::TitleBar(t) => Value::from(title_bar_word(*t)),
             Update::FrameRateLimit(l) => Value::from(l.as_env()),
+            Update::ReloadFlags => Value::from(true),
         }
     }
 
@@ -385,6 +397,10 @@ impl Update {
                 .filter(|n| valid_sink_name(n))
                 .map(|n| Update::AudioInput(n.to_string()))
                 .ok_or_else(bad),
+            "reload_flags" => match value.as_bool() {
+                Some(true) => Ok(Update::ReloadFlags),
+                _ => Err(bad()),
+            },
             _ => Err(format!("{key}: not a live setting")),
         }
     }
@@ -414,7 +430,7 @@ pub fn parse_set_body(map: &Map<String, Value>) -> Result<SetBody, String> {
     let mut updates = Vec::new();
     let mut ignored = Vec::new();
     for (key, value) in map {
-        if KEYS.contains(&key.as_str()) {
+        if KEYS.contains(&key.as_str()) || ACTION_KEYS.contains(&key.as_str()) {
             updates.push(Update::from_pair(key, value)?);
         } else {
             ignored.push(key.clone());
@@ -455,6 +471,7 @@ mod tests {
             Update::FrameRateLimit(FrameRateLimit::Cap144),
             Update::PerfHud(true),
             Update::ServerRegionNotify(false),
+            Update::ReloadFlags,
         ]
     }
 
@@ -468,6 +485,25 @@ mod tests {
         updates.sort_by_key(|u| u.key());
         want.sort_by_key(|u| u.key());
         assert_eq!(updates, want);
+    }
+
+    #[test]
+    fn reload_flags_round_trips_as_action_key_without_polluting_stored_keys() {
+        assert!(!KEYS.contains(&"reload_flags"), "action key must stay outside persistent KEYS");
+        assert!(ACTION_KEYS.contains(&"reload_flags"));
+
+        let body = set_body(&[Update::ReloadFlags]);
+        assert_eq!(body.get("reload_flags"), Some(&Value::Bool(true)));
+        let map: Map<String, Value> = body.into_iter().collect();
+        let parsed = parse_set_body(&map).unwrap();
+        assert_eq!(parsed.updates, vec![Update::ReloadFlags]);
+        assert!(parsed.ignored.is_empty());
+
+        for bad in [Value::Bool(false), Value::from("yes"), Value::from(1)] {
+            let mut m = Map::new();
+            m.insert("reload_flags".to_string(), bad);
+            assert!(parse_set_body(&m).is_err());
+        }
     }
 
     #[test]

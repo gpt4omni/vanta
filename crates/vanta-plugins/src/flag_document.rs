@@ -76,15 +76,48 @@ pub fn parse(text: &str) -> Result<BTreeMap<String, String>, String> {
 }
 
 /// A JSON value as the string Roblox stores, or why it has none.
-fn value_text(key: &str, value: &serde_json::Value) -> Result<String, String> {
+///
+/// JSON booleans (`true`/`false`) are normalised to Roblox's `"True"`/`"False"`
+/// spelling and whole JSON floats (`144.0`) are normalised to whole integers
+/// (`"144"`), while `FLog`/`DFLog` and `FString`/`DFString` entries are left
+/// intact so log-channel shapes and literal strings are never altered.
+pub fn normalise_json_value(key: &str, value: &serde_json::Value) -> Result<String, String> {
+    let kind = kind_of(key);
+    let keep_raw = matches!(kind, Kind::Log | Kind::Text);
     match value {
-        serde_json::Value::String(s) => Ok(s.clone()),
-        serde_json::Value::Bool(_) | serde_json::Value::Number(_) => Ok(value.to_string()),
+        serde_json::Value::String(s) => {
+            if kind == Kind::Int {
+                if let Some(whole) = whole_number(s.trim()) {
+                    return Ok(whole);
+                }
+            }
+            Ok(s.clone())
+        }
+        serde_json::Value::Bool(b) => {
+            if keep_raw {
+                Ok(b.to_string())
+            } else {
+                Ok(if *b { "True" } else { "False" }.to_string())
+            }
+        }
+        serde_json::Value::Number(n) => {
+            let raw = n.to_string();
+            if keep_raw {
+                Ok(raw)
+            } else {
+                Ok(whole_number(&raw).unwrap_or(raw))
+            }
+        }
         serde_json::Value::Null => Err(format!("{key}: null is not a value. Remove the line to unset it.")),
         serde_json::Value::Array(_) | serde_json::Value::Object(_) => {
             Err(format!("{key}: a flag value must be text, a number or true/false"))
         }
     }
+}
+
+/// A JSON value as the string Roblox stores, or why it has none.
+fn value_text(key: &str, value: &serde_json::Value) -> Result<String, String> {
+    normalise_json_value(key, value)
 }
 
 /// What a flag's name says its value is. Roblox carries the type in the
@@ -352,13 +385,44 @@ mod tests {
         assert_eq!(values.len(), 3);
     }
 
-    /// JSON types are converted, matching what the loader has always done.
+    /// JSON types are converted, matching what the loader does.
     #[test]
     fn the_editor_accepts_everything_the_loader_does() {
         let values = parse(r#"{"A": true, "B": 7, "C": "x"}"#).unwrap();
-        assert_eq!(values.get("A").map(String::as_str), Some("true"));
+        assert_eq!(values.get("A").map(String::as_str), Some("True"));
         assert_eq!(values.get("B").map(String::as_str), Some("7"));
         assert_eq!(values.get("C").map(String::as_str), Some("x"));
+    }
+
+    #[test]
+    fn parse_normalises_booleans_and_whole_floats_leaving_logs_and_strings_intact() {
+        let values = parse(
+            r#"{
+                "FFlagEnabled": true,
+                "DFFlagDisabled": false,
+                "DFIntTaskSchedulerTargetFps": 144.0,
+                "FIntNegative": -8.0,
+                "DFIntStringFloat": "240.0",
+                "FIntFractional": 1.5,
+                "FLogNativeDM": "Verbose",
+                "FLogNetwork": 7,
+                "DFLogChannel": 7.0,
+                "FStringLiteral": "true",
+                "DFStringNumber": "144.0"
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(values["FFlagEnabled"], "True");
+        assert_eq!(values["DFFlagDisabled"], "False");
+        assert_eq!(values["DFIntTaskSchedulerTargetFps"], "144");
+        assert_eq!(values["FIntNegative"], "-8");
+        assert_eq!(values["DFIntStringFloat"], "240");
+        assert_eq!(values["FIntFractional"], "1.5");
+        assert_eq!(values["FLogNativeDM"], "Verbose");
+        assert_eq!(values["FLogNetwork"], "7");
+        assert_eq!(values["DFLogChannel"], "7.0");
+        assert_eq!(values["FStringLiteral"], "true");
+        assert_eq!(values["DFStringNumber"], "144.0");
     }
 
     /// A refusal names the flag it choked on.
