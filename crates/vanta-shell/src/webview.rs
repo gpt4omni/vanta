@@ -1110,7 +1110,7 @@ pub fn open_standalone(request: &WindowRequest) -> Option<adw::Window> {
     }
 
     if !gtk4::is_initialized() {
-        if let Err(e) = crate::x11_editor::init() {
+        if let Err(e) = gtk4::init() {
             eprintln!("[webview] could not initialize GTK for standalone web window: {e}");
             return None;
         }
