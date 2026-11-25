@@ -2,27 +2,20 @@
   aria-labelledby="title desc">
   <title id="title">Vanta bot</title>
   <desc
-    id="desc">The obsidian silver Vanta mark with mismatched googly eyes so bot messages read distinctly from the application icon.</desc>
+    id="desc">The tilted white and black Vanta mark with mismatched googly eyes so bot messages read distinctly from the application icon.</desc>
   <defs>
-    <linearGradient id="tile" x1="0" y1="0" x2="1" y2="1">
-      <stop stop-color="#202124" />
-      <stop offset=".55" stop-color="#0c0d0f" />
-      <stop offset="1" stop-color="#050506" />
-    </linearGradient>
-    <linearGradient id="left" x1="0" y1="0" x2="1" y2="1">
-      <stop stop-color="#fafafa" />
-      <stop offset="1" stop-color="#9a9ca2" />
-    </linearGradient>
-    <linearGradient id="right" x1="0" y1="0" x2="0" y2="1">
-      <stop stop-color="#b6b8bf" />
-      <stop offset="1" stop-color="#55575e" />
-    </linearGradient>
+    <clipPath id="vanta-frame">
+      <path clip-rule="evenodd" d="M110 5 L504.5 111.5 L397 507 L4.5 400.5 Z M209.5 175.5 L174.5 300.5 L299.5 337 L336 210 Z"/>
+    </clipPath>
   </defs>
-  <rect x="40" y="40" width="432" height="432" rx="104" fill="url(#tile)" stroke="#404146"
-    stroke-width="2" />
-  <path d="M124 150h73l86 190-34 37z" fill="url(#left)" />
-  <path d="M315 150h73L283 377h-34z" fill="url(#right)" />
-  <path d="m315 150-66 227 34-37z" fill="#e2e3e7" opacity=".32" />
+  <g transform="translate(36 36) scale(0.86)">
+    <g clip-path="url(#vanta-frame)">
+      <path d="M-20 -20 L532 -20 L532 264 L456.5 293 L223 388 L62.5 184 L-10 92 Z" fill="#ffffff"/>
+      <path d="M-10 90.4 L62.5 182.5 L223 386.5 L456.5 291.5 L530 261.6 L532 532 L-20 532 Z" fill="#000000"/>
+      <path d="M210.5 394 L233.5 394 L255 429 L276.5 394 L299.5 394 L255 462.5 Z" fill="#ffffff"/>
+      <path fill="none" stroke="#7c808d" stroke-opacity="0.28" stroke-width="3" d="M110 5 L504.5 111.5 L397 507 L4.5 400.5 Z M209.5 175.5 L174.5 300.5 L299.5 337 L336 210 Z"/>
+    </g>
+  </g>
   <!--
     The bot avatar: the Vanta mark with googly eyes stuck on. It has to be
     distinguishable from the app icon at 32px in a member list, or a bot
@@ -30,9 +23,9 @@
     looking slightly askew keep it unmistakably a bot avatar.
   -->
   <g>
-    <circle cx="204" cy="184" r="42" fill="#ffffff" stroke="#141414" stroke-width="6" />
-    <circle cx="216" cy="197" r="17" fill="#111111" />
-    <circle cx="308" cy="176" r="36" fill="#ffffff" stroke="#141414" stroke-width="6" />
-    <circle cx="299" cy="189" r="15" fill="#111111" />
+    <circle cx="212" cy="146" r="46" fill="#ffffff" stroke="#111111" stroke-width="7" />
+    <circle cx="226" cy="160" r="19" fill="#111111" />
+    <circle cx="322" cy="172" r="38" fill="#ffffff" stroke="#111111" stroke-width="7" />
+    <circle cx="311" cy="186" r="16" fill="#111111" />
   </g>
 </svg>

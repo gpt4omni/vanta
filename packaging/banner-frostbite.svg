@@ -1,22 +1,29 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="960" height="320" viewBox="0 0 960 320" role="img" aria-labelledby="title desc">
   <title id="title">Vanta · Frostbite</title>
-  <desc id="desc">An obsidian V monogram beside a silver Vanta wordmark on a black banner.</desc>
+  <desc id="desc">Frost-ice tilted Vanta mark beside the Vanta wordmark on an obsidian frostbite banner.</desc>
   <defs>
     <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
-      <stop stop-color="#17181b"/><stop offset="1" stop-color="#050506"/>
+      <stop stop-color="#141b24"/><stop offset="1" stop-color="#070a0f"/>
     </linearGradient>
-    <linearGradient id="silver" x1="0" y1="0" x2="0" y2="1">
-      <stop stop-color="#fafafa"/><stop offset="1" stop-color="#92949c"/>
-    </linearGradient>
+    <radialGradient id="markGlow" cx="190" cy="160" r="160" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#cfe4f8" stop-opacity="0.10"/>
+      <stop offset="100%" stop-color="#000000" stop-opacity="0"/>
+    </radialGradient>
+    <clipPath id="vanta-frame">
+      <path clip-rule="evenodd" d="M110 5 L504.5 111.5 L397 507 L4.5 400.5 Z M209.5 175.5 L174.5 300.5 L299.5 337 L336 210 Z"/>
+    </clipPath>
   </defs>
-  <rect x="1" y="1" width="958" height="318" rx="32" fill="url(#background)" stroke="#303136"/>
-  <g transform="translate(48 32) scale(.5)">
-    <rect x="40" y="40" width="432" height="432" rx="104" fill="#0a0b0d" stroke="#404146" stroke-width="2"/>
-    <path d="M124 150h73l86 190-34 37z" fill="url(#silver)"/>
-    <path d="M315 150h73L283 377h-34z" fill="#85878f"/>
-    <path d="m315 150-66 227 34-37z" fill="#e2e3e7" opacity=".32"/>
+  <rect x="1" y="1" width="958" height="318" rx="32" fill="url(#background)" stroke="#2b3a4a"/>
+  <rect x="1" y="1" width="958" height="318" rx="32" fill="url(#markGlow)"/>
+  <g transform="translate(80 50) scale(.43)">
+    <g clip-path="url(#vanta-frame)">
+      <path d="M-20 -20 L532 -20 L532 264 L456.5 293 L223 388 L62.5 184 L-10 92 Z" fill="#f0f5fa"/>
+      <path d="M-10 90.4 L62.5 182.5 L223 386.5 L456.5 291.5 L530 261.6 L532 532 L-20 532 Z" fill="#101924"/>
+      <path d="M210.5 394 L233.5 394 L255 429 L276.5 394 L299.5 394 L255 462.5 Z" fill="#dce8f5"/>
+      <path fill="none" stroke="#85a2be" stroke-opacity="0.38" stroke-width="3" d="M110 5 L504.5 111.5 L397 507 L4.5 400.5 Z M209.5 175.5 L174.5 300.5 L299.5 337 L336 210 Z"/>
+    </g>
   </g>
-  <text x="350" y="169" fill="#f4f4f5" font-family="Inter, DejaVu Sans, sans-serif" font-size="68" font-weight="600" letter-spacing="14">VANTA</text>
-  <path d="M352 197h64" stroke="#686a72" stroke-width="2"/>
-  <text x="350" y="232" fill="#a1a3ab" font-family="Inter, DejaVu Sans, sans-serif" font-size="16" letter-spacing="3">FROSTBITE EDITION</text>
+  <text x="350" y="169" fill="#f0f5fa" font-family="Inter, Adwaita Sans, DejaVu Sans, sans-serif" font-size="68" font-weight="600" letter-spacing="14">VANTA</text>
+  <path d="M352 197h64" stroke="#5b7a98" stroke-width="2"/>
+  <text x="350" y="232" fill="#a8bed4" font-family="Inter, Adwaita Sans, DejaVu Sans, sans-serif" font-size="16" letter-spacing="3">FROSTBITE EDITION</text>
 </svg>
