@@ -5,15 +5,18 @@
     id="desc">The tilted white and black Vanta mark with mismatched googly eyes so bot messages read distinctly from the application icon.</desc>
   <defs>
     <clipPath id="vanta-frame">
-      <path clip-rule="evenodd" d="M110 5 L504.5 111.5 L397 507 L4.5 400.5 Z M209.5 175.5 L174.5 300.5 L299.5 337 L336 210 Z"/>
+      <path clip-rule="evenodd"
+        d="M110 5 L504.5 111.5 L397 507 L4.5 400.5 Z M209.5 175.5 L174.5 300.5 L299.5 337 L336 210 Z" />
     </clipPath>
   </defs>
   <g transform="translate(36 36) scale(0.86)">
     <g clip-path="url(#vanta-frame)">
-      <path d="M-20 -20 L532 -20 L532 264 L456.5 293 L223 388 L62.5 184 L-10 92 Z" fill="#ffffff"/>
-      <path d="M-10 90.4 L62.5 182.5 L223 386.5 L456.5 291.5 L530 261.6 L532 532 L-20 532 Z" fill="#000000"/>
-      <path d="M210.5 394 L233.5 394 L255 429 L276.5 394 L299.5 394 L255 462.5 Z" fill="#ffffff"/>
-      <path fill="none" stroke="#7c808d" stroke-opacity="0.28" stroke-width="3" d="M110 5 L504.5 111.5 L397 507 L4.5 400.5 Z M209.5 175.5 L174.5 300.5 L299.5 337 L336 210 Z"/>
+      <path d="M-20 -20 L532 -20 L532 264 L456.5 293 L223 388 L62.5 184 L-10 92 Z" fill="#ffffff" />
+      <path d="M-10 90.4 L62.5 182.5 L223 386.5 L456.5 291.5 L530 261.6 L532 532 L-20 532 Z"
+        fill="#000000" />
+      <path d="M210.5 394 L233.5 394 L255 429 L276.5 394 L299.5 394 L255 462.5 Z" fill="#ffffff" />
+      <path fill="none" stroke="#7c808d" stroke-opacity="0.28" stroke-width="3"
+        d="M110 5 L504.5 111.5 L397 507 L4.5 400.5 Z M209.5 175.5 L174.5 300.5 L299.5 337 L336 210 Z" />
     </g>
   </g>
   <!--
