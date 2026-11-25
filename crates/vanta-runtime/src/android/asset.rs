@@ -23,20 +23,93 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::ffi::{c_char, c_int, c_void};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::os::fd::{FromRawFd, IntoRawFd, OwnedFd};
+use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd};
 use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
+
+/// Backing storage for an open `AAsset`.
+enum AssetBacking {
+    /// Borrowed from the APK ZIP fallback cache.
+    Static(&'static [u8]),
+    /// Read-only `MAP_PRIVATE` mapping of an overlay or extracted `ASSET_ROOT`
+    /// file, cleanly `munmap`'d on `AAsset_close` so asset bytes stay in the
+    /// OS page cache instead of leaking private heap.
+    Mmap { ptr: *mut c_void, len: usize },
+    /// Zero-length file (`mmap` with length 0 returns `EINVAL` on Linux).
+    Empty,
+}
+
+impl AssetBacking {
+    fn as_slice(&self) -> &[u8] {
+        match *self {
+            AssetBacking::Static(bytes) => bytes,
+            AssetBacking::Mmap { ptr, len } => {
+                // SAFETY: `ptr` and `len` come from a successful read-only
+                // `libc::mmap` owned by `self` until `Drop`.
+                unsafe { std::slice::from_raw_parts(ptr as *const u8, len) }
+            }
+            AssetBacking::Empty => &[],
+        }
+    }
+}
+
+impl Drop for AssetBacking {
+    fn drop(&mut self) {
+        if let AssetBacking::Mmap { ptr, len } = *self {
+            if !ptr.is_null() && len > 0 {
+                // SAFETY: `ptr` and `len` were returned by `libc::mmap` and
+                // belong exclusively to this `AssetBacking`.
+                unsafe {
+                    libc::munmap(ptr, len);
+                }
+            }
+        }
+    }
+}
+
+/// Map a regular file read-only via `MAP_PRIVATE`. Closing the `File` after
+/// `mmap` keeps the mapping live until `AssetBacking::drop` calls `munmap`.
+fn mmap_file(path: &Path) -> Option<AssetBacking> {
+    let file = File::open(path).ok()?;
+    let meta = file.metadata().ok()?;
+    if !meta.is_file() {
+        return None;
+    }
+    let len = usize::try_from(meta.len()).ok()?;
+    if len == 0 {
+        return Some(AssetBacking::Empty);
+    }
+    // SAFETY: `file` is a valid open regular file of `len > 0` bytes.
+    let ptr = unsafe {
+        libc::mmap(
+            std::ptr::null_mut(),
+            len,
+            libc::PROT_READ,
+            libc::MAP_PRIVATE,
+            file.as_raw_fd(),
+            0,
+        )
+    };
+    if ptr == libc::MAP_FAILED {
+        return None;
+    }
+    Some(AssetBacking::Mmap { ptr, len })
+}
 
 /// One opened asset. The pointer handed back to Roblox is a `Box::into_raw` of
 /// this, which is what an `AAsset*` is as far as the engine is concerned.
 struct Asset {
-    /// Borrowed from the cache, not copied. Roblox opens the same assets
-    /// repeatedly; copying each time would double the memory for no benefit,
-    /// since the cached bytes already live for the process.
-    bytes: &'static [u8],
+    backing: AssetBacking,
     /// Current streaming cursor for `AAsset_read` / `AAsset_seek`.
     pos: usize,
+}
+
+impl Asset {
+    fn bytes(&self) -> &[u8] {
+        self.backing.as_slice()
+    }
 }
 
 /// A reader over the APK that can be cloned cheaply and used from any thread
@@ -528,6 +601,7 @@ pub fn register_plugin_root(id: &str, root: PathBuf) {
         stack.push(OverlayLayer { source, root });
     }
     invalidate();
+    refresh_has_asset_overlays();
 }
 
 /// Remove a plugin's overlay root. Everything it was serving falls straight
@@ -539,6 +613,7 @@ pub fn unregister_plugin_root(id: &str) {
         stack.retain(|l| l.source != source);
     }
     invalidate();
+    refresh_has_asset_overlays();
 }
 
 /// Drop the built index so the next lookup rebuilds it.
@@ -683,6 +758,7 @@ pub struct Reload {
 pub fn reload() -> Reload {
     invalidate();
     let index = index();
+    update_has_asset_overlays_for(!index.is_empty());
     let already_cached = MANAGER
         .get()
         .and_then(|m| {
@@ -837,10 +913,31 @@ pub fn explain(name: &str) -> Option<String> {
 /// resolver that guesses wrong there produces a TLS failure three layers from
 /// anything mentioning certificates. This project has already paid for that
 /// once.
-static ASSET_ROOT: Mutex<Option<PathBuf>> = Mutex::new(None);
+static ASSET_ROOT: RwLock<Option<PathBuf>> = RwLock::new(None);
+static MODS_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 extern "C" {
     fn vanta_set_asset_root(root: *const c_char);
+    fn vanta_set_has_asset_overlays(has_overlays: bool);
+}
+
+fn update_has_asset_overlays_for(index_non_empty: bool) {
+    let active = MODS_ACTIVE.load(Ordering::Relaxed) || index_non_empty;
+    // SAFETY: `vanta_set_has_asset_overlays` writes a single atomic bool in
+    // `native/system_paths.cpp`.
+    unsafe { vanta_set_has_asset_overlays(active) };
+}
+
+fn refresh_has_asset_overlays() {
+    let idx_non_empty = !index().is_empty();
+    update_has_asset_overlays_for(idx_non_empty);
+}
+
+/// Record whether any profile mods are active and refresh the C++
+/// `g_has_asset_overlays` fast-gate in `native/system_paths.cpp`.
+pub fn sync_has_asset_overlays(mods_active: bool) {
+    MODS_ACTIVE.store(mods_active, Ordering::Release);
+    refresh_has_asset_overlays();
 }
 
 /// Record the directory `assetFolderPath` points at — the extraction root,
@@ -848,7 +945,7 @@ extern "C" {
 /// `assets/` and `content/…` is part of the name.
 pub fn set_asset_root(dir: &Path) {
     let resolved = dir.canonicalize().ok().unwrap_or_else(|| dir.to_path_buf());
-    if let Ok(mut held) = ASSET_ROOT.lock() {
+    if let Ok(mut held) = ASSET_ROOT.write() {
         *held = Some(resolved.clone());
     }
     if let Ok(c) = std::ffi::CString::new(resolved.as_os_str().as_encoded_bytes()) {
@@ -856,6 +953,7 @@ pub fn set_asset_root(dir: &Path) {
         // own static buffer for fast prefix gating in `native/system_paths.cpp`.
         unsafe { vanta_set_asset_root(c.as_ptr()) };
     }
+    refresh_has_asset_overlays();
 }
 
 /// Whether these `open` flags mean the caller intends to write.
@@ -889,11 +987,33 @@ pub fn is_write_intent(flags: i32) -> bool {
 /// Anything outside the asset root is not an asset and is left alone. The
 /// overlay must never become a general filesystem redirect; that is the same
 /// line ADR-007 draws between an effect and a channel.
+/// Validate an asset-relative path (`content/sounds/ouch.ogg`) with zero heap
+/// allocations, rejecting empty paths, backslashes, `//`, `.`, and `..`.
+fn is_safe_relative_asset(name: &str) -> bool {
+    !name.is_empty()
+        && !name.starts_with('/')
+        && !name.contains('\\')
+        && !name.bytes().any(|b| b == 0)
+        && name.split('/').all(|seg| !seg.is_empty() && seg != "." && seg != "..")
+}
+
+/// Resolve an already-prefix-stripped asset-relative path against active mods
+/// and overlays without locking `ASSET_ROOT` or cloning a `PathBuf`.
+fn resolve_relative_asset_path(name: &str, write: bool) -> Option<PathBuf> {
+    if write || !is_safe_relative_asset(name) {
+        return None;
+    }
+    if let Some(mod_path) = super::mods::lookup(name) {
+        return Some(mod_path);
+    }
+    index().get(name).map(|r| r.path.clone())
+}
+
 pub fn resolve_asset_path(path: &str, write: bool) -> Option<PathBuf> {
     if write {
         return None;
     }
-    let root = ASSET_ROOT.lock().ok()?.clone()?;
+    let root = ASSET_ROOT.read().ok()?.clone()?;
     let candidate = Path::new(path);
     // Not canonicalised first: the file being looked for frequently does not
     // exist yet under the extraction root, and `canonicalize` on a missing
@@ -915,6 +1035,9 @@ pub fn resolve_asset_path(path: &str, write: bool) -> Option<PathBuf> {
 /// functions (`stat`, `lstat`, `access`, `opendir`, `realpath`, `readlink`,
 /// `fopen`, `statvfs`, `open`) whenever a read-only path matches the
 /// registered extracted asset root prefix.
+///
+/// Accepts either an already-prefix-stripped relative asset path (the fast
+/// path from `native/system_paths.cpp`) or a full path under `ASSET_ROOT`.
 ///
 /// Writes (`for_write != 0`) are never redirected; a buffer too small returns
 /// 0 rather than a truncated path, because a truncated path names a different
@@ -950,7 +1073,11 @@ pub unsafe extern "C" fn vanta_overlay_resolve(
 /// The redirect for `name` as NUL-terminated bytes, or `None` to use the path
 /// as given. Everything `vanta_overlay_resolve` does that is not a pointer.
 fn redirect_bytes(name: &str, for_write: bool) -> Option<Vec<u8>> {
-    let resolved = resolve_asset_path(name, for_write)?;
+    let resolved = if name.starts_with('/') {
+        resolve_asset_path(name, for_write)?
+    } else {
+        resolve_relative_asset_path(name, for_write)?
+    };
     let mut bytes = resolved.as_os_str().as_encoded_bytes().to_vec();
     bytes.push(0);
     Some(bytes)
@@ -1354,11 +1481,50 @@ extern "C" fn asset_manager_open(
     open_asset(manager, &name.to_string_lossy()).map_or(std::ptr::null_mut(), into_handle)
 }
 
-/// Not an error worth failing on: Android's asset manager returns null for a
-/// missing asset and callers probe for optional files. `read` already traced
-/// the miss (under `VANTA_TRACE_ASSETS=1`) with the name.
+/// Open `name` for `AAssetManager_open`, preferring read-only `mmap` from
+/// overlays and extracted `ASSET_ROOT/<name>` (cleanly `munmap`'d on
+/// `AAsset_close` to avoid ZIP inflate CPU and permanently leaked private
+/// heap), falling back to the APK ZIP only when the file is absent on disk.
 fn open_asset(manager: &Manager, name: &str) -> Option<Asset> {
-    manager.read(name).map(|bytes| Asset { bytes, pos: 0 })
+    if let Some(mod_path) = super::mods::lookup(name) {
+        if let Some(backing) = mmap_file(&mod_path) {
+            if trace_assets_enabled() {
+                eprintln!("[asset] hit (mod mmap): {name} from {}", mod_path.display());
+            }
+            record(name, Served::Overlay(OverlaySource::Mod));
+            return Some(Asset { backing, pos: 0 });
+        }
+    }
+
+    if let Some((source, path)) = resolve_overlay(name) {
+        if let Some(backing) = mmap_file(&path) {
+            if trace_assets_enabled() {
+                eprintln!("[asset] hit (overlay mmap): {name} from {}", source.describe());
+            }
+            record(name, Served::Overlay(source));
+            return Some(Asset { backing, pos: 0 });
+        }
+    }
+
+    if is_safe_relative_asset(name) {
+        let extracted = ASSET_ROOT
+            .read()
+            .ok()
+            .and_then(|g| g.as_ref().map(|root| root.join(name)));
+        if let Some(path) = extracted {
+            if let Some(backing) = mmap_file(&path) {
+                if trace_assets_enabled() {
+                    eprintln!("[asset] hit (extracted mmap): {name}");
+                }
+                record(name, Served::Apk);
+                return Some(Asset { backing, pos: 0 });
+            }
+        }
+    }
+
+    manager
+        .read(name)
+        .map(|bytes| Asset { backing: AssetBacking::Static(bytes), pos: 0 })
 }
 
 extern "C" fn asset_read(asset: *mut c_void, buf: *mut c_void, count: usize) -> c_int {
@@ -1369,12 +1535,13 @@ extern "C" fn asset_read(asset: *mut c_void, buf: *mut c_void, count: usize) -> 
     let Some(a) = (unsafe { handle_mut::<Asset>(asset) }) else {
         return -1;
     };
-    let rem = a.bytes.len().saturating_sub(a.pos);
+    let bytes = a.bytes();
+    let rem = bytes.len().saturating_sub(a.pos);
     let n = count.min(rem).min(c_int::MAX as usize);
     if n > 0 {
         // SAFETY: `buf` is caller-owned writable memory of at least `count` bytes (`>= n`).
         unsafe {
-            std::ptr::copy_nonoverlapping(a.bytes.as_ptr().add(a.pos), buf as *mut u8, n);
+            std::ptr::copy_nonoverlapping(bytes.as_ptr().add(a.pos), buf as *mut u8, n);
         }
         a.pos += n;
     }
@@ -1386,16 +1553,17 @@ extern "C" fn asset_seek64(asset: *mut c_void, offset: i64, whence: c_int) -> i6
     let Some(a) = (unsafe { handle_mut::<Asset>(asset) }) else {
         return -1;
     };
+    let len = a.bytes().len();
     let base: i64 = match whence {
         libc::SEEK_SET => 0,
         libc::SEEK_CUR => a.pos as i64,
-        libc::SEEK_END => a.bytes.len() as i64,
+        libc::SEEK_END => len as i64,
         _ => return -1,
     };
     let Some(next) = base.checked_add(offset) else {
         return -1;
     };
-    if next < 0 || next as usize > a.bytes.len() {
+    if next < 0 || next as usize > len {
         return -1;
     }
     a.pos = next as usize;
@@ -1409,18 +1577,19 @@ extern "C" fn asset_seek(asset: *mut c_void, offset: libc::off_t, whence: c_int)
 extern "C" fn asset_get_buffer(asset: *mut c_void) -> *const c_void {
     // SAFETY: `asset` is null or came from asset_manager_open and has not been
     // closed.
-    unsafe { handle_ref::<Asset>(asset) }.map_or(std::ptr::null(), |a| a.bytes.as_ptr() as *const c_void)
+    unsafe { handle_ref::<Asset>(asset) }
+        .map_or(std::ptr::null(), |a| a.bytes().as_ptr() as *const c_void)
 }
 
 extern "C" fn asset_get_length(asset: *mut c_void) -> i64 {
     // SAFETY: as above.
-    unsafe { handle_ref::<Asset>(asset) }.map_or(0, |a| a.bytes.len() as i64)
+    unsafe { handle_ref::<Asset>(asset) }.map_or(0, |a| a.bytes().len() as i64)
 }
 
 extern "C" fn asset_get_remaining_length(asset: *mut c_void) -> i64 {
     // SAFETY: as above.
     unsafe { handle_ref::<Asset>(asset) }
-        .map_or(0, |a| a.bytes.len().saturating_sub(a.pos) as i64)
+        .map_or(0, |a| a.bytes().len().saturating_sub(a.pos) as i64)
 }
 
 extern "C" fn asset_close(asset: *mut c_void) {
@@ -1442,13 +1611,14 @@ extern "C" fn asset_open_file_descriptor(
     let Some(a) = (unsafe { handle_ref::<Asset>(asset) }) else {
         return -1;
     };
-    let Some(fd) = memfd_with(a.bytes) else {
+    let bytes = a.bytes();
+    let Some(fd) = memfd_with(bytes) else {
         return -1;
     };
     // SAFETY: the caller's out-parameters, each valid or null.
     unsafe {
         store_out(out_start, 0);
-        store_out(out_length, a.bytes.len() as i64);
+        store_out(out_length, bytes.len() as i64);
     }
     fd.into_raw_fd()
 }
@@ -1716,7 +1886,7 @@ mod overlay_tests {
 
     /// An `AAsset*` holding `bytes`, as `asset_manager_open` would hand out.
     fn handle_to(bytes: &'static [u8]) -> *mut c_void {
-        into_handle(Asset { bytes, pos: 0 })
+        into_handle(Asset { backing: AssetBacking::Static(bytes), pos: 0 })
     }
 
     #[test]
@@ -2578,5 +2748,87 @@ mod overlay_tests {
 
         super::super::mods::clear();
         let _ = std::fs::remove_dir_all(&profile);
+    }
+
+    #[test]
+    fn open_asset_serves_extracted_files_via_mmap_and_handles_empty_files() {
+        let _guard = GLOBAL.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join(format!("vanta-asset-mmap-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let root = dir.join("extracted");
+        std::fs::create_dir_all(root.join("content/textures")).unwrap();
+        let data = b"MMAP_TEXTURE_PAYLOAD_123456";
+        std::fs::write(root.join("content/textures/brick.png"), data).unwrap();
+        std::fs::write(root.join("content/textures/empty.bin"), b"").unwrap();
+        // Dummy non-existent APK path proves ZIP fallback was never touched.
+        let mgr = Manager {
+            apk: dir.join("missing.apk"),
+            archive: OnceLock::new(),
+            cache: RwLock::new(HashMap::new()),
+        };
+
+        let prev = ASSET_ROOT.read().unwrap().clone();
+        set_asset_root(&root);
+
+        let asset = open_asset(&mgr, "content/textures/brick.png").expect("extracted file");
+        assert!(matches!(asset.backing, AssetBacking::Mmap { .. }));
+        let handle = into_handle(asset);
+        assert_eq!(asset_get_length(handle), data.len() as i64);
+        let ptr = asset_get_buffer(handle);
+        assert!(!ptr.is_null());
+        let slice = unsafe { std::slice::from_raw_parts(ptr as *const u8, data.len()) };
+        assert_eq!(slice, data);
+        asset_close(handle);
+
+        let empty = open_asset(&mgr, "content/textures/empty.bin").expect("empty file");
+        assert!(matches!(empty.backing, AssetBacking::Empty));
+        let empty_handle = into_handle(empty);
+        assert_eq!(asset_get_length(empty_handle), 0);
+        asset_close(empty_handle);
+
+        // Traversal must never escape `ASSET_ROOT`.
+        assert!(open_asset(&mgr, "../extracted/content/textures/brick.png").is_none());
+
+        // Restore previous ASSET_ROOT.
+        if let Ok(mut held) = ASSET_ROOT.write() {
+            *held = prev;
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn overlay_resolve_accepts_prefix_stripped_relative_paths() {
+        let _guard = GLOBAL.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join(format!("vanta-rel-overlay-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let ov = dir.join("plugin-ov");
+        std::fs::create_dir_all(ov.join("content/fonts")).unwrap();
+        let target_file = ov.join("content/fonts/ui.ttf");
+        std::fs::write(&target_file, b"TTF").unwrap();
+        register_plugin_root("rel-test", ov.clone());
+
+        let rel = std::ffi::CString::new("content/fonts/ui.ttf").unwrap();
+        let mut buf = [0u8; 512];
+        let rc = unsafe {
+            vanta_overlay_resolve(rel.as_ptr(), 0, buf.as_mut_ptr() as *mut c_char, buf.len())
+        };
+        assert_eq!(rc, 1, "relative path should resolve directly against overlay index");
+        let end = buf.iter().position(|&b| b == 0).unwrap();
+        let resolved = std::str::from_utf8(&buf[..end]).unwrap();
+        assert_eq!(PathBuf::from(resolved), target_file.canonicalize().unwrap());
+
+        // Traversal and write requests are still rejected.
+        let esc = std::ffi::CString::new("../content/fonts/ui.ttf").unwrap();
+        assert_eq!(
+            unsafe { vanta_overlay_resolve(esc.as_ptr(), 0, buf.as_mut_ptr() as *mut c_char, buf.len()) },
+            0
+        );
+        assert_eq!(
+            unsafe { vanta_overlay_resolve(rel.as_ptr(), 1, buf.as_mut_ptr() as *mut c_char, buf.len()) },
+            0
+        );
+
+        unregister_plugin_root("rel-test");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

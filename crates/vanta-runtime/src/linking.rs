@@ -80,6 +80,16 @@ extern "C" fn on_open_url(request: *const c_char, out: *mut c_char, out_len: usi
 /// would put "link opened" in front of somebody whose browser never moved.
 /// That is AGENTS.md's rule about stubs that lie, with a user-visible
 /// consequence attached.
+/// Whether `url` is a trusted HTTPS `roblox.com` / `*.roblox.com` page that
+/// should stay inside Vanta's embedded WebView when one is active (Servers,
+/// Profile, Settings, Marketplace, Help) rather than escaping to an external
+/// browser.
+#[cfg(any(feature = "webview", test))]
+fn is_trusted_roblox_https_url(url: &str) -> bool {
+    let verdict = vanta_shell::webview_policy::evaluate(url);
+    verdict.allowed && verdict.privileged_bridge_allowed
+}
+
 fn open_from_request(raw: &str) -> bool {
     let Ok(value) = serde_json::from_str::<serde_json::Value>(raw) else {
         eprintln!("[linking] openURL request was not JSON");
@@ -89,6 +99,13 @@ fn open_from_request(raw: &str) -> bool {
         eprintln!("[linking] openURL request carried no {URL_KEY:?}");
         return false;
     };
+    // Keep trusted HTTPS roblox.com pages inside Vanta's embedded WebView when
+    // compiled with `feature = "webview"` and an embedded presenter is active.
+    // Non-Roblox links still open in the user's external browser below.
+    #[cfg(feature = "webview")]
+    if is_trusted_roblox_https_url(url) && crate::webview::open_embedded(url, None) {
+        return true;
+    }
     // The URL comes from the engine, which got it from Lua, which got it from
     // an experience's script or a web page. Attacker-controlled, and treated
     // that way: `urlopen::open` refuses anything that is not http or https
@@ -166,6 +183,31 @@ mod tests {
             r#"{"url":"example.com"}"#,
         ] {
             assert!(!open_from_request(hostile), "{hostile} must be refused");
+        }
+    }
+
+    #[test]
+    fn only_trusted_https_roblox_urls_route_to_embedded_webview() {
+        for trusted in [
+            "https://www.roblox.com/games/12345#!/game-instances",
+            "https://roblox.com/my/account",
+            "https://en.help.roblox.com/hc/en-us",
+            "https://create.roblox.com/dashboard",
+        ] {
+            assert!(is_trusted_roblox_https_url(trusted), "{trusted} should stay embedded");
+        }
+        for external_or_bad in [
+            "https://discord.gg/roblox",
+            "https://notroblox.com/games/1",
+            "https://www.roblox.com@evil.example/login",
+            "http://www.roblox.com/games/1",
+            "file:///etc/passwd",
+            "javascript:alert(1)",
+        ] {
+            assert!(
+                !is_trusted_roblox_https_url(external_or_bad),
+                "{external_or_bad} must not route to embedded webview"
+            );
         }
     }
 }

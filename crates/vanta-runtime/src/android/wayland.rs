@@ -2505,8 +2505,22 @@ impl WaylandWindow {
     /// site that will eventually be trusted to mean "just lowered it", which
     /// would be false the second time.
     pub fn webview_dialog_opened(&self) {
-        self.open_web_view_dialogs.fetch_add(1, Ordering::SeqCst);
+        let prev = self.open_web_view_dialogs.fetch_add(1, Ordering::SeqCst);
         self.reconcile_stacking();
+        // On 0->1 transition, release any keys the engine currently believes
+        // are held so a player walking when a WebView opens does not keep
+        // walking while interacting with the dialog, and discard any queued
+        // unlocked pointer motion.
+        if prev == 0 {
+            let stranded: Vec<u32> = {
+                let mut held = HELD_KEYS.lock().unwrap_or_else(|e| e.into_inner());
+                std::mem::take(&mut *held)
+            };
+            for key in stranded {
+                self.dispatch_key(key, false);
+            }
+            PENDING_UNLOCKED_POS_HAS.store(false, Ordering::Release);
+        }
         // **Claim the whole window for GTK while the dialog is up.**
         //
         // The parent's input region normally has the canvas rectangle punched
@@ -3582,20 +3596,34 @@ impl WaylandWindow {
     /// A canvas leave can be followed by a toplevel lock in the same batch;
     /// releasing inside that callback cuts off a held fire or aim button.
     fn reconcile_pointer_buttons(&self) {
+        // Fast path: when neither `DRAG_HOLD` nor `pointer_buttons` is active,
+        // skip locking `DRAG_HOLD` completely on idle wakeups.
+        let drag_active = DRAG_HOLD_ACTIVE.load(Ordering::Acquire);
+        if !drag_active && self.pointer_buttons.load(Ordering::Relaxed) == 0 {
+            return;
+        }
         // A release set aside with no `leave` behind it was the player's, and a
-        // hold whose lock never arrived has waited long enough.
-        let due = drag_hold().batch_end(
-            self.now_ms(),
-            POINTER_LOCK_ACTIVE.load(Ordering::Acquire),
-            LAST_COUNTED_EVENT_MS.load(Ordering::Relaxed),
-        );
+        // hold whose lock never arrived has waited long enough. Read `holding`
+        // under the same lock guard so `DRAG_HOLD` is never locked twice.
+        let (due, holding) = if drag_active {
+            let mut guard = drag_hold();
+            let due = guard.batch_end(
+                self.now_ms(),
+                POINTER_LOCK_ACTIVE.load(Ordering::Acquire),
+                LAST_COUNTED_EVENT_MS.load(Ordering::Relaxed),
+            );
+            let holding = guard.holding();
+            (due, holding)
+        } else {
+            (0, false)
+        };
         if due != 0 {
             self.release_buttons(due);
         }
         let owns_pointer = pointer_event_is_the_engines(
             POINTER_ON_CANVAS.load(Ordering::Acquire),
             POINTER_LOCK_ACTIVE.load(Ordering::Acquire),
-        ) || drag_hold().holding();
+        ) || holding;
         if !owns_pointer || dialog_in_front(self) || self.host.0.focused() == Some(false) {
             self.release_held_buttons();
         }
@@ -3931,6 +3959,7 @@ unsafe extern "C" fn pointer_leave(_data: *mut c_void, _pointer: *mut c_void, _s
     // INFERRED as the cause of intermittent shooting loss on Hyprland; the
     // button routing is unit-tested, but this needs an in-experience repeat.
     POINTER_ON_CANVAS.store(false, Ordering::Release);
+    PENDING_UNLOCKED_POS_HAS.store(false, Ordering::Release);
     super::input::reset_mouse_delta();
     super::input::forget_pending_unlocked_delta();
     if let Some(w) = current() {
@@ -3951,7 +3980,7 @@ unsafe extern "C" fn pointer_motion(_data: *mut c_void, _pointer: *mut c_void, _
         if dialog_in_front(&w) {
             return;
         }
-        w.dispatch_pointer_motion(fixed_to_f32(x), fixed_to_f32(y));
+        record_unlocked_motion(fixed_to_f32(x), fixed_to_f32(y));
     }
 }
 unsafe extern "C" fn pointer_button(
@@ -4013,6 +4042,7 @@ unsafe extern "C" fn pointer_button(
             return;
         }
     }
+    w.flush_unlocked_pointer_motion();
     w.flush_locked_relative_motion();
     w.dispatch_pointer_button(android_button, state == 1);
 }
@@ -4032,6 +4062,7 @@ unsafe extern "C" fn pointer_axis(_data: *mut c_void, _pointer: *mut c_void, _ti
         if dialog_in_front(&w) {
             return;
         }
+        w.flush_unlocked_pointer_motion();
         w.dispatch_pointer_axis(axis, fixed_to_f32(value));
     }
 }
@@ -4542,6 +4573,31 @@ const DRAG_HOLD_CONFIRM_MS: i64 = 1_000;
 
 static DRAG_HOLD: Mutex<DragHold> =
     Mutex::new(DragHold { deferred: 0, held: 0, since_ms: 0 });
+/// Lock-free mirror of `DRAG_HOLD.holding()` kept synchronized by
+/// [`DragHoldGuard::drop`] so idle wakeups in `reconcile_pointer_buttons`
+/// never lock `DRAG_HOLD`.
+static DRAG_HOLD_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+struct DragHoldGuard(std::sync::MutexGuard<'static, DragHold>);
+
+impl std::ops::Deref for DragHoldGuard {
+    type Target = DragHold;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for DragHoldGuard {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl Drop for DragHoldGuard {
+    fn drop(&mut self) {
+        DRAG_HOLD_ACTIVE.store(self.0.holding(), Ordering::Release);
+    }
+}
 
 /// Events the frame-watching pointer, and the relative-pointer object, have
 /// delivered since the last `wl_pointer.frame`. Zero at a frame means the frame
@@ -4563,8 +4619,8 @@ fn count_pointer_event() {
 /// own pointer is version 1, which the compositor sends no frames to.
 static FRAME_WATCH_ACTIVE: AtomicBool = AtomicBool::new(false);
 
-fn drag_hold() -> std::sync::MutexGuard<'static, DragHold> {
-    DRAG_HOLD.lock().unwrap_or_else(|e| e.into_inner())
+fn drag_hold() -> DragHoldGuard {
+    DragHoldGuard(DRAG_HOLD.lock().unwrap_or_else(|e| e.into_inner()))
 }
 
 /// The engine, not a right-button drag, is what holds the pointer lock -- shift
@@ -5176,10 +5232,38 @@ fn take_pending_locked_delta() -> Option<(f32, f32)> {
     Some((f32::from_bits(bits as u32), f32::from_bits((bits >> 32) as u32)))
 }
 
+/// Lock-free coalesced unlocked pointer position `(x, y)` packed as two `f32`
+/// bit patterns in a single `AtomicU64`. Consecutive `wl_pointer.motion`
+/// packets in the same Wayland dispatch batch overwrite to the latest position
+/// while their matching relative deltas sum in `PENDING_UNLOCKED_DELTA`, so
+/// high-polling mice emit 1 `deliver_mouse` + 1 `pass_mouse_move` per batch.
+static PENDING_UNLOCKED_POS_XY: AtomicU64 = AtomicU64::new(0);
+static PENDING_UNLOCKED_POS_HAS: AtomicBool = AtomicBool::new(false);
+
+fn record_unlocked_motion(x: f32, y: f32) {
+    PENDING_UNLOCKED_POS_XY.store(pack_pointer_position(x, y), Ordering::Relaxed);
+    PENDING_UNLOCKED_POS_HAS.store(true, Ordering::Release);
+}
+
+fn take_pending_unlocked_motion() -> Option<(f32, f32)> {
+    if !PENDING_UNLOCKED_POS_HAS.swap(false, Ordering::AcqRel) {
+        return None;
+    }
+    Some(unpack_pointer_position(PENDING_UNLOCKED_POS_XY.load(Ordering::Relaxed)))
+}
+
 static RELATIVE_POINTER_LISTENER: RelativePointerListener =
     RelativePointerListener { relative_motion: relative_pointer_motion };
 
 impl WaylandWindow {
+    fn flush_unlocked_pointer_motion(&self) {
+        if let Some((x, y)) = take_pending_unlocked_motion() {
+            if !dialog_in_front(self) && POINTER_ON_CANVAS.load(Ordering::Acquire) {
+                self.dispatch_pointer_motion(x, y);
+            }
+        }
+    }
+
     fn flush_locked_relative_motion(&self) {
         if let Some((dx, dy)) = take_pending_locked_delta() {
             self.dispatch_relative_motion(dx, dy);
@@ -6146,6 +6230,12 @@ unsafe extern "C" fn keyboard_key(_data: *mut c_void, _kb: *mut c_void, _serial:
         return;
     }
     if let Some(w) = current() {
+        // Never forward keys to Roblox (or trigger F8/F9/F11 hotkeys) while a
+        // WebView dialog is in front: passwords, 2FA codes, and search input
+        // belong exclusively to the dialog.
+        if dialog_in_front(&w) {
+            return;
+        }
         let pressed = state == 1;
         // Tracked so `keyboard_leave` can release whatever is still down. Kept
         // here rather than inferred from the engine's own state because the
@@ -7232,6 +7322,7 @@ impl WaylandWindow {
         }
         if !engine {
             self.read_display();
+            self.flush_unlocked_pointer_motion();
             self.reconcile_pointer_buttons();
             return;
         }
@@ -7239,6 +7330,7 @@ impl WaylandWindow {
             self.sync_pointer_lock();
         }
         self.read_display();
+        self.flush_unlocked_pointer_motion();
         self.flush_locked_relative_motion();
         self.reconcile_pointer_buttons();
     }
@@ -8176,5 +8268,35 @@ mod tests {
         assert!(should_attach_tearing_control(true, false, false, false));
         assert!(should_attach_tearing_control(true, true, true, false));
         assert!(should_attach_tearing_control(true, true, false, true));
+    }
+
+    #[test]
+    fn unlocked_motion_coalesces_consecutive_positions_to_latest() {
+        let _ = take_pending_unlocked_motion();
+        assert_eq!(take_pending_unlocked_motion(), None);
+        record_unlocked_motion(10.0, 20.0);
+        record_unlocked_motion(35.5, 42.25);
+        record_unlocked_motion(100.0, 200.0);
+        assert_eq!(take_pending_unlocked_motion(), Some((100.0, 200.0)));
+        assert_eq!(take_pending_unlocked_motion(), None);
+    }
+
+    #[test]
+    fn drag_hold_guard_keeps_fast_atomic_flag_synchronized() {
+        {
+            let mut g = drag_hold();
+            let _ = g.lock_lost();
+        }
+        assert!(!DRAG_HOLD_ACTIVE.load(Ordering::Acquire));
+        {
+            let mut g = drag_hold();
+            assert!(g.release(crate::android::input::BUTTON_SECONDARY, true, true));
+        }
+        assert!(DRAG_HOLD_ACTIVE.load(Ordering::Acquire));
+        {
+            let mut g = drag_hold();
+            let _ = g.lock_lost();
+        }
+        assert!(!DRAG_HOLD_ACTIVE.load(Ordering::Acquire));
     }
 }

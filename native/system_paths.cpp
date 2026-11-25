@@ -57,6 +57,12 @@ size_t g_root_len = 0;
 char g_asset_root[PATH_MAX];
 std::atomic<size_t> g_asset_root_len{0};
 
+/// Fast relaxed atomic gate set from Rust via `vanta_set_has_asset_overlays`
+/// whenever mods, plugin overlays, or user overlays are installed/cleared.
+/// Non-overlay runs pay 1 relaxed atomic load (~0.5 ns) with zero prefix
+/// comparison, zero FFI hop, and zero mutex/allocation overhead.
+std::atomic<bool> g_has_asset_overlays{false};
+
 /// `VANTA_TRACE_PATHS=1`. Every function here is fixed-arity except `open`,
 /// which is forwarded properly, so this is safe to leave on — unlike
 /// `VANTA_TRACE=1`, which wraps variadics with fixed-arity declarations and
@@ -88,9 +94,19 @@ void trace_i(const char* call, const char* path, long r) {
     trace(call, path, b);
 }
 
+static inline bool open_has_mode(int flags) {
+    // `O_TMPFILE` is a multi-bit flag (`__O_TMPFILE | O_DIRECTORY`) on Linux.
+    // Checking `(flags & O_TMPFILE) != 0` falsely matches plain `O_DIRECTORY`
+    // opens that pass no `mode` argument (variadic UB) and wrongly flags them
+    // as writes.
+    return ((flags & O_CREAT) != 0) || ((flags & O_TMPFILE) == O_TMPFILE);
+}
+
 static inline bool open_is_write(int flags) {
     const int acc = flags & O_ACCMODE;
-    return acc != O_RDONLY || (flags & (O_CREAT | O_TRUNC | O_APPEND | O_TMPFILE)) != 0;
+    return acc != O_RDONLY
+        || (flags & (O_CREAT | O_TRUNC | O_APPEND)) != 0
+        || ((flags & O_TMPFILE) == O_TMPFILE);
 }
 
 static inline bool fopen_is_write(const char* mode) {
@@ -119,10 +135,14 @@ const char* remap(const char* path, int for_write, char* buf, size_t n) {
         std::memcpy(buf + g_root_len, tail, tail_len + 1);
         return buf;
     }
-    if (!for_write && vanta_overlay_resolve != nullptr) {
+    if (!for_write
+        && g_has_asset_overlays.load(std::memory_order_relaxed)
+        && vanta_overlay_resolve != nullptr) {
         const size_t alen = g_asset_root_len.load(std::memory_order_acquire);
         if (alen != 0 && std::strncmp(path, g_asset_root, alen) == 0 && path[alen] == '/') {
-            if (vanta_overlay_resolve(path, 0, buf, n) == 1) {
+            // Pass the already-prefix-stripped relative path (`path + alen + 1`)
+            // so Rust avoids re-locking `ASSET_ROOT` and cloning a `PathBuf`.
+            if (vanta_overlay_resolve(path + alen + 1, 0, buf, n) == 1) {
                 return buf;
             }
         }
@@ -142,7 +162,8 @@ static inline bool needs_slow_path(const char* path) {
                          0)) {
         return true;
     }
-    if (vanta_overlay_resolve != nullptr) {
+    if (__builtin_expect(g_has_asset_overlays.load(std::memory_order_relaxed), 0)
+        && vanta_overlay_resolve != nullptr) {
         const size_t alen = g_asset_root_len.load(std::memory_order_acquire);
         if (__builtin_expect(alen != 0 && path[0] == g_asset_root[0] &&
                                  std::strncmp(path, g_asset_root, alen) == 0 &&
@@ -302,7 +323,7 @@ FILE* s_fopen(const char* path, const char* mode) {
 /// abort the engine.
 int s_open(const char* path, int flags, ...) {
     unsigned mode = 0;
-    if (flags & (O_CREAT | O_TMPFILE)) {
+    if (open_has_mode(flags)) {
         va_list ap;
         va_start(ap, flags);
         mode = va_arg(ap, unsigned);
@@ -412,6 +433,11 @@ extern "C" void vanta_set_asset_root(const char* root) {
         g_asset_root[--len] = '\0';
     }
     g_asset_root_len.store(len, std::memory_order_release);
+}
+
+/// Enable or disable the asset overlay fast-gate in `needs_slow_path`/`remap`.
+extern "C" void vanta_set_has_asset_overlays(bool has_overlays) {
+    g_has_asset_overlays.store(has_overlays, std::memory_order_release);
 }
 
 /// Turn on the path log. Separate from the root so tracing works even when the

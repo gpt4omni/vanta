@@ -223,6 +223,14 @@ unsafe extern "C" {
         err: *mut c_char,
         n: usize,
     ) -> c_int;
+    fn vanta_messagebus_set_request_handler(
+        f: *mut c_void,
+        protocol: *const c_char,
+        method: *const c_char,
+        sink: extern "C" fn(*const c_char, *mut c_char, usize) -> c_int,
+        err: *mut c_char,
+        err_len: usize,
+    ) -> c_int;
     fn vanta_messagebus_connection_ptr(message_id: *const c_char) -> i64;
     fn vanta_messagebus_is_connected(
         f: *mut c_void,
@@ -495,6 +503,8 @@ pub fn roblox_session_cookie(dir: &std::path::Path) -> Option<String> {
 /// without one, so this path had never actually run end to end.
 type Presenter = dyn Fn(OpenWindowRequest) + Send + Sync;
 static PRESENTER: OnceLock<std::sync::Arc<Presenter>> = OnceLock::new();
+static EMBEDDED_PRESENTER: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 /// Install the presenter [`on_open_window`] hands parsed requests to. See
 /// that type's doc for what a presenter has to do and why nothing here
@@ -505,6 +515,217 @@ static PRESENTER: OnceLock<std::sync::Arc<Presenter>> = OnceLock::new();
 pub fn set_presenter(f: impl Fn(OpenWindowRequest) + Send + Sync + 'static) {
     if PRESENTER.set(std::sync::Arc::new(f)).is_err() {
         println!("  webview: set_presenter called twice; the first presenter installed is the one in effect");
+    }
+}
+
+/// Mark the installed presenter as an embedded in-app WebView (as opposed to
+/// the external-browser fallback used when built without `feature = "webview"`).
+pub fn mark_presenter_embedded() {
+    EMBEDDED_PRESENTER.store(true, Ordering::Release);
+}
+
+/// Whether this build has an active embedded WebView presenter installed.
+///
+/// Always `false` when built without `feature = "webview"` so `WebView.isAvailable`
+/// and `Linking.openURL` tell the truth about what this binary can render.
+pub fn presenter_is_embedded() -> bool {
+    #[cfg(feature = "webview")]
+    {
+        EMBEDDED_PRESENTER.load(Ordering::Acquire) && PRESENTER.get().is_some()
+    }
+    #[cfg(not(feature = "webview"))]
+    {
+        false
+    }
+}
+
+/// Open `url` in Vanta's embedded WebView when one is active.
+///
+/// Returns `true` if the request passed policy and was handed to the embedded
+/// presenter, or `false` if this build has no embedded presenter or the URL
+/// was refused by [`vanta_shell::webview_policy::evaluate`].
+pub fn open_embedded(url: &str, title: Option<&str>) -> bool {
+    if !presenter_is_embedded() {
+        return false;
+    }
+    let Some(present) = PRESENTER.get() else {
+        return false;
+    };
+    let verdict = vanta_shell::webview_policy::evaluate(url);
+    if !verdict.allowed {
+        println!(
+            "[webview] open_embedded refused URL (scheme {}, host {})",
+            verdict.scheme, verdict.host
+        );
+        return false;
+    }
+    CAPTCHA_OPEN.store(false, Ordering::Release);
+    let screen = vanta_linker_sys::game_activity::last_app_ready();
+    let title_owned = title.filter(|t| !t.is_empty()).map(str::to_string);
+    let request = OpenWindowRequest {
+        url: url.to_string(),
+        show_domain_as_title: title_owned.is_none(),
+        title: title_owned,
+        hide_header: false,
+        back_button_visible: true,
+        native_bridge: screen_needs_native_bridge(screen.as_deref()),
+    };
+    println!(
+        "[webview] open_embedded: host {} (scheme {}), path {}, privileged {}, native bridge {}",
+        verdict.host,
+        verdict.scheme,
+        vanta_shell::webview_policy::loggable_path(url),
+        verdict.privileged_bridge_allowed,
+        request.native_bridge,
+    );
+    present(request);
+    true
+}
+
+/// C callback sink invoked by `native/android_classes.cpp` for legacy
+/// `NativeGLJavaInterface::openNativeOverlay` and DataModel webview
+/// notifications (`OPEN_CUSTOM_WEBVIEW`, `VIEW_PROFILE`, `PURCHASE_ROBUX`).
+#[no_mangle]
+pub extern "C" fn vanta_open_native_overlay(url: *const c_char, title: *const c_char) {
+    // SAFETY: `url` is null or a NUL-terminated C string valid for this call.
+    let Some(url_c) = (unsafe { crate::ffi_util::borrow_request(url) }) else {
+        return;
+    };
+    let Ok(url_str) = url_c.to_str() else {
+        println!("[webview] openNativeOverlay received non-UTF-8 URL");
+        return;
+    };
+    if url_str.is_empty() {
+        return;
+    }
+    // SAFETY: `title` is null or a NUL-terminated C string valid for this call.
+    let title_c = unsafe { crate::ffi_util::borrow_request(title) };
+    let title_str = title_c.as_ref().and_then(|c| c.to_str().ok()).filter(|s| !s.is_empty());
+
+    if open_embedded(url_str, title_str) {
+        return;
+    }
+    if let Some(present) = PRESENTER.get() {
+        CAPTCHA_OPEN.store(false, Ordering::Release);
+        let screen = vanta_linker_sys::game_activity::last_app_ready();
+        present(OpenWindowRequest {
+            url: url_str.to_string(),
+            title: title_str.map(str::to_string),
+            hide_header: false,
+            back_button_visible: true,
+            show_domain_as_title: title_str.is_none(),
+            native_bridge: screen_needs_native_bridge(screen.as_deref()),
+        });
+    } else {
+        let verdict = vanta_shell::webview_policy::evaluate(url_str);
+        println!(
+            "[webview] openNativeOverlay (host {}, scheme {}) ignored: no presenter installed",
+            verdict.host, verdict.scheme
+        );
+    }
+}
+
+/// A parsed `WebView.mutateWindow` update from the engine.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct MutateWindowRequest {
+    pub url: Option<String>,
+    pub title: Option<String>,
+    pub is_visible: Option<bool>,
+    pub hide_header: Option<bool>,
+    pub back_button_visible: Option<bool>,
+    pub show_domain_as_title: Option<bool>,
+}
+
+/// Parse one `mutateWindow` payload against this build's own key names.
+pub fn parse_mutate_window(
+    json: &str,
+    keys: &OpenWindowKeys,
+    is_visible_key: Option<&str>,
+) -> Result<MutateWindowRequest, String> {
+    let value: serde_json::Value =
+        serde_json::from_str(json).map_err(|e| format!("mutateWindow payload is not JSON: {e}"))?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| "mutateWindow payload is not a JSON object".to_string())?;
+    let opt_str = |k: &str| {
+        object
+            .get(k)
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    };
+    let opt_bool = |k: &str| object.get(k).and_then(|v| v.as_bool());
+    Ok(MutateWindowRequest {
+        url: opt_str(&keys.url),
+        title: opt_str(&keys.title),
+        is_visible: is_visible_key.and_then(opt_bool),
+        hide_header: opt_bool(&keys.hide_header),
+        back_button_visible: opt_bool(&keys.back_button_visible),
+        show_domain_as_title: opt_bool(&keys.show_domain_as_title),
+    })
+}
+
+type MutateHandler = dyn Fn(MutateWindowRequest) + Send + Sync;
+static MUTATE_HANDLER: OnceLock<std::sync::Arc<MutateHandler>> = OnceLock::new();
+
+/// Install the handler [`on_mutate_window`] calls when the engine publishes a
+/// `WebView.mutateWindow` message.
+pub fn set_mutate_handler(f: impl Fn(MutateWindowRequest) + Send + Sync + 'static) {
+    if MUTATE_HANDLER.set(std::sync::Arc::new(f)).is_err() {
+        println!("  webview: set_mutate_handler called twice; keeping the first handler installed");
+    }
+}
+
+extern "C" fn on_mutate_window(json: *const c_char) {
+    // SAFETY: the C side passes a NUL-terminated string that outlives the call.
+    let Some(request) = (unsafe { crate::ffi_util::borrow_request(json) }) else {
+        println!("[webview] mutateWindow published with a null payload");
+        return;
+    };
+    let Ok(json_str) = std::str::from_utf8(request.to_bytes()) else {
+        println!("[webview] mutateWindow payload is not valid UTF-8");
+        return;
+    };
+    let Some(keys) = KEYS.get() else {
+        println!("[webview] mutateWindow arrived before vocabulary keys were loaded");
+        return;
+    };
+    let is_visible_key = IS_VISIBLE_KEY.get().map(String::as_str);
+    match parse_mutate_window(json_str, keys, is_visible_key) {
+        Ok(req) => {
+            if let Some(handler) = MUTATE_HANDLER.get() {
+                handler(req);
+            } else if req.is_visible == Some(false) {
+                if let Some(close) = CLOSE_HANDLER.get() {
+                    close();
+                }
+            } else {
+                println!("[webview] mutateWindow arrived, but no mutate handler is installed");
+            }
+        }
+        Err(reason) => println!("[webview] mutateWindow could not be parsed: {reason}"),
+    }
+}
+
+fn is_available_response(available_key: &str, available: bool) -> String {
+    let mut map = serde_json::Map::new();
+    map.insert(available_key.to_string(), serde_json::Value::Bool(available));
+    serde_json::Value::Object(map).to_string()
+}
+
+extern "C" fn on_is_available(
+    _request: *const c_char,
+    out: *mut c_char,
+    out_len: usize,
+) -> c_int {
+    let key = AVAILABLE_KEY.get().map(String::as_str).unwrap_or("available");
+    let available = presenter_is_embedded();
+    let body = is_available_response(key, available);
+    let Ok(c) = CString::new(body) else { return 0 };
+    if crate::ffi_util::write_response(c.as_bytes_with_nul(), out, out_len) {
+        1
+    } else {
+        0
     }
 }
 
@@ -920,6 +1141,8 @@ fn return_focus_to_engine() {
 }
 
 static KEYS: OnceLock<OpenWindowKeys> = OnceLock::new();
+static AVAILABLE_KEY: OnceLock<String> = OnceLock::new();
+static IS_VISIBLE_KEY: OnceLock<String> = OnceLock::new();
 
 static CONNECTION: AtomicI64 = AtomicI64::new(0);
 static IS_CONNECTED_NATIVE: OnceLock<usize> = OnceLock::new();
@@ -1051,39 +1274,9 @@ extern "C" fn on_open_window(json: *const c_char) {
 /// and makes the canvas visible again, but nothing was ever telling the
 /// engine the window it blanked itself for is gone.
 pub fn arm(mut symbol: impl FnMut(&str) -> Option<*mut c_void>) {
-    // Called first and unconditionally, because it is a lifecycle call on
-    // this protocol rather than a step in either direction below. The
-    // zero-argument shape is not a guess: the dex's own `method_ids`/
-    // `proto_ids` tables declare `initializeAndroidWebViewProtocol()V` —
-    // read directly out of the shipping APK the way `docs/analysis/
-    // webview-surface.md` reads every other prototype in this file, not
-    // inferred from the naming convention the way an earlier version of this
-    // comment had to. **Whether calling it is required is still not
-    // established** — `openWindow` subscribes and fires without this ever
-    // having been called (confirmed live, screenshot in hand), which is
-    // evidence it is not a precondition for that half of the protocol. It is
-    // attempted anyway because the maintainer's report named it as the first
-    // thing to rule out for the half that is broken, and now that the shape
-    // is confirmed rather than assumed, there is no argument-list risk left
-    // in trying it.
-    match symbol(
-        "Java_com_roblox_protocols_webview_WebViewProtocol_initializeAndroidWebViewProtocol",
-    ) {
-        // SAFETY: `f` is a native resolved via a symbol lookup against the loaded libroblox.so, which is never unloaded.
-        Some(f) => match unsafe { vanta_linker_sys::game_activity::protocol_init(f, CLASS) } {
-            Ok(()) => println!("  webview: initializeAndroidWebViewProtocol ok"),
-            Err(e) => println!("  webview: initializeAndroidWebViewProtocol failed: {e}"),
-        },
-        None => println!(
-            "  webview: initializeAndroidWebViewProtocol is not exported by this build"
-        ),
-    }
-
     // `signalJavascriptCallback` -- resolved here, alongside the protocol's
     // other direct (non-message-bus) native, and stored for
     // [`forward_bridge_message`] to use once a real bridge message arrives.
-    // See that function's own doc for the signature this was checked against
-    // and what calling it does and does not establish.
     match symbol("Java_com_roblox_protocols_webview_WebViewProtocol_signalJavascriptCallback") {
         Some(f) => {
             let _ = SIGNAL_JAVASCRIPT_CALLBACK_NATIVE.set(f as usize);
@@ -1128,89 +1321,170 @@ pub fn arm(mut symbol: impl FnMut(&str) -> Option<*mut c_void>) {
             .find(|(l, _)| *l == label)
             .map(|(_, v)| v.clone())
     };
+    if let Some(key) = get("key:available") {
+        let _ = AVAILABLE_KEY.set(key);
+    }
+    if let Some(key) = get("key:is-visible") {
+        let _ = IS_VISIBLE_KEY.set(key);
+    }
+
+    let init_protocol = |symbol: &mut dyn FnMut(&str) -> Option<*mut c_void>| {
+        // Called AFTER registering `isAvailable`, `openWindow`, `closeWindow`,
+        // and `mutateWindow` so the engine's protocol init sees live handlers
+        // rather than concluding no in-app WebView exists and falling back to
+        // external browser links.
+        match symbol(
+            "Java_com_roblox_protocols_webview_WebViewProtocol_initializeAndroidWebViewProtocol",
+        ) {
+            // SAFETY: `f` is a native resolved via a symbol lookup against the loaded libroblox.so, which is never unloaded.
+            Some(f) => match unsafe { vanta_linker_sys::game_activity::protocol_init(f, CLASS) } {
+                Ok(()) => println!("  webview: initializeAndroidWebViewProtocol ok"),
+                Err(e) => println!("  webview: initializeAndroidWebViewProtocol failed: {e}"),
+            },
+            None => println!(
+                "  webview: initializeAndroidWebViewProtocol is not exported by this build"
+            ),
+        }
+    };
+
     let (Some(protocol), Some(open_window_id)) = (get("protocol"), get("open-window")) else {
         println!(
             "  webview: cannot subscribe to openWindow without getProtocolName and \
              getOpenWindowId (see the vocabulary reported above)"
         );
+        init_protocol(&mut symbol);
         return;
     };
+
+    // Register `WebView.isAvailable` request handler BEFORE calling
+    // `initializeAndroidWebViewProtocol` so Lua's `WebViewProtocol:isAvailable()`
+    // query gets an authoritative answer (`true` when compiled with
+    // `feature = "webview"` and an embedded presenter is installed).
+    match (
+        get("is-available"),
+        symbol("Java_com_roblox_universalapp_messagebus_MessageBus_setRequestHandlerRaw"),
+    ) {
+        (Some(is_available_id), Some(set_req)) => {
+            match (CString::new(protocol.clone()), CString::new(is_available_id.clone())) {
+                (Ok(c_proto), Ok(c_method)) => {
+                    let mut err = vec![0u8; 512];
+                    // SAFETY: `set_req` resolved under `setRequestHandlerRaw`;
+                    // strings and error buffer outlive the call.
+                    let rc = unsafe {
+                        vanta_messagebus_set_request_handler(
+                            set_req,
+                            c_proto.as_ptr(),
+                            c_method.as_ptr(),
+                            on_is_available,
+                            err.as_mut_ptr() as *mut c_char,
+                            err.len(),
+                        )
+                    };
+                    if rc == 0 {
+                        println!(
+                            "  webview: bound {protocol}.{is_available_id} request handler \
+                             (available={})",
+                            presenter_is_embedded()
+                        );
+                    } else {
+                        println!(
+                            "  webview: binding {protocol}.{is_available_id} failed: {}",
+                            take_err(err)
+                        );
+                    }
+                }
+                _ => println!(
+                    "  webview: protocol or isAvailable id contains a NUL byte; skipping isAvailable"
+                ),
+            }
+        }
+        (None, _) => println!(
+            "  webview: no getIsAvailableId in this build's vocabulary; isAvailable not bound"
+        ),
+        (_, None) => println!(
+            "  webview: MessageBus.setRequestHandlerRaw is not exported; isAvailable not bound"
+        ),
+    }
 
     let Some(get_message_id) =
         symbol("Java_com_roblox_universalapp_messagebus_MessageBus_getMessageId")
     else {
         println!("  webview: MessageBus.getMessageId is not exported; not subscribing");
+        init_protocol(&mut symbol);
         return;
     };
-    // SAFETY: `get_message_id` is a native resolved via a symbol lookup against the loaded libroblox.so, which is never unloaded.
-    let bus_id = match unsafe { vanta_linker_sys::game_activity::call_static_two_strings_ret_string(
-        get_message_id,
-        BUS,
-        &protocol,
-        &open_window_id,
-    ) } {
-        Ok(id) => id,
-        Err(e) => {
-            println!("  webview: getMessageId({protocol:?}, {open_window_id:?}) failed: {e}");
-            return;
-        }
-    };
-
     let Some(do_subscribe_raw) =
         symbol("Java_com_roblox_universalapp_messagebus_MessageBus_doSubscribeRaw")
     else {
         println!(
             "  webview: MessageBus.doSubscribeRaw is not exported; openWindow will do nothing"
         );
+        init_protocol(&mut symbol);
         return;
     };
-    let Ok(id) = CString::new(bus_id.clone()) else {
-        println!("  webview: the bus id getMessageId returned has a NUL in it: {bus_id:?}");
-        return;
-    };
-    let mut err = vec![0u8; 512];
-    // SAFETY: `do_subscribe_raw` resolved under its own name, so it is the
-    // native `vanta_messagebus_subscribe` expects; every buffer outlives
-    // the call.
-    let rc = unsafe {
-        vanta_messagebus_subscribe(
-            do_subscribe_raw,
-            id.as_ptr(),
-            Some(on_open_window),
-            err.as_mut_ptr() as *mut c_char,
-            err.len(),
+
+    // SAFETY: `get_message_id` is a native resolved via a symbol lookup against the loaded libroblox.so, which is never unloaded.
+    match unsafe {
+        vanta_linker_sys::game_activity::call_static_two_strings_ret_string(
+            get_message_id,
+            BUS,
+            &protocol,
+            &open_window_id,
         )
-    };
-    if rc != 0 {
-        println!("  webview: doSubscribeRaw failed: {}", take_err(err));
-        return;
-    }
-    // SAFETY: reads a value the subscribe call above stored, keyed by the
-    // same message id.
-    let ptr = unsafe { vanta_messagebus_connection_ptr(id.as_ptr()) };
-    CONNECTION.store(ptr, Ordering::Relaxed);
-    if let Some(f) = symbol("Java_com_roblox_universalapp_messagebus_Connection_isConnected") {
-        let _ = IS_CONNECTED_NATIVE.set(f as usize);
-    }
-    match connected() {
-        Some(true) => println!(
-            "  webview: subscribed to {bus_id} ({protocol}.{open_window_id}); the bus says it \
-             is live"
-        ),
-        Some(false) => println!(
-            "  webview: subscribed to {bus_id}, but the bus says the connection is not live"
-        ),
-        None => println!(
-            "  webview: subscribed to {bus_id}; nothing here can confirm it (no Connection came \
-             back)"
-        ),
+    } {
+        Ok(bus_id) => match CString::new(bus_id.clone()) {
+            Ok(id) => {
+                let mut err = vec![0u8; 512];
+                // SAFETY: `do_subscribe_raw` resolved under its own name, so it is the
+                // native `vanta_messagebus_subscribe` expects; every buffer outlives
+                // the call.
+                let rc = unsafe {
+                    vanta_messagebus_subscribe(
+                        do_subscribe_raw,
+                        id.as_ptr(),
+                        Some(on_open_window),
+                        err.as_mut_ptr() as *mut c_char,
+                        err.len(),
+                    )
+                };
+                if rc != 0 {
+                    println!("  webview: doSubscribeRaw failed: {}", take_err(err));
+                } else {
+                    // SAFETY: reads a value the subscribe call above stored, keyed by the
+                    // same message id.
+                    let ptr = unsafe { vanta_messagebus_connection_ptr(id.as_ptr()) };
+                    CONNECTION.store(ptr, Ordering::Relaxed);
+                    if let Some(f) =
+                        symbol("Java_com_roblox_universalapp_messagebus_Connection_isConnected")
+                    {
+                        let _ = IS_CONNECTED_NATIVE.set(f as usize);
+                    }
+                    match connected() {
+                        Some(true) => println!(
+                            "  webview: subscribed to {bus_id} ({protocol}.{open_window_id}); \
+                             the bus says it is live"
+                        ),
+                        Some(false) => println!(
+                            "  webview: subscribed to {bus_id}, but the bus says the connection \
+                             is not live"
+                        ),
+                        None => println!(
+                            "  webview: subscribed to {bus_id}; nothing here can confirm it \
+                             (no Connection came back)"
+                        ),
+                    }
+                }
+            }
+            Err(_) => println!(
+                "  webview: the bus id getMessageId returned has a NUL in it: {bus_id:?}"
+            ),
+        },
+        Err(e) => {
+            println!("  webview: getMessageId({protocol:?}, {open_window_id:?}) failed: {e}");
+        }
     }
 
-    // The other host-facing command in the same trio as `openWindow`: the
-    // engine asking Vanta to close a window it opened. Best-effort and
-    // deliberately not a reason to bail the rest of `arm` out -- a build
-    // missing `getCloseWindowId`, or one where this particular subscribe
-    // fails, still leaves `openWindow` working, which matters more.
+    // Subscribe to `closeWindow`.
     match get("close-window") {
         Some(close_window_id) => {
             // SAFETY: `get_message_id` is a native resolved via a symbol lookup against the loaded libroblox.so, which is never unloaded.
@@ -1264,64 +1538,105 @@ pub fn arm(mut symbol: impl FnMut(&str) -> Option<*mut c_void>) {
         ),
     }
 
-    // The close report. `getMessageId` and `protocol` are the same values
-    // just used for `openWindow`'s bus id -- this is the same class asked
-    // for a different method id, not a second lookup of anything already
-    // established.
-    //
-    // **`getHandleWindowCloseId` is the id used here, and that choice is
-    // `INFERRED`.** The dex does not label which of `getCloseWindowId` and
-    // `getHandleWindowCloseId` is which direction, and nothing in this
-    // session observed either one fire. The reasoning: `get{Open,Close,
-    // Mutate}WindowId` are grouped together, both in `libroblox.so`'s own
-    // export order (`docs/analysis/webview-surface.md` §3c) and in
-    // `STRING_GETTERS` above -- three parallel *commands*, which reads
-    // naturally as engine-to-host, the direction `getOpenWindowId` already
-    // has confirmed. `getHandleWindowCloseId` sits apart from that group,
-    // beside `getIsAvailableId`, and "handle" names the thing that consumes
-    // a report rather than the thing that issues a command -- the same shape
-    // `onDataModelNotificationCallback` and `onAppBridgeNotification` have,
-    // both named for handling something that already happened. If a live run
-    // shows the canvas still blank after this publishes, that reading is
-    // wrong and `getCloseWindowId` — which this file does not otherwise use;
-    // by the same grouping argument it is likely the engine asking the host
-    // to close a window, a distinct feature from this one — is the next
-    // thing to try.
-    let Some(handle_close_id) = get("handle-window-close") else {
+    // Subscribe to `mutateWindow` so title/URL/visibility updates from Roblox work.
+    match get("mutate-window") {
+        Some(mutate_window_id) => {
+            // SAFETY: `get_message_id` is a native resolved via a symbol lookup against the loaded libroblox.so, which is never unloaded.
+            match unsafe {
+                vanta_linker_sys::game_activity::call_static_two_strings_ret_string(
+                    get_message_id,
+                    BUS,
+                    &protocol,
+                    &mutate_window_id,
+                )
+            } {
+                Ok(mutate_window_bus_id) => match CString::new(mutate_window_bus_id.clone()) {
+                    Ok(id) => {
+                        let mut err = vec![0u8; 512];
+                        // SAFETY: `do_subscribe_raw` resolved under its own name above; every buffer outlives the call.
+                        let rc = unsafe {
+                            vanta_messagebus_subscribe(
+                                do_subscribe_raw,
+                                id.as_ptr(),
+                                Some(on_mutate_window),
+                                err.as_mut_ptr() as *mut c_char,
+                                err.len(),
+                            )
+                        };
+                        if rc == 0 {
+                            println!(
+                                "  webview: subscribed to {mutate_window_bus_id} \
+                                 ({protocol}.{mutate_window_id}); mutateWindow updates armed"
+                            );
+                        } else {
+                            println!(
+                                "  webview: subscribing to {mutate_window_bus_id} failed: {}",
+                                take_err(err)
+                            );
+                        }
+                    }
+                    Err(_) => println!(
+                        "  webview: the mutate-window bus id getMessageId returned has a NUL in \
+                         it: {mutate_window_bus_id:?}"
+                    ),
+                },
+                Err(e) => println!(
+                    "  webview: getMessageId({protocol:?}, {mutate_window_id:?}) failed: {e}"
+                ),
+            }
+        }
+        None => println!(
+            "  webview: no getMutateWindowId in this build's vocabulary; mutateWindow not subscribed"
+        ),
+    }
+
+    // Arm `handleWindowClose` close-report publishing.
+    if let Some(handle_close_id) = get("handle-window-close") {
+        // SAFETY: `get_message_id` is a native resolved via a symbol lookup against the loaded libroblox.so, which is never unloaded.
+        match unsafe {
+            vanta_linker_sys::game_activity::call_static_two_strings_ret_string(
+                get_message_id,
+                BUS,
+                &protocol,
+                &handle_close_id,
+            )
+        } {
+            Ok(close_bus_id) => {
+                if let Some(publish_raw) =
+                    symbol("Java_com_roblox_universalapp_messagebus_MessageBus_publishRaw")
+                {
+                    if CLOSE_BUS_ID.set(close_bus_id.clone()).is_err() {
+                        println!(
+                            "  webview: arm() called twice; keeping the first build's \
+                             close-report bus id"
+                        );
+                    }
+                    let _ = PUBLISH_RAW_NATIVE.set(publish_raw as usize);
+                    println!(
+                        "  webview: armed to report a closed window on {close_bus_id} \
+                         ({protocol}.{handle_close_id})"
+                    );
+                } else {
+                    println!(
+                        "  webview: MessageBus.publishRaw is not exported; a closed window will \
+                         not be reported to the engine"
+                    );
+                }
+            }
+            Err(e) => println!(
+                "  webview: getMessageId({protocol:?}, {handle_close_id:?}) failed: {e}"
+            ),
+        }
+    } else {
         println!(
             "  webview: no getHandleWindowCloseId in this build's vocabulary; a closed window \
              will not be reported to the engine"
         );
-        return;
-    };
-    // SAFETY: `get_message_id` is a native resolved via a symbol lookup against the loaded libroblox.so, which is never unloaded.
-    let close_bus_id = match unsafe { vanta_linker_sys::game_activity::call_static_two_strings_ret_string(
-        get_message_id,
-        BUS,
-        &protocol,
-        &handle_close_id,
-    ) } {
-        Ok(id) => id,
-        Err(e) => {
-            println!("  webview: getMessageId({protocol:?}, {handle_close_id:?}) failed: {e}");
-            return;
-        }
-    };
-    let Some(publish_raw) = symbol("Java_com_roblox_universalapp_messagebus_MessageBus_publishRaw")
-    else {
-        println!(
-            "  webview: MessageBus.publishRaw is not exported; a closed window will not be \
-             reported to the engine"
-        );
-        return;
-    };
-    if CLOSE_BUS_ID.set(close_bus_id.clone()).is_err() {
-        println!("  webview: arm() called twice; keeping the first build's close-report bus id");
     }
-    let _ = PUBLISH_RAW_NATIVE.set(publish_raw as usize);
-    println!(
-        "  webview: armed to report a closed window on {close_bus_id} ({protocol}.{handle_close_id})"
-    );
+
+    // Now that `isAvailable`, `openWindow`, `closeWindow`, `mutateWindow`, and
+    // `handleWindowClose` are all armed, initialize the Android WebView protocol.
+    init_protocol(&mut symbol);
 }
 
 /// Tell the engine a web window closed.
@@ -2056,5 +2371,69 @@ mod tests {
         assert!(!request.hide_header, "a hidden header would hide the fact this is synthetic");
         assert!(request.back_button_visible);
         assert!(request.show_domain_as_title, "the title bar must show the real host, not a guess");
+    }
+
+    #[test]
+    fn is_available_response_uses_the_engine_key_and_boolean() {
+        let yes: serde_json::Value =
+            serde_json::from_str(&is_available_response("isAvailable", true)).unwrap();
+        assert_eq!(yes["isAvailable"], serde_json::Value::Bool(true));
+        let no: serde_json::Value =
+            serde_json::from_str(&is_available_response("available", false)).unwrap();
+        assert_eq!(no["available"], serde_json::Value::Bool(false));
+    }
+
+    #[test]
+    fn mutate_window_parses_partial_updates_and_rejects_bad_json() {
+        let keys = stand_in_keys();
+        let req = parse_mutate_window(
+            r#"{"url":"https://www.roblox.com/games/123","title":"Servers","isVisible":true,"hideHeader":false}"#,
+            &keys,
+            Some("isVisible"),
+        )
+        .expect("valid mutateWindow");
+        assert_eq!(req.url.as_deref(), Some("https://www.roblox.com/games/123"));
+        assert_eq!(req.title.as_deref(), Some("Servers"));
+        assert_eq!(req.is_visible, Some(true));
+        assert_eq!(req.hide_header, Some(false));
+        assert_eq!(req.back_button_visible, None);
+        assert_eq!(req.show_domain_as_title, None);
+
+        let hide = parse_mutate_window(r#"{"isVisible":false}"#, &keys, Some("isVisible"))
+            .expect("visibility-only mutateWindow");
+        assert_eq!(hide.url, None);
+        assert_eq!(hide.is_visible, Some(false));
+
+        assert!(parse_mutate_window("not json", &keys, Some("isVisible")).is_err());
+        assert!(parse_mutate_window("[]", &keys, Some("isVisible")).is_err());
+    }
+
+    #[test]
+    fn arm_looks_up_initialize_protocol_after_vocabulary_getters() {
+        let mut order = Vec::new();
+        arm(|name| {
+            order.push(name.to_string());
+            None
+        });
+        let init_pos = order
+            .iter()
+            .position(|s| s.ends_with("initializeAndroidWebViewProtocol"))
+            .expect("initializeAndroidWebViewProtocol must be looked up");
+        let vocab_pos = order
+            .iter()
+            .position(|s| s.ends_with("getIsAvailableId"))
+            .expect("vocabulary getters must be looked up");
+        assert!(
+            vocab_pos < init_pos,
+            "vocabulary/handler setup must precede initializeAndroidWebViewProtocol"
+        );
+    }
+
+    #[test]
+    fn open_embedded_is_false_without_embedded_webview_feature_or_on_disallowed_url() {
+        assert!(!open_embedded("file:///etc/passwd", None));
+        assert!(!open_embedded("javascript:alert(1)", None));
+        #[cfg(not(feature = "webview"))]
+        assert!(!open_embedded("https://www.roblox.com/games/123", Some("Servers")));
     }
 }

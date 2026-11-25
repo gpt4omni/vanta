@@ -1391,16 +1391,23 @@ fn dispatch(
             // and blocks nothing else in the process. Widening this to the
             // pump would make one plugin's publish lossy to buy a property
             // this path does not need. See `publish_core`.
-            let writers = shared.writers.lock().unwrap_or_else(|e| e.into_inner());
-            for subscriber in subscribers {
-                if let Some(writer) = writers.get(&subscriber) {
-                    // Best effort, the same as every other push in this
-                    // project: a subscriber that has already died is not a
-                    // reason to fail the publisher's call, and the write
-                    // error here would only repeat what that subscriber's own
-                    // thread is about to discover reading its closed stdout.
-                    let _ = writer.push(&Push { event: event_type.to_string(), payload: payload.clone() });
-                }
+            // Clone subscriber writers under the map lock, drop the map lock,
+            // and push outside the lock so a slow subscriber pipe can never
+            // stall or deadlock other plugins registering/exiting/publishing.
+            let targets: Vec<vanta_plugins::host::Writer> = {
+                let writers = shared.writers.lock().unwrap_or_else(|e| e.into_inner());
+                subscribers
+                    .iter()
+                    .filter_map(|subscriber| writers.get(subscriber).cloned())
+                    .collect()
+            };
+            for writer in targets {
+                // Best effort, the same as every other push in this
+                // project: a subscriber that has already died is not a
+                // reason to fail the publisher's call, and the write
+                // error here would only repeat what that subscriber's own
+                // thread is about to discover reading its closed stdout.
+                let _ = writer.push(&Push { event: event_type.to_string(), payload: payload.clone() });
             }
             Response::Ok { id: req.id, result: serde_json::Value::Null }
         }
@@ -1457,7 +1464,20 @@ fn resolve_within(base: &Path, rel: &str) -> Result<PathBuf, String> {
     if rel_path.is_absolute() || rel_path.components().any(|c| c.as_os_str() == "..") {
         return Err(format!("{rel:?} must be a path inside the plugin's own directory"));
     }
-    Ok(base.join(rel_path))
+    let canon_base = base
+        .canonicalize()
+        .map_err(|e| format!("plugin directory could not be resolved: {e}"))?;
+    let canon_target = base
+        .join(rel_path)
+        .canonicalize()
+        .map_err(|e| format!("{rel:?} could not be resolved inside the plugin directory: {e}"))?;
+    if !canon_target.starts_with(&canon_base) {
+        return Err(format!("{rel:?} escapes the plugin's own directory via symlink"));
+    }
+    if !canon_target.is_dir() {
+        return Err(format!("{rel:?} is not a directory"));
+    }
+    Ok(canon_target)
 }
 
 /// Turn a broker effect's plain `Result` into the wire `Response` — the
@@ -2352,12 +2372,31 @@ mod tests {
 
     #[test]
     fn resolve_within_refuses_a_path_that_would_escape_the_base() {
-        let base = std::env::temp_dir().join("vanta-plugin-host-resolve-within-test");
-        for bad in ["..", "../elsewhere", "/etc/passwd", "a/../../b"] {
+        let root = std::env::temp_dir().join(format!(
+            "vanta-plugin-host-resolve-within-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let base = root.join("plugin");
+        let outside = root.join("outside");
+        std::fs::create_dir_all(base.join("overlay")).unwrap();
+        std::fs::create_dir_all(base.join("a/b")).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(base.join("plain-file"), b"hi").unwrap();
+        std::os::unix::fs::symlink(&outside, base.join("escape-link")).unwrap();
+
+        for bad in ["..", "../elsewhere", "/etc/passwd", "a/../../b", "escape-link", "plain-file", "missing"] {
             assert!(resolve_within(&base, bad).is_err(), "{bad:?} should have been refused");
         }
-        assert_eq!(resolve_within(&base, "overlay").unwrap(), base.join("overlay"));
-        assert_eq!(resolve_within(&base, "a/b").unwrap(), base.join("a/b"));
+        assert_eq!(
+            resolve_within(&base, "overlay").unwrap(),
+            base.join("overlay").canonicalize().unwrap()
+        );
+        assert_eq!(
+            resolve_within(&base, "a/b").unwrap(),
+            base.join("a/b").canonicalize().unwrap()
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     // The bug this file exists to fix: `start_all` discovered every plugin

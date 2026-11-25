@@ -256,8 +256,11 @@ fn locate(file: &mut File, len: u64) -> Result<Layout, Refusal> {
     let size_at_end = u64::from_le_bytes(foot[0..8].try_into().expect("8 bytes"));
     // The block is `size` plus the leading 8-byte size field, and both size
     // fields must agree — the leading one is read during parsing.
+    let block_total = size_at_end
+        .checked_add(8)
+        .ok_or(Refusal::MalformedSigningBlock("the block size overflows"))?;
     let block_start = cd_offset
-        .checked_sub(size_at_end + 8)
+        .checked_sub(block_total)
         .ok_or(Refusal::MalformedSigningBlock("the block claims to be larger than the file"))?;
     Ok(Layout { signing_block: (block_start, cd_offset), central_directory: cd_offset, eocd })
 }
@@ -317,6 +320,77 @@ fn content_digest(file: &mut File, layout: &Layout, len: u64) -> Result<[u8; 32]
     Ok(top.finalize().into())
 }
 
+/// Parse one DER TLV, returning `(tag, full_tlv_bytes, value_bytes, rest)`.
+fn der_tlv(b: &[u8]) -> Option<(u8, &[u8], &[u8], &[u8])> {
+    let tag = *b.first()?;
+    let first = *b.get(1)? as usize;
+    let (header_len, len) = if first < 0x80 {
+        (2usize, first)
+    } else {
+        let n = first & 0x7f;
+        if n == 0 || n > 4 || b.len() < 2 + n {
+            return None;
+        }
+        let mut v = 0usize;
+        for &byte in &b[2..2 + n] {
+            v = (v << 8) | byte as usize;
+        }
+        (2 + n, v)
+    };
+    let end = header_len.checked_add(len)?;
+    if b.len() < end {
+        return None;
+    }
+    Some((tag, &b[..end], &b[header_len..end], &b[end..]))
+}
+
+/// Extract the exact DER-encoded `SubjectPublicKeyInfo` element from an X.509
+/// `Certificate` (`Certificate -> TBSCertificate -> subjectPublicKeyInfo`).
+///
+/// APK Signature Scheme v2/v3 requires that the public key embedded in the
+/// signer's first X.509 certificate match the signer's `public_key` field byte
+/// for byte; otherwise an attacker could embed Roblox's real certificate inside
+/// `signed_data` while signing `signed_data` with their own key.
+fn certificate_spki(cert_der: &[u8]) -> Option<&[u8]> {
+    // Certificate ::= SEQUENCE { tbsCertificate, signatureAlgorithm, signatureValue }
+    let (cert_tag, _, cert_body, cert_rest) = der_tlv(cert_der)?;
+    if cert_tag != 0x30 || !cert_rest.is_empty() {
+        return None;
+    }
+    // TBSCertificate ::= SEQUENCE { ... }
+    let (tbs_tag, _, mut tbs, _) = der_tlv(cert_body)?;
+    if tbs_tag != 0x30 {
+        return None;
+    }
+    // Optional version [0] EXPLICIT Version DEFAULT v1 (tag 0xA0)
+    if let Some((0xa0, _, _, rest)) = der_tlv(tbs) {
+        tbs = rest;
+    }
+    // serialNumber INTEGER (0x02)
+    let (tag, _, _, rest) = der_tlv(tbs)?;
+    if tag != 0x02 {
+        return None;
+    }
+    tbs = rest;
+    // signature AlgorithmIdentifier SEQUENCE (0x30)
+    // issuer Name SEQUENCE (0x30)
+    // validity Validity SEQUENCE (0x30)
+    // subject Name SEQUENCE (0x30)
+    for _ in 0..4 {
+        let (tag, _, _, rest) = der_tlv(tbs)?;
+        if tag != 0x30 {
+            return None;
+        }
+        tbs = rest;
+    }
+    // subjectPublicKeyInfo SubjectPublicKeyInfo SEQUENCE (0x30)
+    let (spki_tag, spki_full, _, _) = der_tlv(tbs)?;
+    if spki_tag != 0x30 {
+        return None;
+    }
+    Some(spki_full)
+}
+
 /// Pull the public key bytes and algorithm out of a DER SubjectPublicKeyInfo.
 ///
 /// A whole X.509 parser is not needed and is not wanted: the signing block hands
@@ -324,33 +398,15 @@ fn content_digest(file: &mut File, layout: &Layout, len: u64) -> Result<[u8; 32]
 /// belongs to and the key material. Less parsing of attacker-supplied DER is
 /// strictly better here.
 fn spki(der: &[u8]) -> Option<(Vec<u8>, bool)> {
-    fn tlv(b: &[u8]) -> Option<(u8, &[u8], &[u8])> {
-        let tag = *b.first()?;
-        let first = *b.get(1)? as usize;
-        let (len, rest) = if first < 0x80 {
-            (first, &b[2..])
-        } else {
-            let n = first & 0x7f;
-            if n == 0 || n > 4 || b.len() < 2 + n {
-                return None;
-            }
-            let mut v = 0usize;
-            for &byte in &b[2..2 + n] {
-                v = (v << 8) | byte as usize;
-            }
-            (v, &b[2 + n..])
-        };
-        if rest.len() < len {
-            return None;
-        }
-        Some((tag, &rest[..len], &rest[len..]))
+    let (tag, _, seq, rest) = der_tlv(der)?;
+    if tag != 0x30 || !rest.is_empty() {
+        return None;
     }
-    let (_, seq, _) = tlv(der)?;
-    let (_, alg, after_alg) = tlv(seq)?;
-    let (_, oid, _) = tlv(alg)?;
+    let (_, _, alg, after_alg) = der_tlv(seq)?;
+    let (_, _, oid, _) = der_tlv(alg)?;
     // 1.2.840.113549.1.1.1 rsaEncryption, and 1.2.840.10045.2.1 id-ecPublicKey.
     let is_rsa = oid == [0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01];
-    let (_, bits, _) = tlv(after_alg)?;
+    let (_, _, bits, _) = der_tlv(after_alg)?;
     // A BIT STRING's first content byte is the count of unused trailing bits.
     let key = bits.get(1..)?.to_vec();
     Some((key, is_rsa))
@@ -450,7 +506,7 @@ pub fn verify(path: &Path) -> Result<Signer, Refusal> {
 
     let mut r = Reader::new(&block);
     let declared = r.u64().ok_or(Refusal::MalformedSigningBlock("no leading size"))?;
-    if declared + 8 != size as u64 {
+    if declared.checked_add(8) != Some(size as u64) {
         return Err(Refusal::MalformedSigningBlock("the two size fields disagree"));
     }
 
@@ -460,7 +516,9 @@ pub fn verify(path: &Path) -> Result<Signer, Refusal> {
     let mut v2: Option<&[u8]> = None;
     let mut v3: Option<&[u8]> = None;
     while r.remaining() > 24 {
-        let pair_len = r.u64().ok_or(Refusal::MalformedSigningBlock("a truncated pair"))? as usize;
+        let pair_len_u64 = r.u64().ok_or(Refusal::MalformedSigningBlock("a truncated pair"))?;
+        let pair_len = usize::try_from(pair_len_u64)
+            .map_err(|_| Refusal::MalformedSigningBlock("a pair longer than the block"))?;
         if pair_len < 4 {
             return Err(Refusal::MalformedSigningBlock("a pair shorter than its own id"));
         }
@@ -599,6 +657,17 @@ pub fn verify(path: &Path) -> Result<Signer, Refusal> {
         .sized()
         .ok_or(Refusal::MalformedSigningBlock("no signing certificate"))?
         .buf;
+    // Bind the verified signer `public_key` to the X.509 certificate's
+    // `SubjectPublicKeyInfo` by exact DER byte equality before trusting the
+    // certificate fingerprint.
+    let cert_spki = certificate_spki(certificate).ok_or(Refusal::SignatureInvalid(
+        "the signing certificate does not parse as X.509 DER",
+    ))?;
+    if cert_spki != public_key {
+        return Err(Refusal::SignatureInvalid(
+            "the signing certificate's public key does not match the signer's public key",
+        ));
+    }
     let fingerprint: [u8; 32] = Sha256::digest(certificate).into();
     Ok(Signer { certificate_sha256: hex(&fingerprint) })
 }
@@ -901,6 +970,226 @@ mod tests {
         // a browser arrives in either case, and refusing one of them would be a
         // refusal nobody could debug from the message.
         assert!(verify_signed_by(&apk, &pinned).is_ok());
+    }
+
+    fn der_wrap(tag: u8, body: &[u8]) -> Vec<u8> {
+        let mut out = vec![tag];
+        if body.len() < 0x80 {
+            out.push(body.len() as u8);
+        } else if body.len() <= 0xff {
+            out.push(0x81);
+            out.push(body.len() as u8);
+        } else {
+            out.push(0x82);
+            out.push((body.len() >> 8) as u8);
+            out.push((body.len() & 0xff) as u8);
+        }
+        out.extend_from_slice(body);
+        out
+    }
+
+    fn p256_spki_der(pub_key_bytes: &[u8]) -> Vec<u8> {
+        // AlgorithmIdentifier: id-ecPublicKey (1.2.840.10045.2.1) + prime256v1 (1.2.840.10045.3.1.7)
+        let mut alg_body = Vec::new();
+        alg_body.extend_from_slice(&der_wrap(0x06, &[0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01]));
+        alg_body.extend_from_slice(&der_wrap(
+            0x06,
+            &[0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07],
+        ));
+        let alg = der_wrap(0x30, &alg_body);
+        let mut bit_string_body = Vec::with_capacity(1 + pub_key_bytes.len());
+        bit_string_body.push(0x00); // 0 unused bits
+        bit_string_body.extend_from_slice(pub_key_bytes);
+        let bits = der_wrap(0x03, &bit_string_body);
+        let mut seq_body = alg;
+        seq_body.extend_from_slice(&bits);
+        der_wrap(0x30, &seq_body)
+    }
+
+    fn minimal_x509_cert_with_spki(spki_der: &[u8]) -> Vec<u8> {
+        let mut tbs = Vec::new();
+        // version [0] EXPLICIT INTEGER 2 (v3)
+        tbs.extend_from_slice(&der_wrap(0xa0, &der_wrap(0x02, &[0x02])));
+        // serialNumber INTEGER 1
+        tbs.extend_from_slice(&der_wrap(0x02, &[0x01]));
+        // signature AlgorithmIdentifier SEQUENCE {}
+        tbs.extend_from_slice(&der_wrap(0x30, &[]));
+        // issuer Name SEQUENCE {}
+        tbs.extend_from_slice(&der_wrap(0x30, &[]));
+        // validity Validity SEQUENCE {}
+        tbs.extend_from_slice(&der_wrap(0x30, &[]));
+        // subject Name SEQUENCE {}
+        tbs.extend_from_slice(&der_wrap(0x30, &[]));
+        // subjectPublicKeyInfo
+        tbs.extend_from_slice(spki_der);
+        let tbs_seq = der_wrap(0x30, &tbs);
+
+        let mut cert_body = tbs_seq;
+        cert_body.extend_from_slice(&der_wrap(0x30, &[])); // signatureAlgorithm
+        cert_body.extend_from_slice(&der_wrap(0x03, &[0x00])); // signatureValue
+        der_wrap(0x30, &cert_body)
+    }
+
+    fn len_prefixed(data: &[u8]) -> Vec<u8> {
+        let mut out = (data.len() as u32).to_le_bytes().to_vec();
+        out.extend_from_slice(data);
+        out
+    }
+
+    fn build_synthetic_v2_apk(
+        signing_key: &ring::signature::EcdsaKeyPair,
+        signer_spki: &[u8],
+        embedded_cert: &[u8],
+    ) -> Vec<u8> {
+        use ring::rand::SystemRandom;
+        use sha2::{Digest, Sha256};
+
+        let prefix = b"LOCAL_ZIP_ENTRIES_PAYLOAD";
+        let cd = b"CENTRAL_DIRECTORY";
+        let mut eocd = vec![0x50, 0x4b, 0x05, 0x06];
+        eocd.extend_from_slice(&[0u8; 18]);
+        // Content digest computes EOCD with cd_offset replaced by signing_block.start (= prefix.len())
+        let mut eocd_for_digest = eocd.clone();
+        eocd_for_digest[16..20].copy_from_slice(&(prefix.len() as u32).to_le_bytes());
+
+        let c1 = chunk_digest(prefix);
+        let c2 = chunk_digest(cd);
+        let c3 = chunk_digest(&eocd_for_digest);
+        let mut top = Sha256::new();
+        top.update([0x5au8]);
+        top.update(3u32.to_le_bytes());
+        top.update(c1);
+        top.update(c2);
+        top.update(c3);
+        let digest: [u8; 32] = top.finalize().into();
+
+        // digests: [len-prefixed (alg_u32 + len-prefixed digest)]
+        let mut one_digest = SIG_ECDSA_SHA256.to_le_bytes().to_vec();
+        one_digest.extend_from_slice(&len_prefixed(&digest));
+        let digests = len_prefixed(&len_prefixed(&one_digest));
+        let certs = len_prefixed(&len_prefixed(embedded_cert));
+        let attrs = len_prefixed(&[]);
+
+        let mut signed_data = Vec::new();
+        signed_data.extend_from_slice(&digests);
+        signed_data.extend_from_slice(&certs);
+        signed_data.extend_from_slice(&attrs);
+
+        let rng = SystemRandom::new();
+        let sig = signing_key.sign(&rng, &signed_data).expect("ecdsa sign");
+        let mut one_sig = SIG_ECDSA_SHA256.to_le_bytes().to_vec();
+        one_sig.extend_from_slice(&len_prefixed(sig.as_ref()));
+        let sigs = len_prefixed(&len_prefixed(&one_sig));
+
+        let mut signer = Vec::new();
+        signer.extend_from_slice(&len_prefixed(&signed_data));
+        signer.extend_from_slice(&sigs);
+        signer.extend_from_slice(&len_prefixed(signer_spki));
+
+        let v2_value = len_prefixed(&len_prefixed(&signer));
+        let pair_len = (4 + v2_value.len()) as u64;
+        let mut pair = Vec::new();
+        pair.extend_from_slice(&pair_len.to_le_bytes());
+        pair.extend_from_slice(&BLOCK_ID_V2.to_le_bytes());
+        pair.extend_from_slice(&v2_value);
+
+        let block_size = (pair.len() + 8 + 16) as u64;
+        let mut block = Vec::new();
+        block.extend_from_slice(&block_size.to_le_bytes());
+        block.extend_from_slice(&pair);
+        block.extend_from_slice(&block_size.to_le_bytes());
+        block.extend_from_slice(BLOCK_MAGIC);
+
+        let cd_offset = (prefix.len() + block.len()) as u32;
+        eocd[16..20].copy_from_slice(&cd_offset.to_le_bytes());
+
+        let mut apk = Vec::new();
+        apk.extend_from_slice(prefix);
+        apk.extend_from_slice(&block);
+        apk.extend_from_slice(cd);
+        apk.extend_from_slice(&eocd);
+        apk
+    }
+
+    #[test]
+    fn mismatched_certificate_spki_is_rejected_and_matching_spki_is_accepted() {
+        use ring::rand::SystemRandom;
+        use ring::signature::{EcdsaKeyPair, KeyPair, ECDSA_P256_SHA256_ASN1_SIGNING};
+
+        let rng = SystemRandom::new();
+        let pkcs8_a = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng).unwrap();
+        let key_a = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, pkcs8_a.as_ref(), &rng).unwrap();
+        let spki_a = p256_spki_der(key_a.public_key().as_ref());
+        let cert_a = minimal_x509_cert_with_spki(&spki_a);
+
+        let pkcs8_b = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng).unwrap();
+        let key_b = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, pkcs8_b.as_ref(), &rng).unwrap();
+        let spki_b = p256_spki_der(key_b.public_key().as_ref());
+        let cert_b = minimal_x509_cert_with_spki(&spki_b);
+
+        // Matching key A + cert A succeeds.
+        let good = scratch("synthetic-good.apk");
+        std::fs::write(&good, build_synthetic_v2_apk(&key_a, &spki_a, &cert_a)).unwrap();
+        assert!(verify(&good).is_ok(), "matching certificate SPKI must verify");
+        let _ = std::fs::remove_file(&good);
+
+        // Forgery: signed by key A, claiming cert B's identity. MUST BE REJECTED.
+        let forged = scratch("synthetic-forged.apk");
+        std::fs::write(&forged, build_synthetic_v2_apk(&key_a, &spki_a, &cert_b)).unwrap();
+        assert_eq!(
+            verify(&forged),
+            Err(Refusal::SignatureInvalid(
+                "the signing certificate's public key does not match the signer's public key"
+            ))
+        );
+        let _ = std::fs::remove_file(&forged);
+
+        // Non-DER certificate bytes must also be rejected.
+        let bad_cert = scratch("synthetic-bad-cert.apk");
+        std::fs::write(&bad_cert, build_synthetic_v2_apk(&key_a, &spki_a, b"not-a-cert")).unwrap();
+        assert_eq!(
+            verify(&bad_cert),
+            Err(Refusal::SignatureInvalid(
+                "the signing certificate does not parse as X.509 DER"
+            ))
+        );
+        let _ = std::fs::remove_file(&bad_cert);
+    }
+
+    #[test]
+    fn u64_max_signing_block_sizes_return_err_without_panic_or_wrap() {
+        // Case 1: footer `size_at_end == u64::MAX` would wrap `size_at_end + 8` to 7.
+        let mut foot_overflow = vec![0u8; 32];
+        foot_overflow.extend_from_slice(&u64::MAX.to_le_bytes());
+        foot_overflow.extend_from_slice(BLOCK_MAGIC);
+        let cd_offset = foot_overflow.len() as u32;
+        foot_overflow.extend_from_slice(b"CD");
+        let mut eocd = vec![0x50, 0x4b, 0x05, 0x06];
+        eocd.extend_from_slice(&[0u8; 18]);
+        eocd[16..20].copy_from_slice(&cd_offset.to_le_bytes());
+        foot_overflow.extend_from_slice(&eocd);
+
+        let p1 = scratch("u64max-footer.apk");
+        std::fs::write(&p1, &foot_overflow).unwrap();
+        assert!(matches!(verify(&p1), Err(Refusal::MalformedSigningBlock(_))));
+        let _ = std::fs::remove_file(&p1);
+
+        // Case 2: valid footer size, but leading `declared == u64::MAX` would wrap `declared + 8`.
+        let mut head_overflow = Vec::new();
+        head_overflow.extend_from_slice(&u64::MAX.to_le_bytes()); // leading declared size
+        head_overflow.extend_from_slice(&24u64.to_le_bytes()); // trailing size_at_end (24 + 8 = 32)
+        head_overflow.extend_from_slice(BLOCK_MAGIC);
+        let cd_offset2 = head_overflow.len() as u32;
+        head_overflow.extend_from_slice(b"CD");
+        let mut eocd2 = vec![0x50, 0x4b, 0x05, 0x06];
+        eocd2.extend_from_slice(&[0u8; 18]);
+        eocd2[16..20].copy_from_slice(&cd_offset2.to_le_bytes());
+        head_overflow.extend_from_slice(&eocd2);
+
+        let p2 = scratch("u64max-header.apk");
+        std::fs::write(&p2, &head_overflow).unwrap();
+        assert!(matches!(verify(&p2), Err(Refusal::MalformedSigningBlock(_))));
+        let _ = std::fs::remove_file(&p2);
     }
 }
 

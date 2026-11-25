@@ -48,8 +48,8 @@ static GLOBAL: MiMalloc = MiMalloc;
 /// Tune mimalloc's desktop defaults before `dlopen("libroblox.so")` runs the
 /// engine's statically linked mimalloc constructors (ADR-040). Default mimalloc
 /// purges pages every 10 ms via `madvise(MADV_DONTNEED)`, causing cross-core
-/// `mmap_lock` + TLB shootdown frame spikes; extending the purge delay and
-/// eagerly committing large-page arenas eliminates allocator stutter.
+/// `mmap_lock` + TLB shootdown frame spikes; extending the purge delay avoids
+/// allocator stutter without eagerly committing or reserving 512M-1G of RSS.
 fn tune_mimalloc_for_desktop() {
     if std::env::var_os("VANTA_NO_MIMALLOC_TUNE").is_some() {
         return;
@@ -72,15 +72,6 @@ fn tune_mimalloc_for_desktop() {
         }
     };
     set_if_unset("MIMALLOC_PURGE_DELAY", if total_mb >= 12_000 { "10000" } else { "5000" });
-    set_if_unset("MIMALLOC_PURGE_DECOMMITS", "0");
-    set_if_unset("MIMALLOC_ALLOW_LARGE_OS_PAGES", "1");
-    set_if_unset("MIMALLOC_EAGER_COMMIT", "1");
-    set_if_unset("MIMALLOC_ARENA_EAGER_COMMIT", "2");
-    if total_mb >= 12_000 {
-        set_if_unset("MIMALLOC_RESERVE_OS_MEMORY", "1G");
-    } else if total_mb >= 8_000 {
-        set_if_unset("MIMALLOC_RESERVE_OS_MEMORY", "512M");
-    }
     // Drop Linux's default 50 us kernel timer slack to 1 ns for this process
     // and every child thread cloned from it (TaskScheduler, RenderThread,
     // Physics, Audio). Cuts frame-pacer nanosleep/futex/epoll overshoot so
@@ -563,24 +554,29 @@ fn hold_build(lib_dir: &str) -> Result<Option<std::fs::File>, String> {
 /// and asset paths still work without it.
 fn asset_folder(apk: &Option<String>) -> String {
     let Some(apk) = apk else { return String::new() };
-    let base = assets_root();
-    match vanta_runtime::android::asset::extract_to(&base) {
-        Ok(dir) => {
-            // The overlay resolver needs the *extraction root*, not the
-            // `content` subdirectory handed to the engine: overlay names are
-            // relative to `assets/`, so `content/…` is part of the name.
-            // Both routes then share one index, which they must — an overlay
-            // that applied to a texture reached through `AAssetManager` and
-            // not to the same texture reached by path would be a bug nobody
-            // would guess from the symptom (ADR-021).
-            vanta_runtime::android::asset::set_asset_root(&dir);
-            dir.join("content").to_string_lossy().into_owned()
-        }
-        Err(e) => {
-            println!("  asset extraction failed ({e}); using the APK path");
-            apk.clone()
-        }
-    }
+    static CACHED: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    CACHED
+        .get_or_init(|| {
+            let base = assets_root();
+            match vanta_runtime::android::asset::extract_to(&base) {
+                Ok(dir) => {
+                    // The overlay resolver needs the *extraction root*, not the
+                    // `content` subdirectory handed to the engine: overlay names are
+                    // relative to `assets/`, so `content/…` is part of the name.
+                    // Both routes then share one index, which they must — an overlay
+                    // that applied to a texture reached through `AAssetManager` and
+                    // not to the same texture reached by path would be a bug nobody
+                    // would guess from the symptom (ADR-021).
+                    vanta_runtime::android::asset::set_asset_root(&dir);
+                    dir.join("content").to_string_lossy().into_owned()
+                }
+                Err(e) => {
+                    println!("  asset extraction failed ({e}); using the APK path");
+                    apk.clone()
+                }
+            }
+        })
+        .clone()
 }
 
 /// The directory the engine runs *in*, and why it needs one of its own.
@@ -716,7 +712,10 @@ struct BootstrapPlan {
     /// run.
     cached_native: usize,
     cache_file: String,
-    settings: String,
+    /// Stored behind `Mutex<Option<String>>` so `run_bootstrap` can `.take()`
+    /// and immediately free the ~1.5 MB ClientSettings document once delivered
+    /// to `nativeInitClientSettings`.
+    settings: std::sync::Mutex<Option<String>>,
     /// Where `settings` came from, or why it is empty. Printed by
     /// `run_bootstrap`, because the explicit fallback call site already prints
     /// a byte count and the default path did not print anything at all --
@@ -854,6 +853,12 @@ extern "C" fn run_bootstrap() {
         return;
     }
     println!("  bootstrapTheApp: delivering settings and flags");
+    let settings = plan
+        .settings
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .take()
+        .unwrap_or_default();
 
     // Preloaded overrides first, because "preloaded" is a claim about ordering:
     // the engine reads them inside `getFlags`, which is upstream of the verdict.
@@ -869,20 +874,19 @@ extern "C" fn run_bootstrap() {
         if let Ok(shape) = std::env::var("VANTA_PRELOAD") {
             let body = match shape.as_str() {
                 "empty" => "{}".to_string(),
-                "flat" => plan
-                    .settings
+                "flat" => settings
                     .find("\"applicationSettings\"")
-                    .and_then(|_| plan.settings.find('{').map(|_| ()))
+                    .and_then(|_| settings.find('{').map(|_| ()))
                     .map(|()| {
                         // Strip the one wrapper key, leaving the bare map. Done
                         // textually rather than with a JSON parse because the
                         // document is 1.2 MB and this is a diagnostic.
-                        let open = plan.settings.find(':').map(|i| i + 1).unwrap_or(0);
-                        let inner = plan.settings[open..].trim();
+                        let open = settings.find(':').map(|i| i + 1).unwrap_or(0);
+                        let inner = settings[open..].trim();
                         inner.trim_end_matches('}').trim_end().to_string()
                     })
-                    .unwrap_or_else(|| plan.settings.clone()),
-                _ => plan.settings.clone(),
+                    .unwrap_or_else(|| settings.clone()),
+                _ => settings.clone(),
             };
             // SAFETY: `plan.preload_native as *mut std::ffi:...` is a native resolved via a symbol lookup against the loaded libroblox.so, which is never unloaded.
             match unsafe { linker::game_activity::preload_flag_overrides(
@@ -968,7 +972,7 @@ extern "C" fn run_bootstrap() {
     // connected, or a fetch that connected and was refused. This is that line.
     println!(
         "  client settings: {} bytes ({})",
-        plan.settings.len(),
+        settings.len(),
         plan.settings_source
     );
     // **A native that did not resolve is announced, not skipped in silence.**
@@ -1023,13 +1027,14 @@ extern "C" fn run_bootstrap() {
         // SAFETY: `plan.settings_native as *mut std::ffi...` is a native resolved via a symbol lookup against the loaded libroblox.so, which is never unloaded.
         match unsafe { linker::game_activity::init_client_settings(
             plan.settings_native as *mut std::ffi::c_void,
-            &plan.settings,
+            &settings,
             "",
             "",
         ) } {
             Ok(code) => println!("    nativeInitClientSettings -> {code}"),
             Err(e) => println!("    nativeInitClientSettings failed: {e}"),
         }
+        drop(settings);
         // The delivery attempt is over, one way or the other -- this is the
         // signal `wait_for_settings_delivery` blocks on. Set here, before the
         // optional resettle experiment below, because that is unrelated extra
@@ -1505,13 +1510,6 @@ fn wire_battery_reporting(lib: linker::Library) {
 fn install_webview_presenter() {
     vanta_runtime::webview::set_presenter(|request| {
         gtk4::glib::MainContext::default().invoke(move || {
-            let Some(window) = vanta_runtime::android::wayland::current() else {
-                println!(
-                    "[webview] presenter ran with no Wayland host window open; nothing to attach \
-                     the web window to"
-                );
-                return;
-            };
             // Fetched here, on the GTK thread, right before it is needed --
             // not inside `on_open_window`, which runs on a thread this crate
             // has never established is safe to block on a Secret Service
@@ -1519,115 +1517,80 @@ fn install_webview_presenter() {
             let cookie =
                 vanta_runtime::webview::roblox_session_cookie(&vanta_runtime::profile::active());
             let shell_request = vanta_runtime::webview::to_shell_request(&request, cookie);
-            match vanta_shell::webview::open(window.window(), &shell_request) {
-                Some(dialog) => {
-                    println!("[webview] presented an openWindow request");
-                    // The engine's subsurface sits above the host window's
-                    // own content by default (see
-                    // `android::wayland`'s module doc, "A web-view dialog is
-                    // invisible by default, and this is why"), and an
-                    // `AdwDialog` draws into that same content -- so without
-                    // this the dialog just opened is real and correctly
-                    // rendered and the engine is compositing over every pixel
-                    // of it. `webview_dialog_opened` lowers the canvas for as
-                    // long as this dialog (or any other) is up;
-                    // `connect_closed` is libadwaita's own notification that
-                    // it no longer is, which is the only reliable place to
-                    // raise the canvas back -- there is no `close_request` on
-                    // `AdwDialog` this presenter forces, so this is the one
-                    // path every dismissal (button, gesture, `closeWindow`)
-                    // actually takes.
-                    //
-                    // Raising the subsurface is necessary and not sufficient
-                    // -- reported live, after the stacking fix landed: the
-                    // engine blanks its own drawing when it opens a window,
-                    // expecting to be covered, and nothing was telling it the
-                    // cover was gone, so it stayed blank under a correctly-
-                    // stacked, now-visible canvas. `report_window_closed`
-                    // is that missing half -- see its own doc for the bus id
-                    // this publishes and why that choice is `INFERRED`. Both
-                    // calls belong in the same signal for the same reason:
-                    // one dismissal path, so the stacking fix and the report
-                    // to the engine cannot drift apart and one outlive the
-                    // other.
-                    use libadwaita::prelude::AdwDialogExt;
-                    window.webview_dialog_opened();
-                    // **Nothing here touches the cursor any more.** This used
-                    // to ask GDK for a `default` on the toplevel, because
-                    // Vanta hid the cursor itself from `pointer_enter` and
-                    // there was no other way to get one back over a dialog.
-                    // The canvas widget now carries `none` and the dialog is
-                    // not one of its descendants, so GTK gives it an ordinary
-                    // cursor without being asked -- see
-                    // `host_window::canvas_cursor`.
-                    let host = window;
-                    dialog.connect_closed(move |_| {
-                        host.webview_dialog_closed();
-                        vanta_runtime::webview::report_window_closed();
-                    });
+            if let Some(window) = vanta_runtime::android::wayland::current() {
+                match vanta_shell::webview::open(window.window(), &shell_request) {
+                    Some(dialog) => {
+                        println!("[webview] presented an openWindow request (Wayland dialog)");
+                        use libadwaita::prelude::AdwDialogExt;
+                        window.webview_dialog_opened();
+                        let host = window;
+                        dialog.connect_closed(move |_| {
+                            host.webview_dialog_closed();
+                            vanta_runtime::webview::report_window_closed();
+                        });
+                    }
+                    None => println!(
+                        "[webview] openWindow request was refused by policy before it could be presented"
+                    ),
                 }
-                None => println!(
-                    "[webview] openWindow request was refused by policy before it could be presented"
-                ),
+            } else {
+                // X11 / gamescope backend: no Wayland HostWindow exists, so
+                // present the embedded WebKitWebView inside a standalone
+                // `adw::Window` instead of dropping the request.
+                match vanta_shell::webview::open_standalone(&shell_request) {
+                    Some(win) => {
+                        println!("[webview] presented an openWindow request (standalone X11 window)");
+                        let reported = Rc::new(Cell::new(false));
+                        win.connect_close_request(move |_| {
+                            if !reported.replace(true) {
+                                vanta_runtime::webview::report_window_closed();
+                            }
+                            gtk4::glib::Propagation::Proceed
+                        });
+                    }
+                    None => println!(
+                        "[webview] openWindow request could not be presented in a standalone window"
+                    ),
+                }
             }
         });
     });
+    vanta_runtime::webview::mark_presenter_embedded();
     // The other direction. `set_presenter` above carries the engine's
     // `openWindow` out to a dialog; this carries a command the page issues
-    // back in. It is installed here, rather than beside `webview::arm`, for
-    // the reason `vanta_shell::webview::set_bridge_sink`'s doc gives:
-    // `vanta-runtime` depends on `vanta-shell` and not the reverse, so
-    // this binary is the only place that can see both halves at once.
-    //
-    // Without it the shell's handler has nowhere to send an approved message
-    // and says so on every one -- which is the state the maintainer was
-    // looking at when Join navigated instead of joining.
+    // back in.
     vanta_shell::webview::set_bridge_sink(vanta_runtime::webview::forward_bridge_message);
 
     // The close counterpart: `vanta_runtime::webview::on_close_window`
-    // cannot touch `vanta_shell`'s `AdwDialog` directly (see that crate's
-    // dependency direction, noted beside `set_bridge_sink` above), so this
-    // hands it a closure that can. Re-enters the GTK thread for the same
-    // reason the presenter itself does -- `close-window` can arrive on
-    // whichever thread the engine published from, same as `openWindow`.
+    // re-enters the GTK thread to close the currently open dialog or window.
     vanta_runtime::webview::set_close_handler(|| {
         gtk4::glib::MainContext::default().invoke(|| {
             vanta_shell::webview::close_current();
         });
     });
-    println!("  webview: presenter installed; an openWindow request will now be attached to the host window");
 
-    // Said here, at startup, rather than left for the first `openWindow` to
-    // discover. The presenter attaches an `AdwDialog` to the GTK host window,
-    // and that window only exists on the Wayland backend. On X11 there is no
-    // host window to attach to, so every openWindow the engine ever sends is
-    // dropped.
-    //
-    // This is a much narrower case than it was an hour ago, and the history is
-    // the reason the warning stays. `android::backend()` used to require an
-    // opt-in `VANTA_WAYLAND=1`, which `launch.rs` set and a hand-run
-    // `vanta-run` did not -- so the invocation AGENTS.md documents defaulted
-    // to a backend where the entire web view feature was inert, while the same
-    // build launched through `just dev` had it. Running that command and
-    // reading "presenter ran with no Wayland host window open" as a bug in the
-    // presenter is what cost the time; the presenter was fine and the backend
-    // was X11. `backend()` now prefers Wayland whenever `WAYLAND_DISPLAY` is
-    // set, so the only ways left to be here are a genuinely display-less host
-    // or an explicit `VANTA_X11=1` -- both of which someone chose, and
-    // neither of which should silently cost them Join.
-    //
-    // A line at the point of failure is not enough on its own: it names
-    // Wayland rather than naming X11, it arrives only once a user has already
-    // pressed something, and by then it reads as the button being broken.
-    // AGENTS.md's rule against a stub that lies applies to a diagnostic too --
-    // reporting the gap up front is what keeps it findable.
-    if vanta_runtime::android::wayland::current().is_none() {
+    // Live updates from `WebView.mutateWindow` (title, URL, visibility, chrome).
+    vanta_runtime::webview::set_mutate_handler(|req| {
+        gtk4::glib::MainContext::default().invoke(move || {
+            vanta_shell::webview::mutate_current(
+                req.url.as_deref(),
+                req.title.as_deref(),
+                req.is_visible,
+                req.hide_header,
+                req.back_button_visible,
+                req.show_domain_as_title,
+            );
+        });
+    });
+
+    if vanta_runtime::android::wayland::current().is_some() {
         println!(
-            "  webview: WARNING -- there is no Wayland host window, so nothing can be attached \
-             to and every openWindow (Join, sign-in, Robux) will be dropped. This run is on the \
-             X11 backend -- either VANTA_X11 is set, there is no WAYLAND_DISPLAY to use, or this is \
-             inside gamescope, whose Wayland server cannot host the engine's surface. \
-             Web views need the Wayland backend."
+            "  webview: embedded presenter installed; openWindow will attach to the Wayland host window"
+        );
+    } else {
+        println!(
+            "  webview: embedded presenter installed (X11/gamescope); openWindow will open in a \
+             standalone embedded window"
         );
     }
 }
@@ -1799,27 +1762,22 @@ fn claim_profile(opt: &Options) -> Result<vanta_shell::profile::Claim, String> {
 
 /// Free bytes on the filesystem holding `path`, or `None` if it cannot be asked.
 ///
-/// `df` rather than a `statvfs` binding, because this is a diagnostic and
-/// adding a crate for it would be the wrong trade. `None` is "unknown" and must
-/// never be reported as "full".
+/// Uses `libc::statvfs` directly (~2 µs, zero `fork`/`exec` after `libroblox.so`
+/// is mapped). `None` is "unknown" and must never be reported as "full".
 fn free_bytes(path: &std::path::Path) -> Option<u64> {
+    use std::os::unix::ffi::OsStrExt;
     let mut probe = path.to_path_buf();
     while !probe.exists() {
         probe = probe.parent()?.to_path_buf();
     }
-    let out = std::process::Command::new("df")
-        .args(["-Pk", "--output=avail"])
-        .arg(&probe)
-        .output()
-        .ok()?;
-    String::from_utf8(out.stdout)
-        .ok()?
-        .lines()
-        .nth(1)?
-        .trim()
-        .parse::<u64>()
-        .ok()
-        .map(|kb| kb * 1024)
+    let c_path = std::ffi::CString::new(probe.as_os_str().as_bytes()).ok()?;
+    let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
+    // SAFETY: `c_path` is NUL-terminated and `st` is valid writable storage.
+    if unsafe { libc::statvfs(c_path.as_ptr(), &mut st) } != 0 {
+        return None;
+    }
+    let unit = if st.f_frsize > 0 { st.f_frsize as u64 } else { st.f_bsize as u64 };
+    Some((st.f_bavail as u64).saturating_mul(unit))
 }
 
 /// Say so, loudly, when the disk is nearly full.
@@ -2019,7 +1977,8 @@ fn main() -> ExitCode {
         if n > 0 {
             println!("  {n} plugin asset overlay(s) registered");
         }
-        vanta_runtime::android::mods::init_from_active_profile();
+        let mods_count = vanta_runtime::android::mods::init_from_active_profile();
+        vanta_runtime::android::asset::sync_has_asset_overlays(mods_count > 0);
         if vanta_runtime::android::asset::start_watcher() {
             println!("  overlay: watching for changes (VANTA_OVERLAY_WATCH)");
         }
@@ -2034,6 +1993,19 @@ fn main() -> ExitCode {
         }
     }
     enter_run_dir(&mut opt);
+
+    // Bridge `VantaDeviceProfile` from profile/plugin flags into
+    // `VANTA_DEVICE_PROFILE` when the environment variable is unset, before
+    // spawning background threads or reading `device_identity()` in
+    // `native/init_params.cpp`.
+    if std::env::var_os(vanta_runtime::flags::DEVICE_PROFILE_ENV).is_none() {
+        let profile = vanta_runtime::flags::device_profile();
+        // SAFETY: called on the main thread before spawning worker threads or
+        // loading `libroblox.so`.
+        unsafe {
+            std::env::set_var(vanta_runtime::flags::DEVICE_PROFILE_ENV, profile.label());
+        }
+    }
 
     // Answers "which of my mod's files can never apply" without starting the
     // engine, which is the point: the check is against the APK's own entry
@@ -2117,9 +2089,11 @@ fn main() -> ExitCode {
     vanta_runtime::android::accessibility::start();
 
     // Before the engine loads, so the governor is already up when the shader
-    // compiles and the asset cache warms — the part of a launch most obviously
-    // bound by a CPU that has not been asked to hurry yet.
-    vanta_runtime::gamemode::register();
+    // compiles and the asset cache warms — spawned on a background thread so
+    // D-Bus/GameMode IPC never adds latency to cold startup.
+    let _ = std::thread::Builder::new()
+        .name("vanta-gamemode".into())
+        .spawn(vanta_runtime::gamemode::register);
 
     // Before the table is built, because `symtab::build` consults the same
     // selection to decide whether `libaaudio.so` exists at all, and a reader
@@ -2165,19 +2139,20 @@ fn main() -> ExitCode {
     let mut table = symtab::build(opt.host_libc, &imports);
 
     // An import another library in the same directory exports is the linker's
-    // to resolve against that library, and is not a gap. The Quest build's 73
-    // `xr*` and `ovr_*` imports are all of that kind, and counting them buried
-    // the three that were real. See `elf::defined_symbols_in_dir`.
-    let siblings = vanta_runtime::elf::defined_symbols_in_dir(std::path::Path::new(&opt.lib_dir));
-    let before = table.unprovidable.len();
-    table.unprovidable.retain(|u| !siblings.contains(&u.symbol));
-    let answered_by_siblings = before - table.unprovidable.len();
-    if answered_by_siblings > 0 {
-        println!(
-            "  {answered_by_siblings} more imports are exported by other libraries in {}, \
-             which the linker searches",
-            opt.lib_dir
-        );
+    // to resolve against that library, and is not a gap. Only scan sibling
+    // libraries when there are actually unprovidable imports to check.
+    if !table.unprovidable.is_empty() {
+        let siblings = vanta_runtime::elf::defined_symbols_in_dir(std::path::Path::new(&opt.lib_dir));
+        let before = table.unprovidable.len();
+        table.unprovidable.retain(|u| !siblings.contains(&u.symbol));
+        let answered_by_siblings = before - table.unprovidable.len();
+        if answered_by_siblings > 0 {
+            println!(
+                "  {answered_by_siblings} more imports are exported by other libraries in {}, \
+                 which the linker searches",
+                opt.lib_dir
+            );
+        }
     }
     let totals = table.totals();
 
@@ -3023,7 +2998,7 @@ fn main() -> ExitCode {
                                 .display()
                                 .to_string(),
                                 cache_file: format!("{cache}/cache/flag_cache.dat"),
-                                settings: settings_body.unwrap_or_default(),
+                                settings: std::sync::Mutex::new(settings_body),
                                 settings_source: settings_source.to_string(),
                                 flag_names: FLAG_NAMES.to_string(),
                             };
@@ -4950,11 +4925,6 @@ fn main() -> ExitCode {
                                                 // the same 1200 ms made from a thread of its
                                                 // own was healthy where it stalled the client
                                                 // when this thread slept (docs/NEXT.md).
-                                                let late_post = std::env::var("VANTA_LATE_POST_MS")
-                                                    .ok()
-                                                    .map_or(Some(250), |v| {
-                                                        if v == "off" { None } else { v.parse::<u64>().ok() }
-                                                    });
                                                 // `VANTA_POST_GATE` (ADR-065, #92) holds the post, on a
                                                 // launch the engine is waiting for it on, until the engine's log
                                                 // shows its first render step. It needs the thread below, so it
@@ -4963,19 +4933,15 @@ fn main() -> ExitCode {
                                                     Ok(v) => switch_on(Some(&v)),
                                                     Err(_) => vanta_runtime::post_gate::DEFAULT_ON,
                                                 };
-                                                // `VANTA_POST_ASYNC=1`: make the late post, and the retry that
-                                                // follows it, from a thread of their own so this one goes on to
-                                                // pump the looper at once (#92).
-                                                //
-                                                // Sleeping here keeps the pump -- and
-                                                // so the window's GTK main loop -- from running, and in launches
-                                                // where the engine had already started its Lua app on its own (a
-                                                // valid flag cache) every sleep of 330 ms or more was followed by
-                                                // a client stuck for good in `vkAcquireNextImageKHR` after four
-                                                // presents, waiting for the compositor to release a swapchain
-                                                // image (docs/NEXT.md). The post is made from this thread on
-                                                // Android's behalf anyway; that it may be made from another is
-                                                // `INFERRED` until a launch shows it.
+                                                // When `post_gate` is enabled and `VANTA_LATE_POST_MS` is unset,
+                                                // skip the redundant 250 ms pre-sleep because `post_gate::hold`
+                                                // already synchronizes on `stepDataModelJob: No DM yet` + settle.
+                                                let late_post = match std::env::var("VANTA_LATE_POST_MS") {
+                                                    Ok(v) => {
+                                                        if v == "off" { None } else { v.parse::<u64>().ok() }
+                                                    }
+                                                    Err(_) => Some(if post_gate { 0 } else { 250 }),
+                                                };
                                                 let own_thread = post_async() || post_gate;
                                                 if let (true, Some(ms)) = (own_thread, late_post) {
                                                     let post_f = lib
@@ -4995,7 +4961,9 @@ fn main() -> ExitCode {
                                                     );
                                                     let logs_dir = vanta_runtime::profile::engine_data().join("files/appData/logs");
                                                     let _ = std::thread::Builder::new().name("vanta-late-post".into()).spawn(move || {
-                                                        std::thread::sleep(std::time::Duration::from_millis(ms));
+                                                        if ms > 0 {
+                                                            std::thread::sleep(std::time::Duration::from_millis(ms));
+                                                        }
                                                         if let Some(extra) = extra {
                                                             if linker::game_activity::flags_failed() == 0 {
                                                                 println!("  post not held: the engine loaded its flags itself");
@@ -5341,6 +5309,10 @@ fn main() -> ExitCode {
                                                 // one call earlier than
                                                 // clipboard's but after the
                                                 // same precondition holds.
+                                                // Install the presenter BEFORE `webview::arm` so
+                                                // `WebView.isAvailable` and `initializeAndroidWebViewProtocol`
+                                                // observe the embedded presenter as already active.
+                                                install_webview_presenter();
                                                 vanta_runtime::webview::arm(|name| lib.symbol(name));
                                                 // Same shape, same moment,
                                                 // for a different later
@@ -5379,11 +5351,10 @@ fn main() -> ExitCode {
                                                 if opt.app_bridge {
                                                     vanta_runtime::game_launch::arm(|name| lib.symbol(name), &apk_path, width, height);
                                                 }
-                                                install_webview_presenter();
                                                 // The sign-in security check arrives as
                                                 // an app-bridge notification, not an
                                                 // `openWindow`, and uses the presenter
-                                                // just installed.
+                                                // installed above.
                                                 vanta_runtime::webview::install_app_bridge_sink();
 
                                                 // A dev-only trigger, in the same family as
