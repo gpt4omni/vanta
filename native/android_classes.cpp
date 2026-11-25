@@ -34,6 +34,11 @@
 static std::atomic<bool> g_game_left{false};
 extern "C" int vanta_take_game_left() { return g_game_left.exchange(false, std::memory_order_acq_rel) ? 1 : 0; }
 
+/// Weakly linked into `vanta-runtime`'s `webview::vanta_open_native_overlay` so
+/// standalone C++ unit tests that do not link `vanta-runtime` still link cleanly.
+extern "C" __attribute__((weak)) void vanta_open_native_overlay(
+    const char* url, const char* title);
+
 // ------------------------------------------------------- focused text box
 //
 // Which text box the engine currently has focus in, learned from
@@ -1083,11 +1088,81 @@ public:
         return out;
     }
 
+    /// Extract a plain string field from a flat JSON object (e.g. `"url"` or
+    /// `"title"`), decoding basic JSON escapes (`\/`, `\"`, `\\`). Returns empty
+    /// if the key is absent or malformed.
+    static std::string extract_json_string_field(const std::string& json, const char* key) {
+        std::string needle = std::string("\"") + key + "\"";
+        size_t pos = json.find(needle);
+        if (pos == std::string::npos) return {};
+        pos = json.find(':', pos + needle.size());
+        if (pos == std::string::npos) return {};
+        ++pos;
+        while (pos < json.size() && std::isspace(static_cast<unsigned char>(json[pos]))) {
+            ++pos;
+        }
+        if (pos >= json.size() || json[pos] != '"') return {};
+        ++pos;
+        std::string out;
+        while (pos < json.size()) {
+            char c = json[pos++];
+            if (c == '\\' && pos < json.size()) {
+                char esc = json[pos++];
+                if (esc == '"' || esc == '\\' || esc == '/') {
+                    out.push_back(esc);
+                } else {
+                    out.push_back('\\');
+                    out.push_back(esc);
+                }
+            } else if (c == '"') {
+                return out;
+            } else {
+                out.push_back(c);
+            }
+        }
+        return {};
+    }
+
+    /// Extract a URL (and optional title) from a DataModel notification payload.
+    /// Accepts either a raw `https://...` string or a JSON object carrying `"url"`.
+    static bool extract_overlay_target(const std::string& payload,
+                                       std::string& out_url,
+                                       std::string& out_title) {
+        if (payload.rfind("https://", 0) == 0 || payload.rfind("http://", 0) == 0) {
+            out_url = payload;
+            out_title.clear();
+            return true;
+        }
+        std::string url = extract_json_string_field(payload, "url");
+        if (url.empty()) {
+            url = extract_json_string_field(payload, "Url");
+        }
+        if (url.empty()) {
+            return false;
+        }
+        out_url = std::move(url);
+        out_title = extract_json_string_field(payload, "title");
+        if (out_title.empty()) {
+            out_title = extract_json_string_field(payload, "Title");
+        }
+        return true;
+    }
+
     /// The engine asking the platform to put a web page on screen: url, title.
     /// Corresponds to `BrowserService::openNativeOverlay` on the engine side,
     /// which logs the same two arguments as `openWebView_`.
     static void openNativeOverlay(ENV*, Class*, std::shared_ptr<String> url,
                                   std::shared_ptr<String> title) {
+        const char* url_c = url ? url->c_str() : nullptr;
+        const char* title_c = title ? title->c_str() : nullptr;
+        if (url_c && *url_c && vanta_open_native_overlay != nullptr) {
+            fprintf(stderr,
+                    "[roblox] openNativeOverlay -> vanta webview: %s (title: %s)\n",
+                    url_without_query(*url).c_str(),
+                    title_c ? title_c : "");
+            vanta_open_native_overlay(url_c, title_c);
+            return;
+        }
         fprintf(stderr,
                 "[roblox] web view requested, and Vanta has none: %s (title: %s)\n",
                 url ? url_without_query(*url).c_str() : "(null)",
@@ -1188,6 +1263,16 @@ public:
                 sink();
             }
             return;
+        }
+        if (kind == "OPEN_CUSTOM_WEBVIEW" || kind == "VIEW_PROFILE" || kind == "PURCHASE_ROBUX") {
+            std::string url;
+            std::string title;
+            if (extract_overlay_target(payload, url, title) && vanta_open_native_overlay != nullptr) {
+                fprintf(stderr, "[roblox] datamodel notification: %s -> %s\n",
+                        kind.c_str(), url_without_query(url).c_str());
+                vanta_open_native_overlay(url.c_str(), title.empty() ? nullptr : title.c_str());
+                return;
+            }
         }
         fprintf(stderr, "[roblox] datamodel notification: %s %s\n",
                 type ? type->c_str() : "(null)", payload.c_str());

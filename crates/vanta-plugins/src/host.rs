@@ -303,12 +303,18 @@ impl Plugin {
         self
     }
 
-    /// Read one request from the plugin. `None` at end of stream.
+    /// Maximum size of one JSON-RPC request line read from a plugin process
+    /// (1 MiB). Prevents a buggy or hostile plugin from OOMing the host by
+    /// streaming unbounded data without a newline.
+    pub const MAX_REQUEST_LINE_BYTES: usize = 1024 * 1024;
+
+    /// Read one request from the plugin, bounded at [`Self::MAX_REQUEST_LINE_BYTES`].
+    /// `None` at end of stream.
     pub fn next_request(&mut self) -> Option<Result<Request, String>> {
-        let mut line = String::new();
-        match self.stdout.read_line(&mut line) {
-            Ok(0) => None,
-            Ok(_) => Some(serde_json::from_str(line.trim()).map_err(|e| e.to_string())),
+        match read_bounded_line(&mut self.stdout, Self::MAX_REQUEST_LINE_BYTES) {
+            Ok(None) => None,
+            Ok(Some(Ok(line))) => Some(serde_json::from_str(line.trim()).map_err(|e| e.to_string())),
+            Ok(Some(Err(msg))) => Some(Err(msg)),
             Err(e) => Some(Err(e.to_string())),
         }
     }
@@ -729,7 +735,9 @@ impl Session {
         for subscriber in self.events.subscribers(event_type) {
             let subscriber = subscriber.to_string();
             if let Some(plugin) = self.plugins.get_mut(&subscriber) {
-                let _ = plugin.push(&Push { event: event_type.to_string(), payload: payload.clone() });
+                // Non-blocking offer via the subscriber's bounded Pump so a
+                // wedged subscriber pipe can never stall the Session broker.
+                let _ = plugin.offer(Push { event: event_type.to_string(), payload: payload.clone() });
             }
         }
         Response::Ok { id: req.id, result: serde_json::Value::Null }
@@ -740,6 +748,40 @@ impl Default for Session {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Read one newline-delimited line up to `max_bytes` using `Read::take`,
+/// discarding the remainder of any oversized line without unbounded allocation.
+fn read_bounded_line<R: BufRead>(
+    reader: &mut R,
+    max_bytes: usize,
+) -> std::io::Result<Option<Result<String, String>>> {
+    use std::io::Read;
+    let mut line = String::new();
+    let n = reader.take((max_bytes + 1) as u64).read_line(&mut line)?;
+    if n == 0 {
+        return Ok(None);
+    }
+    if n > max_bytes {
+        if !line.ends_with('\n') {
+            // Drain up to and including the next '\n' (or EOF) so subsequent
+            // reads stay line-aligned without consuming bytes of the next line.
+            loop {
+                let buf = reader.fill_buf()?;
+                if buf.is_empty() {
+                    break;
+                }
+                if let Some(pos) = buf.iter().position(|&b| b == b'\n') {
+                    reader.consume(pos + 1);
+                    break;
+                }
+                let len = buf.len();
+                reader.consume(len);
+            }
+        }
+        return Ok(Some(Err(format!("plugin request line exceeded {max_bytes} byte limit"))));
+    }
+    Ok(Some(Ok(line)))
 }
 
 fn respond(id: u64, result: Result<(), String>) -> Response {
@@ -1099,5 +1141,16 @@ mod tests {
             Response::Error { message, .. } => assert!(message.contains("no broker wired"), "{message}"),
             other => panic!("expected an explicit no-broker error, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn read_bounded_line_rejects_oversized_lines_and_preserves_next_frame() {
+        let oversized = format!("{}\n{{\"id\":2,\"method\":\"ping\"}}\n", "x".repeat(64));
+        let mut cursor = std::io::Cursor::new(oversized.into_bytes());
+        let first = read_bounded_line(&mut cursor, 32).unwrap().unwrap();
+        assert!(first.is_err(), "line longer than cap must return Err");
+        let second = read_bounded_line(&mut cursor, 64).unwrap().unwrap().unwrap();
+        assert_eq!(second.trim(), r#"{"id":2,"method":"ping"}"#);
+        assert!(read_bounded_line(&mut cursor, 64).unwrap().is_none());
     }
 }

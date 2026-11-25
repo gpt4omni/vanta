@@ -1293,22 +1293,26 @@ static aaudio_result_t AAudioStream_read(AAudioStream* stream, void* buffer, int
         s->read_residue_len = 0;
     }
 
-    const auto deadline =
-        std::chrono::steady_clock::now() +
-        std::chrono::nanoseconds(timeoutNanoseconds > 0 ? timeoutNanoseconds : 0);
+    // Track elapsed time from `start` rather than computing `now + timeout`:
+    // callers routinely pass `INT64_MAX` for an indefinite wait, and adding
+    // `INT64_MAX` nanoseconds to `steady_clock::now()` overflows signed 64-bit
+    // time_point arithmetic (UB, wrapping the deadline into the past).
+    const auto start = std::chrono::steady_clock::now();
     for (;;) {
         got += s->capture.read(dst + got, want - got);
         if (got >= want || timeoutNanoseconds <= 0) break;
-        if (std::chrono::steady_clock::now() >= deadline) break;
+        const int64_t raw_elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                        std::chrono::steady_clock::now() - start)
+                                        .count();
+        const int64_t elapsed = raw_elapsed > 0 ? raw_elapsed : 0;
+        if (elapsed >= timeoutNanoseconds) break;
         // A stop from another thread must end the wait rather than let it run
         // out the clock; `CaptureStream::close` is safe against a concurrent
         // `read` (the ring outlives the `pw_stream`), but there will be no
         // more samples, so waiting for them is waiting for nothing.
         if (s->state.load(std::memory_order_relaxed) != AAUDIO_STREAM_STATE_STARTED) break;
         // A millisecond, or whatever is left of the timeout if that is less.
-        auto remaining = std::chrono::duration_cast<std::chrono::nanoseconds>(
-                              deadline - std::chrono::steady_clock::now())
-                              .count();
+        const int64_t remaining = timeoutNanoseconds - elapsed;
         sleep_ns(remaining < 1000000 ? remaining : 1000000);
     }
 

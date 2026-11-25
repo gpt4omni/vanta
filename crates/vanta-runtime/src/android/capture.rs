@@ -38,6 +38,7 @@ const VK_TRUE: u32 = 1;
 const ST_SUBMIT_INFO: u32 = 4;
 const ST_MEMORY_ALLOCATE_INFO: u32 = 5;
 const ST_FENCE_CREATE_INFO: u32 = 8;
+const ST_SEMAPHORE_CREATE_INFO: u32 = 9;
 const ST_BUFFER_CREATE_INFO: u32 = 12;
 const ST_IMAGE_MEMORY_BARRIER: u32 = 45;
 const ST_COMMAND_POOL_CREATE_INFO: u32 = 39;
@@ -203,6 +204,15 @@ struct FenceCreateInfo {
 }
 
 #[repr(C)]
+struct SemaphoreCreateInfo {
+    s_type: u32,
+    _pad: u32,
+    next: *const c_void,
+    flags: u32,
+    _pad2: u32,
+}
+
+#[repr(C)]
 struct SubmitInfo {
     s_type: u32,
     _pad: u32,
@@ -322,6 +332,8 @@ struct DeviceFns {
     queue_submit: extern "C" fn(u64, u32, *const SubmitInfo, u64) -> i32,
     create_fence: extern "C" fn(u64, *const FenceCreateInfo, *const c_void, *mut u64) -> i32,
     destroy_fence: extern "C" fn(u64, u64, *const c_void),
+    create_semaphore: extern "C" fn(u64, *const SemaphoreCreateInfo, *const c_void, *mut u64) -> i32,
+    destroy_semaphore: extern "C" fn(u64, u64, *const c_void),
     wait_for_fences: extern "C" fn(u64, u32, *const u64, u32, u64) -> i32,
     reset_fences: extern "C" fn(u64, u32, *const u64) -> i32,
     map_memory: extern "C" fn(u64, u64, u64, u64, u32, *mut *mut c_void) -> i32,
@@ -357,12 +369,38 @@ pub fn capture(
     ),
     physical_device: *mut c_void,
 ) {
+    let _ = capture_synced(
+        queue,
+        swapchain,
+        image_index,
+        get_device_proc_addr,
+        get_physical_device_memory_properties,
+        physical_device,
+        &[],
+    );
+}
+
+/// Synchronized counterpart of [`capture`] that chains `VkPresentInfoKHR`'s
+/// `pWaitSemaphores` through the capture submit and returns the newly signaled
+/// semaphore (if any) for `vkQueuePresentKHR` to wait on.
+pub fn capture_synced(
+    queue: u64,
+    swapchain: u64,
+    image_index: u32,
+    get_device_proc_addr: extern "C" fn(u64, *const std::ffi::c_char) -> *mut c_void,
+    get_physical_device_memory_properties: extern "C" fn(
+        *mut c_void,
+        *mut PhysicalDeviceMemoryProperties,
+    ),
+    physical_device: *mut c_void,
+    wait_semaphores: &[u64],
+) -> Option<u64> {
     let mut pending = PENDING.lock().unwrap_or_else(|e| e.into_inner());
     let path = pending.take();
     PENDING_FAST.store(false, Ordering::Release);
     drop(pending);
-    let Some(path) = path else { return };
-    let r = do_capture(
+    let path = path?;
+    let (r, signaled) = do_capture_synced(
         queue,
         swapchain,
         image_index,
@@ -370,14 +408,16 @@ pub fn capture(
         get_physical_device_memory_properties,
         physical_device,
         &path,
+        wait_semaphores,
     );
     if let Err(ref e) = r {
         println!("[android] vulkan: capture failed: {e}");
     }
     finish(r);
+    signaled
 }
 
-fn do_capture(
+fn do_capture_synced(
     queue: u64,
     swapchain: u64,
     image_index: u32,
@@ -385,9 +425,13 @@ fn do_capture(
     gpdmp: extern "C" fn(*mut c_void, *mut PhysicalDeviceMemoryProperties),
     physical_device: *mut c_void,
     path: &str,
-) -> Result<String, String> {
-    let target = frame_target(queue, swapchain, image_index, gdpa)?;
-    copy_to_png(&target, gdpa, gpdmp, physical_device, path)
+    wait_semaphores: &[u64],
+) -> (Result<String, String>, Option<u64>) {
+    let target = match frame_target(queue, swapchain, image_index, gdpa) {
+        Ok(t) => t,
+        Err(e) => return (Err(e), None),
+    };
+    copy_to_png_synced(&target, gdpa, gpdmp, physical_device, path, wait_semaphores)
 }
 
 /// The image the engine is presenting, as a [`Target`]: the swapchain's own
@@ -479,6 +523,7 @@ struct ReadbackSlot {
     pool: u64,
     cb: u64,
     fence: u64,
+    semaphore: u64,
     mapped: *const u8,
     in_flight: bool,
 }
@@ -491,6 +536,7 @@ impl ReadbackSlot {
             pool: 0,
             cb: 0,
             fence: 0,
+            semaphore: 0,
             mapped: std::ptr::null(),
             in_flight: false,
         }
@@ -551,6 +597,9 @@ impl Drop for Readback {
             if !slot.mapped.is_null() {
                 (self.f.unmap_memory)(self.device, slot.memory);
             }
+            if slot.semaphore != 0 {
+                (self.f.destroy_semaphore)(self.device, slot.semaphore, std::ptr::null());
+            }
             if slot.fence != 0 {
                 (self.f.destroy_fence)(self.device, slot.fence, std::ptr::null());
             }
@@ -604,6 +653,8 @@ impl Readback {
             queue_submit: load!(gdpa, device, "vkQueueSubmit"),
             create_fence: load!(gdpa, device, "vkCreateFence"),
             destroy_fence: load!(gdpa, device, "vkDestroyFence"),
+            create_semaphore: load!(gdpa, device, "vkCreateSemaphore"),
+            destroy_semaphore: load!(gdpa, device, "vkDestroySemaphore"),
             wait_for_fences: load!(gdpa, device, "vkWaitForFences"),
             reset_fences: load!(gdpa, device, "vkResetFences"),
             map_memory: load!(gdpa, device, "vkMapMemory"),
@@ -729,6 +780,20 @@ impl Readback {
             }
             slot.fence = fence;
 
+            let sci = SemaphoreCreateInfo {
+                s_type: ST_SEMAPHORE_CREATE_INFO,
+                _pad: 0,
+                next: std::ptr::null(),
+                flags: 0,
+                _pad2: 0,
+            };
+            let mut semaphore = 0u64;
+            if (rb.f.create_semaphore)(device, &sci, std::ptr::null(), &mut semaphore) != VK_SUCCESS
+            {
+                return Err("vkCreateSemaphore failed".into());
+            }
+            slot.semaphore = semaphore;
+
             // Mapped once and left mapped. The memory is host-coherent, so nothing
             // needs invalidating between reads.
             let mut ptr: *mut c_void = std::ptr::null_mut();
@@ -749,6 +814,19 @@ impl Readback {
     /// slot's fence (submitted 2 frames ago) and hands back its pixels while
     /// the current frame's copy executes asynchronously on the GPU.
     pub fn read(&mut self, queue: u64, t: &Target) -> Result<&[u8], String> {
+        self.read_synced(queue, t, &[]).map(|(pixels, _)| pixels)
+    }
+
+    /// Submit `t`'s copy into the current free ring slot with its `VkFence`,
+    /// waiting on `wait_semaphores` (the engine's `VkPresentInfoKHR` render-done
+    /// semaphores) before `vkCmdCopyImageToBuffer` and signaling this slot's
+    /// semaphore for `vkQueuePresentKHR` to wait on.
+    pub fn read_synced(
+        &mut self,
+        queue: u64,
+        t: &Target,
+        wait_semaphores: &[u64],
+    ) -> Result<(&[u8], Option<u64>), String> {
         let (x, y, width, height) = t.rect;
         if (width, height) != (self.width, self.height) {
             return Err(format!(
@@ -758,16 +836,12 @@ impl Readback {
         }
         let idx = self.submit_idx;
         let slot_count = self.slots.len();
-        let (image, pool, cb, buffer, fence) = {
+        let (image, pool, cb, buffer, fence, slot_semaphore) = {
             let s = &self.slots[idx];
             debug_assert!(!s.in_flight, "submit slot must not be in flight");
-            (t.image, s.pool, s.cb, s.buffer, s.fence)
+            (t.image, s.pool, s.cb, s.buffer, s.fence, s.semaphore)
         };
         let f = &self.f;
-        // The pool is transient and the buffer one-time-submit, so recording
-        // again means resetting first. Without it the second frame's
-        // `vkBeginCommandBuffer` is a use of a buffer the specification says is
-        // invalid, which a driver is free to tolerate on the first run only.
         (f.reset_command_pool)(self.device, pool, 0);
 
         let begin = CommandBufferBeginInfo {
@@ -780,10 +854,6 @@ impl Readback {
         };
         (f.begin_command_buffer)(cb, &begin);
 
-        // The image arrives in PRESENT_SRC because the engine has just finished
-        // with it, and it must go back in PRESENT_SRC because the present that
-        // this capture is sitting inside is about to use it. Both barriers are
-        // therefore mandatory, and the second one is the easier to forget.
         let to_src = ImageMemoryBarrier {
             s_type: ST_IMAGE_MEMORY_BARRIER,
             _pad: 0,
@@ -806,8 +876,6 @@ impl Readback {
         };
         (f.cmd_pipeline_barrier)(
             cb,
-            // All commands rather than transfer: on the OpenXR path the last
-            // writer is the engine's colour attachment output, not a transfer.
             STAGE_ALL_COMMANDS,
             STAGE_TRANSFER,
             0,
@@ -855,20 +923,26 @@ impl Readback {
         );
         (f.end_command_buffer)(cb);
 
+        let chain_sem = !wait_semaphores.is_empty() && slot_semaphore != 0;
+        let wait_stages: Vec<u32> = if chain_sem {
+            vec![STAGE_TRANSFER; wait_semaphores.len()]
+        } else {
+            Vec::new()
+        };
         let submit = SubmitInfo {
             s_type: ST_SUBMIT_INFO,
             _pad: 0,
             next: std::ptr::null(),
-            wait_semaphore_count: 0,
+            wait_semaphore_count: if chain_sem { wait_semaphores.len() as u32 } else { 0 },
             _pad2: 0,
-            wait_semaphores: std::ptr::null(),
-            wait_dst_stage_mask: std::ptr::null(),
+            wait_semaphores: if chain_sem { wait_semaphores.as_ptr() } else { std::ptr::null() },
+            wait_dst_stage_mask: if chain_sem { wait_stages.as_ptr() } else { std::ptr::null() },
             command_buffer_count: 1,
             _pad3: 0,
             command_buffers: &cb,
-            signal_semaphore_count: 0,
+            signal_semaphore_count: u32::from(chain_sem),
             _pad4: 0,
-            signal_semaphores: std::ptr::null(),
+            signal_semaphores: if chain_sem { &slot_semaphore } else { std::ptr::null() },
         };
         if (f.queue_submit)(queue, 1, &submit, fence) != VK_SUCCESS {
             return Err("vkQueueSubmit failed".into());
@@ -876,8 +950,6 @@ impl Readback {
         self.slots[idx].in_flight = true;
 
         let harvest_idx = if slot_count == 1 || self.last_ready.is_none() {
-            // Single-slot screenshot or frame 0 of recording: wait on this
-            // slot's fence so the caller gets real pixels immediately.
             if (f.wait_for_fences)(self.device, 1, &fence, VK_TRUE, u64::MAX) != VK_SUCCESS {
                 return Err("vkWaitForFences failed".into());
             }
@@ -891,8 +963,6 @@ impl Readback {
         } else {
             let oldest = (idx + 1) % slot_count;
             if self.slots[oldest].in_flight {
-                // Steady state: harvest the oldest in-flight slot (submitted
-                // 2 frames ago) without stalling on the current frame.
                 let oldest_fence = self.slots[oldest].fence;
                 if (f.wait_for_fences)(self.device, 1, &oldest_fence, VK_TRUE, u64::MAX) != VK_SUCCESS
                 {
@@ -906,19 +976,22 @@ impl Readback {
                 self.submit_idx = oldest;
                 oldest
             } else {
-                // Ring warmup (frames 1..slot_count-1): let newly submitted
-                // copies execute asynchronously while re-serving the primed slot.
                 self.submit_idx = oldest;
                 self.last_ready.expect("checked is_some above")
             }
         };
 
+        let signaled = chain_sem.then_some(slot_semaphore);
         // SAFETY: `mapped` is `size` bytes of host-coherent memory owned by
         // `self.slots[harvest_idx]`, which is no longer in flight on the GPU.
-        Ok(unsafe { std::slice::from_raw_parts(self.slots[harvest_idx].mapped, self.size) })
+        Ok((
+            unsafe { std::slice::from_raw_parts(self.slots[harvest_idx].mapped, self.size) },
+            signaled,
+        ))
     }
 }
 
+#[cfg(all(feature = "vr", target_arch = "x86_64"))]
 fn copy_to_png(
     t: &Target,
     gdpa: extern "C" fn(u64, *const std::ffi::c_char) -> *mut c_void,
@@ -926,10 +999,35 @@ fn copy_to_png(
     physical_device: *mut c_void,
     path: &str,
 ) -> Result<String, String> {
+    copy_to_png_synced(t, gdpa, gpdmp, physical_device, path, &[]).0
+}
+
+fn copy_to_png_synced(
+    t: &Target,
+    gdpa: extern "C" fn(u64, *const std::ffi::c_char) -> *mut c_void,
+    gpdmp: extern "C" fn(*mut c_void, *mut PhysicalDeviceMemoryProperties),
+    physical_device: *mut c_void,
+    path: &str,
+    wait_semaphores: &[u64],
+) -> (Result<String, String>, Option<u64>) {
     let (_, _, width, height) = t.rect;
-    let mut rb = Readback::new_with_slots(t, gdpa, gpdmp, physical_device, 1)?;
-    let pixels = rb.read(t.queue, t)?;
-    write_png(path, width, height, pixels, t.format).map(|_| format!("{path} {width}x{height}"))
+    let mut rb = match Readback::new_with_slots(t, gdpa, gpdmp, physical_device, 1) {
+        Ok(rb) => rb,
+        Err(e) => return (Err(e), None),
+    };
+    let (pixels, signaled) = match rb.read_synced(t.queue, t, wait_semaphores) {
+        Ok(res) => res,
+        Err(e) => return (Err(e), None),
+    };
+    let written = write_png(path, width, height, pixels, t.format)
+        .map(|_| format!("{path} {width}x{height}"));
+    // Keep the 1-slot Readback (and its signaled semaphore) alive until the
+    // next `vkQueuePresentKHR` on the Vulkan present thread so the driver can
+    // wait on `signaled` during this frame's present.
+    if signaled.is_some() {
+        crate::recording::retire_readback(rb);
+    }
+    (written, signaled)
 }
 
 /// Whether a swapchain format stores blue first.
@@ -1065,9 +1163,12 @@ mod tests {
         mem_to_buf: std::collections::HashMap<u64, u64>,
         cb_to_buf: std::collections::HashMap<u64, u64>,
         submits: Vec<(u64, u64)>, // (cb, fence)
+        submit_waits: Vec<Vec<u64>>,
+        submit_signals: Vec<Vec<u64>>,
         waits: Vec<Vec<u64>>,
         resets: Vec<u64>,
         destroyed_fences: Vec<u64>,
+        destroyed_semaphores: Vec<u64>,
         destroyed_pools: Vec<u64>,
         destroyed_buffers: Vec<u64>,
         freed_memories: Vec<u64>,
@@ -1083,9 +1184,12 @@ mod tests {
                 mem_to_buf: std::collections::HashMap::new(),
                 cb_to_buf: std::collections::HashMap::new(),
                 submits: Vec::new(),
+                submit_waits: Vec::new(),
+                submit_signals: Vec::new(),
                 waits: Vec::new(),
                 resets: Vec::new(),
                 destroyed_fences: Vec::new(),
+                destroyed_semaphores: Vec::new(),
                 destroyed_pools: Vec::new(),
                 destroyed_buffers: Vec::new(),
                 freed_memories: Vec::new(),
@@ -1160,10 +1264,23 @@ mod tests {
     extern "C" fn mock_submit(_q: u64, _cnt: u32, info: *const SubmitInfo, fence: u64) -> i32 {
         let mut g = MOCK.lock().unwrap();
         let m = g.as_mut().unwrap();
-        let cb = unsafe { *(*info).command_buffers };
+        let si = unsafe { &*info };
+        let cb = unsafe { *si.command_buffers };
+        let wait_sems = if si.wait_semaphore_count > 0 && !si.wait_semaphores.is_null() {
+            unsafe { std::slice::from_raw_parts(si.wait_semaphores, si.wait_semaphore_count as usize) }.to_vec()
+        } else {
+            Vec::new()
+        };
+        let sig_sems = if si.signal_semaphore_count > 0 && !si.signal_semaphores.is_null() {
+            unsafe { std::slice::from_raw_parts(si.signal_semaphores, si.signal_semaphore_count as usize) }.to_vec()
+        } else {
+            Vec::new()
+        };
         assert!(!m.in_flight_fences.contains(&fence), "resubmitted an in-flight fence");
         m.in_flight_fences.insert(fence);
         m.submits.push((cb, fence));
+        m.submit_waits.push(wait_sems);
+        m.submit_signals.push(sig_sems);
         VK_SUCCESS
     }
     extern "C" fn mock_create_fence(_d: u64, _: *const FenceCreateInfo, _: *const c_void, out: *mut u64) -> i32 {
@@ -1176,6 +1293,19 @@ mod tests {
         let m = g.as_mut().unwrap();
         assert!(!m.in_flight_fences.contains(&f), "destroyed fence while still in flight");
         m.destroyed_fences.push(f);
+    }
+    extern "C" fn mock_create_semaphore(
+        _d: u64,
+        _: *const SemaphoreCreateInfo,
+        _: *const c_void,
+        out: *mut u64,
+    ) -> i32 {
+        let h = MOCK.lock().unwrap().as_mut().unwrap().alloc_handle();
+        unsafe { *out = h };
+        VK_SUCCESS
+    }
+    extern "C" fn mock_destroy_semaphore(_d: u64, s: u64, _: *const c_void) {
+        MOCK.lock().unwrap().as_mut().unwrap().destroyed_semaphores.push(s);
     }
     extern "C" fn mock_wait_fences(_d: u64, cnt: u32, fences: *const u64, _: u32, _: u64) -> i32 {
         let mut g = MOCK.lock().unwrap();
@@ -1231,6 +1361,8 @@ mod tests {
             "vkQueueSubmit" => mock_submit as *const () as *mut c_void,
             "vkCreateFence" => mock_create_fence as *const () as *mut c_void,
             "vkDestroyFence" => mock_destroy_fence as *const () as *mut c_void,
+            "vkCreateSemaphore" => mock_create_semaphore as *const () as *mut c_void,
+            "vkDestroySemaphore" => mock_destroy_semaphore as *const () as *mut c_void,
             "vkWaitForFences" => mock_wait_fences as *const () as *mut c_void,
             "vkResetFences" => mock_reset_fences as *const () as *mut c_void,
             "vkMapMemory" => mock_map as *const () as *mut c_void,
@@ -1300,11 +1432,37 @@ mod tests {
         let g = MOCK.lock().unwrap();
         let m = g.as_ref().unwrap();
         assert_eq!(m.destroyed_fences.len(), RING_SLOTS);
+        assert_eq!(m.destroyed_semaphores.len(), RING_SLOTS);
         assert_eq!(m.destroyed_pools.len(), RING_SLOTS);
         assert_eq!(m.destroyed_buffers.len(), RING_SLOTS);
         assert_eq!(m.freed_memories.len(), RING_SLOTS);
         assert_eq!(m.unmapped_memories.len(), RING_SLOTS);
         assert!(m.in_flight_fences.is_empty(), "all in-flight fences must be waited before drop");
         assert_eq!(m.waits.last().unwrap().len(), 2, "drop waits on the two remaining in-flight slots");
+    }
+
+    #[test]
+    fn read_synced_chains_wait_and_signal_semaphores() {
+        let _guard = MOCK_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        *MOCK.lock().unwrap() = Some(MockVk::new());
+
+        let mut rb = Readback::new(&make_target(42), mock_gdpa, mock_gpdmp, std::ptr::null_mut())
+            .expect("ring created");
+        let slot0_sem = rb.slots[0].semaphore;
+        assert_ne!(slot0_sem, 0);
+
+        let (pixels, signaled) = rb.read_synced(1, &make_target(42), &[777, 888]).unwrap();
+        assert_eq!(pixels[0], 42);
+        assert_eq!(signaled, Some(slot0_sem));
+        {
+            let g = MOCK.lock().unwrap();
+            let m = g.as_ref().unwrap();
+            assert_eq!(m.submit_waits[0], vec![777, 888]);
+            assert_eq!(m.submit_signals[0], vec![slot0_sem]);
+        }
+        drop(rb);
+        let g = MOCK.lock().unwrap();
+        let m = g.as_ref().unwrap();
+        assert_eq!(m.destroyed_semaphores.len(), RING_SLOTS);
     }
 }

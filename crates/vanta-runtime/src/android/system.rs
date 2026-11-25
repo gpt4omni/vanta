@@ -74,16 +74,38 @@ fn cache_root() -> PathBuf {
         .join("vanta/system")
 }
 
-/// Every font file the host has, by file name. First writer wins.
-fn host_fonts() -> BTreeMap<String, PathBuf> {
-    let mut found = BTreeMap::new();
+/// The host font roots scanned to build `/system/fonts`.
+fn font_roots() -> Vec<PathBuf> {
     let mut roots: Vec<PathBuf> = FONT_DIRS.iter().map(PathBuf::from).collect();
     if let Some(home) = std::env::var_os("HOME") {
         roots.push(PathBuf::from(&home).join(".local/share/fonts"));
         roots.push(PathBuf::from(&home).join(".fonts"));
     }
+    roots
+}
+
+/// Fingerprint of the scanned font roots using each root's mtime (plus version
+/// header so future alias table updates invalidate cleanly).
+fn roots_stamp(roots: &[PathBuf]) -> String {
+    use std::fmt::Write;
+    let mut out = format!("v1;aliases={}\n", ALIASES.len());
     for root in roots {
-        walk(&root, &mut found, 0);
+        let mtime = std::fs::metadata(root)
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| format!("{}.{:09}", d.as_secs(), d.subsec_nanos()))
+            .unwrap_or_else(|| "missing".to_string());
+        let _ = writeln!(out, "{}={mtime}", root.display());
+    }
+    out
+}
+
+/// Every font file under `roots`, by file name. First writer wins.
+fn host_fonts_in(roots: &[PathBuf]) -> BTreeMap<String, PathBuf> {
+    let mut found = BTreeMap::new();
+    for root in roots {
+        walk(root, &mut found, 0);
     }
     found
 }
@@ -132,12 +154,17 @@ fn resolve<'a>(
 /// directory Vanta controls and show up in `VANTA_TRACE_PATHS=1` as a miss
 /// there — which is a far better diagnostic than a miss in a `/system` that
 /// cannot exist.
-pub fn install() -> PathBuf {
-    let root = cache_root();
-    let fonts_dir = root.join("fonts");
-    let _ = std::fs::create_dir_all(&fonts_dir);
+/// Populate `fonts_dir` from `roots` unless `.stamp` already matches all
+/// root mtimes. Returns `Some(linked)` when a rebuild ran, or `None` when the
+/// warm stamp matched and the walk was skipped.
+fn sync_fonts(fonts_dir: &Path, roots: &[PathBuf]) -> Option<usize> {
+    let stamp_path = fonts_dir.join(".stamp");
+    let expected = roots_stamp(roots);
+    if std::fs::read_to_string(&stamp_path).ok().as_deref() == Some(expected.as_str()) {
+        return None;
+    }
 
-    let fonts = host_fonts();
+    let fonts = host_fonts_in(roots);
     let mut linked = 0usize;
 
     // Every host font under its own name first, so an exact request for a font
@@ -159,9 +186,25 @@ pub fn install() -> PathBuf {
             }
         }
     }
+    let _ = std::fs::write(&stamp_path, expected);
+    Some(linked)
+}
+
+pub fn install() -> PathBuf {
+    let root = cache_root();
+    let fonts_dir = root.join("fonts");
+    let _ = std::fs::create_dir_all(&fonts_dir);
+
+    let roots = font_roots();
+    let rebuilt = sync_fonts(&fonts_dir, &roots);
 
     if std::env::var_os("VANTA_ANDROID_TRACE").is_some() {
-        println!("[android] /system served from {} ({linked} fonts)", root.display());
+        match rebuilt {
+            Some(linked) => {
+                println!("[android] /system served from {} ({linked} fonts)", root.display())
+            }
+            None => println!("[android] /system served from {} (warm stamp)", root.display()),
+        }
     }
 
     if let Ok(c) = CString::new(root.to_string_lossy().as_bytes()) {
@@ -216,5 +259,27 @@ mod tests {
     fn resolve_gives_up_rather_than_guessing() {
         let fonts = BTreeMap::new();
         assert!(resolve(&["NotoColorEmoji.ttf"], &fonts).is_none());
+    }
+
+    #[test]
+    fn sync_fonts_skips_warm_walk_when_stamp_matches() {
+        let base = std::env::temp_dir().join(format!("vanta-sys-stamp-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let src = base.join("host_fonts");
+        let dst = base.join("out_fonts");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::create_dir_all(&dst).unwrap();
+        std::fs::write(src.join("DejaVuSans.ttf"), b"font").unwrap();
+
+        let roots = vec![src.clone()];
+        let first = sync_fonts(&dst, &roots);
+        assert!(first.is_some(), "cold run must populate symlinks");
+        assert!(dst.join("DejaVuSans.ttf").exists());
+        assert!(dst.join(".stamp").exists());
+
+        let second = sync_fonts(&dst, &roots);
+        assert_eq!(second, None, "warm run with unchanged root mtime must skip walk");
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

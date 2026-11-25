@@ -257,10 +257,62 @@ struct InputState {
     /// left alone until it goes back to zero. Android's own `downTime` has this
     /// exact meaning: constant across a MOVE/UP sequence, not per-event.
     down_time_ms: i64,
+    /// Last pointer coordinates seen on this window, used when synthesising
+    /// button releases on `FocusOut`.
+    last_pos: (f32, f32),
     clock: std::time::Instant,
     /// Keys the engine has been told are down and not yet told are up, as
     /// (Android keycode, X keycode). See the `FOCUS_OUT` arm.
     held_keys: Vec<(i32, i32)>,
+}
+
+/// Coalesces consecutive locked-pointer `MotionNotify` deltas within one
+/// `pump_input_events` batch so high-polling mice emit 1 `deliver_mouse` +
+/// 1 `pass_mouse_move_delta` + 1 `XWarpPointer` + 1 `XFlush` per batch.
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
+struct LockedMotionBatch {
+    dx: i32,
+    dy: i32,
+    centre: (i32, i32),
+    had_event: bool,
+}
+
+impl LockedMotionBatch {
+    fn accumulate(&mut self, centre: (i32, i32), dx: i32, dy: i32) {
+        self.dx = self.dx.saturating_add(dx);
+        self.dy = self.dy.saturating_add(dy);
+        self.centre = centre;
+        self.had_event = true;
+    }
+
+    fn take(&mut self) -> Option<((i32, i32), i32, i32)> {
+        if !self.had_event {
+            return None;
+        }
+        let out = (self.centre, self.dx, self.dy);
+        *self = Self::default();
+        Some(out)
+    }
+}
+
+/// Ordered sequence of `(before_mask, button_bit)` pairs needed to release
+/// every button bit in `stranded` cleanly, matching Android's button-up state
+/// transitions (`ACTION_BUTTON_RELEASE` per bit, `ACTION_UP` on the last bit).
+fn stranded_button_releases(mut stranded: i32) -> Vec<(i32, i32)> {
+    let mut out = Vec::new();
+    for button in [
+        super::input::BUTTON_PRIMARY,
+        super::input::BUTTON_SECONDARY,
+        super::input::BUTTON_TERTIARY,
+        super::input::BUTTON_BACK,
+        super::input::BUTTON_FORWARD,
+    ] {
+        if stranded & button != 0 {
+            out.push((stranded, button));
+            stranded &= !button;
+        }
+    }
+    out
 }
 
 /// Record that `key` went down or up, so a focus loss can release whatever is
@@ -820,6 +872,7 @@ pub fn open(width: u32, height: u32, title: &str) -> Result<&'static HostWindow,
         input: Mutex::new(InputState {
             buttons: 0,
             down_time_ms: 0,
+            last_pos: (width as f32 / 2.0, height as f32 / 2.0),
             clock: std::time::Instant::now(),
             held_keys: Vec::new(),
         }),
@@ -1531,6 +1584,7 @@ impl HostWindow {
             state.buttons &= !android_button;
         }
         let down_time = state.down_time_ms;
+        state.last_pos = (x, y);
         drop(state);
         // Real Android mouse input delivers `ACTION_DOWN` for the first button
         // only, `ACTION_BUTTON_PRESS` for each, and `ACTION_UP` when the last
@@ -1544,7 +1598,7 @@ impl HostWindow {
         pass_mouse_button(x, y, press, android_button);
     }
 
-    fn dispatch_motion(&self, handle: i64, ev: &XInputEvent) {
+    fn dispatch_motion(&self, handle: i64, ev: &XInputEvent, locked_batch: &mut LockedMotionBatch) {
         {
             let mut state = self
                 .pointer_lock
@@ -1553,99 +1607,24 @@ impl HostWindow {
 
             if state.locked {
                 let centre = state.centre;
-
-                let (dx, dy) = match state.locked_motion((ev.x, ev.y)) {
+                match state.locked_motion((ev.x, ev.y)) {
                     LockStep::Echo => return,
-                    LockStep::Real(dx, dy) => (dx, dy),
-                };
-                let (cx, cy) = centre;
-
-                // Preserve the existing Android/AGDK motion path while the
-                // pointer is captured. The absolute position remains the
-                // capture centre, but Roblox still sees the same MotionEvent
-                // sequence it saw before pointer locking was introduced.
-                let input = self
-                    .input
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner());
-
-                let buttons = input.buttons;
-                let down_time = input.down_time_ms;
-                let now = input.clock.elapsed().as_millis() as i64;
-                drop(input);
-
-                let action =
-                    if buttons != 0 {
-                        ACTION_MOVE
-                    } else {
-                        ACTION_HOVER_MOVE
-                    };
-
-                deliver_mouse(
-                    handle,
-                    action,
-                    cx as f32,
-                    cy as f32,
-                    buttons,
-                    0,
-                    now,
-                    down_time,
-                );
-
-                // The relative delta is still delivered through Roblox's
-                // NativeInputInterface path for camera rotation.
-                if dx != 0 || dy != 0 {
-                    drop(state);
-
-                    if super::input::trace_mouse() {
-                        eprintln!(
-                            "[vanta] X11 pointer lock: motion at ({}, {}) -> delta ({dx}, {dy}), re-warping to ({cx}, {cy})",
-                            ev.x, ev.y
-                        );
-                    }
-
-                    super::input::pass_mouse_move_delta(
-                        cx as f32,
-                        cy as f32,
-                        dx as f32,
-                        dy as f32,
-                    );
-
-                    let mut state = self
-                        .pointer_lock
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner());
-
-                    state.ignore_next_warp = true;
-                    drop(state);
-
-                    unsafe {
-                        (self.xlib.warp_pointer)(
-                            self.display,
-                            0,
-                            self.window,
-                            0,
-                            0,
-                            0,
-                            0,
-                            cx,
-                            cy,
-                        );
-                        (self.xlib.flush)(self.display);
+                    LockStep::Real(dx, dy) => {
+                        locked_batch.accumulate(centre, dx, dy);
+                        return;
                     }
                 }
-
-                return;
             }
         }
 
         let (x, y) = (ev.x as f32, ev.y as f32);
-        let state = self
+        let mut state = self
             .input
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         let now = state.clock.elapsed().as_millis() as i64;
         let (buttons, down_time) = (state.buttons, state.down_time_ms);
+        state.last_pos = (x, y);
         drop(state);
         // A held button makes this a drag — part of the gesture the DOWN
         // started, hence ACTION_MOVE with the same down_time. No button held
@@ -1657,6 +1636,62 @@ impl HostWindow {
         // real and the engine consumes it, it is simply not what hit-tests the
         // Lua UI.
         pass_mouse_move(x, y);
+    }
+
+    fn flush_locked_motion(&self, handle: i64, locked_batch: &mut LockedMotionBatch) {
+        let Some(((cx, cy), dx, dy)) = locked_batch.take() else {
+            return;
+        };
+        let (buttons, down_time, now) = {
+            let input = self.input.lock().unwrap_or_else(|e| e.into_inner());
+            (input.buttons, input.down_time_ms, input.clock.elapsed().as_millis() as i64)
+        };
+        let action = if buttons != 0 { ACTION_MOVE } else { ACTION_HOVER_MOVE };
+        deliver_mouse(handle, action, cx as f32, cy as f32, buttons, 0, now, down_time);
+
+        if dx != 0 || dy != 0 {
+            if super::input::trace_mouse() {
+                eprintln!(
+                    "[vanta] X11 pointer lock: coalesced delta ({dx}, {dy}), re-warping to ({cx}, {cy})"
+                );
+            }
+            super::input::pass_mouse_move_delta(cx as f32, cy as f32, dx as f32, dy as f32);
+
+            let mut state = self.pointer_lock.lock().unwrap_or_else(|e| e.into_inner());
+            if state.locked {
+                state.ignore_next_warp = true;
+                drop(state);
+                // SAFETY: `self.display` and `self.window` are live X11 handles
+                // owned by `self`.
+                unsafe {
+                    (self.xlib.warp_pointer)(
+                        self.display,
+                        0,
+                        self.window,
+                        0,
+                        0,
+                        0,
+                        0,
+                        cx,
+                        cy,
+                    );
+                    (self.xlib.flush)(self.display);
+                }
+            }
+        }
+    }
+
+    fn sync_pointer_lock_throttled(&self, force: bool) {
+        static LAST_SYNC_MS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+        let now = self.now_ms();
+        if !force {
+            let last = LAST_SYNC_MS.load(Ordering::Relaxed);
+            if now.saturating_sub(last) < 16 {
+                return;
+            }
+        }
+        LAST_SYNC_MS.store(now, Ordering::Relaxed);
+        self.sync_pointer_lock();
     }
 
     /// Whether the KeyRelease in `buf` is the first half of an auto-repeat the
@@ -1957,6 +1992,17 @@ impl HostWindow {
         // edit here, before the engine's connection is drained below. Ahead of
         // the early return so an idle pump still runs it.
         super::x11_text::pump(handle);
+        // When the X11 text editor is off/unavailable, still drain the default
+        // GLib main context so standalone embedded WebView windows on X11
+        // receive `MainContext::default().invoke(...)` and GTK events.
+        if !super::x11_text::available() {
+            let ctx = gtk4::glib::MainContext::default();
+            for _ in 0..32 {
+                if !ctx.iteration(false) {
+                    break;
+                }
+            }
+        }
 
         // Before draining input: if the engine has opened or closed an editor
         // since last time, acknowledge it. Cheap — an atomic load and a
@@ -1971,7 +2017,7 @@ impl HostWindow {
         // pure non-blocking check.
         let ready = unsafe { poll(&mut pfd as *mut PollFd as *mut c_void, 1, 0) };
         if ready <= 0 {
-            self.sync_pointer_lock();
+            self.sync_pointer_lock_throttled(false);
             return;
         }
 
@@ -1979,6 +2025,8 @@ impl HostWindow {
         // call into unbounded work inside the render loop's own timing
         // budget.
         const MAX_EVENTS_PER_DRAIN: usize = 64;
+        let mut locked_batch = LockedMotionBatch::default();
+        let mut lock_state_changed = false;
         for _ in 0..MAX_EVENTS_PER_DRAIN {
             // SAFETY: `self.display` is open; reached only after `poll` above
             // found the connection readable (or a previous iteration left
@@ -1995,50 +2043,57 @@ impl HostWindow {
 
             match event_type {
                 BUTTON_PRESS | BUTTON_RELEASE => {
+                    self.flush_locked_motion(handle, &mut locked_batch);
+                    lock_state_changed = true;
                     let ev = unsafe { &*(buf.as_ptr() as *const XInputEvent) };
                     self.dispatch_button(handle, ev, event_type == BUTTON_PRESS);
                 }
                 MOTION_NOTIFY => {
                     let ev = unsafe { &*(buf.as_ptr() as *const XInputEvent) };
-                    self.dispatch_motion(handle, ev);
+                    self.dispatch_motion(handle, ev, &mut locked_batch);
                 }
                 KEY_PRESS | KEY_RELEASE => {
+                    self.flush_locked_motion(handle, &mut locked_batch);
                     if event_type == KEY_RELEASE && self.release_is_autorepeat(&buf) {
                         continue;
                     }
+                    lock_state_changed = true;
                     self.dispatch_key(handle, &mut buf, event_type == KEY_PRESS);
                 }
                 FOCUS_IN => {
+                    lock_state_changed = true;
                     vanta_shell::x11_editor::notify_engine_focus_in();
                 }
                 FOCUS_OUT => {
+                    self.flush_locked_motion(handle, &mut locked_batch);
+                    lock_state_changed = true;
                     self.release_pointer_lock();
                     if !super::x11_text::owns_keyboard() {
                         vanta_shell::x11_editor::notify_engine_focus_out();
                     }
 
-                    let stranded = {
+                    let (stranded_buttons, down_time, last_pos, stranded) = {
                         let mut state = self.input.lock().unwrap_or_else(|e| e.into_inner());
+                        let btns = state.buttons;
+                        let dt = state.down_time_ms;
+                        let pos = state.last_pos;
                         state.buttons = 0;
-                        std::mem::take(&mut state.held_keys)
+                        let keys = std::mem::take(&mut state.held_keys);
+                        (btns, dt, pos, keys)
                     };
 
-                    // **Let go of every key the engine still thinks is down.**
-                    // X only sends key events to the focused client, so a key
-                    // released while another window has focus never produces a
-                    // KeyRelease here, and the engine goes on walking in the
-                    // direction it was last told. Issue #41 describes exactly
-                    // that on X11: movement continuing in the previous
-                    // direction for about five seconds after the camera's
-                    // warp/grab cycle, which releases the grab through this
-                    // arm. The Wayland backend has done this on
-                    // `wl_keyboard.leave` for some time; this backend kept no
-                    // held-key set to do it with. Measured on a private Xvfb: a key held
-                    // by XTest, then `XSetInputFocus` onto another window, produces
-                    // the release here. `INFERRED` that this is the whole of #41's
-                    // second symptom, which was reported on XFCE with a window
-                    // manager this was not run under; a release for a key that is
-                    // up is harmless, and a missing one is the reported bug's shape.
+                    if stranded_buttons != 0 {
+                        let now = self.now_ms();
+                        let (x, y) = last_pos;
+                        for (before, button) in stranded_button_releases(stranded_buttons) {
+                            deliver_mouse_button(handle, false, before, button, x, y, now, down_time);
+                            pass_mouse_button(x, y, false, button);
+                        }
+                        if super::input::trace_mouse() {
+                            eprintln!("[vanta] X11 focus out: released stranded mouse buttons ({stranded_buttons:#x})");
+                        }
+                    }
+
                     if !stranded.is_empty() {
                         let now = self.now_ms();
                         for (keycode, x_keycode) in stranded {
@@ -2051,36 +2106,22 @@ impl HostWindow {
                     }
                 }
                 EXPOSE => {
-                    // SAFETY: `event_type == EXPOSE` means `XNextEvent` just
-                    // filled `buf` as the `XExposeEvent` member of Xlib's
-                    // `XEvent` union — a different layout from
-                    // `XInputEvent` above (see `XExposeEvent`'s own doc
-                    // comment), but the one this specific event type is
-                    // documented to have.
                     let ev = unsafe { &*(buf.as_ptr() as *const XExposeEvent) };
                     if is_final_expose(ev.count) {
                         deliver_surface_redraw(handle);
                     }
                 }
                 CONFIGURE_NOTIFY => {
-                    // SAFETY: the event type says `XNextEvent` filled `buf` as
-                    // the `XConfigureEvent` member of Xlib's union.
+                    self.flush_locked_motion(handle, &mut locked_batch);
                     let ev = unsafe { &*(buf.as_ptr() as *const XConfigureEvent) };
                     self.dispatch_configure(handle, ev.width, ev.height);
                 }
                 CLIENT_MESSAGE => {
-                    // `WM_DELETE_WINDOW` arrives as a ClientMessage whose
-                    // `message_type` is WM_PROTOCOLS and whose first data word
-                    // is the delete atom -- the same offsets `open` writes by
-                    // hand. Read unaligned, since `buf` is a byte array.
                     let message_type =
                         unsafe { std::ptr::read_unaligned(buf.as_ptr().add(40) as *const c_ulong) };
                     let protocol =
                         unsafe { std::ptr::read_unaligned(buf.as_ptr().add(56) as *const c_ulong) };
                     if message_type == self.wm_protocols && protocol == self.wm_delete_window {
-                        // Recorded, not acted on: the pump reads it and
-                        // `VANTA_NO_CLOSE_EXIT` decides whether it ends the
-                        // run, the same as a Wayland close.
                         if !WINDOW_CLOSED.swap(true, Ordering::AcqRel) {
                             println!("[android] X11: the window manager asked the window to close");
                         }
@@ -2090,7 +2131,8 @@ impl HostWindow {
             }
         }
 
-        self.sync_pointer_lock();
+        self.flush_locked_motion(handle, &mut locked_batch);
+        self.sync_pointer_lock_throttled(lock_state_changed);
     }
 
     /// The window changed size. Update what the engine is told about it.
@@ -2651,5 +2693,30 @@ mod tests {
             format_x11_title("Vanta — Test", false, Some("60 FPS · 16ms")),
             "Vanta - Test - 60 FPS - 16ms"
         );
+    }
+
+    #[test]
+    fn locked_motion_batch_coalesces_deltas_and_resets_on_take() {
+        let mut batch = LockedMotionBatch::default();
+        assert_eq!(batch.take(), None);
+        batch.accumulate((640, 360), 4, -2);
+        batch.accumulate((640, 360), 7, 5);
+        batch.accumulate((640, 360), -1, 3);
+        assert_eq!(batch.take(), Some(((640, 360), 10, 6)));
+        assert_eq!(batch.take(), None);
+    }
+
+    #[test]
+    fn stranded_button_releases_clears_each_button_in_sequence() {
+        let mask = crate::android::input::BUTTON_PRIMARY | crate::android::input::BUTTON_SECONDARY;
+        let seq = stranded_button_releases(mask);
+        assert_eq!(
+            seq,
+            vec![
+                (mask, crate::android::input::BUTTON_PRIMARY),
+                (crate::android::input::BUTTON_SECONDARY, crate::android::input::BUTTON_SECONDARY),
+            ]
+        );
+        assert!(stranded_button_releases(0).is_empty());
     }
 }

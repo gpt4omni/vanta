@@ -292,11 +292,57 @@ impl PopupLifecycleGate {
 /// `unsafe impl` below, the same shape
 /// `vanta_runtime::android::wayland::HostWindowCell` already uses for the
 /// identical reason.
-struct CurrentDialogCell(std::cell::RefCell<Option<adw::Dialog>>);
+#[derive(Clone)]
+enum CurrentPresentation {
+    Dialog(adw::Dialog),
+    Window(adw::Window),
+}
+
+impl CurrentPresentation {
+    fn is_same_dialog(&self, dialog: &adw::Dialog) -> bool {
+        matches!(self, Self::Dialog(d) if d == dialog)
+    }
+
+    fn is_same_window(&self, window: &adw::Window) -> bool {
+        matches!(self, Self::Window(w) if w == window)
+    }
+
+    fn set_title(&self, title: &str) {
+        match self {
+            Self::Dialog(d) => d.set_title(title),
+            Self::Window(w) => w.set_title(Some(title)),
+        }
+    }
+
+    fn close(&self) -> bool {
+        match self {
+            Self::Dialog(d) => {
+                let accepted = d.close();
+                if !accepted {
+                    eprintln!("[webview] close_current: the open dialog did not accept the close request");
+                }
+                accepted
+            }
+            Self::Window(w) => {
+                w.close();
+                true
+            }
+        }
+    }
+}
+
+#[derive(Clone)]
+struct CurrentWindow {
+    presentation: CurrentPresentation,
+    view: webkit6::WebView,
+    header: adw::HeaderBar,
+}
+
+struct CurrentWindowCell(std::cell::RefCell<Option<CurrentWindow>>);
 // SAFETY: see the doc comment above -- GTK-main-thread-only by construction.
-unsafe impl Send for CurrentDialogCell {}
-unsafe impl Sync for CurrentDialogCell {}
-static CURRENT_DIALOG: CurrentDialogCell = CurrentDialogCell(std::cell::RefCell::new(None));
+unsafe impl Send for CurrentWindowCell {}
+unsafe impl Sync for CurrentWindowCell {}
+static CURRENT_WINDOW: CurrentWindowCell = CurrentWindowCell(std::cell::RefCell::new(None));
 
 /// Close the currently-open web window, the same way a user dismissing it
 /// would, so everything already wired to `AdwDialog`'s own `closed` signal --
@@ -313,20 +359,69 @@ static CURRENT_DIALOG: CurrentDialogCell = CurrentDialogCell(std::cell::RefCell:
 /// seeing rather than folding into a single silent no-op, the discipline this
 /// whole module holds itself to for every other refusal.
 pub fn close_current() -> bool {
-    let dialog = CURRENT_DIALOG.0.borrow().clone();
-    match dialog {
-        Some(dialog) => {
-            let accepted = dialog.close();
-            if !accepted {
-                eprintln!("[webview] close_current: the open dialog did not accept the close request");
-            }
-            accepted
-        }
+    let current = CURRENT_WINDOW.0.borrow().clone();
+    match current {
+        Some(current) => current.presentation.close(),
         None => {
             eprintln!("[webview] close_current: no web window is currently open");
             false
         }
     }
+}
+
+/// Apply a `WebView.mutateWindow` update (URL, title, visibility, header chrome)
+/// to the currently-open web window.
+///
+/// Must be called from the GTK main thread, same as [`open`] and [`close_current`].
+pub fn mutate_current(
+    url: Option<&str>,
+    title: Option<&str>,
+    is_visible: Option<bool>,
+    hide_header: Option<bool>,
+    back_button_visible: Option<bool>,
+    show_domain_as_title: Option<bool>,
+) -> bool {
+    let Some(current) = CURRENT_WINDOW.0.borrow().clone() else {
+        eprintln!("[webview] mutate_current: no web window is currently open");
+        return false;
+    };
+    if is_visible == Some(false) {
+        return current.presentation.close();
+    }
+    let mut resolved_host: Option<String> = None;
+    if let Some(u) = url.filter(|s| !s.is_empty()) {
+        let policy = webview_policy::evaluate(u);
+        if policy.allowed {
+            resolved_host = Some(policy.host);
+            current.view.load_uri(u);
+        } else {
+            eprintln!(
+                "[webview] mutate_current refused URL (scheme {}, host {})",
+                policy.scheme, policy.host
+            );
+        }
+    }
+    if let Some(hide) = hide_header {
+        current.header.set_visible(!hide);
+    }
+    if let Some(back) = back_button_visible {
+        current.header.set_show_start_title_buttons(back);
+    }
+    let next_title = if show_domain_as_title == Some(true) {
+        resolved_host.or_else(|| {
+            current
+                .view
+                .uri()
+                .map(|u| webview_policy::evaluate(u.as_str()).host)
+        })
+    } else {
+        title.filter(|t| !t.is_empty()).map(str::to_string)
+    };
+    if let Some(t) = next_title {
+        current.header.set_title_widget(Some(&adw::WindowTitle::new(&t, "")));
+        current.presentation.set_title(&t);
+    }
+    true
 }
 
 #[derive(Clone, Copy)]
@@ -542,18 +637,48 @@ pub struct WindowRequest {
 /// loudly matters more here than elsewhere: silence is the failure mode this
 /// whole module exists to end, and "the window did not open" must never again be
 /// indistinguishable from "nobody was listening".
-pub fn open(parent: &(impl IsA<gtk4::Widget> + Clone), request: &WindowRequest) -> Option<adw::Dialog> {
-    let policy = webview_policy::evaluate(&request.url);
-    if !policy.allowed {
-        eprintln!(
-            "[webview] refused to open {} (scheme {}, host {})",
-            if request.url.len() > 120 { "a very long address" } else { &request.url },
-            policy.scheme,
-            policy.host,
-        );
-        return None;
+/// Seed `.ROBLOSECURITY` (when present) and then navigate `view` to
+/// `request.url`.
+///
+/// `CookieManager::add_cookie` is asynchronous across IPC to
+/// `WebKitNetworkProcess`. Calling `view.load_uri` immediately after
+/// `add_cookie` races the IPC and frequently dispatches the first HTTP request
+/// without `.ROBLOSECURITY`, causing authenticated pages (Servers, Settings,
+/// Profile) to render signed-out or redirect to login. Deferring `load_uri`
+/// into the `add_cookie` completion callback (and still loading on `Err` so
+/// the dialog never stalls blank) closes that race.
+fn start_initial_load(
+    network_session: &webkit6::NetworkSession,
+    view: &webkit6::WebView,
+    request: &WindowRequest,
+) {
+    if let Some(cookie_value) = &request.roblox_session_cookie {
+        if let Some(cookie_manager) = network_session.cookie_manager() {
+            let mut cookie =
+                webkit6::soup::Cookie::new(".ROBLOSECURITY", cookie_value, ".roblox.com", "/", -1);
+            cookie.set_secure(true);
+            cookie.set_http_only(true);
+            let initial_url = request.url.clone();
+            let view_for_load = view.clone();
+            // The callback reports failure only, and reports it as a fact
+            // with no value in it -- the one thing worth knowing here is
+            // whether the session made it into the view, never what it was.
+            cookie_manager.add_cookie(&cookie, gtk4::gio::Cancellable::NONE, move |result| {
+                if let Err(e) = result {
+                    eprintln!("[webview] could not seed the session cookie: {e}");
+                }
+                view_for_load.load_uri(&initial_url);
+            });
+            return;
+        }
     }
+    view.load_uri(&request.url);
+}
 
+fn build_webview_content(
+    request: &WindowRequest,
+    policy: &webview_policy::UriPolicy,
+) -> (webkit6::NetworkSession, webkit6::WebView, adw::HeaderBar, adw::ToolbarView, String) {
     // Ephemeral, deliberately: a `NetworkSession` built without a data
     // directory keeps its cookie jar in memory and writes nothing to disk.
     // ADR-012 already made Vanta's session store the desktop secret
@@ -565,22 +690,6 @@ pub fn open(parent: &(impl IsA<gtk4::Widget> + Clone), request: &WindowRequest) 
     // (ADR-012's lock), so there is never a second window in this process for
     // one session to leak into.
     let network_session = webkit6::NetworkSession::new_ephemeral();
-    if let Some(cookie_value) = &request.roblox_session_cookie {
-        if let Some(cookie_manager) = network_session.cookie_manager() {
-            let mut cookie =
-                webkit6::soup::Cookie::new(".ROBLOSECURITY", cookie_value, ".roblox.com", "/", -1);
-            cookie.set_secure(true);
-            cookie.set_http_only(true);
-            // The callback reports failure only, and reports it as a fact
-            // with no value in it -- the one thing worth knowing here is
-            // whether the session made it into the view, never what it was.
-            cookie_manager.add_cookie(&cookie, gtk4::gio::Cancellable::NONE, |result| {
-                if let Err(e) = result {
-                    eprintln!("[webview] could not seed the session cookie: {e}");
-                }
-            });
-        }
-    }
 
     // Registered unconditionally, whatever `policy` said about the opening
     // url. What matters for the bridge is not the address this window was
@@ -653,21 +762,6 @@ pub fn open(parent: &(impl IsA<gtk4::Widget> + Clone), request: &WindowRequest) 
     // for the bridge is wherever it ended up rather than where it started.
     install_navigation_policy(&view);
     install_nav_probe(&view);
-
-    // **A page opening a second window got none of the above at all, until
-    // now.** `window.open()` and a `target="_blank"` link both fire WebKit's
-    // `create` signal, and an unanswered `create` returns nothing by
-    // WebKitGTK's own default -- no view, no error, nothing reaching this
-    // process to log. See [`install_popup_handling`]'s doc for why this was
-    // never exercised: the only window this module used to build was the one
-    // `openWindow` itself asked for, and nothing inside that page had ever
-    // been observed to open a second one.
-    // `Clone::clone(parent)`, not `parent.clone()` -- `parent` is already a
-    // reference, and `&T` is unconditionally `Clone` in its own right (a
-    // trivial pointer copy), so `.clone()` on it resolves to *that* impl
-    // before ever considering `T`'s. The explicit trait form pins `Self = T`
-    // from the argument type instead, giving the owned widget `upcast` needs.
-    install_popup_handling(&view, Clone::clone(parent).upcast(), request.user_agent.clone());
 
     // Whether the page decided it is running inside an app. roblox.com reads
     // that from the User-Agent, and the answer decides whether anything the page
@@ -933,32 +1027,128 @@ pub fn open(parent: &(impl IsA<gtk4::Widget> + Clone), request: &WindowRequest) 
     toolbar.add_top_bar(&header);
     toolbar.set_content(Some(&view));
 
+    (network_session, view, header, toolbar, title)
+}
+
+/// Open a web window for `request`, attached to `parent`.
+///
+/// Returns the dialog so a later `closeWindow` or `mutateWindow` can find it
+/// again; the protocol has both and neither can be served by a window that was
+/// opened and forgotten.
+///
+/// A request whose URL the policy refuses opens nothing and says why. Refusing
+/// loudly matters more here than elsewhere: silence is the failure mode this
+/// whole module exists to end, and "the window did not open" must never again be
+/// indistinguishable from "nobody was listening".
+pub fn open(parent: &(impl IsA<gtk4::Widget> + Clone), request: &WindowRequest) -> Option<adw::Dialog> {
+    let policy = webview_policy::evaluate(&request.url);
+    if !policy.allowed {
+        eprintln!(
+            "[webview] refused to open {} (scheme {}, host {})",
+            if request.url.len() > 120 { "a very long address" } else { &request.url },
+            policy.scheme,
+            policy.host,
+        );
+        return None;
+    }
+
+    let (network_session, view, header, toolbar, title) = build_webview_content(request, &policy);
+    // `Clone::clone(parent)`, not `parent.clone()` -- `parent` is already a
+    // reference, and `&T` is unconditionally `Clone` in its own right (a
+    // trivial pointer copy), so `.clone()` on it resolves to *that* impl
+    // before ever considering `T`'s. The explicit trait form pins `Self = T`
+    // from the argument type instead, giving the owned widget `upcast` needs.
+    install_popup_handling(&view, Clone::clone(parent).upcast(), request.user_agent.clone());
+
     let dialog = adw::Dialog::new();
     dialog.set_child(Some(&toolbar));
     dialog.set_content_width(900);
     dialog.set_content_height(700);
     dialog.set_title(&title);
 
-    view.load_uri(&request.url);
+    start_initial_load(&network_session, &view, request);
     dialog.present(Some(parent));
 
-    // Tracked for [`close_current`], and untracked again the moment this
-    // dialog's own `closed` signal fires -- by any path, not only that
-    // function's -- so a stale handle here never outlives the window it
-    // names. Guarded by identity, not just by clearing unconditionally: a
-    // second `open()` call that presented a newer dialog before this one
-    // got around to closing must not have its entry erased by the older
-    // dialog's own belated signal.
-    *CURRENT_DIALOG.0.borrow_mut() = Some(dialog.clone());
+    // Tracked for [`close_current`] and [`mutate_current`], and untracked again
+    // the moment this dialog's own `closed` signal fires -- by any path, not
+    // only that function's -- so a stale handle here never outlives the window
+    // it names. Guarded by identity, not just by clearing unconditionally: a
+    // second `open()` call that presented a newer dialog before this one got
+    // around to closing must not have its entry erased by the older dialog's
+    // own belated signal.
+    *CURRENT_WINDOW.0.borrow_mut() = Some(CurrentWindow {
+        presentation: CurrentPresentation::Dialog(dialog.clone()),
+        view,
+        header,
+    });
     let tracked = dialog.clone();
     dialog.connect_closed(move |_| {
-        let mut slot = CURRENT_DIALOG.0.borrow_mut();
-        if slot.as_ref() == Some(&tracked) {
+        let mut slot = CURRENT_WINDOW.0.borrow_mut();
+        if slot.as_ref().is_some_and(|c| c.presentation.is_same_dialog(&tracked)) {
             *slot = None;
         }
     });
 
     Some(dialog)
+}
+
+/// Open a standalone `adw::Window` hosting the embedded `WebKitWebView`.
+///
+/// Used on the X11 / gamescope backend where there is no Wayland `HostWindow`
+/// to attach an `adw::Dialog` to. Ensures GTK4 and libadwaita are initialised
+/// on the calling (GTK main) thread before creating the window.
+pub fn open_standalone(request: &WindowRequest) -> Option<adw::Window> {
+    let policy = webview_policy::evaluate(&request.url);
+    if !policy.allowed {
+        eprintln!(
+            "[webview] refused to open {} (scheme {}, host {})",
+            if request.url.len() > 120 { "a very long address" } else { &request.url },
+            policy.scheme,
+            policy.host,
+        );
+        return None;
+    }
+
+    if !gtk4::is_initialized() {
+        if let Err(e) = gtk4::init() {
+            eprintln!("[webview] could not initialize GTK for standalone web window: {e}");
+            return None;
+        }
+    }
+    if !adw::is_initialized() {
+        if let Err(e) = adw::init() {
+            eprintln!("[webview] could not initialize libadwaita for standalone web window: {e}");
+            return None;
+        }
+    }
+
+    let (network_session, view, header, toolbar, title) = build_webview_content(request, &policy);
+
+    let window = adw::Window::new();
+    window.set_content(Some(&toolbar));
+    window.set_default_size(900, 700);
+    window.set_title(Some(&title));
+
+    install_popup_handling(&view, window.clone().upcast(), request.user_agent.clone());
+
+    start_initial_load(&network_session, &view, request);
+    window.present();
+
+    *CURRENT_WINDOW.0.borrow_mut() = Some(CurrentWindow {
+        presentation: CurrentPresentation::Window(window.clone()),
+        view,
+        header,
+    });
+    let tracked = window.clone();
+    window.connect_close_request(move |_| {
+        let mut slot = CURRENT_WINDOW.0.borrow_mut();
+        if slot.as_ref().is_some_and(|c| c.presentation.is_same_window(&tracked)) {
+            *slot = None;
+        }
+        glib::Propagation::Proceed
+    });
+
+    Some(window)
 }
 
 /// The script every view this module builds needs, so `window.__globalRobloxAndroidBridge__`

@@ -412,6 +412,45 @@ static ACTIVE: AtomicBool = AtomicBool::new(false);
 /// When the next frame is wanted, in nanoseconds since [`base`].
 static NEXT_DUE_NS: AtomicU64 = AtomicU64::new(0);
 static SESSION: Mutex<Option<Session>> = Mutex::new(None);
+/// Retired `Readback` handles waiting to be destroyed strictly on the Vulkan
+/// present thread (or before `vkDestroyDevice`), never on a background hotkey
+/// or stop thread.
+static RETIRED_READBACKS: Mutex<Vec<Readback>> = Mutex::new(Vec::new());
+static HAS_RETIRED_READBACKS: AtomicBool = AtomicBool::new(false);
+
+/// Enqueue a `Readback` for destruction on the Vulkan present thread.
+pub(crate) fn retire_readback(rb: Readback) {
+    RETIRED_READBACKS.lock().unwrap_or_else(|e| e.into_inner()).push(rb);
+    HAS_RETIRED_READBACKS.store(true, Ordering::Release);
+}
+
+/// Lock-free check for the per-present hot path.
+pub(crate) fn has_retired_readbacks() -> bool {
+    HAS_RETIRED_READBACKS.load(Ordering::Acquire)
+}
+
+/// Destroy all retired `Readback`s on the Vulkan present thread.
+pub(crate) fn drain_retired_readbacks() {
+    if !HAS_RETIRED_READBACKS.swap(false, Ordering::AcqRel) {
+        return;
+    }
+    let retired = {
+        let mut q = RETIRED_READBACKS.lock().unwrap_or_else(|e| e.into_inner());
+        std::mem::take(&mut *q)
+    };
+    drop(retired);
+}
+
+/// Called right before `vkDestroyDevice` so every live and retired `Readback`
+/// is destroyed while the `VkDevice` is still valid.
+pub(crate) fn before_device_destroy() {
+    if let Ok(mut slot) = SESSION.lock() {
+        if let Some(s) = slot.as_mut() {
+            s.readback = None;
+        }
+    }
+    drain_retired_readbacks();
+}
 /// A request from the environment, waiting for the first frame to exist.
 static ARMED: Mutex<Option<String>> = Mutex::new(None);
 static ARMED_FAST: AtomicBool = AtomicBool::new(false);
@@ -546,10 +585,11 @@ pub fn audio_choice(setting: Option<&str>, can_pulse: impl FnOnce() -> bool) -> 
 /// Returns once the session exists; the encoder is started by the first frame,
 /// because its input size is that frame's size and nobody knows it before then.
 pub fn start(arg: &str) -> Result<String, String> {
-    let mut slot = SESSION.lock().unwrap_or_else(|e| e.into_inner());
-    if slot.is_some() {
+    if SESSION.lock().unwrap_or_else(|e| e.into_inner()).is_some() {
         return Err("already recording; stop first".into());
     }
+    // Probe `ffmpeg` encoders and PulseAudio devices outside `SESSION.lock()`
+    // so subprocess execution never stalls `vkQueuePresentKHR` or `status()`.
     let ffmpeg = find_in_path("ffmpeg").ok_or(
         "ffmpeg was not found on PATH; install it to record (the Flatpak runtime ships one)",
     )?;
@@ -570,6 +610,11 @@ pub fn start(arg: &str) -> Result<String, String> {
         .unwrap_or(DEFAULT_FPS);
     let first = segment_path(&stem, 1, codec.ext);
     let desc = format!("{} ({} at {} fps, {})", first.display(), codec.name, fps, audio_note);
+
+    let mut slot = SESSION.lock().unwrap_or_else(|e| e.into_inner());
+    if slot.is_some() {
+        return Err("already recording; stop first".into());
+    }
     *slot = Some(Session {
         stem,
         fps,
@@ -813,6 +858,19 @@ fn finish(mut s: Session, at_exit: bool) -> Result<String, String> {
         if let Some(rb) = s.readback.take() {
             std::mem::forget(rb);
         }
+        HAS_RETIRED_READBACKS.store(false, Ordering::Release);
+        let retired = {
+            let mut q = RETIRED_READBACKS.lock().unwrap_or_else(|e| e.into_inner());
+            std::mem::take(&mut *q)
+        };
+        for rb in retired {
+            std::mem::forget(rb);
+        }
+    } else if let Some(rb) = s.readback.take() {
+        // Never destroy Vulkan `Readback` resources on a background thread;
+        // retire them for cleanup on the next `vkQueuePresentKHR` or
+        // `vkDestroyDevice` on the Vulkan thread.
+        retire_readback(rb);
     }
     let mut problems = Vec::new();
     if let Some(enc) = s.enc.take() {
@@ -1144,14 +1202,17 @@ fn open_encoding(ffmpeg: &Path, spec: &EncodeSpec) -> Result<Encoding, String> {
 }
 
 /// Called from `vkQueuePresentKHR` when [`frame_due`] said so, with the image
-/// being presented. Never panics and never blocks on the encoder.
+/// being presented and the present's `pWaitSemaphores`. Returns the newly
+/// signaled semaphore (if any) that `vkQueuePresentKHR` should wait on.
+/// Never panics and never blocks on the encoder.
 pub fn on_frame(
     queue: u64,
     target: Target,
     gdpa: extern "C" fn(u64, *const std::ffi::c_char) -> *mut c_void,
     gpdmp: extern "C" fn(*mut c_void, *mut capture::PhysicalDeviceMemoryProperties),
     physical_device: *mut c_void,
-) {
+    wait_semaphores: &[u64],
+) -> Option<u64> {
     if ARMED_FAST.swap(false, Ordering::AcqRel) {
         let arg = ARMED.lock().unwrap_or_else(|e| e.into_inner()).take();
         if let Some(arg) = arg {
@@ -1161,13 +1222,13 @@ pub fn on_frame(
         }
     }
     if !ACTIVE.load(Ordering::Acquire) {
-        return;
+        return None;
     }
     let started = Instant::now();
     let mut slot = SESSION.lock().unwrap_or_else(|e| e.into_inner());
-    let Some(s) = slot.as_mut() else { return };
+    let s = slot.as_mut()?;
 
-    let result = take_frame(s, queue, &target, gdpa, gpdmp, physical_device);
+    let result = take_frame(s, queue, &target, gdpa, gpdmp, physical_device, wait_semaphores);
     s.read_ns += started.elapsed().as_nanos() as u64;
     // The next frame is one period after this one was *wanted*, not after it
     // was taken, so the average rate holds at the asked-for one however the
@@ -1179,20 +1240,24 @@ pub fn on_frame(
     let anchor = if due == 0 { now } else { due };
     NEXT_DUE_NS.store((anchor + period).max(now + period / 2), Ordering::Relaxed);
 
-    if let Err(why) = result {
-        ACTIVE.store(false, Ordering::Release);
-        INDICATOR_DIRTY.store(true, Ordering::Release);
-        let session = slot.take();
-        drop(slot);
-        println!("[record] stopping: {why}");
-        if let Some(session) = session {
-            // Finished on a thread of its own: this is the engine's present.
-            let _ = std::thread::Builder::new().name("vanta-rec-stop".into()).spawn(move || {
-                match finish(session, false) {
-                    Ok(summary) => println!("[record] {summary}"),
-                    Err(e) => println!("[record] {e}"),
-                }
-            });
+    match result {
+        Ok(signaled) => signaled,
+        Err(why) => {
+            ACTIVE.store(false, Ordering::Release);
+            INDICATOR_DIRTY.store(true, Ordering::Release);
+            let session = slot.take();
+            drop(slot);
+            println!("[record] stopping: {why}");
+            if let Some(session) = session {
+                // Finished on a thread of its own: this is the engine's present.
+                let _ = std::thread::Builder::new().name("vanta-rec-stop".into()).spawn(move || {
+                    match finish(session, false) {
+                        Ok(summary) => println!("[record] {summary}"),
+                        Err(e) => println!("[record] {e}"),
+                    }
+                });
+            }
+            None
         }
     }
 }
@@ -1204,17 +1269,23 @@ fn take_frame(
     gdpa: extern "C" fn(u64, *const std::ffi::c_char) -> *mut c_void,
     gpdmp: extern "C" fn(*mut c_void, *mut capture::PhysicalDeviceMemoryProperties),
     physical_device: *mut c_void,
-) -> Result<(), String> {
+    wait_semaphores: &[u64],
+) -> Result<Option<u64>, String> {
     let dims = (target.rect.2, target.rect.3);
     let bgra = capture::is_bgra(target.format)?;
 
     if s.dims != dims || s.enc.is_none() {
-        // A new size needs a new encoder and a new buffer. The first frame is
-        // this path too, with nothing to close.
+        // A new size needs a new encoder and a new buffer. Close the old
+        // encoder on a background finisher thread so a slow/wedged `ffmpeg`
+        // flush can never stall `vkQueuePresentKHR` for up to 20 seconds.
         if let Some(old) = s.enc.take() {
-            if let Err(e) = close_encoding(old) {
-                println!("[record] {e}");
-            }
+            let _ = std::thread::Builder::new()
+                .name("vanta-rec-resize-close".into())
+                .spawn(move || {
+                    if let Err(e) = close_encoding(old) {
+                        println!("[record] {e}");
+                    }
+                });
         }
         s.readback = None;
         s.segment += 1;
@@ -1238,7 +1309,7 @@ fn take_frame(
     }
     let enc = s.enc.as_mut().ok_or("no encoder")?;
     let rb = s.readback.as_mut().ok_or("no readback")?;
-    let pixels = rb.read(queue, target)?;
+    let (pixels, signaled) = rb.read_synced(queue, target, wait_semaphores)?;
     let mut buf = enc.pool.lock().ok().and_then(|mut p| p.pop()).unwrap_or_default();
     buf.clear();
     buf.extend_from_slice(pixels);
@@ -1251,7 +1322,7 @@ fn take_frame(
             return Err(format!("the encoder stopped reading ({tail})"));
         }
     }
-    Ok(())
+    Ok(signaled)
 }
 
 #[cfg(test)]

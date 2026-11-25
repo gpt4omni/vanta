@@ -485,6 +485,13 @@ extern "C" fn vk_get_instance_proc_addr(instance: *mut c_void, name: *const c_ch
             );
             vk_create_device as *const () as *mut c_void
         }
+        b"vkDestroyDevice" => {
+            HOST_DESTROY_DEVICE.store(
+                unsafe { (h.get_instance_proc_addr)(instance, name) } as usize,
+                std::sync::atomic::Ordering::Relaxed,
+            );
+            vk_destroy_device as *const () as *mut c_void
+        }
         // A device-level command, normally fetched through
         // `vkGetDeviceProcAddr` and peeled off there. It is answered here too
         // because `vkGetInstanceProcAddr` is required to answer for device
@@ -610,6 +617,11 @@ extern "C" fn vk_get_device_proc_addr(device: *mut c_void, name: *const c_char) 
                 .store(host(device, name) as usize, std::sync::atomic::Ordering::Relaxed);
             vk_create_shader_module as *const () as *mut c_void
         }
+        b"vkDestroyDevice" => {
+            HOST_DESTROY_DEVICE
+                .store(host(device, name) as usize, std::sync::atomic::Ordering::Relaxed);
+            vk_destroy_device as *const () as *mut c_void
+        }
         _ => {
             let p = host(device, name);
             super::vulkan_etc::hook(bytes, p, device).unwrap_or(p)
@@ -702,6 +714,37 @@ fn normalize_acquire_result(rc: i32) -> i32 {
 /// through unchanged.
 static HOST_QUEUE_PRESENT: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
+static HOST_DESTROY_DEVICE: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+extern "C" fn vk_destroy_device(device: *mut c_void, allocator: *const c_void) {
+    // Destroy any live or retired recording/capture `Readback` handles while
+    // `device` is still valid so `vkDestroyCommandPool` / `vkDestroySemaphore`
+    // never touch a torn-down `VkDevice`.
+    crate::recording::before_device_destroy();
+    let f = HOST_DESTROY_DEVICE.load(std::sync::atomic::Ordering::Relaxed);
+    if f != 0 {
+        // SAFETY: resolved from the host loader for `vkDestroyDevice`.
+        let host: extern "C" fn(*mut c_void, *const c_void) = unsafe { std::mem::transmute(f) };
+        host(device, allocator);
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct PresentInfoKhr {
+    s_type: u32,
+    _pad0: u32,
+    p_next: *const c_void,
+    wait_semaphore_count: u32,
+    _pad1: u32,
+    p_wait_semaphores: *const u64,
+    swapchain_count: u32,
+    _pad2: u32,
+    p_swapchains: *const u64,
+    p_image_indices: *const u32,
+    p_results: *mut i32,
+}
 
 extern "C" fn vk_queue_present_khr(queue: *mut c_void, info: *const c_void) -> i32 {
     crate::android::glcount::QUEUE_PRESENT
@@ -709,80 +752,81 @@ extern "C" fn vk_queue_present_khr(queue: *mut c_void, info: *const c_void) -> i
     // How evenly, not just how often. A count is a mean and a mean hides
     // judder -- see `frame_pacing`.
     crate::android::frame_pacing::record_present();
+    // Drain retired `Readback` handles strictly on the Vulkan present thread.
+    if crate::recording::has_retired_readbacks() {
+        crate::recording::drain_retired_readbacks();
+    }
     let f = HOST_QUEUE_PRESENT.load(std::sync::atomic::Ordering::Relaxed);
     if f == 0 {
         return 0;
     }
     // A capture, if one was asked for, before the frame goes anywhere.
-    //
-    // Here rather than after the present because this is the only moment the
-    // image is both complete and in a layout the copy can name: the engine has
-    // finished rendering it and left it in `VK_IMAGE_LAYOUT_PRESENT_SRC_KHR`.
-    // Once the present has been forwarded the image belongs to the driver and
-    // reading it is a race.
-    //
-    // A recording asks the same question every frame it wants one, and for the
-    // same reason this is the place to ask it (`recording`, ADR-059).
-    if super::capture::pending() || crate::recording::frame_due() {
-        take_capture(queue, info);
-    }
+    // If the capture/recording readback consumed `VkPresentInfoKHR::pWaitSemaphores`
+    // to synchronize with rendering completion, it returns a freshly signaled
+    // semaphore that we hand to `vkQueuePresentKHR` via a stack-local copy.
+    let replacement_sem = if super::capture::pending() || crate::recording::frame_due() {
+        take_capture(queue, info)
+    } else {
+        None
+    };
     // SAFETY: resolved from the host loader for exactly this name.
     let f: extern "C" fn(*mut c_void, *const c_void) -> i32 = unsafe { std::mem::transmute(f) };
-    let rc = f(queue, info);
+    let rc = if let Some(sem) = replacement_sem {
+        if !info.is_null() {
+            // SAFETY: `info` is a valid `VkPresentInfoKHR` for this call.
+            let mut patched = unsafe { std::ptr::read_unaligned(info as *const PresentInfoKhr) };
+            patched.wait_semaphore_count = 1;
+            patched.p_wait_semaphores = &sem as *const u64;
+            f(queue, &patched as *const PresentInfoKhr as *const c_void)
+        } else {
+            f(queue, info)
+        }
+    } else {
+        f(queue, info)
+    };
     if rc != VK_SUCCESS {
         report_present_result(rc);
     }
     rc
 }
 
-/// Pull the image index out of `VkPresentInfoKHR` and hand the copy off.
-///
-/// `pImageIndices` sits 48 bytes in, by the specification's C layout, after
-/// `sType`, `pNext`, the wait-semaphore pair and the swapchain pair. Read
-/// unaligned because nothing guarantees the caller's struct alignment matches
-/// ours, and a misaligned read is undefined behaviour rather than a slow one.
-fn take_capture(queue: *mut c_void, info: *const c_void) {
+/// Pull the image index and `pWaitSemaphores` out of `VkPresentInfoKHR` and
+/// hand the copy off, returning a replacement wait semaphore if the readback
+/// consumed the present's original wait semaphores.
+fn take_capture(queue: *mut c_void, info: *const c_void) -> Option<u64> {
     if info.is_null() {
-        return;
+        return None;
     }
-    // SAFETY: the caller passes a valid `VkPresentInfoKHR`; only the image
-    // index array is read, and only its first element, which the count above
-    // it guarantees exists for any present that names a swapchain.
-    // Take BOTH the swapchain and the image index from the present itself.
-    //
-    // The first version took only the index here and used the swapchain
-    // recorded at creation time, which is wrong whenever the engine presents on
-    // anything other than the most recently created one -- after a recreate, or
-    // with more than one alive. The image then came from a swapchain that had
-    // been created and never drawn into, so every capture was the clear colour:
-    // a uniform field, identical to six decimal places between runs that looked
-    // nothing alike on screen. That was very nearly written up as "Roblox
-    // presents blank frames".
-    //
-    // `pSwapchains` is at offset 40 and `pImageIndices` at 48, by the
-    // specification's C layout: sType, pNext, the wait-semaphore pair, then the
-    // swapchain count and array, then the indices. Read unaligned because
-    // nothing guarantees the caller's struct shares our alignment.
-    let (swapchain, image_index) = unsafe {
+    // SAFETY: the caller passes a valid `VkPresentInfoKHR`.
+    let (swapchain, image_index, orig_wait_semaphores) = unsafe {
         let base = info as *const u8;
+        let wait_count = std::ptr::read_unaligned(base.add(16) as *const u32);
+        let wait_ptr = std::ptr::read_unaligned(base.add(24) as *const *const u64);
         let count = std::ptr::read_unaligned(base.add(32) as *const u32);
         let chains = std::ptr::read_unaligned(base.add(40) as *const *const u64);
         let indices = std::ptr::read_unaligned(base.add(48) as *const *const u32);
         if count == 0 || chains.is_null() || indices.is_null() {
-            return;
+            return None;
         }
-        (std::ptr::read_unaligned(chains), std::ptr::read_unaligned(indices))
+        let mut waits = Vec::new();
+        if wait_count > 0 && !wait_ptr.is_null() {
+            waits.reserve(wait_count as usize);
+            for i in 0..wait_count as usize {
+                waits.push(std::ptr::read_unaligned(wait_ptr.add(i)));
+            }
+        }
+        (std::ptr::read_unaligned(chains), std::ptr::read_unaligned(indices), waits)
     };
-    let Some(h) = host() else { return };
+    let h = host()?;
     let gdpa = HOST_GET_DEVICE_PROC_ADDR.load(std::sync::atomic::Ordering::Relaxed);
     if gdpa == 0 {
         println!("[android] vulkan: capture needs vkGetDeviceProcAddr and it was never resolved");
-        return;
+        return None;
     }
     let phys = PHYSICAL_DEVICE.load(std::sync::atomic::Ordering::Relaxed) as *mut c_void;
     if phys.is_null() {
         println!("[android] vulkan: capture needs the physical device and vkCreateDevice never ran");
-        return;
+        return None;
     }
     let name = c"vkGetPhysicalDeviceMemoryProperties";
     let inst = INSTANCE.load(std::sync::atomic::Ordering::Relaxed) as *mut c_void;
@@ -790,15 +834,12 @@ fn take_capture(queue: *mut c_void, info: *const c_void) {
     // instance, for a core instance-level command.
     let gpdmp = unsafe { (h.get_instance_proc_addr)(inst, name.as_ptr()) };
     if gpdmp.is_null() {
-        // Once. This runs inside a present, so a per-frame complaint would
-        // bury the run at sixty lines a second -- which is exactly what the
-        // first version of this did.
         static SAID: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
         if !SAID.swap(true, std::sync::atomic::Ordering::Relaxed) {
             println!("[android] vulkan: no vkGetPhysicalDeviceMemoryProperties, so no capture");
         }
         super::capture::abandon("vkGetPhysicalDeviceMemoryProperties is unavailable");
-        return;
+        return None;
     }
     // SAFETY: both were resolved from the loader for exactly these names, and
     // are called with the signatures the specification gives them.
@@ -811,15 +852,28 @@ fn take_capture(queue: *mut c_void, info: *const c_void) {
             >(gpdmp),
         )
     };
-    // The screenshot and the recording both read this present's image, so one
-    // present can serve a harness that asks for a still while recording.
-    super::capture::capture(queue as u64, swapchain, image_index, gdpa, gpdmp, phys);
+    let mut cur_waits = orig_wait_semaphores;
+    let mut replacement: Option<u64> = None;
+
+    // The screenshot and the recording both read this present's image; chain
+    // semaphores sequentially so each copy waits on rendering completion and
+    // hands a signaled semaphore to the next consumer / `vkQueuePresentKHR`.
+    if let Some(sem) =
+        super::capture::capture_synced(queue as u64, swapchain, image_index, gdpa, gpdmp, phys, &cur_waits)
+    {
+        cur_waits = vec![sem];
+        replacement = Some(sem);
+    }
     if crate::recording::frame_due() {
         match super::capture::frame_target(queue as u64, swapchain, image_index, gdpa) {
-            Ok(target) => crate::recording::on_frame(queue as u64, target, gdpa, gpdmp, phys),
+            Ok(target) => {
+                if let Some(sem) =
+                    crate::recording::on_frame(queue as u64, target, gdpa, gpdmp, phys, &cur_waits)
+                {
+                    replacement = Some(sem);
+                }
+            }
             Err(e) => {
-                // Once: this is the engine's present, and a complaint per
-                // frame would bury the run at sixty lines a second.
                 static SAID: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
                 if !SAID.swap(true, std::sync::atomic::Ordering::Relaxed) {
                     println!("[record] cannot read the presented frame: {e}");
@@ -827,6 +881,7 @@ fn take_capture(queue: *mut c_void, info: *const c_void) {
             }
         }
     }
+    replacement
 }
 
 /// The capture for a frame that is never presented: an OpenXR engine hands
