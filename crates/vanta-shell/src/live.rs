@@ -646,6 +646,40 @@ pub fn running_summary() -> Option<Running> {
     s.targets.iter().find_map(|t| summarize(t, s.notices.back()))
 }
 
+/// Ask every connected running client to re-read `<profile>/flags.json` and
+/// re-apply dynamic (`DF*`) FastFlags immediately (ADR-051).
+///
+/// Returns `true` when at least one running client link was queued.
+pub fn reload_flags() -> bool {
+    let links: Vec<(u32, Arc<Link>)> = {
+        let s = state();
+        s.targets
+            .iter()
+            .filter(|t| !t.superseded)
+            .filter_map(|t| t.link.as_ref().filter(|l| !l.superseded()).map(|l| (t.pid, l.clone())))
+            .collect()
+    };
+    if links.is_empty() {
+        return false;
+    }
+    let _ = std::thread::Builder::new().name("vanta-flag-reload".into()).spawn(move || {
+        for (pid, link) in links {
+            match link.settings_set(&[Update::ReloadFlags]) {
+                Ok(reply) => {
+                    for (key, note) in &reply.notes {
+                        println!("  shell: pid {pid}: {key}: {note}");
+                    }
+                    println!("  shell: live settings -> pid {pid}: reload_flags");
+                }
+                Err(why) => {
+                    println!("  shell: could not reload flags on pid {pid}: {why}");
+                }
+            }
+        }
+    });
+    true
+}
+
 /// The values the shell currently wants running clients to have.
 pub fn want(config: &ShellConfig) {
     ensure_worker();

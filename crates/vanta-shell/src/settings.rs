@@ -4451,8 +4451,14 @@ fn populate_fastflags_page(
                             if let Ok(pretty) = serde_json::to_string_pretty(&values) {
                                 set_buffer_instant(&format!("{pretty}\n"));
                             }
+                            let reloaded = crate::live::reload_flags();
+                            let suffix = if reloaded {
+                                "Dynamic (DF*) flags reloaded live; startup flags apply on next launch."
+                            } else {
+                                "Applies at the next launch."
+                            };
                             dialog.add_toast(adw::Toast::new(&format!(
-                                "Saved {} flag{}. Applies at the next launch.",
+                                "Saved {} flag{}. {suffix}",
                                 values.len(),
                                 if values.len() == 1 { "" } else { "s" }
                             )));
@@ -4512,7 +4518,13 @@ fn import_flags_file(
     if let Ok(pretty) = serde_json::to_string_pretty(&flags) {
         buffer.set_text(&format!("{pretty}\n"));
     }
-    let summary = format!("{} Applies at the next launch.", fd::summary(&imported, added, changed));
+    let reloaded = crate::live::reload_flags();
+    let suffix = if reloaded {
+        "Dynamic (DF*) flags reloaded live; startup flags apply on next launch."
+    } else {
+        "Applies at the next launch."
+    };
+    let summary = format!("{} {suffix}", fd::summary(&imported, added, changed));
     if imported.skipped.is_empty() && imported.unrecognised.is_empty() {
         dialog.add_toast(adw::Toast::new(&summary));
         return;
