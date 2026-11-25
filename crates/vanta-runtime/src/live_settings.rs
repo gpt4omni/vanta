@@ -94,6 +94,14 @@ pub fn apply(update: &Update) -> Option<String> {
             crate::server_region::set_notify_enabled(*on);
             None
         }
+        Update::ReloadFlags => {
+            if !crate::flag_reapply::enabled() {
+                Some("VANTA_NO_FLAG_REDELIVERY is set, so the engine was not told".to_string())
+            } else {
+                crate::flag_reapply::request_apply();
+                None
+            }
+        }
     };
     // Narrated because this project debugs by reading the client's output, and
     // "the setting reached the process" is the fact worth being able to see.
@@ -124,6 +132,7 @@ fn value_word(update: &Update) -> String {
         Update::AudioOutput(name) => name.clone(),
         Update::AudioInput(name) if name.is_empty() => "the system default".to_string(),
         Update::AudioInput(name) => name.clone(),
+        Update::ReloadFlags => "true".to_string(),
     }
 }
 
@@ -543,5 +552,22 @@ mod tests {
         let back = set(&[Update::ServerRegionNotify(before)]);
         assert_eq!(back.values["server_region_notify"], before);
         assert_eq!(crate::server_region::notify_enabled(), before);
+    }
+
+    #[test]
+    fn reload_flags_triggers_reapply_and_is_not_reported_in_current() {
+        let _g = GLOBALS.lock().unwrap_or_else(|e| e.into_inner());
+        let parsed = SettingsSet::from_payload(&serde_json::json!({"reload_flags": true})).unwrap();
+        assert_eq!(parsed.updates, vec![Update::ReloadFlags]);
+        assert!(parsed.ignored.is_empty());
+        assert!(SettingsSet::from_payload(&serde_json::json!({"reload_flags": false})).is_err());
+
+        let r = set(&[Update::ReloadFlags]);
+        assert_eq!(r.applied, vec!["reload_flags".to_string()]);
+        assert!(!r.notes.contains_key("reload_flags"), "{:?}", r.notes);
+        assert!(
+            !r.values.contains_key("reload_flags"),
+            "reload_flags is a one-shot action and must not appear in settings.get"
+        );
     }
 }

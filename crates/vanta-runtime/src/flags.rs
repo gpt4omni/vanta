@@ -178,14 +178,41 @@ pub fn read_layer(path: &Path, source: Source) -> Option<Layer> {
     let values = obj
         .iter()
         .map(|(k, v)| {
-            let s = match v {
-                serde_json::Value::String(s) => s.clone(),
-                other => other.to_string(),
-            };
+            let s = vanta_plugins::flag_document::normalise_json_value(k, v)
+                .unwrap_or_else(|_| v.to_string());
             (k.clone(), s)
         })
         .collect();
     Some(Layer { source, values })
+}
+
+/// The FastFlag that overrides FRM quality level (`1..=21`).
+pub const FRM_QUALITY_OVERRIDE_FLAG: &str = "DFIntDebugFRMQualityLevelOverride";
+
+/// Roblox's Android settings document sets this to `"True"`, which causes
+/// `FRM::getDistanceSquared()` to ignore `frm->distanceSquared` (`+0x110`, set
+/// from the user's slider) and return `lockstepTable.Distance[qualityLevel]`
+/// (500 studs at QL 1) whenever `DFIntDebugFRMQualityLevelOverride` is active.
+pub const FRM_LOCKSTEP_FLAG: &str = "FFlagFRMLockstepOverridesEffective";
+
+/// Preserve render distance when `DFIntDebugFRMQualityLevelOverride` is set to
+/// a valid quality level (`1..=21`) and nothing explicitly set
+/// `FFlagFRMLockstepOverridesEffective`.
+fn preserve_frm_render_distance(resolved: &mut BTreeMap<String, Resolved>) {
+    let valid_quality = resolved
+        .get(FRM_QUALITY_OVERRIDE_FLAG)
+        .and_then(|r| r.value.trim().parse::<i64>().ok())
+        .is_some_and(|level| (1..=21).contains(&level));
+    if valid_quality && !resolved.contains_key(FRM_LOCKSTEP_FLAG) {
+        resolved.insert(
+            FRM_LOCKSTEP_FLAG.to_string(),
+            Resolved {
+                value: "False".to_string(),
+                source: Source::Builtin,
+                overridden: Vec::new(),
+            },
+        );
+    }
 }
 
 /// Resolve layers into one set of effective values.
@@ -213,6 +240,7 @@ pub fn resolve(layers: Vec<Layer>) -> BTreeMap<String, Resolved> {
             }
         }
     }
+    preserve_frm_render_distance(&mut out);
     out
 }
 
@@ -507,7 +535,7 @@ const BUILTIN: &[(&str, &str)] = &[("FFlagUserLaunchedWithBloxstrap", "True")];
 /// shipped behaviour is exactly what it was.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Performance {
-    /// Sets nothing. What Vanta has always done.
+    /// Desktop-tuned moderate scaling. Default.
     #[default]
     Balanced,
     /// More worker threads and parallel prerender, at the cost of using more of
@@ -516,6 +544,12 @@ pub enum Performance {
     /// Fewer threads and a smaller physics batch, for a machine where latency
     /// matters more than throughput or where cores are scarce.
     Latency,
+    /// Aggressive weak/older-CPU optimisation bundle (libroblox.so-verified):
+    /// capped workers, FRM QL 1 with preserved render distance, trimmed
+    /// shadows/post-FX/textures/grass/particles/terrain/audio, and lighter
+    /// Vulkan pooling. All flags sit in `Source::Performance` so user
+    /// `flags.json` overrides still win.
+    Speed,
 }
 
 /// The flags a mode asks for, given how many *physical* cores the machine has.
@@ -544,12 +578,25 @@ pub fn performance_flags(mode: Performance, physical_cores: usize) -> Vec<(Strin
     let workers = physical_cores.max(1);
     let owned = |k: &str, v: String| (k.to_string(), v);
     match mode {
-        // Desktop-tuned default: unlock multi-core TaskScheduler scaling,
-        // parallel prerender, desktop Vulkan extended dynamic state & empty
-        // page pooling, faster terrain cluster meshing, and desktop physics
-        // contact batching so Linux desktops are not throttled by
-        // GoogleAndroidApp's mobile defaults.
-        Performance::Balanced | Performance::Throughput => vec![
+        // Desktop-tuned balanced default: moderate multi-core scaling and
+        // desktop Vulkan pooling without saturating every core.
+        Performance::Balanced => vec![
+            owned("FIntTaskSchedulerThreadMin", "0".into()),
+            owned("FIntTaskSchedulerAsyncTasksMinimumThreadCount", workers.min(2).to_string()),
+            owned("FIntTaskSchedulerAutoThreadLimit", workers.min(8).to_string()),
+            owned("FIntSmoothClusterTaskQueueMaxParallelTasks", workers.div_ceil(2).max(1).to_string()),
+            owned("FIntSmoothClusterTaskQueueMsPerCycle", "4".into()),
+            owned("FIntOcclusionWorkerThreadCount", workers.div_ceil(4).max(1).to_string()),
+            owned("FFlagMovePrerenderV2", "True".into()),
+            owned("DFIntSimMidPhaseContactPipelineBatchSize", "64".into()),
+            owned("FFlagGraphicsVulkanExtendedDynamicState", "True".into()),
+            owned("FFlagVulkanAllocatorPoolSmallOnly", "False".into()),
+            owned("FIntVulkanAllocatorKeepEmptyPages", "8".into()),
+        ],
+        // High-core desktop scaling: full physical-core concurrency across
+        // TaskScheduler, cluster meshing, occlusion, parallel animators, and
+        // larger physics batches.
+        Performance::Throughput => vec![
             owned("FIntTaskSchedulerThreadMin", "0".into()),
             owned("FIntTaskSchedulerAsyncTasksMinimumThreadCount", workers.min(3).to_string()),
             owned("FIntTaskSchedulerAutoThreadLimit", workers.to_string()),
@@ -557,15 +604,86 @@ pub fn performance_flags(mode: Performance, physical_cores: usize) -> Vec<(Strin
             owned("FIntSmoothClusterTaskQueueMsPerCycle", "8".into()),
             owned("FIntOcclusionWorkerThreadCount", workers.div_ceil(2).max(1).to_string()),
             owned("FFlagMovePrerenderV2", "True".into()),
-            owned("FFlagGcInParallelWithRenderPrepare3", "True".into()),
+            owned("FFlagAnimatorParallelManagerUseLiveTaskSchedulerConcurrency", "True".into()),
+            owned("FFlagHumanoidParallelManagerUseLiveTaskSchedulerConcurrency", "True".into()),
             owned("DFIntSimMidPhaseContactPipelineBatchSize", "128".into()),
             owned("FFlagGraphicsVulkanExtendedDynamicState", "True".into()),
             owned("FFlagVulkanAllocatorPoolSmallOnly", "False".into()),
-            owned("FIntVulkanAllocatorKeepEmptyPages", "8".into()),
+            owned("FIntVulkanAllocatorKeepEmptyPages", "12".into()),
         ],
+        // Low-latency mode: lower worker thread counts and a smaller physics
+        // contact batch to minimise thread contention and frame jitter.
         Performance::Latency => vec![
-            owned("DFIntSimMidPhaseContactPipelineBatchSize", "128".into()),
             owned("FIntTaskSchedulerThreadMin", "0".into()),
+            owned("FIntTaskSchedulerAsyncTasksMinimumThreadCount", "1".into()),
+            owned("FIntTaskSchedulerAutoThreadLimit", workers.clamp(1, 4).to_string()),
+            owned("FIntSmoothClusterTaskQueueMaxParallelTasks", "1".into()),
+            owned("FIntSmoothClusterTaskQueueMsPerCycle", "2".into()),
+            owned("FIntOcclusionWorkerThreadCount", "1".into()),
+            owned("FFlagMovePrerenderV2", "True".into()),
+            owned("DFIntSimMidPhaseContactPipelineBatchSize", "32".into()),
+            owned("FFlagGraphicsVulkanExtendedDynamicState", "True".into()),
+            owned("FFlagVulkanAllocatorPoolSmallOnly", "False".into()),
+            owned("FIntVulkanAllocatorKeepEmptyPages", "4".into()),
+        ],
+        // Weak/old-CPU Speed mode: 100% libroblox.so-verified FastFlag bundle.
+        Performance::Speed => vec![
+            // CPU / TaskScheduler
+            owned("FIntTaskSchedulerThreadMin", "0".into()),
+            owned("FIntTaskSchedulerAutoThreadLimit", workers.clamp(1, 4).to_string()),
+            owned("FIntTaskSchedulerAsyncTasksMinimumThreadCount", "1".into()),
+            owned("FIntSmoothClusterTaskQueueMaxParallelTasks", "1".into()),
+            owned("FIntSmoothClusterTaskQueueMsPerCycle", "1".into()),
+            owned("FIntOcclusionWorkerThreadCount", "1".into()),
+            owned("DFIntDebugVoxelJobManagerMaxThreads", "1".into()),
+            owned("DFIntVoxelJobManagerDMJobTimeMicroSeconds", "1000".into()),
+            owned("DFIntVoxelJobManagerRenderThreadJobTimeMicroSeconds", "1000".into()),
+            owned("DFIntSimMidPhaseContactPipelineBatchSize", "32".into()),
+            owned("FFlagMovePrerenderV2", "True".into()),
+            owned("FFlagAnimatorParallelManagerUseLiveTaskSchedulerConcurrency", "True".into()),
+            owned("FFlagHumanoidParallelManagerUseLiveTaskSchedulerConcurrency", "True".into()),
+            // FRM Quality Lock (with Render Distance Preserved!) & Post-FX / Shadows / Lighting
+            owned("DFIntDebugFRMQualityLevelOverride", "1".into()),
+            owned("FFlagFRMLockstepOverridesEffective", "False".into()),
+            owned("FIntDebugFRMOptionalMSAALevelOverride", "0".into()),
+            owned("FIntBloomFrmCutoff", "22".into()),
+            owned("FFlagFRMDisableCloudsAtLowQL", "True".into()),
+            owned("DFFlagRenderConstantFogAtLowQL", "True".into()),
+            owned("DFIntRenderConstantFogAtLowQLQLCutoff", "21".into()),
+            owned("DFIntRenderPostFxBasePixelCount", "480000".into()),
+            owned("FFlagRenderShadowResolutionScaling", "True".into()),
+            owned("FStringRenderShadowResolutionQualityByRam", "1024,3,2048,3,4096,3".into()),
+            owned("FFlagRenderAllocateShadowMapResourcesOnDemand", "True".into()),
+            owned("FIntTM2ShadowMapMaxMips", "6".into()),
+            owned("FIntTM2EnvMapMaxMips", "6".into()),
+            owned("FIntEnvMapRaycastCount", "4".into()),
+            owned("FIntEnvMapMaxRayLength", "64".into()),
+            owned("FFlagRenderWaterDemoteSHQ", "True".into()),
+            // Textures / Grass / Terrain / Particles / Audio / Vulkan
+            owned("DFFlagDebugForceAnisoOff", "True".into()),
+            owned("DFIntRenderClampRoughnessMax", "1".into()),
+            owned("FIntDebugTextureManagerSkipMips", "1".into()),
+            owned("DFIntDynamicTextureManagerPrepareBudgetMicroSeconds", "500".into()),
+            owned("FIntFRMMinGrassDistance", "0".into()),
+            owned("FIntFRMMaxGrassDistance", "0".into()),
+            owned("FIntRenderGrassDensityMax", "0".into()),
+            owned("FIntRenderGrassDensityMin", "0".into()),
+            owned("DFFlagFRMUseParticleCountBudget", "True".into()),
+            owned("DFFlagFRMUseGlobalParticleCountBudget", "True".into()),
+            owned("DFIntFRMParticleBudgetMinLerp", "64".into()),
+            owned("DFIntFRMGlobalParticleBudgetMinLerp", "256".into()),
+            owned("FFlagRenderParticlesCapNonVisibleEmission", "True".into()),
+            owned("FFlagRenderParticlesNonVisibleSimBudget", "True".into()),
+            owned("DFIntRenderParticlesNonVisibleSimBudgetMicros", "100".into()),
+            owned("DFIntParticlesFramesBetweenNonVisibleUpdates", "12".into()),
+            owned("DFIntTerrainLodActive", "4".into()),
+            owned("DFIntTerrainLodLevels", "2".into()),
+            owned("DFIntTerrainPow2LodBiasPercent", "50".into()),
+            owned("FFlagAudioEngineThrottleSoundServiceStep", "True".into()),
+            owned("FIntAudioEngineAudibilityDepthLimit", "6".into()),
+            owned("FFlagGraphicsVulkanExtendedDynamicState", "True".into()),
+            owned("FFlagVulkanAllocatorPoolSmallOnly", "False".into()),
+            owned("FIntVulkanAllocatorKeepEmptyPages", "4".into()),
         ],
     }
 }
@@ -587,6 +705,7 @@ impl Performance {
             "" | "balanced" => Some(Performance::Balanced),
             "throughput" => Some(Performance::Throughput),
             "latency" => Some(Performance::Latency),
+            "speed" => Some(Performance::Speed),
             _ => None,
         }
     }
@@ -596,6 +715,7 @@ impl Performance {
             Performance::Balanced => "balanced",
             Performance::Throughput => "throughput",
             Performance::Latency => "latency",
+            Performance::Speed => "speed",
         }
     }
 }
@@ -618,7 +738,7 @@ pub fn performance() -> Performance {
         None => {
             println!(
                 "  flags: {PERFORMANCE_ENV}={text:?} is not a performance mode; using balanced. \
-                 Known: balanced, throughput, latency"
+                 Known: balanced, throughput, latency, speed"
             );
             Performance::Balanced
         }
@@ -1224,7 +1344,11 @@ pub fn report(resolved: &BTreeMap<String, Resolved>) {
             r.source.describe()
         );
     }
-
+    if resolved.get(FRM_LOCKSTEP_FLAG).is_some_and(|r| r.source == Source::Builtin) {
+        println!(
+            "  flags: added {FRM_LOCKSTEP_FLAG}=False to preserve render distance with {FRM_QUALITY_OVERRIDE_FLAG}"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -1631,18 +1755,215 @@ pub(crate) mod tests {
         assert!(resolved.contains_key("FFlagMine"), "a user plugin with its own id still loads");
     }
 
+    #[test]
+    fn read_layer_normalises_booleans_and_whole_floats_and_preserves_logs_and_strings() {
+        let (root, _g) = scratch("normalise");
+        let path = root.join("flags.json");
+        std::fs::write(
+            &path,
+            r#"{
+                "FFlagEnabled": true,
+                "DFFlagDisabled": false,
+                "DFIntTaskSchedulerTargetFps": 144.0,
+                "FIntNegative": -4.0,
+                "FLogNativeDM": "Verbose",
+                "FLogNetwork": 7,
+                "DFLogChannel": 7.0,
+                "FStringRawBool": "true",
+                "DFStringRawFloat": "144.0"
+            }"#,
+        )
+        .unwrap();
+
+        let layer = read_layer(&path, Source::User).expect("valid JSON should read");
+        assert_eq!(layer.values["FFlagEnabled"], "True");
+        assert_eq!(layer.values["DFFlagDisabled"], "False");
+        assert_eq!(layer.values["DFIntTaskSchedulerTargetFps"], "144");
+        assert_eq!(layer.values["FIntNegative"], "-4");
+        assert_eq!(layer.values["FLogNativeDM"], "Verbose");
+        assert_eq!(layer.values["FLogNetwork"], "7");
+        assert_eq!(layer.values["DFLogChannel"], "7.0");
+        assert_eq!(layer.values["FStringRawBool"], "true");
+        assert_eq!(layer.values["DFStringRawFloat"], "144.0");
+    }
+
+    #[test]
+    fn frm_quality_override_in_range_auto_injects_lockstep_false() {
+        for valid in ["1", "10", "21"] {
+            let resolved = resolve(vec![layer(
+                Source::User,
+                &[(FRM_QUALITY_OVERRIDE_FLAG, valid)],
+            )]);
+            let lockstep = resolved
+                .get(FRM_LOCKSTEP_FLAG)
+                .unwrap_or_else(|| panic!("expected {FRM_LOCKSTEP_FLAG} for QL={valid}"));
+            assert_eq!(lockstep.value, "False");
+            assert_eq!(lockstep.source, Source::Builtin);
+        }
+    }
+
+    #[test]
+    fn frm_quality_override_out_of_range_does_not_inject_lockstep() {
+        for invalid in ["0", "-1", "22", "99", "notanumber"] {
+            let resolved = resolve(vec![layer(
+                Source::User,
+                &[(FRM_QUALITY_OVERRIDE_FLAG, invalid)],
+            )]);
+            assert!(
+                !resolved.contains_key(FRM_LOCKSTEP_FLAG),
+                "QL={invalid} must not inject {FRM_LOCKSTEP_FLAG}"
+            );
+        }
+    }
+
+    #[test]
+    fn explicit_user_lockstep_flag_wins_over_auto_injection() {
+        let resolved = resolve(vec![layer(
+            Source::User,
+            &[(FRM_QUALITY_OVERRIDE_FLAG, "1"), (FRM_LOCKSTEP_FLAG, "True")],
+        )]);
+        let lockstep = &resolved[FRM_LOCKSTEP_FLAG];
+        assert_eq!(lockstep.value, "True");
+        assert_eq!(lockstep.source, Source::User);
+    }
+
 }
 
 #[cfg(test)]
 mod performance_tests {
     use super::*;
 
+    fn to_map(v: Vec<(String, String)>) -> BTreeMap<String, String> {
+        v.into_iter().collect()
+    }
+
     #[test]
-    fn balanced_enables_desktop_parallel_flags() {
-        let balanced = performance_flags(Performance::Balanced, 8);
-        assert!(!balanced.is_empty());
-        assert_eq!(balanced, performance_flags(Performance::Throughput, 8));
+    fn balanced_throughput_latency_and_speed_are_distinct_and_free_of_dead_flags() {
+        let balanced = to_map(performance_flags(Performance::Balanced, 16));
+        let throughput = to_map(performance_flags(Performance::Throughput, 16));
+        let latency = to_map(performance_flags(Performance::Latency, 16));
+        let speed = to_map(performance_flags(Performance::Speed, 16));
+
         assert_eq!(Performance::default(), Performance::Balanced);
+        assert!(!balanced.is_empty());
+        assert_ne!(balanced, throughput, "Throughput must scale beyond Balanced");
+        assert_ne!(balanced, latency, "Latency must differ from Balanced");
+        assert_ne!(throughput, latency);
+        assert_ne!(latency, speed);
+
+        for (name, map) in [
+            ("balanced", &balanced),
+            ("throughput", &throughput),
+            ("latency", &latency),
+            ("speed", &speed),
+        ] {
+            assert!(
+                !map.contains_key("FFlagGcInParallelWithRenderPrepare3"),
+                "{name} must not emit removed flag FFlagGcInParallelWithRenderPrepare3"
+            );
+        }
+
+        // Throughput scales higher than Balanced on a 16-core machine.
+        assert_eq!(balanced["FIntTaskSchedulerAutoThreadLimit"], "8");
+        assert_eq!(throughput["FIntTaskSchedulerAutoThreadLimit"], "16");
+        assert_eq!(balanced["DFIntSimMidPhaseContactPipelineBatchSize"], "64");
+        assert_eq!(throughput["DFIntSimMidPhaseContactPipelineBatchSize"], "128");
+
+        // Latency uses genuinely lower thread counts and a 32-item physics batch.
+        assert_eq!(latency["FIntTaskSchedulerAutoThreadLimit"], "4");
+        assert_eq!(latency["FIntSmoothClusterTaskQueueMaxParallelTasks"], "1");
+        assert_eq!(latency["FIntOcclusionWorkerThreadCount"], "1");
+        assert_eq!(latency["DFIntSimMidPhaseContactPipelineBatchSize"], "32");
+    }
+
+    #[test]
+    fn speed_mode_parses_case_insensitively_and_emits_verified_bundle() {
+        assert_eq!(Performance::parse("speed"), Some(Performance::Speed));
+        assert_eq!(Performance::parse("SPEED"), Some(Performance::Speed));
+        assert_eq!(Performance::parse(" Speed "), Some(Performance::Speed));
+        assert_eq!(Performance::Speed.label(), "speed");
+
+        let speed_2c = to_map(performance_flags(Performance::Speed, 2));
+        let speed_16c = to_map(performance_flags(Performance::Speed, 16));
+        assert_eq!(speed_2c["FIntTaskSchedulerAutoThreadLimit"], "2");
+        assert_eq!(speed_16c["FIntTaskSchedulerAutoThreadLimit"], "4");
+
+        let expected: &[(&str, &str)] = &[
+            ("FIntTaskSchedulerThreadMin", "0"),
+            ("FIntTaskSchedulerAutoThreadLimit", "4"),
+            ("FIntTaskSchedulerAsyncTasksMinimumThreadCount", "1"),
+            ("FIntSmoothClusterTaskQueueMaxParallelTasks", "1"),
+            ("FIntSmoothClusterTaskQueueMsPerCycle", "1"),
+            ("FIntOcclusionWorkerThreadCount", "1"),
+            ("DFIntDebugVoxelJobManagerMaxThreads", "1"),
+            ("DFIntVoxelJobManagerDMJobTimeMicroSeconds", "1000"),
+            ("DFIntVoxelJobManagerRenderThreadJobTimeMicroSeconds", "1000"),
+            ("DFIntSimMidPhaseContactPipelineBatchSize", "32"),
+            ("FFlagMovePrerenderV2", "True"),
+            ("FFlagAnimatorParallelManagerUseLiveTaskSchedulerConcurrency", "True"),
+            ("FFlagHumanoidParallelManagerUseLiveTaskSchedulerConcurrency", "True"),
+            ("DFIntDebugFRMQualityLevelOverride", "1"),
+            ("FFlagFRMLockstepOverridesEffective", "False"),
+            ("FIntDebugFRMOptionalMSAALevelOverride", "0"),
+            ("FIntBloomFrmCutoff", "22"),
+            ("FFlagFRMDisableCloudsAtLowQL", "True"),
+            ("DFFlagRenderConstantFogAtLowQL", "True"),
+            ("DFIntRenderConstantFogAtLowQLQLCutoff", "21"),
+            ("DFIntRenderPostFxBasePixelCount", "480000"),
+            ("FFlagRenderShadowResolutionScaling", "True"),
+            ("FStringRenderShadowResolutionQualityByRam", "1024,3,2048,3,4096,3"),
+            ("FFlagRenderAllocateShadowMapResourcesOnDemand", "True"),
+            ("FIntTM2ShadowMapMaxMips", "6"),
+            ("FIntTM2EnvMapMaxMips", "6"),
+            ("FIntEnvMapRaycastCount", "4"),
+            ("FIntEnvMapMaxRayLength", "64"),
+            ("FFlagRenderWaterDemoteSHQ", "True"),
+            ("DFFlagDebugForceAnisoOff", "True"),
+            ("DFIntRenderClampRoughnessMax", "1"),
+            ("FIntDebugTextureManagerSkipMips", "1"),
+            ("DFIntDynamicTextureManagerPrepareBudgetMicroSeconds", "500"),
+            ("FIntFRMMinGrassDistance", "0"),
+            ("FIntFRMMaxGrassDistance", "0"),
+            ("FIntRenderGrassDensityMax", "0"),
+            ("FIntRenderGrassDensityMin", "0"),
+            ("DFFlagFRMUseParticleCountBudget", "True"),
+            ("DFFlagFRMUseGlobalParticleCountBudget", "True"),
+            ("DFIntFRMParticleBudgetMinLerp", "64"),
+            ("DFIntFRMGlobalParticleBudgetMinLerp", "256"),
+            ("FFlagRenderParticlesCapNonVisibleEmission", "True"),
+            ("FFlagRenderParticlesNonVisibleSimBudget", "True"),
+            ("DFIntRenderParticlesNonVisibleSimBudgetMicros", "100"),
+            ("DFIntParticlesFramesBetweenNonVisibleUpdates", "12"),
+            ("DFIntTerrainLodActive", "4"),
+            ("DFIntTerrainLodLevels", "2"),
+            ("DFIntTerrainPow2LodBiasPercent", "50"),
+            ("FFlagAudioEngineThrottleSoundServiceStep", "True"),
+            ("FIntAudioEngineAudibilityDepthLimit", "6"),
+            ("FFlagGraphicsVulkanExtendedDynamicState", "True"),
+            ("FFlagVulkanAllocatorPoolSmallOnly", "False"),
+            ("FIntVulkanAllocatorKeepEmptyPages", "4"),
+        ];
+        assert_eq!(speed_16c.len(), expected.len());
+        for (k, v) in expected {
+            assert_eq!(speed_16c.get(*k).map(String::as_str), Some(*v), "Speed flag {k}");
+        }
+
+        // Speed flags live in Source::Performance, so user flags.json overrides still win.
+        let perf_layer = Layer { source: Source::Performance, values: speed_16c };
+        let user_layer = Layer {
+            source: Source::User,
+            values: [
+                ("DFIntDebugFRMQualityLevelOverride".to_string(), "10".to_string()),
+                ("FFlagFRMLockstepOverridesEffective".to_string(), "True".to_string()),
+            ]
+            .into_iter()
+            .collect(),
+        };
+        let resolved = resolve(vec![perf_layer, user_layer]);
+        assert_eq!(resolved["DFIntDebugFRMQualityLevelOverride"].value, "10");
+        assert_eq!(resolved["DFIntDebugFRMQualityLevelOverride"].source, Source::User);
+        assert_eq!(resolved["FFlagFRMLockstepOverridesEffective"].value, "True");
+        assert_eq!(resolved["FFlagFRMLockstepOverridesEffective"].source, Source::User);
     }
 
     #[test]

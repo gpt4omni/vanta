@@ -970,4 +970,25 @@ mod tests {
             _ => panic!("expected Source::Nothing, got a different source"),
         }
     }
+
+    #[test]
+    fn frm_quality_override_merges_lockstep_false_over_android_settings() {
+        let base = r#"{"applicationSettings":{"FFlagFRMLockstepOverridesEffective":"True","DFIntDebugFRMQualityLevelOverride":"0"}}"#;
+        let resolved = crate::flags::resolve(vec![crate::flags::Layer {
+            source: crate::flags::Source::User,
+            values: [("DFIntDebugFRMQualityLevelOverride".to_string(), "1".to_string())]
+                .into_iter()
+                .collect(),
+        }]);
+        let overrides = roblox_overrides(&resolved);
+
+        let (merged, _) = merge(base, overrides.clone()).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&merged).unwrap();
+        assert_eq!(v["applicationSettings"]["DFIntDebugFRMQualityLevelOverride"], "1");
+        assert_eq!(v["applicationSettings"]["FFlagFRMLockstepOverridesEffective"], "False");
+
+        let (delta, _) = build_delta_document(overrides).unwrap();
+        let dv: serde_json::Value = serde_json::from_str(&delta).unwrap();
+        assert_eq!(dv["applicationSettings"]["FFlagFRMLockstepOverridesEffective"], "False");
+    }
 }

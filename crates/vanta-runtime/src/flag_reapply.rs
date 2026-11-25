@@ -64,6 +64,13 @@ pub const MIN_GAP: Duration = Duration::from_secs(2);
 /// logs, so 150 s is past it with room to spare.
 pub const FALLBACK_AFTER: Duration = Duration::from_secs(150);
 
+/// One-shot post-startup settle delay. Roblox's engine runs its initial
+/// settings fetch ~2–4 s after launch and reverts `DF*` keys over the top;
+/// re-applying once at 5 s guarantees `DF*` overrides survive even when the
+/// initial fetch does not emit a recognisable cache log line. Cancelled if a
+/// `SettingsRefreshed` event has already been seen.
+pub const STARTUP_SETTLE: Duration = Duration::from_secs(5);
+
 /// Whether the resolved flags include anything worth keeping in force.
 ///
 /// "Worth keeping" is any Roblox flag a layer above Vanta's own built-in
@@ -90,6 +97,8 @@ pub enum Reason {
     Refresh,
     /// A live setting changed what is wanted, so the engine is told now.
     Requested,
+    /// One-shot post-startup re-apply after Roblox's initial 2–4 s fetch window.
+    StartupSettle,
     /// No refresh line has ever been seen and the interval ran out.
     Fallback,
 }
@@ -99,6 +108,7 @@ impl Reason {
         match self {
             Reason::Refresh => "engine settings refresh seen",
             Reason::Requested => "live change",
+            Reason::StartupSettle => "startup settle",
             Reason::Fallback => "no refresh line seen, timer",
         }
     }
@@ -111,6 +121,8 @@ pub struct Trigger {
     debounce: Duration,
     min_gap: Duration,
     fallback: Duration,
+    startup_settle: Option<Duration>,
+    startup_settle_pending: bool,
     started: Instant,
     refresh_pending: Option<Instant>,
     requested: bool,
@@ -121,6 +133,7 @@ pub struct Trigger {
 impl Trigger {
     pub fn new(now: Instant) -> Self {
         Self::with_timing(now, DEBOUNCE, MIN_GAP, FALLBACK_AFTER)
+            .with_startup_settle(STARTUP_SETTLE)
     }
 
     pub fn with_timing(now: Instant, debounce: Duration, min_gap: Duration, fallback: Duration) -> Self {
@@ -128,6 +141,8 @@ impl Trigger {
             debounce,
             min_gap,
             fallback,
+            startup_settle: None,
+            startup_settle_pending: false,
             started: now,
             refresh_pending: None,
             requested: false,
@@ -136,10 +151,30 @@ impl Trigger {
         }
     }
 
+    /// Arm a one-shot post-startup settle re-apply `delay` after start, unless
+    /// an engine refresh has already been seen.
+    pub fn with_startup_settle(mut self, delay: Duration) -> Self {
+        self.startup_settle = Some(delay);
+        self.startup_settle_pending = self.refreshes_seen == 0;
+        self
+    }
+
+    /// Record the launch-time initial apply when the worker starts, anchoring
+    /// the startup-settle and fallback timers to `now`.
+    pub fn mark_started(&mut self, now: Instant) {
+        self.started = now;
+        self.requested = false;
+        self.refresh_pending = None;
+        self.last_applied = Some(now);
+        self.startup_settle_pending = self.startup_settle.is_some() && self.refreshes_seen == 0;
+    }
+
     /// The engine's log reported a finished refresh.
     pub fn refresh_seen(&mut self, now: Instant) {
         self.refreshes_seen += 1;
         self.refresh_pending.get_or_insert(now);
+        // A real settings refresh supersedes the one-shot startup settle.
+        self.startup_settle_pending = false;
     }
 
     /// Something changed what is wanted and the engine should hear it at once.
@@ -160,6 +195,13 @@ impl Trigger {
         if let Some(seen) = self.refresh_pending {
             return (now.saturating_duration_since(seen) >= self.debounce).then_some(Reason::Refresh);
         }
+        if self.startup_settle_pending {
+            if let Some(delay) = self.startup_settle {
+                if now.saturating_duration_since(self.started) >= delay {
+                    return Some(Reason::StartupSettle);
+                }
+            }
+        }
         if self.refreshes_seen == 0 {
             let since = self.last_applied.unwrap_or(self.started);
             if now.saturating_duration_since(since) >= self.fallback {
@@ -174,6 +216,11 @@ impl Trigger {
     pub fn begin(&mut self, now: Instant) {
         self.requested = false;
         self.refresh_pending = None;
+        if let Some(delay) = self.startup_settle {
+            if now.saturating_duration_since(self.started) >= delay {
+                self.startup_settle_pending = false;
+            }
+        }
         self.last_applied = Some(now);
     }
 
@@ -188,10 +235,20 @@ impl Trigger {
         if let Some(seen) = self.refresh_pending {
             return Some(later(seen + self.debounce));
         }
-        if self.refreshes_seen == 0 {
-            return Some(later(self.last_applied.unwrap_or(self.started) + self.fallback));
+        let settle_at = if self.startup_settle_pending {
+            self.startup_settle.map(|delay| later(self.started + delay))
+        } else {
+            None
+        };
+        let fallback_at = if self.refreshes_seen == 0 {
+            Some(later(self.last_applied.unwrap_or(self.started) + self.fallback))
+        } else {
+            None
+        };
+        match (settle_at, fallback_at) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
         }
-        None
     }
 }
 
@@ -247,7 +304,7 @@ pub fn start(hooks: Hooks) {
     }
     static STARTED: std::sync::Once = std::sync::Once::new();
     STARTED.call_once(|| {
-        shared().trigger.lock().unwrap_or_else(|e| e.into_inner()).begin(Instant::now());
+        shared().trigger.lock().unwrap_or_else(|e| e.into_inner()).mark_started(Instant::now());
         std::thread::Builder::new()
             .name("flag-reapply".into())
             .spawn(move || worker(shared(), hooks))
@@ -482,6 +539,62 @@ mod tests {
         assert_eq!(t.next_deadline(), Some(at(t0, 3_250)), "a request waits out the gap");
     }
 
+    #[test]
+    fn startup_settle_fires_once_at_five_seconds_when_no_refresh_is_seen() {
+        let t0 = Instant::now();
+        let mut t = Trigger::new(t0);
+        t.mark_started(t0);
+
+        assert_eq!(t.next_deadline(), Some(at(t0, 5_000)));
+        assert_eq!(t.due(at(t0, 0)), None);
+        assert_eq!(t.due(at(t0, 4_999)), None);
+        assert_eq!(t.due(at(t0, 5_000)), Some(Reason::StartupSettle));
+
+        // Strictly one-shot: after begin() runs, StartupSettle does not repeat
+        // and the fallback net takes over from t0 + 5s.
+        t.begin(at(t0, 5_000));
+        assert_eq!(t.due(at(t0, 10_000)), None);
+        assert_eq!(t.due(at(t0, 154_999)), None);
+        assert_eq!(t.due(at(t0, 155_000)), Some(Reason::Fallback));
+        assert_eq!(t.next_deadline(), Some(at(t0, 155_000)));
+    }
+
+    #[test]
+    fn startup_settle_is_cancelled_if_a_settings_refresh_already_ran() {
+        let t0 = Instant::now();
+        let mut t = Trigger::new(t0);
+        t.mark_started(t0);
+
+        // Initial fetch logged at 2.5s: debounce runs at 2.75s, cancelling the 5s settle.
+        t.refresh_seen(at(t0, 2_500));
+        assert_eq!(t.next_deadline(), Some(at(t0, 2_750)));
+        assert_eq!(t.due(at(t0, 2_750)), Some(Reason::Refresh));
+        t.begin(at(t0, 2_750));
+
+        assert_eq!(t.due(at(t0, 5_000)), None, "startup settle must stay cancelled");
+        assert_eq!(t.due(at(t0, 200_000)), None, "fallback net is also down after a refresh");
+        assert_eq!(t.next_deadline(), None);
+    }
+
+    #[test]
+    fn startup_settle_survives_an_early_live_request_and_respects_min_gap() {
+        let t0 = Instant::now();
+        let mut t = Trigger::new(t0);
+        t.mark_started(t0);
+
+        // Live setting applied at 4.0s (before the 5s settle window closes).
+        t.request();
+        assert_eq!(t.due(at(t0, 4_000)), Some(Reason::Requested));
+        t.begin(at(t0, 4_000));
+
+        // Startup settle stays armed, delayed to 6.0s to honour MIN_GAP (2s).
+        assert_eq!(t.next_deadline(), Some(at(t0, 6_000)));
+        assert_eq!(t.due(at(t0, 5_000)), None);
+        assert_eq!(t.due(at(t0, 6_000)), Some(Reason::StartupSettle));
+        t.begin(at(t0, 6_000));
+        assert_eq!(t.due(at(t0, 10_000)), None, "consumed after firing once");
+    }
+
     // ---- the worker's one apply ---------------------------------------------
 
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -555,9 +668,10 @@ mod tests {
             }),
         };
         run_once(Reason::Refresh, &hooks);
+        run_once(Reason::StartupSettle, &hooks);
         run_once(Reason::Fallback, &hooks);
         run_once(Reason::Requested, &hooks);
-        assert_eq!(*forced.lock().unwrap(), vec![false, false, true]);
+        assert_eq!(*forced.lock().unwrap(), vec![false, false, false, true]);
     }
 
     #[test]

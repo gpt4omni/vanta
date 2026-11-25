@@ -17,13 +17,13 @@ FastFlags are Roblox's internal tuning switches. Vanta lets you override any of 
 
 ```json
 {
-  "DFFlagRbxTransportUseRtcioRna": false,
+  "DFIntTaskSchedulerTargetFps": 144,
   "FIntTaskSchedulerAutoThreadLimit": 8,
   "FFlagDebugGraphicsDisableVulkan": false
 }
 ```
 
-Values can be booleans, numbers or strings. Roblox stores them all as strings and Vanta converts. The format is Bloxstrap's, so a list from a video or a Discord message pastes in as it is.
+Values can be booleans, numbers or strings. Roblox stores them all as strings and Vanta normalises JSON booleans (`true`/`false` → `"True"`/`"False"`) and whole floats (`144.0` → `"144"`) while leaving `FLog`/`DFLog` and `FString`/`DFString` values intact. The format is Bloxstrap's, so a list from a video or a Discord message pastes in as it is.
 
 ### Start Roblox again
 
@@ -73,14 +73,17 @@ To choose a graphics backend, use **Settings → General → Graphics**, not a f
 
 A plugin loaded part-way through a session cannot change a startup flag, whatever it writes.
 
-Vanta puts your overrides back after each Roblox refresh, whatever the family. Each time it prints a `[reapply]` line with what it cost. Two limits:
-
-- The first couple of seconds, before the engine's first fetch, are not covered.
-- It re-sends the cached copy of Roblox's document, so a flag Roblox changed during your session goes back to its older value, as at launch.
+Vanta puts your overrides back after each Roblox refresh, whatever the family — watching both `[FLog::DynamicFastVariableReloader]` and `[DFLog::FlagCache]` lines, plus a one-shot 5-second post-startup settle re-apply (cancelled if a refresh line already ran) so `DF*` overrides survive Roblox's initial 2–4 second fetch too. Periodic post-refresh re-applies send a minimal delta containing only your overridden flags rather than re-sending the entire cached settings document, and live edits can trigger an immediate reload via the `reload_flags` live control action. Each re-apply prints a `[reapply]` line with what it cost.
 
 `VANTA_NO_FLAG_REDELIVERY=1` in the client's environment turns the re-apply off. It exists to confirm that a flag reverts without it.
 
 Why: [ADR-051](adr/ADR-051-overrides-are-reapplied-after-the-engines-refresh.md).
+
+## Render distance with `DFIntDebugFRMQualityLevelOverride`
+
+Roblox's Android client settings document ships `"FFlagFRMLockstepOverridesEffective": "True"`. When `DFIntDebugFRMQualityLevelOverride` is set to a quality level in `1..=21`, `FRM::getDistanceSquared()` ignores the render-distance slider and locks view distance to the quality level's table entry (`500` studs at QL `1`).
+
+To prevent quality overrides from collapsing render distance, whenever your resolved flags set `DFIntDebugFRMQualityLevelOverride` to an integer in `1..=21` and nothing explicitly sets `FFlagFRMLockstepOverridesEffective`, Vanta automatically injects `"FFlagFRMLockstepOverridesEffective": "False"` and logs a note. Setting `"FFlagFRMLockstepOverridesEffective": "True"` explicitly in your `flags.json` still wins over the automatic injection.
 
 ## Which layer wins
 
@@ -89,8 +92,8 @@ Flags come from several sources and each owns its own file. From lowest preceden
 | Layer | Source | Notes |
 |---|---|---|
 | Roblox's settings | The client-settings document from Roblox | The base everything else is merged into. |
-| Vanta's default | Built in | Only `FFlagUserLaunchedWithBloxstrap`, see the table below. |
-| Graphics optimisation | **Settings → General → Graphics** | The "more cores" and "fewer cores" choices set thread-count flags. Balanced sets none. |
+| Vanta's default | Built in | `FFlagUserLaunchedWithBloxstrap`, plus automatic `FFlagFRMLockstepOverridesEffective=False` when `DFIntDebugFRMQualityLevelOverride` is in `1..=21`. |
+| Graphics optimisation | **Settings → General → Graphics** (`VANTA_PERFORMANCE`) | `balanced` (default), `throughput`, `latency`, and `speed`. |
 | Plugins | `<plugin>/flags.json`, alphabetical | A plugin switched off contributes nothing. |
 | Frame rate limit | **Settings → General → Graphics** | Sets `DFIntTaskSchedulerTargetFps`. Beats a plugin that sets the same flag. |
 | Your flags | `<profile>/flags.json` | Always wins. |
@@ -119,27 +122,66 @@ Besides Roblox's own flags, these names mean something to Vanta. The `Vanta` one
 | `VantaGraphicsBackend` | `automatic`, `vulkan`, `gles` | Which graphics backend to offer the engine. The **Graphics** row beats a plugin's request. |
 | `VantaDeviceProfile` | `pc-windows-11`, `roblox-app`, `android-tablet`, `meta-quest` | Which device Vanta says it is. **Has no effect from `flags.json` today**; the Graphics optimisation row sets it, through `VANTA_DEVICE_PROFILE`. `INFERRED` from reading the code: nothing outside the flag module calls the reader. |
 
-Graphics optimisation sets these flags, sized to your physical core count:
+Graphics optimisation (`VANTA_PERFORMANCE`) sets these flags, sized to your physical core count (`workers`):
 
 <details>
-<summary>What the more-cores and fewer-cores choices set</summary>
+<summary>What Balanced, Throughput, Latency, and Speed set</summary>
 
-"Windows PC - more cores" (`VANTA_PERFORMANCE=throughput`):
+**Balanced** (`VANTA_PERFORMANCE=balanced`, default) — moderate desktop multi-core scaling and Vulkan pooling:
 
 | Flag | Value |
 |---|---|
 | `FIntTaskSchedulerThreadMin` | `0` |
-| `FIntTaskSchedulerAsyncTasksMinimumThreadCount` | physical cores, at most 3 |
-| `FIntTaskSchedulerAutoThreadLimit` | physical cores |
-| `FIntSmoothClusterTaskQueueMaxParallelTasks` | physical cores |
-| `FIntOcclusionWorkerThreadCount` | half the physical cores, rounded up |
+| `FIntTaskSchedulerAsyncTasksMinimumThreadCount` | `min(workers, 2)` |
+| `FIntTaskSchedulerAutoThreadLimit` | `min(workers, 8)` |
+| `FIntSmoothClusterTaskQueueMaxParallelTasks` | `ceil(workers / 2)` |
+| `FIntSmoothClusterTaskQueueMsPerCycle` | `4` |
+| `FIntOcclusionWorkerThreadCount` | `ceil(workers / 4)` |
 | `FFlagMovePrerenderV2` | `True` |
-| `FFlagGcInParallelWithRenderPrepare3` | `True` |
+| `DFIntSimMidPhaseContactPipelineBatchSize` | `64` |
+| `FFlagGraphicsVulkanExtendedDynamicState` | `True` |
+| `FFlagVulkanAllocatorPoolSmallOnly` | `False` |
+| `FIntVulkanAllocatorKeepEmptyPages` | `8` |
+
+**Throughput** (`VANTA_PERFORMANCE=throughput`) — full physical-core scaling for desktops with cores to spare:
+
+| Flag | Value |
+|---|---|
+| `FIntTaskSchedulerThreadMin` | `0` |
+| `FIntTaskSchedulerAsyncTasksMinimumThreadCount` | `min(workers, 3)` |
+| `FIntTaskSchedulerAutoThreadLimit` | `workers` |
+| `FIntSmoothClusterTaskQueueMaxParallelTasks` | `workers` |
+| `FIntSmoothClusterTaskQueueMsPerCycle` | `8` |
+| `FIntOcclusionWorkerThreadCount` | `ceil(workers / 2)` |
+| `FFlagMovePrerenderV2` | `True` |
+| `FFlagAnimatorParallelManagerUseLiveTaskSchedulerConcurrency` | `True` |
+| `FFlagHumanoidParallelManagerUseLiveTaskSchedulerConcurrency` | `True` |
 | `DFIntSimMidPhaseContactPipelineBatchSize` | `128` |
+| `FFlagGraphicsVulkanExtendedDynamicState` | `True` |
+| `FFlagVulkanAllocatorPoolSmallOnly` | `False` |
+| `FIntVulkanAllocatorKeepEmptyPages` | `12` |
 
-"Windows PC - fewer cores" (`VANTA_PERFORMANCE=latency`) sets only `DFIntSimMidPhaseContactPipelineBatchSize` to `128` and `FIntTaskSchedulerThreadMin` to `0`.
+**Latency** (`VANTA_PERFORMANCE=latency`) — lower thread counts and a smaller physics batch to reduce contention and jitter:
 
-None of these is measured on this project's hardware, which is why Balanced, which sets nothing, is the default.
+| Flag | Value |
+|---|---|
+| `FIntTaskSchedulerThreadMin` | `0` |
+| `FIntTaskSchedulerAsyncTasksMinimumThreadCount` | `1` |
+| `FIntTaskSchedulerAutoThreadLimit` | `clamp(workers, 1, 4)` |
+| `FIntSmoothClusterTaskQueueMaxParallelTasks` | `1` |
+| `FIntSmoothClusterTaskQueueMsPerCycle` | `2` |
+| `FIntOcclusionWorkerThreadCount` | `1` |
+| `FFlagMovePrerenderV2` | `True` |
+| `DFIntSimMidPhaseContactPipelineBatchSize` | `32` |
+| `FFlagGraphicsVulkanExtendedDynamicState` | `True` |
+| `FFlagVulkanAllocatorPoolSmallOnly` | `False` |
+| `FIntVulkanAllocatorKeepEmptyPages` | `4` |
+
+**Speed** (`VANTA_PERFORMANCE=speed`) — `libroblox.so`-verified weak/older-CPU optimisation bundle. Also defaults looper zero-timeout poll coalescing (`VANTA_POLL_COALESCE_US`) to `500` µs (instead of `250` µs) when unset to save busy-poll CPU cycles on 2-core CPUs. All flags sit in the `performance mode` layer so overrides in your `flags.json` still win:
+
+- **CPU / TaskScheduler:** `FIntTaskSchedulerThreadMin=0`, `FIntTaskSchedulerAutoThreadLimit=clamp(workers, 1, 4)`, `FIntTaskSchedulerAsyncTasksMinimumThreadCount=1`, `FIntSmoothClusterTaskQueueMaxParallelTasks=1`, `FIntSmoothClusterTaskQueueMsPerCycle=1`, `FIntOcclusionWorkerThreadCount=1`, `DFIntDebugVoxelJobManagerMaxThreads=1`, `DFIntVoxelJobManagerDMJobTimeMicroSeconds=1000`, `DFIntVoxelJobManagerRenderThreadJobTimeMicroSeconds=1000`, `DFIntSimMidPhaseContactPipelineBatchSize=32`, `FFlagMovePrerenderV2=True`, `FFlagAnimatorParallelManagerUseLiveTaskSchedulerConcurrency=True`, `FFlagHumanoidParallelManagerUseLiveTaskSchedulerConcurrency=True`.
+- **FRM Quality Lock (with render distance preserved) & Post-FX / Shadows / Lighting:** `DFIntDebugFRMQualityLevelOverride=1`, `FFlagFRMLockstepOverridesEffective=False`, `FIntDebugFRMOptionalMSAALevelOverride=0`, `FIntBloomFrmCutoff=22`, `FFlagFRMDisableCloudsAtLowQL=True`, `DFFlagRenderConstantFogAtLowQL=True`, `DFIntRenderConstantFogAtLowQLQLCutoff=21`, `DFIntRenderPostFxBasePixelCount=480000`, `FFlagRenderShadowResolutionScaling=True`, `FStringRenderShadowResolutionQualityByRam=1024,3,2048,3,4096,3`, `FFlagRenderAllocateShadowMapResourcesOnDemand=True`, `FIntTM2ShadowMapMaxMips=6`, `FIntTM2EnvMapMaxMips=6`, `FIntEnvMapRaycastCount=4`, `FIntEnvMapMaxRayLength=64`, `FFlagRenderWaterDemoteSHQ=True`.
+- **Textures / Grass / Terrain / Particles / Audio / Vulkan:** `DFFlagDebugForceAnisoOff=True`, `DFIntRenderClampRoughnessMax=1`, `FIntDebugTextureManagerSkipMips=1`, `DFIntDynamicTextureManagerPrepareBudgetMicroSeconds=500`, `FIntFRMMinGrassDistance=0`, `FIntFRMMaxGrassDistance=0`, `FIntRenderGrassDensityMax=0`, `FIntRenderGrassDensityMin=0`, `DFFlagFRMUseParticleCountBudget=True`, `DFFlagFRMUseGlobalParticleCountBudget=True`, `DFIntFRMParticleBudgetMinLerp=64`, `DFIntFRMGlobalParticleBudgetMinLerp=256`, `FFlagRenderParticlesCapNonVisibleEmission=True`, `FFlagRenderParticlesNonVisibleSimBudget=True`, `DFIntRenderParticlesNonVisibleSimBudgetMicros=100`, `DFIntParticlesFramesBetweenNonVisibleUpdates=12`, `DFIntTerrainLodActive=4`, `DFIntTerrainLodLevels=2`, `DFIntTerrainPow2LodBiasPercent=50`, `FFlagAudioEngineThrottleSoundServiceStep=True`, `FIntAudioEngineAudibilityDepthLimit=6`, `FFlagGraphicsVulkanExtendedDynamicState=True`, `FFlagVulkanAllocatorPoolSmallOnly=False`, `FIntVulkanAllocatorKeepEmptyPages=4`.
 
 </details>
 
