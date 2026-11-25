@@ -722,6 +722,11 @@ extern "C" fn vk_destroy_device(device: *mut c_void, allocator: *const c_void) {
     // `device` is still valid so `vkDestroyCommandPool` / `vkDestroySemaphore`
     // never touch a torn-down `VkDevice`.
     crate::recording::before_device_destroy();
+    // Tear down any ETC2 emulation pipelines, staging chunks, and tracked
+    // handles for `device` while `device` is still valid; `vkDestroyDevice`
+    // is intercepted here before `vulkan_etc::hook`, so we must notify it
+    // explicitly before forwarding to the host loader.
+    super::vulkan_etc::device_destroying(device);
     let f = HOST_DESTROY_DEVICE.load(std::sync::atomic::Ordering::Relaxed);
     if f != 0 {
         // SAFETY: resolved from the host loader for `vkDestroyDevice`.

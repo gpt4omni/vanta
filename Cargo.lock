@@ -1755,21 +1755,21 @@ dependencies = [
 
 [[package]]
 name = "vanta-guest"
-version = "0.50.0"
+version = "0.50.1"
 dependencies = [
  "cmake",
 ]
 
 [[package]]
 name = "vanta-linker-sys"
-version = "0.50.0"
+version = "0.50.1"
 dependencies = [
  "cmake",
 ]
 
 [[package]]
 name = "vanta-plugins"
-version = "0.50.0"
+version = "0.50.1"
 dependencies = [
  "base64 0.23.1",
  "blake2",
@@ -1795,7 +1795,7 @@ dependencies = [
 
 [[package]]
 name = "vanta-runtime"
-version = "0.50.0"
+version = "0.50.1"
 dependencies = [
  "gtk4",
  "libadwaita",
@@ -1816,7 +1816,7 @@ dependencies = [
 
 [[package]]
 name = "vanta-shell"
-version = "0.50.0"
+version = "0.50.1"
 dependencies = [
  "gdk4-wayland",
  "gtk4",
@@ -1839,7 +1839,7 @@ dependencies = [
 
 [[package]]
 name = "vanta-update"
-version = "0.50.0"
+version = "0.50.1"
 dependencies = [
  "http",
  "pulldown-cmark",

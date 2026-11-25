@@ -32,7 +32,7 @@
 # submittable package, not a simulation of one.
 
 pkgname=vanta
-pkgver=0.50.0
+pkgver=0.50.1
 pkgrel=1
 pkgdesc="Roblox's official Android build, run natively on Linux -- Vanta ships no Roblox code and fetches a signature-verified one"
 arch=('x86_64' 'aarch64')

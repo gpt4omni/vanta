@@ -78,6 +78,21 @@
       and is not this change. AppStream shows the newest entry as "what's new",
       so the important one is the top.
     -->
+    <release version="0.50.1" date="2026-11-25">
+      <url type="details">https://github.com/gpt4omni/vanta/releases/tag/v0.50.1</url>
+      <description>
+        <p>
+          Hotfix release fixing a SIGSEGV crash in Vulkan drivers (notably
+          NVIDIA) when entering a Roblox experience after v0.50.0.
+        </p>
+        <p>
+          Forwards vkDestroyDevice teardown to the Vulkan ETC2 emulation layer
+          before the host driver destroys the previous VkDevice, and hardens
+          fallback device replacement so Vulkan destroy calls are never issued
+          against a stale VkDevice handle.
+        </p>
+      </description>
+    </release>
     <release version="0.50.0" date="2026-11-25">
       <url type="details">https://github.com/gpt4omni/vanta/releases/tag/v0.50.0</url>
       <description>

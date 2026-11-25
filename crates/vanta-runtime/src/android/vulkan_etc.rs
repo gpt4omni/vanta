@@ -1549,7 +1549,11 @@ pub fn device_created(pd: *mut c_void, device: *mut c_void) {
                 if d.gpu_capable { "on (lazy)" } else { "off" },
                 if d.bc_mode { "BC1/BC3/BC4/BC5 (4x-8x compressed)" } else { "RGBA8/R16/RG16" }
             );
-            forget_device();
+            // Normal teardown happens in `device_destroying` before the host's
+            // `vkDestroyDevice`. If a previous `DEV` is still lingering here,
+            // we cannot assume its `VkDevice` handle is still alive, so drop
+            // Rust state without invoking Vulkan destroy calls on it.
+            forget_device_inner(false);
             DEV.store(Box::into_raw(Box::new(d)), Release);
         }
         None => unhandled(format_args!("device {device:p}: could not resolve the host calls staging needs")),
@@ -1565,7 +1569,12 @@ fn active_device(device: usize) -> Option<&'static Dev> {
     active().filter(|d| d.device == device)
 }
 
+#[cfg(test)]
 fn forget_device() {
+    forget_device_inner(true);
+}
+
+fn forget_device_inner(device_alive: bool) {
     let ptr = DEV.swap(std::ptr::null_mut(), AcqRel);
     // SAFETY: `DEV` either holds a leaked `Box<Dev>` (`owned = true`) or a test harness
     // pointer (`owned = false`) whose lifetime outlives `forget_device()`. Atomic `swap`
@@ -1598,36 +1607,65 @@ fn forget_device() {
     LAST_ETC_UPLOAD_MS.store(0, Relaxed);
     let n = cmds.len();
     for c in cmds {
-        release_cmd(dev, c, false);
+        if device_alive {
+            release_cmd(dev, c, false);
+        } else {
+            let mut cmd = command(&c);
+            cmd.retired = true;
+            cmd.gpu_pipeline_bound = false;
+            for mut pending in cmd.pending.drain(..) {
+                let _ = pending.finish();
+            }
+            if cmd.has_cpu_work {
+                cmd.has_cpu_work = false;
+            }
+            cmd.chunks.clear();
+            cmd.gpu_chunks.clear();
+            cmd.ds_pools.clear();
+        }
     }
     let pooled_cpu: Vec<Chunk> = {
         let mut pool = dev.free_cpu_chunks.lock().unwrap_or_else(|e| e.into_inner());
         std::mem::take(&mut *pool)
     };
-    for c in pooled_cpu {
-        (dev.destroy_buffer)(dev.device, c.buffer, std::ptr::null());
-        (dev.free_memory)(dev.device, c.memory, std::ptr::null());
-    }
-    if let Some(gpu) = dev.gpu_if_initialized() {
-        gpu.destroy(dev);
+    if device_alive {
+        for c in pooled_cpu {
+            (dev.destroy_buffer)(dev.device, c.buffer, std::ptr::null());
+            (dev.free_memory)(dev.device, c.memory, std::ptr::null());
+        }
+        if let Some(gpu) = dev.gpu_if_initialized() {
+            gpu.destroy(dev);
+        }
     }
     let dev_handle = dev.device;
     let owned = dev.owned;
-    trace(format_args!("device 0x{:x}: emulation state dropped, {n} command buffer(s) of staging freed", dev_handle));
+    trace(format_args!(
+        "device 0x{:x}: emulation state dropped (vk_teardown={device_alive}), {n} command buffer(s) of staging freed",
+        dev_handle
+    ));
     if owned {
         // SAFETY: `device_created` allocated `ptr` with `Box::into_raw(Box::new(d))`.
         unsafe { drop(Box::from_raw(ptr)) };
     }
 }
 
-extern "C" fn destroy_device(device: *mut c_void, alloc: *const c_void) {
+/// Tear down all ETC2/EAC emulation resources associated with `device` while
+/// `device` is still valid, right before forwarding `vkDestroyDevice` to the
+/// host Vulkan driver.
+pub fn device_destroying(device: *mut c_void) {
+    if device.is_null() {
+        return;
+    }
     if active_device(device as usize).is_some() {
-        forget_device();
+        forget_device_inner(true);
     }
     let mut list = emulating();
     list.retain(|&d| d != device as usize);
     EMULATING_FAST.store(list.last().copied().unwrap_or(0), Relaxed);
-    drop(list);
+}
+
+extern "C" fn destroy_device(device: *mut c_void, alloc: *const c_void) {
+    device_destroying(device);
     if let Some(f) = as_fn::<extern "C" fn(*mut c_void, *const c_void)>(H_DESTROY_DEVICE.load(Relaxed)) {
         f(device, alloc);
     }
@@ -5900,5 +5938,61 @@ mod tests {
         forget_device();
         assert!(active().is_none());
         forget_device();
+    }
+
+    #[test]
+    fn device_destroying_tears_down_live_device_and_orphan_forget_skips_vk_calls() {
+        let _turn = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        static DESTROYS: AtomicUsize = AtomicUsize::new(0);
+        extern "C" fn create(_: usize, _: *const c_void, _: *const c_void, _: *mut u64) -> i32 { -1 }
+        extern "C" fn destroy(_: usize, _: u64, _: *const c_void) { DESTROYS.fetch_add(1, Relaxed); }
+        extern "C" fn requirements(_: usize, _: u64, _: *mut [u64; 3]) {}
+        extern "C" fn bind(_: usize, _: u64, _: u64, _: u64) -> i32 { 0 }
+        extern "C" fn map(_: usize, _: u64, _: u64, _: u64, _: u32, _: *mut *mut c_void) -> i32 { -1 }
+        extern "C" fn copy(_: *mut c_void, _: u64, _: u64, _: i32, _: u32, _: *const c_void) {}
+
+        let make_dev = |handle: usize| {
+            Box::new(Dev {
+                device: handle,
+                pd: 0,
+                gdpa: 0,
+                bc_mode: false,
+                gpu_capable: false,
+                owned: true,
+                compute_queue_families: Vec::new(),
+                create_buffer: create,
+                destroy_buffer: destroy,
+                buffer_requirements: requirements,
+                allocate_memory: create,
+                free_memory: destroy,
+                bind_buffer_memory: bind,
+                map_memory: map,
+                copy_buffer_to_image: copy,
+                memory_types: vec![MEMORY_HOST_VISIBLE | MEMORY_HOST_COHERENT],
+                free_cpu_chunks: Mutex::new(vec![Chunk { buffer: 11, memory: 12, mapped: 0, size: 4096, used: 0 }]),
+                gpu: OnceLock::new(),
+            })
+        };
+
+        // Case 1: Normal vkDestroyDevice -> device_destroying tears down Vulkan
+        // resources while the device is still alive and clears emulation tracking.
+        let live_handle = 0x9010usize;
+        emulating().push(live_handle);
+        EMULATING_FAST.store(live_handle, Relaxed);
+        DEV.store(Box::into_raw(make_dev(live_handle)), Release);
+        let before = DESTROYS.load(Relaxed);
+        device_destroying(live_handle as *mut c_void);
+        assert!(active().is_none());
+        assert!(!device_emulates(live_handle as *mut c_void));
+        assert_eq!(DESTROYS.load(Relaxed), before + 2);
+
+        // Case 2: Defensive fallback if a previous DEV lingered past vkDestroyDevice
+        // without notifying us — must drop Rust state without invoking vkDestroy*.
+        let stale_handle = 0x9020usize;
+        DEV.store(Box::into_raw(make_dev(stale_handle)), Release);
+        let before_stale = DESTROYS.load(Relaxed);
+        forget_device_inner(false);
+        assert!(active().is_none());
+        assert_eq!(DESTROYS.load(Relaxed), before_stale);
     }
 }
