@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="packaging/banner.svg" alt="Vanta" width="520">
+<img src="docs/logo/vanta.svg" alt="Vanta" width="520">
 
 ### Run Roblox natively on Linux.
 
