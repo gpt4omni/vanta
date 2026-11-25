@@ -154,7 +154,7 @@ fn starting_dialog_with(
     content.set_margin_start(36);
     content.set_margin_end(36);
 
-    let icon = gtk::Image::from_icon_name("io.github.gpt4omni.Vanta");
+    let icon = gtk::Image::from_icon_name(vanta_shell::branding::current().icon());
     icon.set_pixel_size(72);
     content.append(&icon);
 
@@ -263,22 +263,31 @@ pub fn build(
     let profile_button = switcher.button.clone();
     let refresh_profile_row = switcher.refresh.clone();
 
-    // One control, centred, and the empty space around it is the point.
-    //
-    // This was a stack of two `AdwPreferencesGroup`s pinned to the top of the
-    // window, then a profile row over the button, and each read as a form that
-    // had run out of fields. The width clamp is tighter than the 480 the groups
-    // used because a pill button stretched to a launcher's full width looks
-    // like a preferences page whatever is in it.
+    let status_strip = chooser::build_status_strip(config.clone());
+    let refresh_status = status_strip.refresh.clone();
+    let mode_strip = chooser::build_mode_strip(config.clone(), config_path.clone(), {
+        let refresh_status = refresh_status.clone();
+        move || refresh_status()
+    });
+    let sync_mode_strip = mode_strip.sync.clone();
+
+    {
+        let refresh_status = refresh_status.clone();
+        switcher.connect_changed(move || refresh_status());
+    }
+
+    // One hero card, centred, with the segmented Launch Mode strip and compact
+    // status strip flanking the primary Launch button.
     let column = gtk::Box::new(gtk::Orientation::Vertical, 12);
     column.set_valign(gtk::Align::Center);
-    // The Roblox button and nothing under it but the profile's caption, which
-    // is hidden in the ordinary case. VR is started from Settings → VR
-    // (ADR-053, decision 7): the launcher stays one button.
-    column.append(&chooser::hero(chooser_widget.clone()));
+    column.append(&chooser::hero_with_controls(
+        chooser_widget.clone(),
+        Some(&mode_strip.widget),
+        Some(&status_strip.widget),
+    ));
     column.append(&switcher.note);
 
-    let clamp = adw::Clamp::builder().maximum_size(360).child(&column).build();
+    let clamp = adw::Clamp::builder().maximum_size(400).child(&column).build();
     clamp.set_margin_top(24);
     clamp.set_margin_bottom(24);
     clamp.set_margin_start(24);
@@ -332,7 +341,12 @@ pub fn build(
     // [`DEFAULT_WIDTH`] carries why the built-in size is the size it is, and
     // why Settings rather than this window's own content is what decides it.
     let (initial_width, initial_height) = initial_size(&initial_window);
-    let host = HostWindow::new(&vanta_shell::host_window::title(), initial_width, initial_height, &toasts);
+    let host = HostWindow::new_launcher(
+        &vanta_shell::host_window::title(),
+        initial_width,
+        initial_height,
+        &toasts,
+    );
     crate::appearance::apply(host.window().upcast_ref());
 
     // **The primary menu, rightmost, because that is where GNOME users look.**
@@ -464,9 +478,20 @@ pub fn build(
     let settings_action =
         gtk::gio::SimpleAction::new("settings", Some(glib::VariantTy::STRING));
     let window_for_settings = window.clone();
+    let refresh_profiles_and_status: Rc<dyn Fn()> = {
+        let refresh_profile_row = refresh_profile_row.clone();
+        let refresh_status = refresh_status.clone();
+        Rc::new(move || {
+            refresh_profile_row();
+            refresh_status();
+        })
+    };
     let browser_shell = Shell {
-        window: window.clone(), join: join.clone(), config: config.clone(),
-        config_path: config_path.clone(), refresh_profiles: refresh_profile_row.clone(),
+        window: window.clone(),
+        join: join.clone(),
+        config: config.clone(),
+        config_path: config_path.clone(),
+        refresh_profiles: refresh_profiles_and_status,
     };
     settings_action.connect_activate(move |_, page| {
         let settings = settings::build_preferences_window(
@@ -477,9 +502,18 @@ pub fn build(
         if let Some(name) = page.and_then(|p| p.str()).filter(|n| !n.is_empty()) {
             settings.set_visible_page_name(name);
         }
-        // The Version page can pin the profile the launcher row describes.
+        // Keep the profile caption, launch mode selector, and quick status
+        // strip in sync with any changes made in Settings, and return freed
+        // heap pages after the dialog tears down.
         let refresh = refresh_profile_row.clone();
-        settings.connect_closed(move |_| refresh());
+        let sync_mode = sync_mode_strip.clone();
+        let refresh_status = refresh_status.clone();
+        settings.connect_closed(move |_| {
+            refresh();
+            sync_mode();
+            refresh_status();
+            glib::idle_add_local_once(crate::trim_heap);
+        });
         // **Make room for it first, if this window has not got any.**
         //
         // Raising [`DEFAULT_WIDTH`] fixes the cramped dialog for a profile that
@@ -692,7 +726,12 @@ pub fn build(
     // starts is what the button starts (ADR-058). The window is never
     // presented in that case -- see `cli::playing` -- so the launch has no
     // starting dialog to show and a failure leaves through the exit status.
-    if std::env::var_os("VANTA_AUTOSTART").is_some() || crate::cli::playing() {
+    if crate::cli::playing() {
+        let window = window.clone();
+        glib::idle_add_local_once(move || {
+            WidgetExt::activate_action(&window, "win.launch", None).ok();
+        });
+    } else if std::env::var_os("VANTA_AUTOSTART").is_some() {
         let window = window.clone();
         glib::timeout_add_local_once(Duration::from_millis(400), move || {
             WidgetExt::activate_action(&window, "win.launch", None).ok();
@@ -784,7 +823,11 @@ pub fn build(
                 id.remove();
                 persist_window_size(&config, w);
             }
+            glib::idle_add_local_once(crate::trim_heap);
             glib::Propagation::Proceed
+        });
+        window.connect_hide(|_| {
+            glib::idle_add_local_once(crate::trim_heap);
         });
     }
 

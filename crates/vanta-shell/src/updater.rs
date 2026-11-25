@@ -250,8 +250,10 @@ pub fn header_button(
 
     // Manual does no background request of any kind — that is the whole of what
     // the setting says — so nothing is started here and the button is a refresh
-    // control until somebody presses it.
-    if automatic != Automatic::Manual {
+    // control until somebody presses it. Also skip background update checks
+    // under `--play`, where the launcher never maps and exists only to launch
+    // the game immediately.
+    if automatic != Automatic::Manual && !crate::cli::playing() {
         let button = button.clone();
         let last = last.clone();
         let parent = parent.clone();

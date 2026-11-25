@@ -25,9 +25,18 @@
 //! point the user is choosing between them rather than confirming the only
 //! option, and a row per entry is how that choice is shown.
 
+use std::cell::{Cell, RefCell};
+use std::path::PathBuf;
+use std::rc::Rc;
+
 use libadwaita as adw;
 use libadwaita::gtk;
+use libadwaita::gtk::{gio, glib};
 use libadwaita::prelude::*;
+
+use crate::install;
+use crate::settings::persist;
+use crate::shell_config::{GraphicsOptimization, ShellConfig};
 
 /// One entry in the chooser.
 ///
@@ -126,21 +135,48 @@ pub fn build(source: &dyn EntrySource, on_activate: impl Fn(&str) + Clone + 'sta
     group.upcast()
 }
 
+#[allow(dead_code)]
 pub fn hero(launch: gtk::Widget) -> gtk::Widget {
-    let column = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    hero_with_controls(launch, None, None)
+}
+
+/// The launcher hero card: brand mark, wordmark, tagline, optional segmented
+/// Launch Mode strip, primary Launch button, and optional Quick Status Strip.
+pub fn hero_with_controls(
+    launch: gtk::Widget,
+    mode_controls: Option<&gtk::Widget>,
+    status_strip: Option<&gtk::Widget>,
+) -> gtk::Widget {
+    let column = gtk::Box::new(gtk::Orientation::Vertical, 10);
+    column.add_css_class("vanta-hero-card");
     column.add_css_class("vanta-hero");
 
-    let bytes = gtk::glib::Bytes::from_static(include_bytes!("../../../packaging/mark.svg"));
-    let stream = gtk::gio::MemoryInputStream::from_bytes(&bytes);
-    let mark = match gtk::gdk_pixbuf::Pixbuf::from_stream(&stream, gtk::gio::Cancellable::NONE) {
+    // Respect Frostbite branding and decode at exact 2x HiDPI (224x224 for the
+    // 112px hero mark) instead of 512x512 (~5.2x less CPU/GPU memory).
+    let brand = vanta_shell::branding::current();
+    let svg_bytes: &'static [u8] = match brand {
+        vanta_shell::branding::Brand::Vanta => include_bytes!("../../../packaging/mark.svg"),
+        vanta_shell::branding::Brand::Frostbite => include_bytes!(
+            "../../../packaging/icons/hicolor/scalable/apps/io.github.gpt4omni.Vanta.Frostbite.svg"
+        ),
+    };
+    let bytes = glib::Bytes::from_static(svg_bytes);
+    let stream = gio::MemoryInputStream::from_bytes(&bytes);
+    let mark = match gtk::gdk_pixbuf::Pixbuf::from_stream_at_scale(
+        &stream,
+        224,
+        224,
+        true,
+        gio::Cancellable::NONE,
+    ) {
         Ok(pixbuf) => gtk::Image::from_paintable(Some(&gtk::gdk::Texture::for_pixbuf(&pixbuf))),
-        Err(_) => gtk::Image::from_icon_name(vanta_shell::branding::current().icon()),
+        Err(_) => gtk::Image::from_icon_name(brand.icon()),
     };
     mark.set_pixel_size(112);
-    mark.set_margin_bottom(8);
+    mark.set_margin_bottom(4);
     column.append(&mark);
 
-    let title = gtk::Label::new(Some(vanta_shell::branding::current().name()));
+    let title = gtk::Label::new(Some(brand.name()));
     title.add_css_class("vanta-wordmark");
     column.append(&title);
 
@@ -149,8 +185,232 @@ pub fn hero(launch: gtk::Widget) -> gtk::Widget {
     tagline.set_wrap(true);
     tagline.set_justify(gtk::Justification::Center);
     column.append(&tagline);
+
+    if let Some(controls) = mode_controls {
+        column.append(controls);
+    }
     column.append(&launch);
+    if let Some(strip) = status_strip {
+        column.append(strip);
+    }
     column.upcast()
+}
+
+/// The segmented Launch Mode selector inside the hero card (`Balanced`,
+/// `Performance`, `Speed`) plus a compact badge when one of Settings'
+/// specialized modes (`RobloxApp`, `MobileTier`, `FewerCores`) is selected.
+pub struct LaunchModeStrip {
+    pub widget: gtk::Widget,
+    /// Re-read `ShellConfig.graphics_optimization_mode` and sync the toggles.
+    pub sync: Rc<dyn Fn()>,
+}
+
+/// Label for the badge shown when the user picked a specialized mode in Settings.
+fn specialized_mode_note(mode: GraphicsOptimization) -> Option<String> {
+    match mode {
+        GraphicsOptimization::Balanced
+        | GraphicsOptimization::MoreCores
+        | GraphicsOptimization::Speed => None,
+        other => Some(format!("Settings mode: {}", other.short_label())),
+    }
+}
+
+pub fn build_mode_strip(
+    config: Rc<RefCell<ShellConfig>>,
+    config_path: Rc<PathBuf>,
+    on_change: impl Fn() + 'static,
+) -> LaunchModeStrip {
+    let container = gtk::Box::new(gtk::Orientation::Vertical, 6);
+
+    let strip = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+    strip.set_homogeneous(true);
+    strip.add_css_class("vanta-mode-strip");
+
+    let balanced_btn = gtk::ToggleButton::with_label("Balanced");
+    balanced_btn.set_tooltip_text(Some(GraphicsOptimization::Balanced.description()));
+
+    let perf_btn = gtk::ToggleButton::with_label("Performance");
+    perf_btn.set_tooltip_text(Some(GraphicsOptimization::MoreCores.description()));
+
+    let speed_btn = gtk::ToggleButton::with_label("Speed");
+    speed_btn.add_css_class("vanta-mode-speed");
+    speed_btn.set_tooltip_text(Some(GraphicsOptimization::Speed.description()));
+
+    strip.append(&balanced_btn);
+    strip.append(&perf_btn);
+    strip.append(&speed_btn);
+    container.append(&strip);
+
+    let note = gtk::Label::new(None);
+    note.add_css_class("vanta-mode-note");
+    note.set_halign(gtk::Align::Center);
+    note.set_visible(false);
+    container.append(&note);
+
+    let syncing = Rc::new(Cell::new(false));
+    let on_change: Rc<dyn Fn()> = Rc::new(on_change);
+
+    let sync: Rc<dyn Fn()> = {
+        let config = config.clone();
+        let syncing = syncing.clone();
+        let balanced_btn = balanced_btn.clone();
+        let perf_btn = perf_btn.clone();
+        let speed_btn = speed_btn.clone();
+        let note = note.clone();
+        Rc::new(move || {
+            let mode = config.borrow().graphics_optimization_mode;
+            syncing.set(true);
+            balanced_btn.set_active(mode == GraphicsOptimization::Balanced);
+            perf_btn.set_active(mode == GraphicsOptimization::MoreCores);
+            speed_btn.set_active(mode == GraphicsOptimization::Speed);
+            syncing.set(false);
+
+            match specialized_mode_note(mode) {
+                Some(text) => {
+                    note.set_text(&text);
+                    note.set_tooltip_text(Some(mode.description()));
+                    note.set_visible(true);
+                }
+                None => {
+                    note.set_visible(false);
+                }
+            }
+        })
+    };
+
+    for (btn, target_mode) in [
+        (&balanced_btn, GraphicsOptimization::Balanced),
+        (&perf_btn, GraphicsOptimization::MoreCores),
+        (&speed_btn, GraphicsOptimization::Speed),
+    ] {
+        let config = config.clone();
+        let config_path = config_path.clone();
+        let syncing = syncing.clone();
+        let sync = sync.clone();
+        let on_change = on_change.clone();
+        btn.connect_toggled(move |button| {
+            if syncing.get() {
+                return;
+            }
+            if !button.is_active() {
+                // Keep segmented radio behaviour: clicking the active segment
+                // again leaves it selected rather than clearing all segments.
+                if config.borrow().graphics_optimization_mode == target_mode {
+                    syncing.set(true);
+                    button.set_active(true);
+                    syncing.set(false);
+                }
+                return;
+            }
+            config.borrow_mut().graphics_optimization_mode = target_mode;
+            persist(&config, &config_path);
+            sync();
+            on_change();
+        });
+    }
+
+    sync();
+
+    LaunchModeStrip { widget: container.upcast(), sync }
+}
+
+/// Compact status line underneath the Launch button showing active profile,
+/// active launch mode, and installed Roblox build version.
+pub struct StatusStrip {
+    pub widget: gtk::Widget,
+    /// Re-read profile, launch mode, and (asynchronously) installed Roblox build.
+    pub refresh: Rc<dyn Fn()>,
+}
+
+/// Pure formatting for the Quick Status Strip.
+fn format_status_strip(
+    profile: &str,
+    mode: GraphicsOptimization,
+    build_label: Option<&str>,
+) -> String {
+    let build = build_label.unwrap_or("Download needed");
+    format!("{profile}  ·  {}  ·  {build}", mode.short_label())
+}
+
+fn resolve_build_label(profile_name: &str) -> Option<String> {
+    if std::env::var_os(install::APK_OVERRIDE).is_some() {
+        return Some("Custom APK".to_string());
+    }
+    if let Ok(dir) = vanta_shell::profile::dir(profile_name) {
+        if let Some(pin) = vanta_shell::profile::pinned_version(&dir) {
+            return Some(format!("Roblox {pin}"));
+        }
+    }
+    install::installed_version().map(|v| format!("Roblox {v}"))
+}
+
+pub fn build_status_strip(config: Rc<RefCell<ShellConfig>>) -> StatusStrip {
+    let label = gtk::Label::new(None);
+    label.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
+    label.set_halign(gtk::Align::Center);
+    label.set_justify(gtk::Justification::Center);
+
+    let strip = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    strip.set_halign(gtk::Align::Center);
+    strip.add_css_class("vanta-status-strip");
+    strip.append(&label);
+
+    let cached_build: Rc<RefCell<Option<Option<String>>>> = Rc::new(RefCell::new(None));
+    let generation = Rc::new(Cell::new(0u64));
+
+    let refresh: Rc<dyn Fn()> = {
+        let config = config.clone();
+        let label = label.clone();
+        let cached_build = cached_build.clone();
+        let generation = generation.clone();
+        Rc::new(move || {
+            let (profile, mode) = {
+                let cfg = config.borrow();
+                (cfg.profile.clone(), cfg.graphics_optimization_mode)
+            };
+            let initial_build = cached_build
+                .borrow()
+                .as_ref()
+                .and_then(|opt| opt.as_deref())
+                .map(str::to_owned);
+            let placeholder = if cached_build.borrow().is_some() {
+                format_status_strip(&profile, mode, initial_build.as_deref())
+            } else {
+                format_status_strip(&profile, mode, Some("Checking build…"))
+            };
+            label.set_text(&placeholder);
+
+            let ticket = generation.get().wrapping_add(1);
+            generation.set(ticket);
+
+            let weak_label = label.downgrade();
+            let config = config.clone();
+            let cached_build = cached_build.clone();
+            let generation = generation.clone();
+            let profile_for_worker = profile.clone();
+            glib::spawn_future_local(async move {
+                let resolved = gio::spawn_blocking(move || resolve_build_label(&profile_for_worker))
+                    .await
+                    .ok()
+                    .flatten();
+                if generation.get() != ticket {
+                    return;
+                }
+                *cached_build.borrow_mut() = Some(resolved.clone());
+                if let Some(label) = weak_label.upgrade() {
+                    let (profile, mode) = {
+                        let cfg = config.borrow();
+                        (cfg.profile.clone(), cfg.graphics_optimization_mode)
+                    };
+                    label.set_text(&format_status_strip(&profile, mode, resolved.as_deref()));
+                }
+            });
+        })
+    };
+
+    refresh();
+
+    StatusStrip { widget: strip.upcast(), refresh }
 }
 
 /// The lone entry, as the button the window exists for.
@@ -185,6 +445,28 @@ fn button(entry: Entry, on_activate: impl Fn(&str) + 'static) -> gtk::Widget {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn specialized_modes_show_a_note_and_primary_segments_do_not() {
+        assert_eq!(specialized_mode_note(GraphicsOptimization::Balanced), None);
+        assert_eq!(specialized_mode_note(GraphicsOptimization::MoreCores), None);
+        assert_eq!(specialized_mode_note(GraphicsOptimization::Speed), None);
+        assert!(specialized_mode_note(GraphicsOptimization::MobileTier).unwrap().contains("Mobile Tier"));
+        assert!(specialized_mode_note(GraphicsOptimization::RobloxApp).unwrap().contains("Roblox App"));
+        assert!(specialized_mode_note(GraphicsOptimization::FewerCores).unwrap().contains("Fewer Cores"));
+    }
+
+    #[test]
+    fn status_strip_formats_profile_mode_and_build() {
+        assert_eq!(
+            format_status_strip("default", GraphicsOptimization::Speed, Some("Roblox 2.738.0.1397")),
+            "default  ·  Speed  ·  Roblox 2.738.0.1397"
+        );
+        assert_eq!(
+            format_status_strip("alt", GraphicsOptimization::Balanced, None),
+            "alt  ·  Balanced  ·  Download needed"
+        );
+    }
 
     #[test]
     #[ignore = "requires a GTK display"]

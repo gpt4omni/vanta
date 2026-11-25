@@ -4,7 +4,7 @@
 //! in `<profile>/mods-enabled.json`, master toggle (`mods_enabled`), folder
 //! launcher, and one-click folder/ZIP import.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
@@ -123,40 +123,79 @@ pub fn build_mods_page(
         .title("Installed Mod Packs")
         .build();
     let rows_holder: Rc<RefCell<Vec<gtk::Widget>>> = Rc::new(RefCell::new(Vec::new()));
+    let scan_generation = Rc::new(Cell::new(0u64));
 
     let rebuild_packs: Rc<dyn Fn()> = {
         let packs_group = packs_group.clone();
         let rows_holder = rows_holder.clone();
         let profile_dir = profile_dir.clone();
         let dialog = dialog.clone();
+        let scan_generation = scan_generation.clone();
         Rc::new(move || {
-            for old in rows_holder.borrow_mut().drain(..) {
-                packs_group.remove(&old);
-            }
-            let packs = mods::discover_packs(&profile_dir);
-            if packs.is_empty() {
-                let empty = adw::ActionRow::builder()
-                    .title("No mod packs installed yet")
-                    .subtitle(
-                        "Drop any folder with files like content/sounds/ouch.ogg, \
-                         content/fonts/…, or content/textures/cursors/… into the mods folder \
-                         (no mod.json required), or use Import ZIP / Import Folder above.",
-                    )
+            let ticket = scan_generation.get().wrapping_add(1);
+            scan_generation.set(ticket);
+
+            if rows_holder.borrow().is_empty() {
+                let loading = adw::ActionRow::builder()
+                    .title("Scanning mod packs…")
                     .build();
-                empty.set_subtitle_lines(3);
-                packs_group.add(&empty);
-                rows_holder.borrow_mut().push(empty.upcast());
-                return;
+                packs_group.add(&loading);
+                rows_holder.borrow_mut().push(loading.upcast());
             }
-            for pack in packs {
-                let row = build_pack_row(&pack, &profile_dir, &dialog);
-                packs_group.add(&row);
-                rows_holder.borrow_mut().push(row.upcast());
-            }
+
+            let weak_group = packs_group.downgrade();
+            let rows_holder = rows_holder.clone();
+            let profile_dir_worker = profile_dir.clone();
+            let profile_dir_ui = profile_dir.clone();
+            let dialog = dialog.clone();
+            let scan_generation = scan_generation.clone();
+            glib::spawn_future_local(async move {
+                let Ok(packs) = gio::spawn_blocking(move || mods::discover_packs(&profile_dir_worker)).await else {
+                    return;
+                };
+                if scan_generation.get() != ticket {
+                    return;
+                }
+                let Some(packs_group) = weak_group.upgrade() else {
+                    return;
+                };
+                for old in rows_holder.borrow_mut().drain(..) {
+                    packs_group.remove(&old);
+                }
+                if packs.is_empty() {
+                    let empty = adw::ActionRow::builder()
+                        .title("No mod packs installed yet")
+                        .subtitle(
+                            "Drop any folder with files like content/sounds/ouch.ogg, \
+                             content/fonts/…, or content/textures/cursors/… into the mods folder \
+                             (no mod.json required), or use Import ZIP / Import Folder above.",
+                        )
+                        .build();
+                    empty.set_subtitle_lines(3);
+                    packs_group.add(&empty);
+                    rows_holder.borrow_mut().push(empty.upcast());
+                    return;
+                }
+                for pack in packs {
+                    let row = build_pack_row(&pack, &profile_dir_ui, &dialog);
+                    packs_group.add(&row);
+                    rows_holder.borrow_mut().push(row.upcast());
+                }
+            });
         })
     };
 
-    rebuild_packs();
+    // Defer the initial recursive mod-pack scan until the Mods tab is actually
+    // mapped so opening Settings onto another page pays zero disk I/O here.
+    let scanned_once = Rc::new(Cell::new(false));
+    {
+        let rebuild = rebuild_packs.clone();
+        page.connect_map(move |_| {
+            if !scanned_once.replace(true) {
+                rebuild();
+            }
+        });
+    }
 
     {
         let rebuild = rebuild_packs.clone();

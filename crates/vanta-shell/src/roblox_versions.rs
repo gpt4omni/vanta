@@ -19,7 +19,7 @@
 //! this profile's pin -- unpinned, it would be the oldest thing in the store and
 //! pruned on the next launch.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
@@ -119,6 +119,7 @@ struct View {
     download_rows: gtk::ListBox,
     meter: Rc<Meter>,
     busy: RefCell<Option<(String, Arc<Cancel>)>>,
+    populated: Cell<bool>,
 }
 
 pub fn build_version_page(config: Rc<RefCell<ShellConfig>>) -> adw::PreferencesPage {
@@ -167,17 +168,18 @@ pub fn build_version_page(config: Rc<RefCell<ShellConfig>>) -> adw::PreferencesP
         download_rows,
         meter,
         busy: RefCell::new(None),
+        populated: Cell::new(false),
     });
-    populate(&view);
 
-    // **The one strong reference to the view, and it has to exist.** Every
-    // handler on a row holds a `Weak`, so with nothing holding the view it was
-    // dropped as this function returned and `repopulate_soon` found nothing to
-    // repopulate. Held by a signal on the page, it lives exactly as long as the
-    // page does. The mirror is asked here, on first showing, rather than when
-    // Settings is built: most openings of Settings never visit this page.
+    // Populate the store rows and query the mirror lazily on first map so
+    // opening Settings onto another tab pays zero disk I/O for Version.
     let held = view.clone();
-    page.connect_map(move |_| ask(&held));
+    page.connect_map(move |_| {
+        if !held.populated.replace(true) {
+            populate(&held);
+        }
+        ask(&held);
+    });
     page
 }
 

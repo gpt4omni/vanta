@@ -266,6 +266,59 @@ fn unmute_waylands_own_errors() {
     );
 }
 
+/// Game-host-only GTK widgets: text overlay editors, HUD badges, server
+/// popover, and dynamic editor/title-bar CSS providers. Skipped entirely by
+/// [`HostWindow::new_launcher`] so the launcher pays zero widget/CSS overhead
+/// for controls only `vanta-run` uses.
+struct EngineChrome {
+    text_layer: gtk::Fixed,
+    /// The editor itself: a real editable GTK widget, not a picture of one.
+    editor: gtk::Text,
+    /// Font size and colours for the current box. Reloaded when a box takes
+    /// focus rather than styled per keystroke -- see [`HostWindow::set_text_overlay`].
+    editor_css: gtk::CssProvider,
+    /// Holds [`COMPACT_SHEET`] when the bar is compact and nothing otherwise.
+    compact_css: gtk::CssProvider,
+    /// Where the editor is in surface coordinates, so the input-region punch
+    /// can hand that one rectangle back to GTK. `None` when nothing is focused.
+    editor_rect: std::cell::Cell<Option<(i32, i32, i32, i32)>>,
+    /// Set while Vanta is seeding the widget from the engine's text, so the
+    /// change signal does not echo Vanta's own write straight back at it.
+    editor_seeding: std::rc::Rc<std::cell::Cell<bool>>,
+    /// What to tell when the user edits. Installed by the runtime, which owns
+    /// the push to `syncTextboxTextAndCursorPosition2`.
+    editor_changed: std::rc::Rc<std::cell::RefCell<Option<Box<dyn Fn(&str, i32)>>>>,
+    /// Called when Enter is pressed in the single-line editor, GTK's
+    /// `activate`. Absent on the multi-line one on purpose.
+    editor_activated: std::rc::Rc<std::cell::RefCell<Option<Box<dyn Fn()>>>>,
+    /// The font family the engine draws with, once the runtime has found it in
+    /// the APK.
+    editor_font_family: std::cell::RefCell<Option<String>>,
+    /// The multi-line editor for a Roblox `TextBox` with `MultiLine` true.
+    editor_multiline: gtk::TextView,
+    /// The scrollable container [`Self::editor_multiline`] sits in.
+    editor_multiline_scroll: gtk::ScrolledWindow,
+    /// Seeding guard for the multi-line editor.
+    editor_multiline_seeding: std::rc::Rc<std::cell::Cell<bool>>,
+    /// The one `GtkTextTag` carrying the current box's font family, weight,
+    /// style and size.
+    editor_multiline_tag: gtk::TextTag,
+    /// Which of `editor`/`editor_multiline` [`HostWindow::set_text_overlay`] last showed.
+    editor_active_multiline: std::cell::Cell<bool>,
+    /// Built-in live Performance HUD monospace pill badge in the header bar.
+    perf_hud_label: gtk::Label,
+    /// Server region quick-actions pill in the header bar (visible while in-game).
+    server_pill: gtk::MenuButton,
+    /// Detail header label inside the server quick-actions popover.
+    server_detail_label: gtk::Label,
+    /// Rejoin button inside the server popover (enabled when a place_id is known).
+    server_rejoin_btn: gtk::Button,
+    /// Latest server banner payload backing the popover's Copy / Rejoin buttons.
+    server_banner: std::rc::Rc<std::cell::RefCell<Option<ServerBanner>>>,
+    /// Callback installed by the runtime to trigger Quick Rejoin Server.
+    server_rejoin_cb: std::rc::Rc<std::cell::RefCell<Option<Box<dyn Fn()>>>>,
+}
+
 /// A built, not-yet-presented shell window.
 ///
 /// Holds GTK objects, which are `Rc`-refcounted and must only ever be touched
@@ -280,84 +333,13 @@ pub struct HostWindow {
     /// what the engine's subsurface is sized and positioned from, so that the
     /// header bar's height never has to be assumed anywhere.
     content: gtk::Widget,
-    text_layer: gtk::Fixed,
-    /// The editor itself: a real editable GTK widget, not a picture of one.
-    ///
-    /// It was a `GtkLabel` mirroring a buffer Vanta owned, with a caret
-    /// Vanta drew. That worked and was miserable to use -- no selection, no
-    /// click-to-position, no double-click-to-word, a caret that did not blink,
-    /// and every one of those would have had to be written by hand. Reported as
-    /// "the text field is so weird ... our own handling is ultra awkward".
-    ///
-    /// A `gtk::Text` is the bare editable widget behind `GtkEntry`, without the
-    /// frame and background an entry draws, which is what suits sitting
-    /// invisibly on top of a box Roblox has already drawn.
-    editor: gtk::Text,
-    /// Font size and colours for the current box. Reloaded when a box takes
-    /// focus rather than styled per keystroke -- see [`HostWindow::set_text_overlay`].
-    editor_css: gtk::CssProvider,
     /// The title-bar preference in force. A cell because it changes while the
     /// window is up (ADR-044), and shared because the fullscreen handler reads
     /// it each time the window enters or leaves fullscreen and must see the
     /// current choice, not the one the window was built with.
     title_bar: std::rc::Rc<std::cell::Cell<crate::title_bar::TitleBar>>,
-    /// Holds [`COMPACT_SHEET`] when the bar is compact and nothing otherwise.
-    compact_css: gtk::CssProvider,
-    /// Where the editor is in surface coordinates, so the input-region punch
-    /// can hand that one rectangle back to GTK. `None` when nothing is focused.
-    editor_rect: std::cell::Cell<Option<(i32, i32, i32, i32)>>,
-    /// Set while Vanta is seeding the widget from the engine's text, so the
-    /// change signal does not echo Vanta's own write straight back at it.
-    editor_seeding: std::rc::Rc<std::cell::Cell<bool>>,
-    /// What to tell when the user edits. Installed by the runtime, which owns
-    /// the push to `syncTextboxTextAndCursorPosition2`.
-    editor_changed: std::rc::Rc<std::cell::RefCell<Option<Box<dyn Fn(&str, i32)>>>>,
-    /// Called when Enter is pressed in the single-line editor, GTK's
-    /// `activate`. Absent on the multi-line one on purpose: Enter there is a
-    /// newline in the text, not an action. See [`Self::connect_editor_activate`].
-    editor_activated: std::rc::Rc<std::cell::RefCell<Option<Box<dyn Fn()>>>>,
-    /// The font family the engine draws with, once the runtime has found it in
-    /// the APK. `None` until then, and `None` for ever if it is not there --
-    /// see [`HostWindow::set_editor_font_family`].
-    editor_font_family: std::cell::RefCell<Option<String>>,
-    /// The multi-line editor for a Roblox `TextBox` with `MultiLine` true.
-    ///
-    /// `gtk::Text` cannot hold more than one line -- see [`Self::editor`]'s own
-    /// doc -- so a genuinely multi-line box (Circuit Maker 2's assembler and
-    /// ROM boxes, a code editor, a chat entry more than one line tall) needs a
-    /// widget that can wrap and scroll. `gtk::TextView` is GTK's editable
-    /// multi-line widget; [`Self::editor_multiline_scroll`] is the
-    /// `gtk::ScrolledWindow` that actually sits in [`Self::text_layer`], so
-    /// text past the box's height scrolls inside the box instead of spilling
-    /// onto the canvas. Exactly one of `editor`/`editor_multiline` is visible
-    /// at a time -- chosen in [`Self::set_text_overlay`] by
-    /// `TextOverlay::multiline` -- and [`Self::editor_active_multiline`]
-    /// records which, for devctl's `paste`/`settext` to route to.
-    editor_multiline: gtk::TextView,
-    /// The scrollable container [`Self::editor_multiline`] sits in, and the
-    /// widget [`Self::text_layer`] actually places and sizes. See
-    /// [`Self::editor_multiline`].
-    editor_multiline_scroll: gtk::ScrolledWindow,
-    /// Same purpose as [`Self::editor_seeding`], and kept separate rather than
-    /// shared: the two widgets' change signals fire independently of each
-    /// other and only one editor is ever live, but a single flag toggled by
-    /// both would race if a stray signal from the widget being hidden arrived
-    /// after the other had already started seeding.
-    editor_multiline_seeding: std::rc::Rc<std::cell::Cell<bool>>,
-    /// The one `GtkTextTag` carrying the current box's font family, weight,
-    /// style and size, reapplied across the whole buffer on every change.
-    ///
-    /// `gtk::TextView` has no per-widget equivalent of `gtk::Text::set_attributes`
-    /// -- a `GtkTextBuffer`'s formatting lives in tags attached to ranges of
-    /// text, not in one Pango attribute list for the whole widget. One mutable
-    /// tag, restyled here and kept applied to the entire buffer (see the
-    /// `connect_changed` handler installed in [`Self::new`]), gets the same
-    /// effect as `gtk::Text`'s attribute list without hand-tracking which
-    /// ranges are tagged.
-    editor_multiline_tag: gtk::TextTag,
-    /// Which of `editor`/`editor_multiline` [`Self::set_text_overlay`] last
-    /// showed. `false` (and no editor visible) once a box has blurred.
-    editor_active_multiline: std::cell::Cell<bool>,
+    /// Present for `with_canvas` / `new` (game host); `None` for `new_launcher`.
+    engine: Option<EngineChrome>,
     /// Whether the canvas is currently lowered. Remembered for the CSS class;
     /// the input region no longer depends on it, see [`HostWindow::set_canvas_cutout`].
     canvas_see_through: std::cell::Cell<bool>,
@@ -386,24 +368,12 @@ pub struct HostWindow {
     /// `after-paint` has fired since. `None` when no lowering is being
     /// prepared. See [`HostWindow::arm_present_probe`].
     present_probe: std::cell::RefCell<Option<PresentProbe>>,
-    /// Built-in live Performance HUD monospace pill badge in the header bar.
-    perf_hud_label: gtk::Label,
     /// Unadorned window title passed to [`HostWindow::new`].
     base_title: String,
     /// Whether the recording marker (`● REC`) is currently shown in the title.
     recording: std::cell::Cell<bool>,
     /// Compact live Performance HUD text, when enabled.
     perf_hud: std::cell::RefCell<Option<String>>,
-    /// Server region quick-actions pill in the header bar (visible while in-game).
-    server_pill: gtk::MenuButton,
-    /// Detail header label inside the server quick-actions popover.
-    server_detail_label: gtk::Label,
-    /// Rejoin button inside the server popover (enabled when a place_id is known).
-    server_rejoin_btn: gtk::Button,
-    /// Latest server banner payload backing the popover's Copy / Rejoin buttons.
-    server_banner: std::rc::Rc<std::cell::RefCell<Option<ServerBanner>>>,
-    /// Callback installed by the runtime to trigger Quick Rejoin Server.
-    server_rejoin_cb: std::rc::Rc<std::cell::RefCell<Option<Box<dyn Fn()>>>>,
 }
 
 /// Live in-game server details displayed by [`HostWindow::set_server_banner`].
@@ -936,20 +906,24 @@ impl HostWindow {
              } \
              .vanta-perf-hud { \
                  font-family: monospace; \
+                 font-variant-numeric: tabular-nums; \
                  font-size: 11px; \
                  font-weight: 600; \
                  padding: 2px 9px; \
                  border-radius: 999px; \
-                 background-color: alpha(@window_fg_color, 0.10); \
+                 background-color: alpha(@window_fg_color, 0.09); \
+                 border: 1px solid alpha(@window_fg_color, 0.14); \
                  color: @headerbar_fg_color; \
              } \
              .vanta-server-pill > button { \
                  font-size: 11px; \
                  font-weight: 600; \
+                 font-variant-numeric: tabular-nums; \
                  min-height: 24px; \
                  padding: 0 9px; \
                  border-radius: 999px; \
-                 background-color: alpha(@window_fg_color, 0.10); \
+                 background-color: alpha(@window_fg_color, 0.09); \
+                 border: 1px solid alpha(@window_fg_color, 0.14); \
                  color: @headerbar_fg_color; \
              }",
         );
@@ -960,26 +934,72 @@ impl HostWindow {
             &css,
             gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
         );
-        // After the main sheet at the same priority, so where both name the same
-        // property this one wins, as it did when it was appended to it.
-        host.compact_css
-            .load_from_string(if title_bar == crate::title_bar::TitleBar::Compact { COMPACT_SHEET } else { "" });
-        gtk::style_context_add_provider_for_display(
-            &WidgetExt::display(&host.window),
-            &host.compact_css,
-            gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
-        );
-        // The editor's own sheet, empty until a box takes focus and reloaded
-        // with that box's font size and colours each time one does. Separate
-        // from the sheet above because that one is written once and this one is
-        // rewritten, and reparsing the whole stylesheet to restyle one widget
-        // would restyle the header bar too.
-        gtk::style_context_add_provider_for_display(
-            &WidgetExt::display(&host.window),
-            &host.editor_css,
-            gtk::STYLE_PROVIDER_PRIORITY_APPLICATION + 1,
-        );
+        if let Some(engine) = &host.engine {
+            // After the main sheet at the same priority, so where both name the same
+            // property this one wins, as it did when it was appended to it.
+            engine.compact_css
+                .load_from_string(if title_bar == crate::title_bar::TitleBar::Compact { COMPACT_SHEET } else { "" });
+            gtk::style_context_add_provider_for_display(
+                &WidgetExt::display(&host.window),
+                &engine.compact_css,
+                gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+            );
+            // The editor's own sheet, empty until a box takes focus and reloaded
+            // with that box's font size and colours each time one does.
+            gtk::style_context_add_provider_for_display(
+                &WidgetExt::display(&host.window),
+                &engine.editor_css,
+                gtk::STYLE_PROVIDER_PRIORITY_APPLICATION + 1,
+            );
+        }
         host
+    }
+
+    /// Lightweight launcher window: skips allocating game-only widgets
+    /// (`gtk::Overlay`, `gtk::Fixed`, `gtk::Text`, multiline `gtk::TextView`,
+    /// `ServerPopover`, `perf_hud_label`, and extra editor CSS providers).
+    pub fn new_launcher(
+        title: &str,
+        width: i32,
+        height: i32,
+        content: &impl IsA<gtk::Widget>,
+    ) -> Self {
+        let header = adw::HeaderBar::new();
+        let toolbar = adw::ToolbarView::new();
+        toolbar.add_top_bar(&header);
+        toolbar.set_content(Some(content));
+
+        let (w, h) = match smallest_monitor() {
+            Some(monitor) => fit_within((width, height), monitor),
+            None => (width, height),
+        };
+
+        let window = adw::Window::builder()
+            .title(title)
+            .default_width(w)
+            .default_height(h)
+            .content(&toolbar)
+            .build();
+        window.connect_map(|_| crate::startup_watch::mapped());
+
+        HostWindow {
+            window,
+            header,
+            toolbar,
+            content: content.as_ref().clone(),
+            title_bar: std::rc::Rc::new(std::cell::Cell::new(crate::title_bar::TitleBar::Default)),
+            engine: None,
+            canvas_see_through: std::cell::Cell::new(false),
+            opaque_unsized: std::cell::Cell::new(false),
+            canvas_rect: std::cell::Cell::new(None),
+            cutout_cache: std::cell::Cell::new(None),
+            dialog_up: std::cell::Cell::new(false),
+            canvas_in_input_region: std::cell::Cell::new(false),
+            present_probe: std::cell::RefCell::new(None),
+            base_title: title.to_owned(),
+            recording: std::cell::Cell::new(false),
+            perf_hud: std::cell::RefCell::new(None),
+        }
     }
 
     pub fn new(title: &str, width: i32, height: i32, content: &impl IsA<gtk::Widget>) -> Self {
@@ -1282,17 +1302,29 @@ impl HostWindow {
             header,
             toolbar,
             content: content.as_ref().clone(),
-            text_layer,
-            editor,
-            editor_css,
             title_bar: std::rc::Rc::new(std::cell::Cell::new(crate::title_bar::TitleBar::Default)),
-            compact_css: gtk::CssProvider::new(),
-            editor_rect: std::cell::Cell::new(None),
-            editor_multiline,
-            editor_multiline_scroll,
-            editor_multiline_seeding,
-            editor_multiline_tag,
-            editor_active_multiline: std::cell::Cell::new(false),
+            engine: Some(EngineChrome {
+                text_layer,
+                editor,
+                editor_css,
+                compact_css: gtk::CssProvider::new(),
+                editor_rect: std::cell::Cell::new(None),
+                editor_seeding,
+                editor_changed,
+                editor_activated,
+                editor_font_family: std::cell::RefCell::new(None),
+                editor_multiline,
+                editor_multiline_scroll,
+                editor_multiline_seeding,
+                editor_multiline_tag,
+                editor_active_multiline: std::cell::Cell::new(false),
+                perf_hud_label,
+                server_pill,
+                server_detail_label,
+                server_rejoin_btn,
+                server_banner,
+                server_rejoin_cb,
+            }),
             canvas_see_through: std::cell::Cell::new(false),
             opaque_unsized: std::cell::Cell::new(false),
             canvas_rect: std::cell::Cell::new(None),
@@ -1300,19 +1332,9 @@ impl HostWindow {
             dialog_up: std::cell::Cell::new(false),
             canvas_in_input_region: std::cell::Cell::new(false),
             present_probe: std::cell::RefCell::new(None),
-            perf_hud_label,
             base_title: title.to_owned(),
             recording: std::cell::Cell::new(false),
             perf_hud: std::cell::RefCell::new(None),
-            server_pill,
-            server_detail_label,
-            server_rejoin_btn,
-            server_banner,
-            server_rejoin_cb,
-            editor_seeding,
-            editor_changed,
-            editor_activated,
-            editor_font_family: std::cell::RefCell::new(None),
         }
     }
 
@@ -1340,7 +1362,9 @@ impl HostWindow {
     /// not what the engine drew -- acceptable as a fallback, never as the
     /// intent.
     pub fn set_editor_font_family(&self, family: Option<String>) {
-        *self.editor_font_family.borrow_mut() = family;
+        if let Some(engine) = &self.engine {
+            *engine.editor_font_family.borrow_mut() = family;
+        }
     }
 
     /// Install a callback for edits the user makes in the editor.
@@ -1354,7 +1378,9 @@ impl HostWindow {
     /// is told them together and a caret reported for text the engine has not
     /// seen yet is a caret past the end of the string it holds.
     pub fn connect_editor_changed<F: Fn(&str, i32) + 'static>(&self, f: F) {
-        *self.editor_changed.borrow_mut() = Some(Box::new(f));
+        if let Some(engine) = &self.engine {
+            *engine.editor_changed.borrow_mut() = Some(Box::new(f));
+        }
     }
 
     /// Install a callback for Enter in the single-line editor.
@@ -1366,7 +1392,9 @@ impl HostWindow {
     /// the newline into its buffer, `connect_editor_changed` reports it like
     /// any other edit, and what the engine does with a newline is its own.
     pub fn connect_editor_activate<F: Fn() + 'static>(&self, f: F) {
-        *self.editor_activated.borrow_mut() = Some(Box::new(f));
+        if let Some(engine) = &self.engine {
+            *engine.editor_activated.borrow_mut() = Some(Box::new(f));
+        }
     }
 
     /// The development control surface's `paste`: insert `text` at the
@@ -1396,12 +1424,13 @@ impl HostWindow {
     /// have dropped it unaided; flattening explicitly is correct either way
     /// and does not depend on finding out.
     pub fn editor_paste_at_caret(&self, text: &str) -> usize {
+        let Some(engine) = &self.engine else { return 0 };
         let text = text.replace('\n', " ");
-        self.editor.delete_selection();
-        let mut pos = self.editor.position();
-        self.editor.insert_text(&text, &mut pos);
-        self.editor.set_position(pos);
-        self.editor.text().chars().count()
+        engine.editor.delete_selection();
+        let mut pos = engine.editor.position();
+        engine.editor.insert_text(&text, &mut pos);
+        engine.editor.set_position(pos);
+        engine.editor.text().chars().count()
     }
 
     /// The development control surface's `settext`: replace the field's
@@ -1413,10 +1442,11 @@ impl HostWindow {
     /// synchronous signal path as the paste above, and the same newline
     /// flattening.
     pub fn editor_set_text(&self, text: &str) -> usize {
+        let Some(engine) = &self.engine else { return 0 };
         let text = text.replace('\n', " ");
-        self.editor.set_text(&text);
-        self.editor.set_position(text.chars().count() as i32);
-        self.editor.text().chars().count()
+        engine.editor.set_text(&text);
+        engine.editor.set_position(text.chars().count() as i32);
+        engine.editor.text().chars().count()
     }
 
     /// [`Self::editor_paste_at_caret`]'s multi-line counterpart: insert at the
@@ -1428,7 +1458,8 @@ impl HostWindow {
     ///
     /// Caller has checked a box has focus and that it is multi-line.
     pub fn editor_multiline_paste_at_caret(&self, text: &str) -> usize {
-        let buffer = self.editor_multiline.buffer();
+        let Some(engine) = &self.engine else { return 0 };
+        let buffer = engine.editor_multiline.buffer();
         buffer.delete_selection(false, true);
         buffer.insert_at_cursor(text);
         buffer.char_count() as usize
@@ -1437,7 +1468,8 @@ impl HostWindow {
     /// [`Self::editor_set_text`]'s multi-line counterpart: replace the whole
     /// buffer and place the caret at the end.
     pub fn editor_multiline_set_text(&self, text: &str) -> usize {
-        let buffer = self.editor_multiline.buffer();
+        let Some(engine) = &self.engine else { return 0 };
+        let buffer = engine.editor_multiline.buffer();
         buffer.set_text(text);
         let end = buffer.end_iter();
         buffer.place_cursor(&end);
@@ -1449,7 +1481,7 @@ impl HostWindow {
     /// focused at all. What the runtime's devctl `paste`/`settext` reads to
     /// decide which of the two pairs of methods above to call.
     pub fn editor_multiline_active(&self) -> bool {
-        self.editor_active_multiline.get()
+        self.engine.as_ref().is_some_and(|e| e.editor_active_multiline.get())
     }
 
     /// Place (or hide) the desktop equivalent of Android's transparent
@@ -1463,20 +1495,21 @@ impl HostWindow {
     /// tick would reset the selection, fight the user's caret, and echo back
     /// through [`Self::connect_editor_changed`] as though they had typed it.
     pub fn set_text_overlay(&self, overlay: Option<TextOverlay<'_>>) {
+        let Some(engine) = &self.engine else { return };
         let Some(overlay) = overlay else {
-            self.editor.set_visible(false);
-            self.editor_multiline_scroll.set_visible(false);
-            self.text_layer.set_can_target(false);
-            self.editor_rect.set(None);
-            self.editor_active_multiline.set(false);
+            engine.editor.set_visible(false);
+            engine.editor_multiline_scroll.set_visible(false);
+            engine.text_layer.set_can_target(false);
+            engine.editor_rect.set(None);
+            engine.editor_active_multiline.set(false);
             // Seeded, not typed: clearing on blur must not reach the engine as
             // an edit that empties the box the user just finished filling in.
-            self.editor_seeding.set(true);
-            self.editor.set_text("");
-            self.editor_seeding.set(false);
-            self.editor_multiline_seeding.set(true);
-            self.editor_multiline.buffer().set_text("");
-            self.editor_multiline_seeding.set(false);
+            engine.editor_seeding.set(true);
+            engine.editor.set_text("");
+            engine.editor_seeding.set(false);
+            engine.editor_multiline_seeding.set(true);
+            engine.editor_multiline.buffer().set_text("");
+            engine.editor_multiline_seeding.set(false);
             self.refresh_input_region();
             self.window.queue_draw();
             return;
@@ -1488,101 +1521,43 @@ impl HostWindow {
             overlay.height.max(1.0).round() as i32,
         );
 
-        // Colours and size, as CSS rather than Pango attributes, because the
-        // caret is the reason. GTK paints it from the CSS `caret-color`, which
-        // defaults to the themed text colour and takes no notice of a Pango
-        // foreground override -- so an attribute-styled editor on Roblox's
-        // light search field drew dark text with the theme's white caret,
-        // invisible on exactly the field it was in. Both editors share one
-        // sheet: only one of them is ever visible, so there is nothing to
-        // disambiguate by restricting the selector to whichever is active.
         let rgb = format!(
             "#{:02x}{:02x}{:02x}",
             (overlay.text_color >> 16) & 0xff,
             (overlay.text_color >> 8) & 0xff,
             overlay.text_color & 0xff
         );
-        self.editor_css.load_from_string(&editor_colour_sheet(&rgb));
+        engine.editor_css.load_from_string(&editor_colour_sheet(&rgb));
 
-        self.editor_active_multiline.set(overlay.multiline);
-        // Each branch may adjust `y`/`h` for its own vertical placement rule
-        // (`vertical_placement` for the single-line widget, `multiline_placement`
-        // -- a no-op -- for the multi-line one) and hands back the rectangle it
-        // actually drew at, which is what the input-region punch below must
-        // match. Using the pre-adjustment `(x, y, w, h)` here instead would
-        // reopen the coordinate-space bug `the_editor_is_clickable_where_it_is_drawn`
-        // regression-tests: a `Top`- or `Bottom`-aligned single-line box would
-        // punch a hole for its full height while the widget itself only drew
-        // (and could only be clicked) inside the shrunk strip.
+        engine.editor_active_multiline.set(overlay.multiline);
         let placed = if overlay.multiline {
-            self.editor.set_visible(false);
-            self.set_multiline_overlay(&overlay, x, y, w, h)
+            engine.editor.set_visible(false);
+            Self::set_multiline_overlay(engine, &overlay, x, y, w, h)
         } else {
-            self.editor_multiline_scroll.set_visible(false);
-            self.set_singleline_overlay(&overlay, x, y, w, h)
+            engine.editor_multiline_scroll.set_visible(false);
+            Self::set_singleline_overlay(engine, &overlay, x, y, w, h)
         };
 
-        self.text_layer.set_can_target(true);
-        self.editor_rect.set(Some(placed));
+        engine.text_layer.set_can_target(true);
+        engine.editor_rect.set(Some(placed));
         self.refresh_input_region();
         self.window.queue_draw();
     }
 
-    /// [`Self::set_text_overlay`]'s single-line branch: place and style
-    /// [`Self::editor`]. Split out so the multi-line branch below is not
-    /// buried inside it -- the two widgets share nothing past the colour CSS
-    /// and the rectangle already handled by the caller.
     fn set_singleline_overlay(
-        &self,
+        engine: &EngineChrome,
         overlay: &TextOverlay<'_>,
         x: i32,
         y: i32,
         w: i32,
         h: i32,
     ) -> (i32, i32, i32, i32) {
-        // `new_size_absolute`, not `new`. `AttrSize::new` takes points and Pango
-        // converts them through the context's resolution; the absolute form takes
-        // device units and skips that conversion entirely. The engine's
-        // `fontSize` is in the same space as the `x`, `y`, `width` and `height`
-        // beside it in the same struct, and those are placed straight into the
-        // widget tree without a conversion -- so the size must not get a *DPI*
-        // conversion either, or the text is the only part of the spec drawn in
-        // different units from the box it goes in. It may already carry a
-        // *font-specific* correction by the time it gets here -- see this
-        // field's own doc comment -- and that is a different adjustment for a
-        // different reason: it is reconciling Roblox's own two text stacks
-        // with each other, not converting between Pango's and the engine's.
-        //
-        // **Colour is set by the caller, size deliberately not the same way.**
-        // A CSS `font-size` is scaled by the desktop's text-scaling factor
-        // before it reaches Pango, so on any setup with font scaling turned up
-        // -- which is most laptops -- the editor drew visibly larger than the
-        // text Roblox draws in the same box when it is not focused. Reported
-        // as "text gets too big when selected", and "selected" is "focused",
-        // because the editor only exists while the box has focus.
         let attrs = gtk::pango::AttrList::new();
         attrs.insert(gtk::pango::AttrSize::new_size_absolute(
             (overlay.font_size.max(1.0) * gtk::pango::SCALE as f32).round() as i32,
         ));
-        // **The family matters as much as the size, and was missing.** Setting
-        // only the size left Pango drawing the desktop's UI font over a string
-        // the engine had drawn in its own, so focusing a box changed the shape
-        // and weight of every character while the height stayed right. With
-        // the engine's own family registered the two renderings agree.
-        //
-        // The box's own family wins over the process-wide one, because a game
-        // may restyle a single TextBox and the login form in the same session.
-        // The process-wide family stays as the fallback and is what still
-        // works when the APK's font table cannot be read at all -- losing the
-        // family entirely would put the desktop UI font back, which is the
-        // original bug rather than a smaller version of it.
-        //
-        // Weight and style ride with the family and only with the family. A
-        // weight applied over Pango's own choice of face would restyle the
-        // desktop font, which is a second wrong answer rather than a partial
-        // right one.
         let per_box = overlay.font_family;
-        let process_wide = self.editor_font_family.borrow();
+        let process_wide = engine.editor_font_family.borrow();
         if let Some(family) = per_box.or(process_wide.as_deref()) {
             attrs.insert(gtk::pango::AttrString::new_family(family));
         }
@@ -1595,145 +1570,53 @@ impl HostWindow {
             }));
         }
         drop(process_wide);
-        self.editor.set_attributes(Some(&attrs));
-
-        // Horizontal alignment. Cheap and idempotent, so it is set on every
-        // call rather than only when it changes -- the same editor widget is
-        // reused across boxes, and a `Right`-aligned box followed by a
-        // `Left`-aligned one has to put this back same as the family and the
-        // input purpose below do.
-        self.editor.set_alignment(gtk_xalign(overlay.x_alignment));
-
-        // GTK's own masking rather than a string of bullets: the widget then
-        // holds the real text, so the caret lands between real characters and
-        // a paste or a selection means what it says. Substituting the bullets
-        // ourselves would have made the buffer a lie the moment anything
-        // measured it.
-        self.editor.set_visibility(!overlay.password);
-
-        // **And the purpose, which masking does not imply.** GTK's own
-        // documentation for `set_visibility` says so directly: "you probably
-        // want to set input-purpose to password or pin to inform input
-        // methods about the purpose of this widget, *in addition to* setting
-        // visibility to false."
-        //
-        // It matters because an input method decides what to offer from the
-        // purpose, not from whether glyphs are drawn. Left unset, a composing
-        // IME is entitled to show a candidate window containing what is being
-        // typed into a masked field, and to keep it in its own learning
-        // history. Neither is visible from this side, which is why the field
-        // looked fine without it.
-        //
-        // Set on both branches, not just the password one, because the same
-        // editor widget is reused for every box the engine focuses -- a
-        // password box followed by a chat box has to put this back.
-        self.editor.set_input_purpose(if overlay.password {
+        engine.editor.set_attributes(Some(&attrs));
+        engine.editor.set_alignment(gtk_xalign(overlay.x_alignment));
+        engine.editor.set_visibility(!overlay.password);
+        engine.editor.set_input_purpose(if overlay.password {
             gtk::InputPurpose::Password
         } else {
             gtk::InputPurpose::FreeForm
         });
 
-        // **There is deliberately no clipboard guard here, and that is not an
-        // oversight.** An audit reported that selecting a masked password and
-        // pressing Ctrl+C copies it in clear, which would be worth fixing and
-        // is not true: the same GTK documentation says the invisible char
-        // "will also appear that way when the text in the widget is copied to
-        // the clipboard". GTK masks the copy as well as the display.
-        //
-        // Written down because the fix for the claim is a one-liner that looks
-        // obviously correct -- disable `clipboard.copy` for password fields --
-        // and would cost a real password field its copy behaviour to defend
-        // against nothing.
-
-        if self.editor.text() != overlay.text {
-            self.editor_seeding.set(true);
-            self.editor.set_text(overlay.text);
-            self.editor.set_position(overlay.caret_chars);
-            self.editor_seeding.set(false);
+        if engine.editor.text() != overlay.text {
+            engine.editor_seeding.set(true);
+            engine.editor.set_text(overlay.text);
+            engine.editor.set_position(overlay.caret_chars);
+            engine.editor_seeding.set(false);
         }
 
-        // Vertical alignment. Measured after the attributes above are set,
-        // because the natural height this asks for is the *drawn* font's line
-        // height, not the engine's `fontSize` before the per-font ratio
-        // correction -- see `TextOverlay::font_size`'s own comment for why
-        // those differ. `Center` (`y_alignment == 1`, the only value this
-        // project has ever measured) leaves `y`/`h` exactly as they arrived,
-        // so this changes nothing for every box checked in docs/NEXT.md.
-        let (_, natural_h, _, _) = self.editor.measure(gtk::Orientation::Vertical, -1);
+        let (_, natural_h, _, _) = engine.editor.measure(gtk::Orientation::Vertical, -1);
         let (y, h) = vertical_placement(overlay.y_alignment, y, h, natural_h);
 
-        self.editor.set_size_request(w, h);
-        self.text_layer.move_(&self.editor, x as f64, y as f64);
+        engine.editor.set_size_request(w, h);
+        engine.text_layer.move_(&engine.editor, x as f64, y as f64);
 
-        // **A bare editor is invisible half the time.** With the engine's own
-        // spec it sits on the box and takes the box's colour, which is right.
-        // With a synthesised placement it floats over whatever happens to be
-        // there -- and Roblox's own search dropdown is white, so white text on
-        // it renders nothing at all. Reported as "I don't think it's even
-        // drawing"; it was drawing, in white, on white.
         if overlay.fallback {
-            self.editor.add_css_class("vanta-text-fallback");
+            engine.editor.add_css_class("vanta-text-fallback");
         } else {
-            self.editor.remove_css_class("vanta-text-fallback");
+            engine.editor.remove_css_class("vanta-text-fallback");
         }
 
-        self.editor.set_visible(true);
-        if !self.editor.has_focus() {
-            // **`grab_focus_without_selecting`, and the difference is not
-            // cosmetic.** GTK's `gtk-entry-select-on-focus` is on by default,
-            // so a plain `grab_focus` on a text widget selects its entire
-            // contents. The editor then comes up with everything selected and
-            // the very next keystroke *replaces* the lot -- so focusing a box
-            // that already had text in it and typing one character threw the
-            // rest away. Reported as two separate symptoms that turned out to
-            // be one bug: "text gets too big when selected" (that is the
-            // selection highlight, on all of it) and "when you deselect and
-            // select it again, it clears everything once you type".
-            //
-            // Measured: a sign-in username field holding `abcdefZ`, one real
-            // keystroke through the compositor, and the engine afterwards
-            // reported the box as one byte long.
-            self.editor.grab_focus_without_selecting();
+        engine.editor.set_visible(true);
+        if !engine.editor.has_focus() {
+            engine.editor.grab_focus_without_selecting();
         }
-        // **Nothing here touches the selection, and that is deliberate.**
-        // There used to be a "collapse any stray selection" line, added to
-        // belt-and-brace the select-on-focus fix above. It destroyed every
-        // selection the user made: selecting text moves the cursor, moving the
-        // cursor notifies, notifying pushes to the engine, pushing repaints the
-        // overlay, and the repaint ran the collapse. Ctrl+A appeared to do
-        // nothing and dragging across text would not highlight it.
-        // `grab_focus_without_selecting` already handles the only case that
-        // needed handling. The widget owns its selection.
         (x, y, w, h)
     }
 
-    /// [`Self::set_text_overlay`]'s multi-line branch: place and style
-    /// [`Self::editor_multiline`].
-    ///
-    /// Mirrors [`Self::set_singleline_overlay`] wherever the two widgets can
-    /// agree -- horizontal alignment, text seeding, fallback chrome -- and
-    /// departs where `gtk::TextView` genuinely differs: font styling goes
-    /// through [`Self::editor_multiline_tag`] rather than `set_attributes`
-    /// (`gtk::TextView` has no such method -- see the field's own doc), the
-    /// vertical rectangle is never shrunk (see [`multiline_placement`]), and
-    /// there is no password masking: Roblox's own masked `textInputType`
-    /// values have never been observed on a box that also reports
-    /// `multiline=1`, and `gtk::TextView` has nothing built in to mask with in
-    /// any case. Should a masked multi-line box ever turn up, drawing it
-    /// unmasked is the same "smaller of two wrong answers" this project has
-    /// taken before rather than the worse failure of drawing nothing.
     fn set_multiline_overlay(
-        &self,
+        engine: &EngineChrome,
         overlay: &TextOverlay<'_>,
         x: i32,
         y: i32,
         w: i32,
         h: i32,
     ) -> (i32, i32, i32, i32) {
-        let tag = &self.editor_multiline_tag;
+        let tag = &engine.editor_multiline_tag;
         tag.set_size((overlay.font_size.max(1.0) * gtk::pango::SCALE as f32).round() as i32);
         let per_box = overlay.font_family;
-        let process_wide = self.editor_font_family.borrow();
+        let process_wide = engine.editor_font_family.borrow();
         tag.set_family(per_box.or(process_wide.as_deref()));
         drop(process_wide);
         if per_box.is_some() {
@@ -1744,72 +1627,46 @@ impl HostWindow {
                 gtk::pango::Style::Normal
             });
         } else {
-            // Put the weight/style back to the tag's own unset state, the
-            // same reasoning as `gtk::Text`'s attribute list starting empty
-            // each call: a restyled box followed by an unstyled one must not
-            // carry the first box's weight over.
             tag.set_weight(400);
             tag.set_style(gtk::pango::Style::Normal);
         }
 
-        self.editor_multiline.set_justification(gtk_justification(overlay.x_alignment));
-        self.editor_multiline.set_wrap_mode(if overlay.text_wrapped {
+        engine.editor_multiline.set_justification(gtk_justification(overlay.x_alignment));
+        engine.editor_multiline.set_wrap_mode(if overlay.text_wrapped {
             gtk::WrapMode::WordChar
         } else {
             gtk::WrapMode::None
         });
 
-        let buffer = self.editor_multiline.buffer();
+        let buffer = engine.editor_multiline.buffer();
         let (start, end) = buffer.bounds();
         if buffer.text(&start, &end, true).as_str() != overlay.text {
-            self.editor_multiline_seeding.set(true);
+            engine.editor_multiline_seeding.set(true);
             buffer.set_text(overlay.text);
-            // Inside the guard, as `gtk::Text`'s `set_position` is. Placed
-            // after it, the move from where `set_text` left the cursor to
-            // `overlay.caret_chars` fired the cursor signal unguarded and sent
-            // the text the engine had just pushed straight back to it.
             let at = buffer.iter_at_offset(overlay.caret_chars.max(0));
             buffer.place_cursor(&at);
-            self.editor_multiline_seeding.set(false);
+            engine.editor_multiline_seeding.set(false);
         }
-        // The tag is reapplied on every text change too (see the
-        // `connect_changed` handler installed in `Self::new`), which is what
-        // keeps newly typed characters styled; this covers the seed above and
-        // the case where only the styling changed and the text did not, which
-        // would fire no `changed` signal to trigger that handler.
         let (start, end) = buffer.bounds();
         buffer.apply_tag(tag, &start, &end);
-        // Caret placement, mirroring `gtk::Text::set_position` above: only
-        // meaningful right after a reseed, since `edit_text_buffer`'s own
-        // caret tracking is what moves it the rest of the time and this would
-        // otherwise fight the user's own cursor on every pump tick.
         let target = buffer.iter_at_offset(overlay.caret_chars.max(0));
         if buffer.iter_at_mark(&buffer.get_insert()).offset() != target.offset() {
             buffer.place_cursor(&target);
         }
 
-        // `multiline_placement` rather than the box's `(y, h)` inline: see its
-        // own doc for why a multi-line box is never shrunk to a line height,
-        // and why that decision has its own named, tested function rather
-        // than being folded back into this one.
         let (y, h) = multiline_placement(y, h);
-        self.editor_multiline_scroll.set_size_request(w, h);
-        self.text_layer.move_(&self.editor_multiline_scroll, x as f64, y as f64);
+        engine.editor_multiline_scroll.set_size_request(w, h);
+        engine.text_layer.move_(&engine.editor_multiline_scroll, x as f64, y as f64);
 
         if overlay.fallback {
-            self.editor_multiline_scroll.add_css_class("vanta-text-fallback");
+            engine.editor_multiline_scroll.add_css_class("vanta-text-fallback");
         } else {
-            self.editor_multiline_scroll.remove_css_class("vanta-text-fallback");
+            engine.editor_multiline_scroll.remove_css_class("vanta-text-fallback");
         }
 
-        self.editor_multiline_scroll.set_visible(true);
-        if !self.editor_multiline.has_focus() {
-            // `gtk::TextView` has no `gtk-entry-select-on-focus` equivalent --
-            // that setting is `GtkEntry`'s -- so a plain `grab_focus` here
-            // does not select the field's contents the way it would on
-            // `gtk::Text`. UNVERIFIED against a real multi-line box; see
-            // docs/NEXT.md.
-            self.editor_multiline.grab_focus();
+        engine.editor_multiline_scroll.set_visible(true);
+        if !engine.editor_multiline.has_focus() {
+            engine.editor_multiline.grab_focus();
         }
         (x, y, w, h)
     }
@@ -1925,7 +1782,7 @@ impl HostWindow {
         let region = input_region(
             (surface.width(), surface.height()),
             canvas,
-            self.editor_rect.get(),
+            self.engine.as_ref().and_then(|e| e.editor_rect.get()),
             claims_whole_window(
                 self.dialog_up.get(),
                 self.canvas_in_input_region.get(),
@@ -2577,9 +2434,11 @@ impl HostWindow {
     pub fn set_title_bar(&self, choice: crate::title_bar::TitleBar) {
         self.title_bar.set(choice);
         self.toolbar.set_reveal_top_bars(choice.revealed(self.window.is_fullscreen()));
-        self.compact_css.load_from_string(
-            if choice == crate::title_bar::TitleBar::Compact { COMPACT_SHEET } else { "" },
-        );
+        if let Some(engine) = &self.engine {
+            engine.compact_css.load_from_string(
+                if choice == crate::title_bar::TitleBar::Compact { COMPACT_SHEET } else { "" },
+            );
+        }
         self.sync_title();
         // See the fullscreen handler: a reveal alone need not reach the
         // compositor, so ask for a frame once this call has returned.
@@ -2622,14 +2481,18 @@ impl HostWindow {
     pub fn set_perf_hud(&self, badge: Option<&str>, tooltip: Option<&str>) {
         match badge {
             Some(text) => {
-                self.perf_hud_label.set_text(text);
-                self.perf_hud_label.set_tooltip_text(tooltip);
-                self.perf_hud_label.set_visible(true);
+                if let Some(engine) = &self.engine {
+                    engine.perf_hud_label.set_text(text);
+                    engine.perf_hud_label.set_tooltip_text(tooltip);
+                    engine.perf_hud_label.set_visible(true);
+                }
                 *self.perf_hud.borrow_mut() = Some(text.to_owned());
             }
             None => {
-                self.perf_hud_label.set_visible(false);
-                self.perf_hud_label.set_tooltip_text(None);
+                if let Some(engine) = &self.engine {
+                    engine.perf_hud_label.set_visible(false);
+                    engine.perf_hud_label.set_tooltip_text(None);
+                }
                 *self.perf_hud.borrow_mut() = None;
             }
         }
@@ -2638,26 +2501,29 @@ impl HostWindow {
 
     /// Show or hide the in-game Server Region quick-actions pill in the header bar.
     pub fn set_server_banner(&self, banner: Option<ServerBanner>) {
+        let Some(engine) = &self.engine else { return };
         match banner {
             Some(b) => {
-                self.server_pill.set_label(&b.pill_label);
-                self.server_pill.set_tooltip_text(Some(&b.server_info));
-                self.server_detail_label.set_text(&b.detail_title);
-                self.server_rejoin_btn.set_sensitive(b.can_rejoin);
-                *self.server_banner.borrow_mut() = Some(b);
-                self.server_pill.set_visible(true);
+                engine.server_pill.set_label(&b.pill_label);
+                engine.server_pill.set_tooltip_text(Some(&b.server_info));
+                engine.server_detail_label.set_text(&b.detail_title);
+                engine.server_rejoin_btn.set_sensitive(b.can_rejoin);
+                *engine.server_banner.borrow_mut() = Some(b);
+                engine.server_pill.set_visible(true);
             }
             None => {
-                self.server_pill.set_visible(false);
-                self.server_pill.set_tooltip_text(None);
-                *self.server_banner.borrow_mut() = None;
+                engine.server_pill.set_visible(false);
+                engine.server_pill.set_tooltip_text(None);
+                *engine.server_banner.borrow_mut() = None;
             }
         }
     }
 
     /// Install the callback invoked when the user clicks "Quick Rejoin Server".
     pub fn connect_rejoin<F: Fn() + 'static>(&self, f: F) {
-        *self.server_rejoin_cb.borrow_mut() = Some(Box::new(f));
+        if let Some(engine) = &self.engine {
+            *engine.server_rejoin_cb.borrow_mut() = Some(Box::new(f));
+        }
     }
 }
 
