@@ -565,19 +565,13 @@ pub extern "C" fn semaphore_post(sem: *mut c_void) -> c_int {
     let Some(s) = (unsafe { overlay_ref::<BionicSem>(sem) }) else {
         return sem_einval();
     };
-    let mut cur = s.count.load(Ordering::Relaxed);
-    loop {
-        if cur >= i32::MAX as u32 {
-            unsafe { *libc::__errno_location() = libc::EOVERFLOW };
-            return -1;
-        }
-        match s.count.compare_exchange_weak(cur, cur + 1, Ordering::Release, Ordering::Relaxed) {
-            Ok(_) => break,
-            Err(next) => cur = next,
-        }
+    let prev = s.count.fetch_add(1, Ordering::SeqCst);
+    if prev >= i32::MAX as u32 {
+        s.count.fetch_sub(1, Ordering::SeqCst);
+        unsafe { *libc::__errno_location() = libc::EOVERFLOW };
+        return -1;
     }
-    std::sync::atomic::fence(Ordering::SeqCst);
-    if s.waiters.load(Ordering::Relaxed) > 0 {
+    if s.waiters.load(Ordering::SeqCst) > 0 {
         let private = s.shared.load(Ordering::Relaxed) == 0;
         unsafe { futex_wake(&s.count, 1, private) };
     }
@@ -619,7 +613,7 @@ pub extern "C" fn semaphore_wait(sem: *mut c_void) -> c_int {
     let private = s.shared.load(Ordering::Relaxed) == 0;
     s.waiters.fetch_add(1, Ordering::SeqCst);
     loop {
-        let mut cur = s.count.load(Ordering::Relaxed);
+        let mut cur = s.count.load(Ordering::SeqCst);
         while cur > 0 {
             match s.count.compare_exchange_weak(cur, cur - 1, Ordering::Acquire, Ordering::Relaxed) {
                 Ok(_) => {
@@ -657,6 +651,34 @@ fn adaptive_mutex_enabled() -> bool {
     })
 }
 
+/// Process-lifetime cached `PTHREAD_MUTEX_ADAPTIVE_NP` attribute object,
+/// avoiding repeated `pthread_mutexattr_{init,settype,destroy}` calls on every
+/// mutex creation.
+fn adaptive_mutex_attr() -> Option<*const c_void> {
+    struct CachedAttr([u64; 8]);
+    // SAFETY: initialized once and read-only for the lifetime of the process.
+    unsafe impl Sync for CachedAttr {}
+
+    static ATTR: std::sync::OnceLock<Option<CachedAttr>> = std::sync::OnceLock::new();
+    ATTR.get_or_init(|| {
+        let mut storage = [0u64; 8]; // 64 bytes >> sizeof(pthread_mutexattr_t)
+        let ap = storage.as_mut_ptr() as *mut c_void;
+        // SAFETY: aligned storage large enough for glibc `pthread_mutexattr_t`.
+        unsafe {
+            if pthread_mutexattr_init(ap) != 0 {
+                return None;
+            }
+            if pthread_mutexattr_settype(ap, GLIBC_MUTEX_ADAPTIVE_NP) != 0 {
+                pthread_mutexattr_destroy(ap);
+                return None;
+            }
+        }
+        Some(CachedAttr(storage))
+    })
+    .as_ref()
+    .map(|a| a.0.as_ptr() as *const c_void)
+}
+
 /// Initialise a host glibc `pthread_mutex_t`, promoting plain private
 /// `PTHREAD_MUTEX_NORMAL` (and `attr == NULL`) mutexes to glibc's
 /// `PTHREAD_MUTEX_ADAPTIVE_NP` so brief critical sections spin briefly in
@@ -689,21 +711,10 @@ unsafe fn init_host_mutex(mutex: *mut c_void, attr: *const c_void) -> c_int {
     if !promote {
         return unsafe { host_pthread_mutex_init(mutex, attr) };
     }
-    let mut local_attr = [0u64; 8]; // 64 bytes >> sizeof(pthread_mutexattr_t)
-    let ap = local_attr.as_mut_ptr() as *mut c_void;
-    // SAFETY: stack-local aligned attribute storage.
-    unsafe {
-        if pthread_mutexattr_init(ap) != 0 {
-            return host_pthread_mutex_init(mutex, attr);
-        }
-        let set_rc = pthread_mutexattr_settype(ap, GLIBC_MUTEX_ADAPTIVE_NP);
-        let rc = if set_rc == 0 {
-            host_pthread_mutex_init(mutex, ap)
-        } else {
-            host_pthread_mutex_init(mutex, attr)
-        };
-        pthread_mutexattr_destroy(ap);
-        rc
+    match adaptive_mutex_attr() {
+        // SAFETY: `ap` is a valid immutable glibc `pthread_mutexattr_t`.
+        Some(ap) => unsafe { host_pthread_mutex_init(mutex, ap) },
+        None => unsafe { host_pthread_mutex_init(mutex, attr) },
     }
 }
 

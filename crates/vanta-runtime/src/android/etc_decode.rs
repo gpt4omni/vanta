@@ -93,6 +93,12 @@ fn signed3(v: u8) -> i32 {
     }
 }
 
+#[inline]
+fn pack_rgba_u32(r: i32, g: i32, b: i32, a: u8) -> u32 {
+    u32::from_le_bytes([clamp8(r), clamp8(g), clamp8(b), a])
+}
+
+#[inline]
 fn pixel_index(lo: u32, x: usize, y: usize) -> usize {
     let i = x * 4 + y;
     let msb = (lo >> (16 + i)) & 1;
@@ -100,7 +106,76 @@ fn pixel_index(lo: u32, x: usize, y: usize) -> usize {
     ((msb << 1) | lsb) as usize
 }
 
-pub fn decode_etc2_rgb(block: &[u8], punchthrough: bool, out: &mut [[u8; 4]; 16]) {
+#[inline]
+fn paint_block_u32(paint: &[[i32; 3]; 4], lo: u32, opaque: bool, out: &mut [u32; 16]) {
+    let mut colours = [
+        pack_rgba_u32(paint[0][0], paint[0][1], paint[0][2], 255),
+        pack_rgba_u32(paint[1][0], paint[1][1], paint[1][2], 255),
+        if opaque { pack_rgba_u32(paint[2][0], paint[2][1], paint[2][2], 255) } else { 0 },
+        pack_rgba_u32(paint[3][0], paint[3][1], paint[3][2], 255),
+    ];
+    if !opaque {
+        colours[2] = 0;
+    }
+    for y in 0..4 {
+        let base = y * 4;
+        out[base] = colours[pixel_index(lo, 0, y)];
+        out[base + 1] = colours[pixel_index(lo, 1, y)];
+        out[base + 2] = colours[pixel_index(lo, 2, y)];
+        out[base + 3] = colours[pixel_index(lo, 3, y)];
+    }
+}
+
+#[inline]
+fn subblocks_u32(c1: [i32; 3], c2: [i32; 3], b3: u8, lo: u32, opaque: bool, out: &mut [u32; 16]) {
+    let cw = [usize::from(b3 >> 5), usize::from((b3 >> 2) & 7)];
+    let flip = b3 & 1 != 0;
+    let colours = [c1, c2];
+    let mut paint = [[0u32; 4]; 2];
+    for i in 0..2 {
+        let base = colours[i];
+        let table = INTENSITY[cw[i]];
+        let m0 = if opaque { table[0] } else { 0 };
+        paint[i][0] = pack_rgba_u32(base[0] + m0, base[1] + m0, base[2] + m0, 255);
+        paint[i][1] = pack_rgba_u32(base[0] + table[1], base[1] + table[1], base[2] + table[1], 255);
+        paint[i][2] = if opaque {
+            pack_rgba_u32(base[0] - table[0], base[1] - table[0], base[2] - table[0], 255)
+        } else {
+            0
+        };
+        paint[i][3] = pack_rgba_u32(base[0] - table[1], base[1] - table[1], base[2] - table[1], 255);
+    }
+    if flip {
+        for y in 0..2 {
+            let base = y * 4;
+            let p = &paint[0];
+            out[base] = p[pixel_index(lo, 0, y)];
+            out[base + 1] = p[pixel_index(lo, 1, y)];
+            out[base + 2] = p[pixel_index(lo, 2, y)];
+            out[base + 3] = p[pixel_index(lo, 3, y)];
+        }
+        for y in 2..4 {
+            let base = y * 4;
+            let p = &paint[1];
+            out[base] = p[pixel_index(lo, 0, y)];
+            out[base + 1] = p[pixel_index(lo, 1, y)];
+            out[base + 2] = p[pixel_index(lo, 2, y)];
+            out[base + 3] = p[pixel_index(lo, 3, y)];
+        }
+    } else {
+        let p0 = &paint[0];
+        let p1 = &paint[1];
+        for y in 0..4 {
+            let base = y * 4;
+            out[base] = p0[pixel_index(lo, 0, y)];
+            out[base + 1] = p0[pixel_index(lo, 1, y)];
+            out[base + 2] = p1[pixel_index(lo, 2, y)];
+            out[base + 3] = p1[pixel_index(lo, 3, y)];
+        }
+    }
+}
+
+fn decode_etc2_rgb_u32(block: &[u8], punchthrough: bool, out: &mut [u32; 16]) {
     let b0 = block[0];
     let b1 = block[1];
     let b2 = block[2];
@@ -112,7 +187,7 @@ pub fn decode_etc2_rgb(block: &[u8], punchthrough: bool, out: &mut [[u8; 4]; 16]
     if !differential {
         let c1 = [ext4(b0 >> 4), ext4(b1 >> 4), ext4(b2 >> 4)];
         let c2 = [ext4(b0 & 0xF), ext4(b1 & 0xF), ext4(b2 & 0xF)];
-        subblocks(c1, c2, b3, lo, true, out);
+        subblocks_u32(c1, c2, b3, lo, true, out);
         return;
     }
 
@@ -132,7 +207,7 @@ pub fn decode_etc2_rgb(block: &[u8], punchthrough: bool, out: &mut [[u8; 4]; 16]
         let c2 = [ext4(b2 >> 4), ext4(b2 & 0xF), ext4(b3 >> 4)];
         let d = DISTANCE[usize::from((((b3 >> 2) & 3) << 1) | (b3 & 1))];
         let paint = [c1, add(c2, d), c2, add(c2, -d)];
-        paint_block(&paint, lo, opaque, out);
+        paint_block_u32(&paint, lo, opaque, out);
     } else if !(0..=31).contains(&g2) {
         let r1 = (b0 >> 3) & 0xF;
         let g1 = ((b0 & 7) << 1) | ((b1 >> 4) & 1);
@@ -147,7 +222,7 @@ pub fn decode_etc2_rgb(block: &[u8], punchthrough: bool, out: &mut [[u8; 4]; 16]
         let c1 = [ext4(r1), ext4(g1), ext4(bl1)];
         let c2 = [ext4(r2h), ext4(g2h), ext4(bl2)];
         let paint = [add(c1, d), add(c1, -d), add(c2, d), add(c2, -d)];
-        paint_block(&paint, lo, opaque, out);
+        paint_block_u32(&paint, lo, opaque, out);
     } else if !(0..=31).contains(&b2c) {
         let ro = ext6((b0 >> 1) & 0x3F);
         let go = ext7(((b0 & 1) << 6) | ((b1 >> 1) & 0x3F));
@@ -158,63 +233,65 @@ pub fn decode_etc2_rgb(block: &[u8], punchthrough: bool, out: &mut [[u8; 4]; 16]
         let rv = ext6(((lo >> 13) & 0x3F) as u8);
         let gv = ext7(((lo >> 6) & 0x7F) as u8);
         let bv = ext6((lo & 0x3F) as u8);
+        let (drx, dry) = (rh - ro, rv - ro);
+        let (dgx, dgy) = (gh - go, gv - go);
+        let (dbx, dby) = (bh - bo, bv - bo);
+        let (r0, g0, b0p) = (4 * ro + 2, 4 * go + 2, 4 * bo + 2);
         for y in 0..4 {
+            let yi = y as i32;
+            let ry = r0 + yi * dry;
+            let gy = g0 + yi * dgy;
+            let by = b0p + yi * dby;
+            let base = y * 4;
             for x in 0..4 {
-                let (xi, yi) = (x as i32, y as i32);
-                let f = |o: i32, h: i32, v: i32| clamp8((xi * (h - o) + yi * (v - o) + 4 * o + 2) >> 2);
-                out[y * 4 + x] = [f(ro, rh, rv), f(go, gh, gv), f(bo, bh, bv), 255];
+                let xi = x as i32;
+                out[base + x] = pack_rgba_u32(
+                    (ry + xi * drx) >> 2,
+                    (gy + xi * dgx) >> 2,
+                    (by + xi * dbx) >> 2,
+                    255,
+                );
             }
         }
     } else {
         let c1 = [ext5(r), ext5(g), ext5(b)];
         let c2 = [ext5(r2), ext5(g2), ext5(b2c)];
-        subblocks(c1, c2, b3, lo, opaque, out);
+        subblocks_u32(c1, c2, b3, lo, opaque, out);
     }
 }
 
+pub fn decode_etc2_rgb(block: &[u8], punchthrough: bool, out: &mut [[u8; 4]; 16]) {
+    let mut px = [0u32; 16];
+    decode_etc2_rgb_u32(block, punchthrough, &mut px);
+    for i in 0..16 {
+        out[i] = px[i].to_le_bytes();
+    }
+}
+
+#[inline]
 fn add(c: [i32; 3], d: i32) -> [i32; 3] {
     [c[0] + d, c[1] + d, c[2] + d]
 }
 
+#[cfg(test)]
 fn paint_block(paint: &[[i32; 3]; 4], lo: u32, opaque: bool, out: &mut [[u8; 4]; 16]) {
-    let mut colours = paint.map(|p| [clamp8(p[0]), clamp8(p[1]), clamp8(p[2]), 255]);
-    if !opaque {
-        colours[2] = [0; 4];
-    }
-    for y in 0..4 {
-        for x in 0..4 {
-            let idx = pixel_index(lo, x, y);
-            out[y * 4 + x] = colours[idx];
-        }
+    let mut px = [0u32; 16];
+    paint_block_u32(paint, lo, opaque, &mut px);
+    for i in 0..16 {
+        out[i] = px[i].to_le_bytes();
     }
 }
 
+#[cfg(test)]
 fn subblocks(c1: [i32; 3], c2: [i32; 3], b3: u8, lo: u32, opaque: bool, out: &mut [[u8; 4]; 16]) {
-    let cw = [usize::from(b3 >> 5), usize::from((b3 >> 2) & 7)];
-    let flip = b3 & 1 != 0;
-    let colours = [c1, c2];
-    let paint: [[[u8; 4]; 4]; 2] = std::array::from_fn(|i| {
-        let base = colours[i];
-        let table = INTENSITY[cw[i]];
-        let modifiers = [if opaque { table[0] } else { 0 }, table[1], -table[0], -table[1]];
-        std::array::from_fn(|idx| {
-            let m = modifiers[idx];
-            if !opaque && idx == 2 {
-                [0; 4]
-            } else {
-                [clamp8(base[0] + m), clamp8(base[1] + m), clamp8(base[2] + m), 255]
-            }
-        })
-    });
-    for y in 0..4 {
-        for x in 0..4 {
-            let second = if flip { y >= 2 } else { x >= 2 };
-            let idx = pixel_index(lo, x, y);
-            out[y * 4 + x] = paint[usize::from(second)][idx];
-        }
+    let mut px = [0u32; 16];
+    subblocks_u32(c1, c2, b3, lo, opaque, &mut px);
+    for i in 0..16 {
+        out[i] = px[i].to_le_bytes();
     }
 }
 
+#[inline]
 fn eac_parts(block: &[u8]) -> (u8, i32, &'static [i32; 8], u64) {
     let bits = u64::from_be_bytes([
         0, 0, block[2], block[3], block[4], block[5], block[6], block[7],
@@ -222,9 +299,23 @@ fn eac_parts(block: &[u8]) -> (u8, i32, &'static [i32; 8], u64) {
     (block[0], i32::from(block[1] >> 4), &EAC_MODIFIERS[usize::from(block[1] & 0xF)], bits)
 }
 
+#[inline]
 fn eac_index(bits: u64, x: usize, y: usize) -> usize {
     let i = x * 4 + y;
     ((bits >> (45 - 3 * i)) & 7) as usize
+}
+
+#[inline]
+fn decode_eac_alpha_u32(block: &[u8], out: &mut [u32; 16]) {
+    let (base, mult, table, bits) = eac_parts(block);
+    let paint = table.map(|m| u32::from(clamp8(i32::from(base) + m * mult)) << 24);
+    for y in 0..4 {
+        let base_idx = y * 4;
+        out[base_idx] = (out[base_idx] & 0x00FF_FFFF) | paint[eac_index(bits, 0, y)];
+        out[base_idx + 1] = (out[base_idx + 1] & 0x00FF_FFFF) | paint[eac_index(bits, 1, y)];
+        out[base_idx + 2] = (out[base_idx + 2] & 0x00FF_FFFF) | paint[eac_index(bits, 2, y)];
+        out[base_idx + 3] = (out[base_idx + 3] & 0x00FF_FFFF) | paint[eac_index(bits, 3, y)];
+    }
 }
 
 pub fn decode_eac_alpha(block: &[u8], out: &mut [[u8; 4]; 16]) {
@@ -267,47 +358,68 @@ pub fn decode_eac11(block: &[u8], signed: bool, out: &mut [u16; 16]) {
     }
 }
 
-pub fn decode_block(format: EtcFormat, block: &[u8], out: &mut [u8; 64]) {
-    decode_block_rows(format, block, out, 4 * format.texel_bytes());
+#[inline]
+fn write_u32x16_to_bytes(px: &[u32; 16], out: &mut [u8; 64]) {
+    for i in 0..16 {
+        out[i * 4..i * 4 + 4].copy_from_slice(&px[i].to_le_bytes());
+    }
 }
 
-fn decode_block_rows(format: EtcFormat, block: &[u8], out: &mut [u8], stride: usize) {
+#[inline]
+fn decode_block_rgb8(block: &[u8], out: &mut [u8; 64]) {
+    let mut px = [0u32; 16];
+    decode_etc2_rgb_u32(&block[0..8], false, &mut px);
+    write_u32x16_to_bytes(&px, out);
+}
+
+#[inline]
+fn decode_block_rgb8a1(block: &[u8], out: &mut [u8; 64]) {
+    let mut px = [0u32; 16];
+    decode_etc2_rgb_u32(&block[0..8], true, &mut px);
+    write_u32x16_to_bytes(&px, out);
+}
+
+#[inline]
+fn decode_block_rgba8(block: &[u8], out: &mut [u8; 64]) {
+    let mut px = [0u32; 16];
+    decode_etc2_rgb_u32(&block[8..16], false, &mut px);
+    decode_eac_alpha_u32(&block[0..8], &mut px);
+    write_u32x16_to_bytes(&px, out);
+}
+
+#[inline]
+fn decode_block_r11(block: &[u8], signed: bool, out: &mut [u8; 64]) {
+    let (paint, bits) = eac_palette(&block[0..8], signed);
+    for y in 0..4 {
+        let row = y * 8;
+        for x in 0..4 {
+            out[row + x * 2..row + x * 2 + 2].copy_from_slice(&paint[eac_index(bits, x, y)].to_le_bytes());
+        }
+    }
+}
+
+#[inline]
+fn decode_block_rg11(block: &[u8], signed: bool, out: &mut [u8; 64]) {
+    let (red, rbits) = eac_palette(&block[0..8], signed);
+    let (green, gbits) = eac_palette(&block[8..16], signed);
+    for y in 0..4 {
+        let row = y * 16;
+        for x in 0..4 {
+            let word = u32::from(red[eac_index(rbits, x, y)]) | (u32::from(green[eac_index(gbits, x, y)]) << 16);
+            out[row + x * 4..row + x * 4 + 4].copy_from_slice(&word.to_le_bytes());
+        }
+    }
+}
+
+pub fn decode_block(format: EtcFormat, block: &[u8], out: &mut [u8; 64]) {
     match format {
-        EtcFormat::Rgb8 | EtcFormat::Rgb8A1 | EtcFormat::Rgba8 => {
-            let mut px = [[0u8; 4]; 16];
-            if format == EtcFormat::Rgba8 {
-                decode_etc2_rgb(&block[8..16], false, &mut px);
-                decode_eac_alpha(&block[0..8], &mut px);
-            } else {
-                decode_etc2_rgb(&block[0..8], format == EtcFormat::Rgb8A1, &mut px);
-            }
-            for y in 0..4 {
-                let row: [u8; 16] = std::array::from_fn(|i| px[y * 4 + i / 4][i % 4]);
-                out[y * stride..y * stride + 16].copy_from_slice(&row);
-            }
-        }
-        EtcFormat::R11 | EtcFormat::R11Signed => {
-            let (paint, bits) = eac_palette(&block[0..8], format == EtcFormat::R11Signed);
-            let paint = paint.map(u16::to_le_bytes);
-            for y in 0..4 {
-                let row: [u8; 8] = std::array::from_fn(|i| paint[eac_index(bits, i / 2, y)][i % 2]);
-                out[y * stride..y * stride + 8].copy_from_slice(&row);
-            }
-        }
-        EtcFormat::Rg11 | EtcFormat::Rg11Signed => {
-            let signed = format == EtcFormat::Rg11Signed;
-            let (red, rbits) = eac_palette(&block[0..8], signed);
-            let (green, gbits) = eac_palette(&block[8..16], signed);
-            let red = red.map(u16::to_le_bytes);
-            let green = green.map(u16::to_le_bytes);
-            for y in 0..4 {
-                let row: [u8; 16] = std::array::from_fn(|i| {
-                    if i % 4 < 2 { red[eac_index(rbits, i / 4, y)][i % 2] }
-                    else { green[eac_index(gbits, i / 4, y)][i % 2] }
-                });
-                out[y * stride..y * stride + 16].copy_from_slice(&row);
-            }
-        }
+        EtcFormat::Rgb8 => decode_block_rgb8(block, out),
+        EtcFormat::Rgb8A1 => decode_block_rgb8a1(block, out),
+        EtcFormat::Rgba8 => decode_block_rgba8(block, out),
+        EtcFormat::R11 => decode_block_r11(block, false, out),
+        EtcFormat::R11Signed => decode_block_r11(block, true, out),
+        EtcFormat::Rg11 => decode_block_rg11(block, false, out),
+        EtcFormat::Rg11Signed => decode_block_rg11(block, true, out),
     }
 }
 
@@ -315,6 +427,53 @@ pub struct Surface<'a> {
     pub data: &'a [u8],
     pub row_blocks: usize,
     pub rows_of_blocks: usize,
+}
+
+#[inline(always)]
+fn decode_region_loop<const BB: usize, const TB: usize, F: FnMut(&[u8], &mut [u8; 64])>(
+    src: &Surface<'_>,
+    width: usize,
+    height: usize,
+    dst: &mut [u8],
+    mut decode_one: F,
+) {
+    let bw = width.div_ceil(4);
+    let bh = height.div_ceil(4);
+    // Keep the last decoded block in L1/stack scratch so consecutive identical
+    // blocks never read back from `dst`, which may be uncached write-combined
+    // Vulkan staging memory where CPU reads stall by 50-100x.
+    let mut texels = [0u8; 64];
+    let mut previous: Option<&[u8]> = None;
+    let stride = width * TB;
+    let row_bytes = 4 * TB;
+    let full_bw = width / 4;
+    let full_bh = height / 4;
+    for by in 0..bh {
+        let full_y = by < full_bh;
+        let max_y = if full_y { 4 } else { height - by * 4 };
+        let row_base = by * src.row_blocks;
+        for bx in 0..bw {
+            let off = (row_base + bx) * BB;
+            let block = &src.data[off..off + BB];
+            let d = (by * 4 * width + bx * 4) * TB;
+            if previous != Some(block) {
+                decode_one(block, &mut texels);
+                previous = Some(block);
+            }
+            if full_y && bx < full_bw {
+                for y in 0..4 {
+                    dst[d + y * stride..d + y * stride + row_bytes]
+                        .copy_from_slice(&texels[y * row_bytes..(y + 1) * row_bytes]);
+                }
+            } else {
+                let bytes = (width - bx * 4).min(4) * TB;
+                for y in 0..max_y {
+                    dst[d + y * stride..d + y * stride + bytes]
+                        .copy_from_slice(&texels[y * row_bytes..y * row_bytes + bytes]);
+                }
+            }
+        }
+    }
 }
 
 pub fn decode_region(
@@ -353,37 +512,14 @@ pub fn decode_region(
     if dst.len() < width * height * tb {
         return Err(format!("destination has {} bytes, region needs {}", dst.len(), width * height * tb));
     }
-    // Keep the last decoded block in L1/stack scratch so consecutive identical
-    // blocks never read back from `dst`, which may be uncached write-combined
-    // Vulkan staging memory where CPU reads stall by 50-100x.
-    let mut texels = [0u8; 64];
-    let mut previous: Option<&[u8]> = None;
-    let stride = width * tb;
-    let row_bytes = 4 * tb;
-    for by in 0..bh {
-        for bx in 0..bw {
-            let off = (by * src.row_blocks + bx) * bb;
-            let block = &src.data[off..off + bb];
-            let d = (by * 4 * width + bx * 4) * tb;
-            let full = bx * 4 + 4 <= width && by * 4 + 4 <= height;
-            let same = previous.is_some_and(|raw| raw == block);
-            if !same {
-                decode_block(format, block, &mut texels);
-                previous = Some(block);
-            }
-            if full {
-                for y in 0..4 {
-                    dst[d + y * stride..d + y * stride + row_bytes]
-                        .copy_from_slice(&texels[y * row_bytes..(y + 1) * row_bytes]);
-                }
-            } else {
-                let bytes = (width - bx * 4).min(4) * tb;
-                for y in 0..(height - by * 4).min(4) {
-                    dst[d + y * stride..d + y * stride + bytes]
-                        .copy_from_slice(&texels[y * row_bytes..y * row_bytes + bytes]);
-                }
-            }
-        }
+    // Hoist format dispatch outside the (by, bx) block loop.
+    match format {
+        EtcFormat::Rgb8 => decode_region_loop::<8, 4, _>(src, width, height, dst, decode_block_rgb8),
+        EtcFormat::Rgb8A1 => decode_region_loop::<8, 4, _>(src, width, height, dst, decode_block_rgb8a1),
+        EtcFormat::Rgba8 => decode_region_loop::<16, 4, _>(src, width, height, dst, decode_block_rgba8),
+        EtcFormat::R11Signed => decode_region_loop::<8, 2, _>(src, width, height, dst, |b, o| decode_block_r11(b, true, o)),
+        EtcFormat::Rg11Signed => decode_region_loop::<16, 4, _>(src, width, height, dst, |b, o| decode_block_rg11(b, true, o)),
+        EtcFormat::R11 | EtcFormat::Rg11 => unreachable!(),
     }
     Ok(())
 }
@@ -403,22 +539,197 @@ fn unpack_rgb565(c: u16) -> [i32; 3] {
     [r | (r >> 5), g | (g >> 6), b | (b >> 5)]
 }
 
-fn encode_bc1_block(rgba: &[u8; 64], punchthrough: bool, out: &mut [u8]) {
-    let mut has_trans = false;
+#[inline]
+fn dot3(a: [i32; 3], b: [i32; 3]) -> i32 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+#[inline]
+fn bc1_bbox_opaque_scalar(rgba: &[u8; 64]) -> ([i32; 3], [i32; 3]) {
     let mut mn = [255i32; 3];
     let mut mx = [0i32; 3];
     for i in 0..16 {
         let p = &rgba[i * 4..i * 4 + 4];
-        if punchthrough && p[3] == 0 {
-            has_trans = true;
-            continue;
-        }
-        for c in 0..3 {
-            let v = p[c] as i32;
-            if v < mn[c] { mn[c] = v; }
-            if v > mx[c] { mx[c] = v; }
-        }
+        let (r, g, b) = (p[0] as i32, p[1] as i32, p[2] as i32);
+        if r < mn[0] { mn[0] = r; }
+        if r > mx[0] { mx[0] = r; }
+        if g < mn[1] { mn[1] = g; }
+        if g > mx[1] { mx[1] = g; }
+        if b < mn[2] { mn[2] = b; }
+        if b > mx[2] { mx[2] = b; }
     }
+    (mn, mx)
+}
+
+#[cfg(target_arch = "x86_64")]
+#[inline]
+fn bc1_bbox_opaque_sse2(rgba: &[u8; 64]) -> ([i32; 3], [i32; 3]) {
+    use std::arch::x86_64::*;
+    // SAFETY: SSE2 is architecturally mandatory on all x86_64 targets and
+    // `rgba` is a 64-byte array (4 x 16 bytes) loaded with unaligned loads.
+    unsafe {
+        let ptr = rgba.as_ptr() as *const __m128i;
+        let r0 = _mm_loadu_si128(ptr);
+        let r1 = _mm_loadu_si128(ptr.add(1));
+        let r2 = _mm_loadu_si128(ptr.add(2));
+        let r3 = _mm_loadu_si128(ptr.add(3));
+        let mut vmin = _mm_min_epu8(_mm_min_epu8(r0, r1), _mm_min_epu8(r2, r3));
+        let mut vmax = _mm_max_epu8(_mm_max_epu8(r0, r1), _mm_max_epu8(r2, r3));
+        vmin = _mm_min_epu8(vmin, _mm_srli_si128::<8>(vmin));
+        vmin = _mm_min_epu8(vmin, _mm_srli_si128::<4>(vmin));
+        vmax = _mm_max_epu8(vmax, _mm_srli_si128::<8>(vmax));
+        vmax = _mm_max_epu8(vmax, _mm_srli_si128::<4>(vmax));
+        let mn_u32 = _mm_cvtsi128_si32(vmin) as u32;
+        let mx_u32 = _mm_cvtsi128_si32(vmax) as u32;
+        (
+            [(mn_u32 & 0xFF) as i32, ((mn_u32 >> 8) & 0xFF) as i32, ((mn_u32 >> 16) & 0xFF) as i32],
+            [(mx_u32 & 0xFF) as i32, ((mx_u32 >> 8) & 0xFF) as i32, ((mx_u32 >> 16) & 0xFF) as i32],
+        )
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline]
+fn bc1_bbox_opaque_neon(rgba: &[u8; 64]) -> ([i32; 3], [i32; 3]) {
+    use std::arch::aarch64::*;
+    // SAFETY: NEON is architecturally mandatory on all aarch64 targets and
+    // `rgba` is a 64-byte array (4 x 16 bytes).
+    unsafe {
+        let ptr = rgba.as_ptr();
+        let r0 = vld1q_u8(ptr);
+        let r1 = vld1q_u8(ptr.add(16));
+        let r2 = vld1q_u8(ptr.add(32));
+        let r3 = vld1q_u8(ptr.add(48));
+        let vmin16 = vminq_u8(vminq_u8(r0, r1), vminq_u8(r2, r3));
+        let vmax16 = vmaxq_u8(vmaxq_u8(r0, r1), vmaxq_u8(r2, r3));
+        let vmin8 = vmin_u8(vget_low_u8(vmin16), vget_high_u8(vmin16));
+        let vmax8 = vmax_u8(vget_low_u8(vmax16), vget_high_u8(vmax16));
+        let mut mn_arr = [0u8; 8];
+        let mut mx_arr = [0u8; 8];
+        vst1_u8(mn_arr.as_mut_ptr(), vmin8);
+        vst1_u8(mx_arr.as_mut_ptr(), vmax8);
+        (
+            [
+                mn_arr[0].min(mn_arr[4]) as i32,
+                mn_arr[1].min(mn_arr[5]) as i32,
+                mn_arr[2].min(mn_arr[6]) as i32,
+            ],
+            [
+                mx_arr[0].max(mx_arr[4]) as i32,
+                mx_arr[1].max(mx_arr[5]) as i32,
+                mx_arr[2].max(mx_arr[6]) as i32,
+            ],
+        )
+    }
+}
+
+#[inline]
+fn bc1_indices_opaque_scalar(rgba: &[u8; 64], dir: [i32; 3], m02: i32, m23: i32, m31: i32) -> u32 {
+    let mut bits = 0u32;
+    for i in 0..16 {
+        let p = &rgba[i * 4..i * 4 + 4];
+        let t = (p[0] as i32 * dir[0] + p[1] as i32 * dir[1] + p[2] as i32 * dir[2]) * 2;
+        let best = if t >= m02 { 0u32 } else if t >= m23 { 2u32 } else if t >= m31 { 3u32 } else { 1u32 };
+        bits |= best << (i * 2);
+    }
+    bits
+}
+
+#[cfg(target_arch = "x86_64")]
+#[inline]
+fn bc1_indices_opaque_sse2(rgba: &[u8; 64], dir: [i32; 3], m02: i32, m23: i32, m31: i32) -> u32 {
+    use std::arch::x86_64::*;
+    // SAFETY: SSE2 is architecturally mandatory on x86_64. Each `dir[c]` is in
+    // -255..=255 so `2 * dir[c]` fits cleanly in i16 (-510..=510), and the
+    // dot product fits in i32 without overflow (max |t| <= 390,150).
+    unsafe {
+        let zero = _mm_setzero_si128();
+        let w_dir = _mm_set_epi16(
+            0,
+            (dir[2] * 2) as i16,
+            (dir[1] * 2) as i16,
+            (dir[0] * 2) as i16,
+            0,
+            (dir[2] * 2) as i16,
+            (dir[1] * 2) as i16,
+            (dir[0] * 2) as i16,
+        );
+        // `t >= m` is equivalent to `t > m - 1` for signed 32-bit integers.
+        let v_m02 = _mm_set1_epi32(m02 - 1);
+        let v_m23 = _mm_set1_epi32(m23 - 1);
+        let v_m31 = _mm_set1_epi32(m31 - 1);
+        let ptr = rgba.as_ptr() as *const __m128i;
+        let mut bits = 0u32;
+        for row in 0..4 {
+            let px = _mm_loadu_si128(ptr.add(row));
+            let lo16 = _mm_unpacklo_epi8(px, zero);
+            let hi16 = _mm_unpackhi_epi8(px, zero);
+            // Multiply-add pairs: [r*2dr + g*2dg, b*2db + 0] for each pixel.
+            let mlo = _mm_madd_epi16(lo16, w_dir);
+            let mhi = _mm_madd_epi16(hi16, w_dir);
+            // Horizontal pairwise sum across the 4 pixels in this row:
+            // rg = [p0.rg, p1.rg, p2.rg, p3.rg], bb = [p0.b, p1.b, p2.b, p3.b].
+            let rg = _mm_castps_si128(_mm_shuffle_ps::<0x88>(_mm_castsi128_ps(mlo), _mm_castsi128_ps(mhi)));
+            let bb = _mm_castps_si128(_mm_shuffle_ps::<0xDD>(_mm_castsi128_ps(mlo), _mm_castsi128_ps(mhi)));
+            let t = _mm_add_epi32(rg, bb);
+
+            // Classify each of the 4 pixels:
+            // t >= m02 -> 0, t >= m23 -> 2, t >= m31 -> 3, else 1.
+            let ge02 = _mm_movemask_ps(_mm_castsi128_ps(_mm_cmpgt_epi32(t, v_m02))) as u32;
+            let ge23 = _mm_movemask_ps(_mm_castsi128_ps(_mm_cmpgt_epi32(t, v_m23))) as u32;
+            let ge31 = _mm_movemask_ps(_mm_castsi128_ps(_mm_cmpgt_epi32(t, v_m31))) as u32;
+
+            for k in 0..4 {
+                let bit_k = 1u32 << k;
+                let code = if (ge02 & bit_k) != 0 {
+                    0u32
+                } else if (ge23 & bit_k) != 0 {
+                    2u32
+                } else if (ge31 & bit_k) != 0 {
+                    3u32
+                } else {
+                    1u32
+                };
+                bits |= code << ((row * 4 + k) * 2);
+            }
+        }
+        bits
+    }
+}
+
+fn encode_bc1_block_scalar(rgba: &[u8; 64], punchthrough: bool, out: &mut [u8]) {
+    let mut has_trans = false;
+    let (mut mn, mut mx) = if punchthrough {
+        let mut mn = [255i32; 3];
+        let mut mx = [0i32; 3];
+        for i in 0..16 {
+            let p = &rgba[i * 4..i * 4 + 4];
+            if p[3] == 0 {
+                has_trans = true;
+                continue;
+            }
+            for c in 0..3 {
+                let v = p[c] as i32;
+                if v < mn[c] { mn[c] = v; }
+                if v > mx[c] { mx[c] = v; }
+            }
+        }
+        (mn, mx)
+    } else {
+        bc1_bbox_opaque_scalar(rgba)
+    };
+    encode_bc1_finish(rgba, has_trans, &mut mn, &mut mx, out, false);
+}
+
+#[inline]
+fn encode_bc1_finish(
+    rgba: &[u8; 64],
+    has_trans: bool,
+    mn: &mut [i32; 3],
+    mx: &mut [i32; 3],
+    out: &mut [u8],
+    use_simd: bool,
+) {
     if mn[0] > mx[0] {
         out[0..4].copy_from_slice(&0u32.to_le_bytes());
         out[4..8].copy_from_slice(&u32::MAX.to_le_bytes());
@@ -435,19 +746,35 @@ fn encode_bc1_block(rgba: &[u8; 64], punchthrough: bool, out: &mut [u8]) {
         if c0 > c1 {
             std::mem::swap(&mut c0, &mut c1);
         }
+        if c0 == c1 {
+            let mut bits = 0u32;
+            for i in 0..16 {
+                if rgba[i * 4 + 3] == 0 {
+                    bits |= 3u32 << (i * 2);
+                }
+            }
+            out[0..2].copy_from_slice(&c0.to_le_bytes());
+            out[2..4].copy_from_slice(&c1.to_le_bytes());
+            out[4..8].copy_from_slice(&bits.to_le_bytes());
+            return;
+        }
         let p0 = unpack_rgb565(c0);
         let p1 = unpack_rgb565(c1);
         let p2 = [(p0[0] + p1[0]) >> 1, (p0[1] + p1[1]) >> 1, (p0[2] + p1[2]) >> 1];
+        let dir = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]];
+        let d0 = dot3(p0, dir);
+        let d1 = dot3(p1, dir);
+        let d2 = dot3(p2, dir);
+        let m02 = d0 + d2;
+        let m21 = d2 + d1;
         let mut bits = 0u32;
         for i in 0..16 {
             let p = &rgba[i * 4..i * 4 + 4];
             let best = if p[3] == 0 {
                 3u32
             } else {
-                let c = [p[0] as i32, p[1] as i32, p[2] as i32];
-                let d = |q: [i32; 3]| (c[0] - q[0]).pow(2) + (c[1] - q[1]).pow(2) + (c[2] - q[2]).pow(2);
-                let (e0, e1, e2) = (d(p0), d(p1), d(p2));
-                if e0 <= e1 && e0 <= e2 { 0 } else if e1 <= e2 { 1 } else { 2 }
+                let t = (p[0] as i32 * dir[0] + p[1] as i32 * dir[1] + p[2] as i32 * dir[2]) * 2;
+                if t <= m02 { 0 } else if t <= m21 { 2 } else { 1 }
             };
             bits |= best << (i * 2);
         }
@@ -469,22 +796,57 @@ fn encode_bc1_block(rgba: &[u8; 64], punchthrough: bool, out: &mut [u8]) {
     let p1 = unpack_rgb565(c1);
     let p2 = [(2 * p0[0] + p1[0]) / 3, (2 * p0[1] + p1[1]) / 3, (2 * p0[2] + p1[2]) / 3];
     let p3 = [(p0[0] + 2 * p1[0]) / 3, (p0[1] + 2 * p1[1]) / 3, (p0[2] + 2 * p1[2]) / 3];
-    let mut bits = 0u32;
-    for i in 0..16 {
-        let p = &rgba[i * 4..i * 4 + 4];
-        let c = [p[0] as i32, p[1] as i32, p[2] as i32];
-        let d = |q: [i32; 3]| (c[0] - q[0]).pow(2) + (c[1] - q[1]).pow(2) + (c[2] - q[2]).pow(2);
-        let (e0, e1, e2, e3) = (d(p0), d(p1), d(p2), d(p3));
-        let mut best = 0u32;
-        let mut eb = e0;
-        if e1 < eb { eb = e1; best = 1; }
-        if e2 < eb { eb = e2; best = 2; }
-        if e3 < eb { best = 3; }
-        bits |= best << (i * 2);
-    }
+    let dir = [p0[0] - p1[0], p0[1] - p1[1], p0[2] - p1[2]];
+    let d0 = dot3(p0, dir);
+    let d1 = dot3(p1, dir);
+    let d2 = dot3(p2, dir);
+    let d3 = dot3(p3, dir);
+    let m02 = d0 + d2;
+    let m23 = d2 + d3;
+    let m31 = d3 + d1;
+    let bits = {
+        #[cfg(target_arch = "x86_64")]
+        {
+            if use_simd {
+                bc1_indices_opaque_sse2(rgba, dir, m02, m23, m31)
+            } else {
+                bc1_indices_opaque_scalar(rgba, dir, m02, m23, m31)
+            }
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            let _ = use_simd;
+            bc1_indices_opaque_scalar(rgba, dir, m02, m23, m31)
+        }
+    };
     out[0..2].copy_from_slice(&c0.to_le_bytes());
     out[2..4].copy_from_slice(&c1.to_le_bytes());
     out[4..8].copy_from_slice(&bits.to_le_bytes());
+}
+
+fn encode_bc1_block(rgba: &[u8; 64], punchthrough: bool, out: &mut [u8]) {
+    if punchthrough {
+        encode_bc1_block_scalar(rgba, true, out);
+        return;
+    }
+    #[cfg(target_arch = "x86_64")]
+    let (mut mn, mut mx) = bc1_bbox_opaque_sse2(rgba);
+    #[cfg(target_arch = "aarch64")]
+    let (mut mn, mut mx) = bc1_bbox_opaque_neon(rgba);
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    let (mut mn, mut mx) = bc1_bbox_opaque_scalar(rgba);
+
+    encode_bc1_finish(rgba, false, &mut mn, &mut mx, out, true);
+}
+
+#[inline]
+fn bc4_quantize_recip(span: u32) -> u32 {
+    ((7u32 << 17) + span - 1) / span
+}
+
+#[inline]
+fn bc4_quantize(delta: u32, inv: u32) -> u32 {
+    (delta * inv + 65_536) >> 17
 }
 
 fn encode_bc4_unorm_block(vals: &[u8; 16], out: &mut [u8]) {
@@ -499,12 +861,12 @@ fn encode_bc4_unorm_block(vals: &[u8; 16], out: &mut [u8]) {
         out[4..8].copy_from_slice(&0u32.to_le_bytes());
         return;
     }
-    let span = hi - lo;
-    let half = span >> 1;
+    // 1 reciprocal per block (bit-exact across all span in 1..=255).
+    let inv = bc4_quantize_recip(hi - lo);
     let mut w0 = hi | (lo << 8);
     let mut w1 = 0u32;
     for (i, &v) in vals.iter().enumerate() {
-        let q = ((hi - v as u32) * 7 + half) / span;
+        let q = bc4_quantize(hi - v as u32, inv);
         let code = if q == 0 { 0 } else if q == 7 { 1 } else { q + 1 };
         let bit = 16 + i * 3;
         if bit < 32 {
@@ -534,12 +896,12 @@ fn encode_bc4_snorm_block(vals: &[i8; 16], out: &mut [u8]) {
         out[4..8].copy_from_slice(&0u32.to_le_bytes());
         return;
     }
-    let span = hi - lo;
-    let half = span >> 1;
+    // 1 reciprocal per block (bit-exact across all span in 1..=254).
+    let inv = bc4_quantize_recip((hi - lo) as u32);
     let mut w0 = uhi | (ulo << 8);
     let mut w1 = 0u32;
     for (i, &v) in vals.iter().enumerate() {
-        let q = (((hi - v as i32) * 7 + half) / span) as u32;
+        let q = bc4_quantize((hi - v as i32) as u32, inv);
         let code = if q == 0 { 0 } else if q == 7 { 1 } else { q + 1 };
         let bit = 16 + i * 3;
         if bit < 32 {
@@ -553,6 +915,32 @@ fn encode_bc4_snorm_block(vals: &[i8; 16], out: &mut [u8]) {
     }
     out[0..4].copy_from_slice(&w0.to_le_bytes());
     out[4..8].copy_from_slice(&w1.to_le_bytes());
+}
+
+#[inline(always)]
+fn transcode_region_bc_loop<const BB: usize, F: FnMut(&[u8], &mut [u8; 16])>(
+    src: &Surface<'_>,
+    bw: usize,
+    bh: usize,
+    dst: &mut [u8],
+    mut transcode_one: F,
+) {
+    let mut bc_block = [0u8; 16];
+    let mut previous: Option<&[u8]> = None;
+    for by in 0..bh {
+        let src_row = by * src.row_blocks;
+        let dst_row = by * bw;
+        for bx in 0..bw {
+            let off = (src_row + bx) * BB;
+            let block = &src.data[off..off + BB];
+            if previous != Some(block) {
+                transcode_one(block, &mut bc_block);
+                previous = Some(block);
+            }
+            let d = (dst_row + bx) * BB;
+            dst[d..d + BB].copy_from_slice(&bc_block[0..BB]);
+        }
+    }
 }
 
 /// CPU fallback transcoder from ETC2/EAC to native BC1/BC3/BC4/BC5 blocks.
@@ -586,74 +974,80 @@ pub fn transcode_region_bc(
         return Err(format!("destination has {} bytes, region needs {dst_need}", dst.len()));
     }
     let mut texels = [0u8; 64];
-    let mut bc_block = [0u8; 16];
-    let mut previous: Option<&[u8]> = None;
-    for by in 0..bh {
-        for bx in 0..bw {
-            let off = (by * src.row_blocks + bx) * bb;
-            let block = &src.data[off..off + bb];
-            if previous != Some(block) {
-                decode_block(format, block, &mut texels);
-                match format {
-                    EtcFormat::Rgb8 => encode_bc1_block(&texels, false, &mut bc_block[0..8]),
-                    EtcFormat::Rgb8A1 => encode_bc1_block(&texels, true, &mut bc_block[0..8]),
-                    EtcFormat::Rgba8 => {
-                        let mut a = [0u8; 16];
-                        for i in 0..16 {
-                            a[i] = texels[i * 4 + 3];
-                        }
-                        encode_bc4_unorm_block(&a, &mut bc_block[0..8]);
-                        encode_bc1_block(&texels, false, &mut bc_block[8..16]);
-                    }
-                    EtcFormat::R11 => {
-                        let mut v = [0u8; 16];
-                        for i in 0..16 {
-                            let u = u16::from_le_bytes([texels[i * 2], texels[i * 2 + 1]]) as u32;
-                            v[i] = ((u + 128) >> 8).min(255) as u8;
-                        }
-                        encode_bc4_unorm_block(&v, &mut bc_block[0..8]);
-                    }
-                    EtcFormat::R11Signed => {
-                        let mut s = [0i8; 16];
-                        for i in 0..16 {
-                            let s16 = i16::from_le_bytes([texels[i * 2], texels[i * 2 + 1]]) as i32;
-                            let r = if s16 >= 0 { (s16 + 128) >> 8 } else { -((-s16 + 128) >> 8) };
-                            s[i] = r.clamp(-127, 127) as i8;
-                        }
-                        encode_bc4_snorm_block(&s, &mut bc_block[0..8]);
-                    }
-                    EtcFormat::Rg11 => {
-                        let mut r = [0u8; 16];
-                        let mut g = [0u8; 16];
-                        for i in 0..16 {
-                            let ru = u16::from_le_bytes([texels[i * 4], texels[i * 4 + 1]]) as u32;
-                            let gu = u16::from_le_bytes([texels[i * 4 + 2], texels[i * 4 + 3]]) as u32;
-                            r[i] = ((ru + 128) >> 8).min(255) as u8;
-                            g[i] = ((gu + 128) >> 8).min(255) as u8;
-                        }
-                        encode_bc4_unorm_block(&r, &mut bc_block[0..8]);
-                        encode_bc4_unorm_block(&g, &mut bc_block[8..16]);
-                    }
-                    EtcFormat::Rg11Signed => {
-                        let mut r = [0i8; 16];
-                        let mut g = [0i8; 16];
-                        for i in 0..16 {
-                            let rs = i16::from_le_bytes([texels[i * 4], texels[i * 4 + 1]]) as i32;
-                            let gs = i16::from_le_bytes([texels[i * 4 + 2], texels[i * 4 + 3]]) as i32;
-                            let rr = if rs >= 0 { (rs + 128) >> 8 } else { -((-rs + 128) >> 8) };
-                            let gr = if gs >= 0 { (gs + 128) >> 8 } else { -((-gs + 128) >> 8) };
-                            r[i] = rr.clamp(-127, 127) as i8;
-                            g[i] = gr.clamp(-127, 127) as i8;
-                        }
-                        encode_bc4_snorm_block(&r, &mut bc_block[0..8]);
-                        encode_bc4_snorm_block(&g, &mut bc_block[8..16]);
-                    }
-                }
-                previous = Some(block);
+    // Hoist format dispatch outside the (by, bx) block loop.
+    match format {
+        EtcFormat::Rgb8 => transcode_region_bc_loop::<8, _>(src, bw, bh, dst, |block, bc| {
+            decode_block_rgb8(block, &mut texels);
+            encode_bc1_block(&texels, false, &mut bc[0..8]);
+        }),
+        EtcFormat::Rgb8A1 => transcode_region_bc_loop::<8, _>(src, bw, bh, dst, |block, bc| {
+            decode_block_rgb8a1(block, &mut texels);
+            encode_bc1_block(&texels, true, &mut bc[0..8]);
+        }),
+        EtcFormat::Rgba8 => transcode_region_bc_loop::<16, _>(src, bw, bh, dst, |block, bc| {
+            decode_block_rgba8(block, &mut texels);
+            let mut a = [0u8; 16];
+            for i in 0..16 {
+                a[i] = texels[i * 4 + 3];
             }
-            let d = (by * bw + bx) * bb;
-            dst[d..d + bb].copy_from_slice(&bc_block[0..bb]);
-        }
+            encode_bc4_unorm_block(&a, &mut bc[0..8]);
+            encode_bc1_block(&texels, false, &mut bc[8..16]);
+        }),
+        EtcFormat::R11 => transcode_region_bc_loop::<8, _>(src, bw, bh, dst, |block, bc| {
+            let (paint, bits) = eac_palette(block, false);
+            let mut v = [0u8; 16];
+            for y in 0..4 {
+                for x in 0..4 {
+                    let u = u32::from(paint[eac_index(bits, x, y)]);
+                    v[y * 4 + x] = ((u + 128) >> 8).min(255) as u8;
+                }
+            }
+            encode_bc4_unorm_block(&v, &mut bc[0..8]);
+        }),
+        EtcFormat::R11Signed => transcode_region_bc_loop::<8, _>(src, bw, bh, dst, |block, bc| {
+            let (paint, bits) = eac_palette(block, true);
+            let mut s = [0i8; 16];
+            for y in 0..4 {
+                for x in 0..4 {
+                    let s16 = paint[eac_index(bits, x, y)] as i16 as i32;
+                    let r = if s16 >= 0 { (s16 + 128) >> 8 } else { -((-s16 + 128) >> 8) };
+                    s[y * 4 + x] = r.clamp(-127, 127) as i8;
+                }
+            }
+            encode_bc4_snorm_block(&s, &mut bc[0..8]);
+        }),
+        EtcFormat::Rg11 => transcode_region_bc_loop::<16, _>(src, bw, bh, dst, |block, bc| {
+            let (rp, rbits) = eac_palette(&block[0..8], false);
+            let (gp, gbits) = eac_palette(&block[8..16], false);
+            let (mut r, mut g) = ([0u8; 16], [0u8; 16]);
+            for y in 0..4 {
+                for x in 0..4 {
+                    let ru = u32::from(rp[eac_index(rbits, x, y)]);
+                    let gu = u32::from(gp[eac_index(gbits, x, y)]);
+                    r[y * 4 + x] = ((ru + 128) >> 8).min(255) as u8;
+                    g[y * 4 + x] = ((gu + 128) >> 8).min(255) as u8;
+                }
+            }
+            encode_bc4_unorm_block(&r, &mut bc[0..8]);
+            encode_bc4_unorm_block(&g, &mut bc[8..16]);
+        }),
+        EtcFormat::Rg11Signed => transcode_region_bc_loop::<16, _>(src, bw, bh, dst, |block, bc| {
+            let (rp, rbits) = eac_palette(&block[0..8], true);
+            let (gp, gbits) = eac_palette(&block[8..16], true);
+            let (mut r, mut g) = ([0i8; 16], [0i8; 16]);
+            for y in 0..4 {
+                for x in 0..4 {
+                    let rs = rp[eac_index(rbits, x, y)] as i16 as i32;
+                    let gs = gp[eac_index(gbits, x, y)] as i16 as i32;
+                    let rr = if rs >= 0 { (rs + 128) >> 8 } else { -((-rs + 128) >> 8) };
+                    let gr = if gs >= 0 { (gs + 128) >> 8 } else { -((-gs + 128) >> 8) };
+                    r[y * 4 + x] = rr.clamp(-127, 127) as i8;
+                    g[y * 4 + x] = gr.clamp(-127, 127) as i8;
+                }
+            }
+            encode_bc4_snorm_block(&r, &mut bc[0..8]);
+            encode_bc4_snorm_block(&g, &mut bc[8..16]);
+        }),
     }
     Ok(())
 }
@@ -1092,6 +1486,48 @@ mod tests {
                     };
                     assert_eq!(out[y * 4 + x], expected);
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn bc4_reciprocal_quantize_is_bit_exact_for_all_spans() {
+        for span in 1u32..=255 {
+            let inv = bc4_quantize_recip(span);
+            for delta in 0..=span {
+                let exact = (delta * 7 + (span >> 1)) / span;
+                let fast = bc4_quantize(delta, inv);
+                assert_eq!(fast, exact, "span={span} delta={delta} inv={inv}");
+            }
+        }
+    }
+
+    #[test]
+    fn bc1_simd_matches_scalar_bit_for_bit() {
+        let mut seed = 0x9e37_79b9u32;
+        for i in 0..4096 {
+            let mut rgba = [0u8; 64];
+            for b in &mut rgba {
+                seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                *b = (seed >> 24) as u8;
+            }
+            if i % 8 == 0 {
+                // Degenerate single-color block.
+                let px = [rgba[0], rgba[1], rgba[2], 255];
+                for chunk in rgba.chunks_exact_mut(4) {
+                    chunk.copy_from_slice(&px);
+                }
+            }
+            for punchthrough in [false, true] {
+                if punchthrough && i % 3 == 0 {
+                    rgba[3] = 0;
+                    rgba[19] = 0;
+                }
+                let mut simd_out = [0u8; 8];
+                let mut scalar_out = [0u8; 8];
+                encode_bc1_block(&rgba, punchthrough, &mut simd_out);
+                encode_bc1_block_scalar(&rgba, punchthrough, &mut scalar_out);
+                assert_eq!(simd_out, scalar_out, "block {i} punchthrough={punchthrough}");
             }
         }
     }

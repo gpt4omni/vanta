@@ -522,13 +522,22 @@ struct PlaybackStream::Impl {
     uint32_t bytes_per_frame = 0;
     uint32_t max_pending = 2;
 
-    mutable std::mutex mutex;
-    std::deque<PendingBuffer> pending;
+    // Lock-free power-of-two SPSC ring of PendingBuffer slots: `enqueue`/`clear`
+    // serialize on `producer_mutex`, while PipeWire's real-time `process()`
+    // thread is the sole consumer and NEVER acquires a mutex or allocates.
+    std::mutex producer_mutex;
+    std::vector<PendingBuffer> ring;
+    size_t ring_cap = 0;
+    size_t ring_mask = 0;
+    alignas(64) std::atomic<uint64_t> write_pos{0};
+    alignas(64) std::atomic<uint64_t> read_pos{0};
+    alignas(64) std::atomic<uint64_t> clear_target{0};
+
     // Pre-reserved RT scratch for drained callback contexts (zero heap alloc on RT thread).
     std::vector<void*> drained_scratch;
-    PlaybackStream::DrainCallback drain_cb = nullptr;
-    void* drain_user = nullptr;
-    uint32_t enqueued_index = 0;
+    std::atomic<PlaybackStream::DrainCallback> drain_cb{nullptr};
+    std::atomic<void*> drain_user{nullptr};
+    std::atomic<uint32_t> enqueued_index{0};
     uint64_t underrun_frames = 0; // diagnostic counter, not surfaced through the OpenSL API
 
     /// The recorder's copy of this player's output (ADR-059). Set in `open`
@@ -543,6 +552,26 @@ struct PlaybackStream::Impl {
     uint64_t trace_process_cycles = 0;
     uint64_t trace_drains = 0;
     std::chrono::steady_clock::time_point trace_last_report{};
+
+    static size_t next_pow2(size_t n) {
+        size_t p = 64;
+        while (p < n && p <= (SIZE_MAX >> 1)) p <<= 1;
+        return p;
+    }
+
+    // Called only in `open()` before the PipeWire stream is connected.
+    void ring_reset(uint32_t max_bufs) {
+        const size_t min_slots = static_cast<size_t>(max_bufs) * 4;
+        const size_t cap = next_pow2(min_slots > 64 ? min_slots : 64);
+        ring.assign(cap, PendingBuffer{nullptr, 0, 0, nullptr});
+        ring_cap = cap;
+        ring_mask = cap - 1;
+        write_pos.store(0, std::memory_order_relaxed);
+        read_pos.store(0, std::memory_order_relaxed);
+        clear_target.store(0, std::memory_order_relaxed);
+        enqueued_index.store(0, std::memory_order_relaxed);
+        drained_scratch.reserve(cap);
+    }
 
     static void on_process(void* data) { static_cast<Impl*>(data)->process(); }
 
@@ -560,6 +589,8 @@ struct PlaybackStream::Impl {
         }
     }
 
+    /// **Realtime, lock-free.** Reads pending PCM descriptors from the SPSC
+    /// ring without taking any mutex or allocating heap memory.
     void process() {
         pw_buffer* b = g_lib.stream_dequeue_buffer(stream);
         if (!b) return; // no buffer available this cycle; PipeWire will ask again
@@ -577,26 +608,38 @@ struct PlaybackStream::Impl {
             if (requested_bytes < capacity) want = static_cast<uint32_t>(requested_bytes);
         }
 
-        DrainCallback cb;
-        void* user;
-        // Contexts of buffers this cycle fully drained. Reuse pre-reserved
-        // scratch storage so PipeWire's RT thread never allocates on the heap.
-        if (drained_scratch.capacity() < 64) {
-            drained_scratch.reserve(64);
-        }
         drained_scratch.clear();
-        uint32_t padded;
-        {
-            std::lock_guard<std::mutex> lock(mutex);
-            cb = drain_cb;
-            user = drain_user;
-            padded = testing::fill_pcm(pending, dst, want, drained_scratch);
+        uint32_t filled = 0;
+        if (ring_cap != 0) {
+            uint64_t r = read_pos.load(std::memory_order_relaxed);
+            const uint64_t ct = clear_target.load(std::memory_order_acquire);
+            if (r < ct) {
+                r = ct;
+                read_pos.store(r, std::memory_order_release);
+            }
+            const uint64_t w = write_pos.load(std::memory_order_acquire);
+            while (filled < want && r < w) {
+                PendingBuffer& front = ring[r & ring_mask];
+                const uint32_t avail = front.size - front.offset;
+                const uint32_t take = avail < (want - filled) ? avail : (want - filled);
+                std::memcpy(dst + filled, front.data + front.offset, take);
+                front.offset += take;
+                filled += take;
+                if (front.offset >= front.size) {
+                    drained_scratch.push_back(front.context);
+                    ++r;
+                }
+            }
+            read_pos.store(r, std::memory_order_release);
         }
+
+        const uint32_t padded = want - filled;
         if (padded != 0) {
+            std::memset(dst + filled, 0, padded);
             underrun_frames += padded / (bytes_per_frame ? bytes_per_frame : 1);
         }
         // After the fill, so an underrun's silence is recorded as silence, and
-        // outside the lock: the tap never waits.
+        // completely lock-free: the tap never waits.
         if (tap_src && bytes_per_frame != 0) {
             tap::push(tap_src, dst, want / bytes_per_frame, tap_channels, tap_fmt);
         }
@@ -607,6 +650,8 @@ struct PlaybackStream::Impl {
 
         g_lib.stream_queue_buffer(stream, b);
 
+        DrainCallback cb = drain_cb.load(std::memory_order_acquire);
+        void* user = drain_user.load(std::memory_order_acquire);
         if (cb) {
             for (void* ctx : drained_scratch) cb(ctx, user);
         }
@@ -620,7 +665,7 @@ struct PlaybackStream::Impl {
                 std::fprintf(stderr,
                     "D/Vanta-OpenSLES         audio trace: %llu buffers enqueued, %llu process "
                     "cycles, %llu drained, %llu underrun frames padded with silence\n",
-                    static_cast<unsigned long long>(enqueued_index),
+                    static_cast<unsigned long long>(enqueued_index.load(std::memory_order_relaxed)),
                     static_cast<unsigned long long>(trace_process_cycles),
                     static_cast<unsigned long long>(trace_drains),
                     static_cast<unsigned long long>(underrun_frames));
@@ -1794,6 +1839,7 @@ bool PlaybackStream::open(uint32_t rate_hz, uint32_t channels, uint32_t bits_per
 
     impl_->bytes_per_frame = channels * (container_bits / 8);
     impl_->max_pending = max_pending_buffers > 0 ? max_pending_buffers : 2;
+    impl_->ring_reset(impl_->max_pending);
     // Integer PCM only: OpenSL ES' simple buffer queue has no float format here.
     // Eight- and 24-bit players are not copied for the recorder (`Fmt::None`).
     impl_->tap_fmt = (!big_endian && bits_per_sample == container_bits)
@@ -1901,22 +1947,29 @@ void PlaybackStream::close() {
 
 bool PlaybackStream::enqueue(const void* data, uint32_t size, void* buffer_context) {
     if (size == 0) return true;
-    std::lock_guard<std::mutex> lock(impl_->mutex);
-    if (impl_->pending.size() >= impl_->max_pending) return false;
-    impl_->pending.push_back({static_cast<const uint8_t*>(data), size, 0, buffer_context});
-    ++impl_->enqueued_index;
+    std::lock_guard<std::mutex> lock(impl_->producer_mutex);
+    if (impl_->ring_cap == 0) return false;
+    const uint64_t w = impl_->write_pos.load(std::memory_order_relaxed);
+    const uint64_t r = impl_->read_pos.load(std::memory_order_acquire);
+    const uint64_t ct = impl_->clear_target.load(std::memory_order_relaxed);
+    const uint64_t eff_r = r > ct ? r : ct;
+    if (w - eff_r >= impl_->max_pending) return false;
+    if (w - r >= impl_->ring_cap) return false;
+    impl_->ring[w & impl_->ring_mask] = {static_cast<const uint8_t*>(data), size, 0, buffer_context};
+    impl_->write_pos.store(w + 1, std::memory_order_release);
+    impl_->enqueued_index.fetch_add(1, std::memory_order_relaxed);
     return true;
 }
 
 void PlaybackStream::clear() {
-    std::lock_guard<std::mutex> lock(impl_->mutex);
-    impl_->pending.clear();
+    std::lock_guard<std::mutex> lock(impl_->producer_mutex);
+    const uint64_t w = impl_->write_pos.load(std::memory_order_relaxed);
+    impl_->clear_target.store(w, std::memory_order_release);
 }
 
 void PlaybackStream::set_drain_callback(DrainCallback cb, void* user) {
-    std::lock_guard<std::mutex> lock(impl_->mutex);
-    impl_->drain_cb = cb;
-    impl_->drain_user = user;
+    impl_->drain_user.store(user, std::memory_order_release);
+    impl_->drain_cb.store(cb, std::memory_order_release);
 }
 
 void PlaybackStream::set_active(bool active) {
@@ -1963,8 +2016,12 @@ void PlaybackStream::set_mute(bool mute) {
 }
 
 PlaybackStream::QueueState PlaybackStream::state() const {
-    std::lock_guard<std::mutex> lock(impl_->mutex);
-    return {static_cast<uint32_t>(impl_->pending.size()), impl_->enqueued_index};
+    const uint64_t w = impl_->write_pos.load(std::memory_order_acquire);
+    const uint64_t r = impl_->read_pos.load(std::memory_order_acquire);
+    const uint64_t ct = impl_->clear_target.load(std::memory_order_acquire);
+    const uint64_t eff_r = r > ct ? r : ct;
+    const uint32_t count = w > eff_r ? static_cast<uint32_t>(w - eff_r) : 0;
+    return {count, impl_->enqueued_index.load(std::memory_order_relaxed)};
 }
 
 } // namespace vanta::audio
