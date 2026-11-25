@@ -78,6 +78,25 @@
       and is not this change. AppStream shows the newest entry as "what's new",
       so the important one is the top.
     -->
+    <release version="0.50.2" date="2026-11-25">
+      <url type="details">https://github.com/gpt4omni/vanta/releases/tag/v0.50.2</url>
+      <description>
+        <p>
+          Fixes game window header bar focus stealing where pressing Space to
+          jump in Roblox would repeatedly open or trigger the Server Region
+          popover menu, and improves Raspberry Pi OS and Debian/Ubuntu
+          packaging compatibility.
+        </p>
+        <p>
+          Disables keyboard focus on the game window's HeaderBar, server pill,
+          and server popover actions while keeping mouse clicks working, clears
+          GTK focus when exiting in-game text boxes or dialogs, updates Debian
+          t64 library dependencies, and adds automatic Flatpak/AppImage
+          fallback in the universal installer when libwebkitgtk-6.0-4 is
+          unavailable.
+        </p>
+      </description>
+    </release>
     <release version="0.50.1" date="2026-11-25">
       <url type="details">https://github.com/gpt4omni/vanta/releases/tag/v0.50.1</url>
       <description>

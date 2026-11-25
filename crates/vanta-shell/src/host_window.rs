@@ -1004,6 +1004,12 @@ impl HostWindow {
 
     pub fn new(title: &str, width: i32, height: i32, content: &impl IsA<gtk::Widget>) -> Self {
         let header = adw::HeaderBar::new();
+        // Prevent the game window's header bar and every control inside it
+        // (server region pill, window minimize/maximize/close buttons) from
+        // ever taking keyboard focus. Otherwise pressing Space to jump in
+        // Roblox activates the focused `MenuButton` or header button.
+        header.set_can_focus(false);
+        header.set_focus_on_click(false);
         let perf_hud_label = gtk::Label::new(None);
         perf_hud_label.add_css_class("vanta-perf-hud");
         perf_hud_label.set_valign(gtk::Align::Center);
@@ -1017,6 +1023,7 @@ impl HostWindow {
             std::rc::Rc::new(std::cell::RefCell::new(None));
 
         let popover_box = gtk::Box::new(gtk::Orientation::Vertical, 4);
+        popover_box.set_can_focus(false);
         popover_box.set_margin_top(6);
         popover_box.set_margin_bottom(6);
         popover_box.set_margin_start(6);
@@ -1034,20 +1041,31 @@ impl HostWindow {
         let copy_invite_btn = gtk::Button::builder()
             .label("Copy Invite Link")
             .has_frame(false)
+            .can_focus(false)
+            .focusable(false)
+            .focus_on_click(false)
             .build();
         let copy_info_btn = gtk::Button::builder()
             .label("Copy Server Info")
             .has_frame(false)
+            .can_focus(false)
+            .focusable(false)
+            .focus_on_click(false)
             .build();
         let server_rejoin_btn = gtk::Button::builder()
             .label("Quick Rejoin Server")
             .has_frame(false)
+            .can_focus(false)
+            .focusable(false)
+            .focus_on_click(false)
             .build();
         popover_box.append(&copy_invite_btn);
         popover_box.append(&copy_info_btn);
         popover_box.append(&server_rejoin_btn);
 
         let server_popover = gtk::Popover::new();
+        server_popover.set_autohide(true);
+        server_popover.set_can_focus(false);
         server_popover.set_child(Some(&popover_box));
 
         let server_pill = gtk::MenuButton::builder()
@@ -1055,6 +1073,9 @@ impl HostWindow {
             .popover(&server_popover)
             .valign(gtk::Align::Center)
             .visible(false)
+            .can_focus(false)
+            .focusable(false)
+            .focus_on_click(false)
             .build();
         server_pill.add_css_class("vanta-server-pill");
         header.pack_start(&server_pill);
@@ -1294,8 +1315,19 @@ impl HostWindow {
             .content(&toolbar)
             .build();
         // Tells the launcher's startup watchdog that there is nothing to
-        // report. Harmless in `vanta-run`, which never arms it.
-        window.connect_map(|_| crate::startup_watch::mapped());
+        // report. Harmless in `vanta-run`, which never arms it. Also clear
+        // initial GTK focus so Space/Enter during gameplay never activate
+        // header chrome.
+        window.connect_map(|win| {
+            crate::startup_watch::mapped();
+            GtkWindowExt::set_focus(win, gtk::Widget::NONE);
+        });
+        {
+            let win = window.clone();
+            server_popover.connect_closed(move |_| {
+                GtkWindowExt::set_focus(&win, gtk::Widget::NONE);
+            });
+        }
 
         HostWindow {
             window,
@@ -1497,6 +1529,9 @@ impl HostWindow {
     pub fn set_text_overlay(&self, overlay: Option<TextOverlay<'_>>) {
         let Some(engine) = &self.engine else { return };
         let Some(overlay) = overlay else {
+            // Clear GTK focus before hiding the editors so GTK does not fall
+            // back onto header chrome widgets when a Roblox TextBox blurs.
+            GtkWindowExt::set_focus(&self.window, gtk::Widget::NONE);
             engine.editor.set_visible(false);
             engine.editor_multiline_scroll.set_visible(false);
             engine.text_layer.set_can_target(false);
@@ -1732,6 +1767,9 @@ impl HostWindow {
     pub fn set_dialog_up(&self, up: bool) {
         if self.dialog_up.replace(up) == up {
             return;
+        }
+        if !up {
+            GtkWindowExt::set_focus(&self.window, gtk::Widget::NONE);
         }
         self.refresh_input_region();
     }
