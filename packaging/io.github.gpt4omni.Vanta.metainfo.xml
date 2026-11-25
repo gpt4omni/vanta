@@ -78,6 +78,28 @@
       and is not this change. AppStream shows the newest entry as "what's new",
       so the important one is the top.
     -->
+    <release version="0.50.0" date="2026-11-25">
+      <url type="details">https://github.com/gpt4omni/vanta/releases/tag/v0.50.0</url>
+      <description>
+        <p>
+          Major v0.50.0 release introducing Vanta's new tilted-square logo, a
+          redesigned obsidian launcher UI with a dedicated Speed launch mode for
+          old and weak CPUs, fixed FastFlags (including
+          DFIntDebugFRMQualityLevelOverride preserving full render distance),
+          in-app WebViews for Servers and Roblox pages, and major startup, RAM,
+          and runtime performance breakthroughs.
+        </p>
+        <p>
+          Under the hood, adds on-disk VkPipelineCache and lazy GPU ETC2
+          initialization (~1 s faster warm NVIDIA startup), bit-exact
+          reciprocal BC4 and SIMD ETC2 decoding, JNI Rocket v2 fast paths,
+          file-backed hugepage text mapping and mmap-backed assets, tightened
+          mimalloc/madvise memory return, and fixes for APK signature SPKI
+          binding, Wayland dialog keystroke isolation, recording resize stalls,
+          plugin deadlocks, and AAudio timeout overflow.
+        </p>
+      </description>
+    </release>
     <release version="0.45.0" date="2026-11-23">
       <url type="details">https://github.com/gpt4omni/vanta/releases/tag/v0.45.0</url>
       <description>
